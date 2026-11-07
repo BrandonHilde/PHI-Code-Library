@@ -4,9 +4,9 @@ A collection of libraries written in [PHI](../PHI), each of which builds to a `.
 program can include with a single `use`. The first three are a **Web Library**, an **Image Library**
 and a **Font Library**, and more will follow.
 
-Written 2026-11-06. Status (2026-11-07): Phase 0 is done, and Phase 1's move is done but not
-committed. weblib builds here, and all its tests pass from here (38 of 38 runs as Linux programs,
-and the compiled test). Phase 2 can start.
+Written 2026-11-06. Status (2026-11-07): Phase 0 is done, and so is Phase 1's move (commit
+`2e9743f`). weblib builds here, and all its tests pass from here (38 of 38 runs as Linux programs,
+and the compiled test). Phase 1's tidying is left, and Phase 2 can start.
 
 | Library | File | What it does | Starts from |
 |---|---|---|---|
@@ -174,7 +174,7 @@ It was removed from this computer afterwards; the owner keeps a backup of it on 
       Unicode's license texts weren't beside their data, and now are
 - [x] Copy `weblib/` to `libs/web/`, along with its docs and the tools it needs (in `tools/web/`). The
       test browser stays out, as its own project, and so does `browser_roots.py`, which is its
-- [ ] Commit the small suites (html5lib, CSS parsing, JS fixtures, about 5 MB), with their licenses
+- [x] Commit the small suites (html5lib, CSS parsing, JS fixtures, about 5 MB), with their licenses
 - [x] Leave out test262 (217 MB): `tools/web/fetch_test262.py` fetches it at commit `d115437`, and
       `js_test262.py` says so when it's absent. `test_js262`'s self-test needed three of its harness
       files, which are kept with the self-test's own fixtures
@@ -195,7 +195,7 @@ results match the baseline below (or differences are explained).
 **2026-11-07:** from `libs/web`, through `.\build.ps1 web -Test -Timeout 600` in 24 minutes, the same 37
 of 38 as the baseline, with the same one failure, and `tests/use` 2 of 2. All 19 pass on `linux64`.
 Once PHI's heap limit was the program's to set (see the first item above): 38 of 38, in 4 minutes.
-The outside suites (the table below) haven't been rerun here yet.
+The outside suites, rerun on Linux the same day, are in the table below.
 
 **Then, bringing weblib in line with [the conventions](docs/conventions.md)** (this doesn't hold up the
 phases after it):
@@ -203,13 +203,18 @@ phases after it):
 - [ ] Move the use of `OS.Now` and `OS.GetTicks` (`Date`, and seeding `Math.random`) behind hooks
 - [ ] List its x87 assembly, and write plain PHI versions where they're practical
 
-| Suite | Last recorded (browse README) |
-|---|---|
-| html5lib / WPT tree construction | 14,792 of 14,792 |
-| html5lib tokenizer | 14,084 of 14,084 |
-| CSS parsing tests | 8,331 of 8,338 |
-| test262 `language` | 21,487 of 23,015 (93.4%), no crashes |
-| test262 `built-ins` (families built so far) | 14,351 of 17,398 (82.5%), no crashes |
+| Suite | Last recorded (browse README, Windows) | Linux, 2026-11-07 |
+|---|---|---|
+| html5lib / WPT tree construction | 14,792 of 14,792 | the same (`test_html5lib.expected`) |
+| html5lib tokenizer | 14,084 of 14,084 | the same |
+| CSS parsing tests | 8,331 of 8,338 | the same (`test_css_syntax.expected`) |
+| test262 `language` | 21,487 of 23,015 (93.4%), no crashes | the same, as a 64-bit program |
+| test262 `built-ins` | 14,351 of 17,398 (82.5%) of the families built so far, no crashes | 14,577 of all 23,848 (61.1%), no crashes |
+
+The old `built-ins` figure left out families that weren't built, but which ones wasn't written down,
+so the Linux run counts all of them. Leaving out those at 0% because they aren't there (`Temporal`,
+`Atomics`, `SharedArrayBuffer`, `BigInt`, `ShadowRealm`, `DisposableStack`, `AsyncDisposableStack`,
+`SuppressedError`) and `Iterator` (2%) gives 14,561 of 17,702 (82.3%).
 
 ### Phase 2: Core Library
 

@@ -66,8 +66,8 @@ python tools/web/js_test262.py language --depth 2   # after building test_js262 
 All 19 test programs pass as `windows` and `windows64` programs (2026-11-06). As Linux programs
 (2026-11-07, their first run), all pass on `linux` and `linux64`, once PHI gave 32-bit Linux
 programs the same 128 MB default heap limit as the other systems (see
-[phi-notes.md](../../docs/phi-notes.md)). Where an outside test suite exists, it's the measure (the
-figures are from Windows):
+[phi-notes.md](../../docs/phi-notes.md)). Where an outside test suite exists, it's the measure. The
+figures are the same on Windows and Linux, except for `built-ins`, which was counted differently:
 
 | Suite | Result |
 |---|---|
@@ -75,7 +75,11 @@ figures are from Windows):
 | html5lib tokenizer | 14,084 of 14,084 runs |
 | CSS parsing tests | 8,331 of 8,338 |
 | test262, `language` | 21,487 of 23,015 (93.4%), no crashes |
-| test262, `built-ins` (everything but `Intl`, `Temporal`, `BigInt` and other families not built) | 14,351 of 17,398 (82.5%), no crashes |
+| test262, `built-ins`, all of it (Linux, 2026-11-07) | 14,577 of 23,848 (61.1%), no crashes |
+| test262, `built-ins`, without the families that aren't built (`Temporal`, `Atomics`, `SharedArrayBuffer`, `BigInt`, `ShadowRealm`, the disposable stacks, `SuppressedError`, `Iterator`) | 14,561 of 17,702 (82.3%) |
+
+(On Windows, 2026-11-06, `built-ins` without the families not built then was 14,351 of 17,398, 82.5%;
+which families those were wasn't written down. `Intl` is in test262's `intl402`, not `built-ins`.)
 
 Most of the test262 failures are things deliberately not here (see below), and whole families are at or near 100%: `Reflect`, `parseInt`, `Number`, `Object`, `String`, `Date`.
 

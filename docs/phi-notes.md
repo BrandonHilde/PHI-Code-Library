@@ -17,7 +17,7 @@ the PHI repo.
 ## Found on Linux (2026-11-07)
 
 PHI's first run on a Linux computer (Fedora 42, a GNOME desktop on Wayland), after moving it to .NET 10.
-Each is fixed in PHI's working tree, not yet committed there.
+Each is fixed in PHI, in commits `6858e27` to `457456d`.
 
 | What | Why | Fix |
 |---|---|---|
@@ -35,7 +35,7 @@ and a PHI OS program's at 124 MB, but a 32-bit Linux program's grew with `brk` u
 which can be gigabytes. weblib's `test_js_limits` fills the heap to check that running out is a
 `RangeError`, and on 32-bit Linux that took longer than its 600 s. Found 2026-11-07.
 
-**Fixed in PHI's working tree:** how far the heap grows is now the program's decision,
+**Fixed in PHI (`0b5f105`):** how far the heap grows is now the program's decision,
 `Heap.most_bytes` in `memory/program_heap.phi`. The default (0) is 128 MB in 32-bit code on every
 system, and the system's own limit in 64-bit. 32-bit Windows now reserves up to 1 GB of addresses
 so a program can raise it (that part is assembled but not yet run on Windows). `test_js_limits`
