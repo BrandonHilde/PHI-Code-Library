@@ -1,0 +1,6 @@
+# The bottom of the throwaway chain: see tools\check_build.ps1.
+phi.CbBase:Library
+{
+	[Twice: int x: 0;]
+	[end: x * 2]
+}

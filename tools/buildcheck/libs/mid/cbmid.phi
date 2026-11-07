@@ -1,0 +1,8 @@
+# The top of the throwaway chain: see tools\check_build.ps1.
+use cbbase;
+
+phi.CbMid:Library
+{
+	[Four: int x: 0;]
+	[end: (CbBase.Twice: (CbBase.Twice: x))]
+}

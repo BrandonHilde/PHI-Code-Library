@@ -1,0 +1,9 @@
+# A compiled test: only the .philib files are here, and it uses the library's dependency directly too.
+use cbmid;
+use cbbase;
+
+phi.TestCbMid:Program
+{
+	log (CbMid.Four: 3) ' ' (CbBase.Twice: 4) '\n';
+	exit 0;
+}

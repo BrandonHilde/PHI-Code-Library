@@ -1,0 +1,5 @@
+*.phi linguist-language=Phi
+
+# Compared or read byte for byte, so git mustn't change their line endings
+*.expected -text
+libs/*/tests/** -text

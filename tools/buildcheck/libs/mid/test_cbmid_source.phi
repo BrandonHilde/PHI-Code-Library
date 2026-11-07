@@ -1,0 +1,8 @@
+# An internal test: beside the source, so `use cbmid;` finds cbmid.phi, not the compiled file.
+use cbmid;
+
+phi.TestCbMidSource:Program
+{
+	log (CbMid.Four: 5) '\n';
+	exit 0;
+}

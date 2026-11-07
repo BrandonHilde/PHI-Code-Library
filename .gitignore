@@ -1,0 +1,9 @@
+# Build output. A .philib only loads with the phi that built it, so they're never committed.
+dist/
+build/
+*.philib
+*.img
+*.actual
+
+# Fetched by a script in tools/, because it's 217 MB
+libs/web/tests/test262/
