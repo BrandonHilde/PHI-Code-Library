@@ -1,0 +1,577 @@
+# Inflating DEFLATE data (RFC 1951), bare or in its zlib (RFC 1950) or gzip (RFC 1952) wrapper: PNG's
+# pixels and WOFF's tables are zlib, and web pages often come gzipped.
+#
+#   u32 size: 0;
+#   ptr<u8> bytes: (CoreInflate.Zlib: data length 0 addr size);    # 0: the default limit
+#   if bytes is 0
+#       log 'bad data: ' CoreInflate.error '\n';
+#       return;
+#   ;;
+#   ...                                                             # size bytes at bytes
+#   free bytes;
+#
+# Each takes the whole input at once and gives back the whole output, on the heap, for the caller to
+# free. Data that's damaged, cut short or made to cause trouble gives 0 and a reason in
+# CoreInflate.error, never a crash or a hang. The limit is the most the output may be (a small
+# file can say it inflates to gigabytes): more than that is a failure, found before the memory for it
+# is taken.
+#
+# The rules for a damaged stream are zlib's, so this and zlib agree on which are bad: codes that
+# claim more than there's room for, incomplete codes (except a lone one-bit code), distances before
+# the start of the output, and the codes DEFLATE doesn't have. Like zlib's one-shot inflate, it doesn't
+# hold a distance to the window size in a zlib header. Data after the end is left alone, and
+# CoreInflate.used says where the stream ended.
+
+use memory.mem;
+use data.crc32;
+use corelib.bits;
+use corelib.adler;
+
+# One Huffman code, for decoding: the next 9 bits of input find most symbols in one look.
+struct.CoreHuff
+{
+	u16 fast[512];      # by the next 9 bits, low bit first: symbol << 4 | its code's length; 0 when that's longer than 9 or no code starts so
+	u16 counts[16];     # how many codes there are of each length
+	u16 symbols[288];   # the symbols, in the order of their codes
+
+	# The code for n symbols with these code lengths (0: the symbol isn't used). strict is for the
+	# code that codes the other codes' lengths, where zlib allows no gaps at all.
+	[Build: ptr<u8> lengths: 0; u32 n: 0; bln strict: false;]
+		while u32 i: 0; i < 16; i++;
+			counts:i is 0;
+		;;
+		u32 longest: 0;
+		while u32 s: 0; s < n; s++;
+			u32 len: lengths:s;
+			counts:len++;
+			if len > longest
+				longest is len;
+			;;
+		;;
+		counts:0 is 0;
+		while u32 f: 0; f < 512; f++;
+			fast:f is 0;
+		;;
+		if longest is 0 return;         # no codes at all: anything that tries to use it fails
+
+		# more codes than there's room for is an error; fewer is too, unless it's one 1-bit code
+		int left: 1;
+		u16 starts[16];
+		u32 total: 0;
+		while u32 len: 1; len < 16; len++;
+			left is left * 2 - counts:len;
+			if left < 0
+				throw 'a Huffman code with more codes than there's room for';
+			;;
+			starts:len is total as u16;
+			total++ counts:len;
+		;;
+		if left > 0 and (strict or longest is not 1)
+			throw 'an incomplete Huffman code';
+		;;
+
+		while u32 s: 0; s < n; s++;
+			u32 len: lengths:s;
+			if len is not 0
+				symbols:(starts:len) is s as u16;
+				starts:len++;
+			;;
+		;;
+
+		# canonical codes: each length's are consecutive, after the shorter ones', and the input
+		# holds them high bit first, so the table is indexed by them reversed
+		u32 code: 0;
+		u32 index: 0;
+		while u32 len: 1; len < 10; len++;
+			while u32 k: 0; k < counts:len; k++;
+				u32 reversed: 0;
+				u32 c: code;
+				while u32 b: 0; b < len; b++;
+					reversed is (reversed << 1) | (c & 1);
+					c is c >> 1;
+				;;
+				u16 entry: ((symbols:index << 4) | len) as u16;
+				u32 step: 1 << len;
+				while reversed < 512
+					fast:reversed is entry;
+					reversed++ step;
+				;;
+				code++;
+				index++;
+			;;
+			code is code << 1;
+		;;
+	[end]
+}
+
+# One inflation in progress. It's on the heap, as it's bigger than a method's variables may be.
+struct.CoreInflater
+{
+	CoreBits bits;
+	ptr<u8> dest;       # the output so far: size bytes, with room for cap
+	u32 size;
+	u32 cap;
+	u32 limit;
+	u32 used;           # how many bytes of the input the stream took
+	CoreHuff lit;       # literals and lengths
+	CoreHuff dist;      # distances
+	CoreHuff codes;     # the code lengths of a dynamic block's codes
+	u8 lengths[320];
+
+	[Go: ptr<u8> data: 0; u32 length: 0; u32 most: 0; int format: 0;]
+		if data is 0 and length > 0
+			throw 'no data was given';
+		;;
+		limit is most;
+		cap is 4096;
+		if length < 0x10000000 and length * 4 > cap
+			cap is length * 4;
+		;;
+		if cap > limit
+			cap is limit;
+		;;
+		dest is new u8[cap];
+		if dest is 0
+			throw 'out of memory for ' cap ' bytes';
+		;;
+		when format
+			is CoreInflate.RAW
+				call bits.Start: data length false;
+				call Blocks;
+				call bits.Release;
+				used is bits.pos;
+			;;
+			is CoreInflate.ZLIB
+				call Zlib: data length;
+			;;
+			else
+				call Gzip: data length;
+			;;
+		;;
+	[end]
+
+	[Zlib: ptr<u8> data: 0; u32 length: 0;]
+		if length < 2
+			throw 'too short for a zlib header';
+		;;
+		u32 kind: data:0 & 15;
+		u32 window: data:0 >> 4;
+		u32 flags: data:1;
+		if kind is not 8
+			throw 'compression method ' kind ', where zlib has only 8 (DEFLATE)';
+		;;
+		if window > 7
+			throw 'a window of more than 32 KB in the zlib header';
+		;;
+		if ((data:0 << 8) | flags) % 31 is not 0
+			throw 'the zlib header's check doesn't add up';
+		;;
+		if (flags & 0x20) is not 0
+			throw 'a preset dictionary, which isn't supported';
+		;;
+		call bits.Start: data + 2 length - 2 false;
+		call Blocks;
+		call bits.Release;
+		if bits.len - bits.pos < 4
+			throw 'the data ends before the Adler-32 check at its end';
+		;;
+		ptr<u8> p: bits.data + bits.pos;
+		u32 want: ((p:0 as u32) << 24) | (p:1 << 16) | (p:2 << 8) | p:3;
+		if (CoreAdler.Of: dest size) is not want
+			throw 'the Adler-32 check doesn't match the data';
+		;;
+		used is 2 + bits.pos + 4;
+	[end]
+
+	# one or more gzip members, one after another, each inflated onto the end of the last
+	[Gzip: ptr<u8> data: 0; u32 length: 0;]
+		u32 at_byte: 0;
+		bln first: true;
+		while first or (length - at_byte >= 2 and data:at_byte is 0x1F and data:(at_byte + 1) is 0x8B)
+			first is false;
+			at_byte is (Member: data + at_byte length - at_byte) + at_byte;
+		;;
+		used is at_byte;
+	[end]
+
+	# one gzip member; how many bytes it took
+	[Member: ptr<u8> data: 0; u32 length: 0; : u32]
+		if length < 10
+			throw 'too short for a gzip header';
+		;;
+		if data:0 is not 0x1F or data:1 is not 0x8B
+			throw 'not gzip data: it doesn't start with 1F 8B';
+		;;
+		if data:2 is not 8
+			throw 'compression method ' data:2 ', where gzip has only 8 (DEFLATE)';
+		;;
+		u32 flags: data:3;
+		if (flags & 0xE0) is not 0
+			throw 'gzip flags that are reserved';
+		;;
+		u32 at_byte: 10;
+		if (flags & 4) is not 0                 # extra fields
+			if length - at_byte < 2
+				throw 'the data ends in the gzip header';
+			;;
+			u32 extra: data:at_byte | (data:(at_byte + 1) << 8);
+			at_byte++ 2;
+			if extra > length - at_byte
+				throw 'the data ends in the gzip header';
+			;;
+			at_byte++ extra;
+		;;
+		while u32 field: 8; field <= 16; field is field * 2;   # a file name, then a comment
+			if (flags & field) is not 0
+				while at_byte < length and data:at_byte is not 0
+					at_byte++;
+				;;
+				if at_byte >= length
+					throw 'the data ends in the gzip header';
+				;;
+				at_byte++;
+			;;
+		;;
+		if (flags & 2) is not 0                 # a CRC of the header
+			if length - at_byte < 2
+				throw 'the data ends in the gzip header';
+			;;
+			u32 header_crc: data:at_byte | (data:(at_byte + 1) << 8);
+			if ((Crc32.Of: data at_byte) & 0xFFFF) is not header_crc
+				throw 'the gzip header's CRC doesn't match it';
+			;;
+			at_byte++ 2;
+		;;
+
+		u32 start: size;
+		call bits.Start: data + at_byte length - at_byte false;
+		call Blocks;
+		call bits.Release;
+		if bits.len - bits.pos < 8
+			throw 'the data ends before the CRC and size at the end of gzip data';
+		;;
+		ptr<u8> p: bits.data + bits.pos;
+		u32 crc: p:0 | (p:1 << 8) | (p:2 << 16) | ((p:3 as u32) << 24);
+		u32 isize: p:4 | (p:5 << 8) | (p:6 << 16) | ((p:7 as u32) << 24);
+		if (Crc32.Of: dest + start size - start) is not crc
+			throw 'the gzip CRC doesn't match the data';
+		;;
+		if isize is not size - start
+			throw 'the size at the end of the gzip data doesn't match it';
+		;;
+	[end: at_byte + bits.pos + 8]
+
+	# ---- DEFLATE
+
+	[Blocks]
+		bln last: false;
+		while last is false
+			last is ((bits.Bits: 1) is 1);
+			u32 kind: (bits.Bits: 2);
+			if bits.failed
+				throw 'the data ends before its last block';
+			;;
+			when kind
+				is 0
+					call Stored;
+				;;
+				is 1
+					call Fixed;
+					call Codes;
+				;;
+				is 2
+					call Dynamic;
+					call Codes;
+				;;
+				else
+					throw 'block type 3, which DEFLATE doesn't have';
+				;;
+			;;
+		;;
+	[end]
+
+	[Stored]
+		call bits.AlignByte;
+		u32 n: (bits.Bits: 16);
+		u32 check: (bits.Bits: 16);
+		if bits.failed
+			throw 'the data ends in a stored block's header';
+		;;
+		if (n ^ check) is not 0xFFFF
+			throw 'a stored block's length doesn't match its check';
+		;;
+		call bits.Release;
+		if n > bits.len - bits.pos
+			throw 'the data ends inside a stored block';
+		;;
+		if n > cap - size
+			call Grow: n;
+		;;
+		if n > 0
+			call Mem.Copy: dest + size bits.data + bits.pos n;
+		;;
+		bits.pos++ n;
+		size++ n;
+	[end]
+
+	[Fixed]
+		while u32 i: 0; i < 288; i++;
+			u8 len: 8;
+			if i >= 144 and i < 256
+				len is 9;
+			;;
+			elif i >= 256 and i < 280
+				len is 7;
+			;;
+			lengths:i is len;
+		;;
+		call lit.Build: addr lengths:0 288 false;
+		# all 32 distance codes, so the code is complete; 30 and 31 are refused when they're used
+		while u32 d: 0; d < 32; d++;
+			lengths:d is 5;
+		;;
+		call dist.Build: addr lengths:0 32 false;
+	[end]
+
+	[Dynamic]
+		u32 nlen: (bits.Bits: 5) + 257;
+		u32 ndist: (bits.Bits: 5) + 1;
+		u32 ncode: (bits.Bits: 4) + 4;
+		if bits.failed
+			throw 'the data ends in a block's header';
+		;;
+		if nlen > 286 or ndist > 30
+			throw 'a block with more length or distance codes than DEFLATE has';
+		;;
+		u8 code_lengths[19];
+		while u32 i: 0; i < ncode; i++;
+			code_lengths:(CoreInflate.code_order:i) is (bits.Bits: 3) as u8;
+		;;
+		if bits.failed
+			throw 'the data ends in a block's header';
+		;;
+		call codes.Build: addr code_lengths:0 19 true;
+
+		u32 total: nlen + ndist;
+		u32 have: 0;
+		while have < total
+			u32 sym: (Decode: codes);
+			if sym < 16
+				lengths:have is sym as u8;
+				have++;
+				continue;
+			;;
+			u8 value: 0;
+			u32 repeat: 0;
+			if sym is 16
+				if have is 0
+					throw 'a code length repeated with nothing before it';
+				;;
+				value is lengths:(have - 1);
+				repeat is 3 + (bits.Bits: 2);
+			;;
+			elif sym is 17
+				repeat is 3 + (bits.Bits: 3);
+			;;
+			else
+				repeat is 11 + (bits.Bits: 7);
+			;;
+			if bits.failed
+				throw 'the data ends in a block's header';
+			;;
+			if repeat > total - have
+				throw 'a code length repeated past the end of the lengths';
+			;;
+			while repeat > 0
+				lengths:have is value;
+				have++;
+				repeat--;
+			;;
+		;;
+		if lengths:256 is 0
+			throw 'a block with no code for its end';
+		;;
+		call lit.Build: addr lengths:0 nlen false;
+		call dist.Build: addr lengths:nlen ndist false;
+	[end]
+
+	# the symbols of a block, to its end
+	[Codes]
+		while true
+			u32 sym: (Decode: lit);
+			if sym < 256
+				if size is cap
+					call Grow: 1;
+				;;
+				dest:size is sym as u8;
+				size++;
+				continue;
+			;;
+			if sym is 256 return;
+			sym-- 257;
+			if sym >= 29
+				throw 'length code ' sym + 257 ', which DEFLATE doesn't have';
+			;;
+			u32 length: CoreInflate.length_base:sym + (bits.Bits: CoreInflate.length_extra:sym);
+			u32 dsym: (Decode: dist);
+			if dsym >= 30
+				throw 'distance code ' dsym ', which DEFLATE doesn't have';
+			;;
+			u32 distance: CoreInflate.distance_base:dsym + (bits.Bits: CoreInflate.distance_extra:dsym);
+			if bits.failed
+				throw 'the data ends before its last block';
+			;;
+			if distance > size
+				throw 'a match from ' distance ' back, before the start of the output';
+			;;
+			if length > cap - size
+				call Grow: length;
+			;;
+			ptr<u8> to: dest + size;
+			ptr<u8> from: to - distance;
+			if distance >= length and length >= 16
+				call Mem.Copy: to from length;
+			;;
+			else
+				# one byte at a time, front to back, as a copy that overlaps itself must be
+				while u32 i: 0; i < length; i++;
+					to:i is from:i;
+				;;
+			;;
+			size++ length;
+		;;
+	[end]
+
+	# the next symbol in the code h
+	[Decode: CoreHuff h; : u32]
+		if bits.count < 9
+			call bits.Fill: 9;
+		;;
+		u32 entry: 0;
+		unsafe
+			entry is h.fast:(bits.buf & 511);
+		;;
+		if entry is not 0
+			call bits.Drop: entry & 15;
+			if bits.failed
+				throw 'the data ends before its last block';
+			;;
+			return entry >> 4;
+		;;
+
+		# a code longer than 9 bits (or one that isn't there): a bit at a time
+		call bits.Fill: 15;
+		u32 code: 0;
+		u32 first: 0;
+		u32 index: 0;
+		while u32 len: 1; len < 16; len++;
+			code is code | ((bits.buf >> (len - 1)) & 1);
+			u32 count: h.counts:len;
+			if code < first + count
+				call bits.Drop: len;
+				if bits.failed
+					throw 'the data ends before its last block';
+				;;
+				return h.symbols:(index + code - first);
+			;;
+			index++ count;
+			first is (first + count) << 1;
+			code is code << 1;
+		;;
+		throw 'a code that isn't in the block's Huffman code';
+	[end: 0]
+
+	# room for more bytes on the end of the output, within the limit
+	[Grow: u32 more: 0;]
+		if more > limit - size
+			throw 'it inflates to more than the limit of ' limit ' bytes';
+		;;
+		u32 want: size + more;
+		if cap < 0x40000000 and cap * 2 > want
+			want is cap * 2;
+		;;
+		if want > limit
+			want is limit;
+		;;
+		ptr<u8> grown: new u8[want];
+		if grown is 0
+			throw 'out of memory for ' want ' bytes';
+		;;
+		if size > 0
+			call Mem.Copy: grown dest size;
+		;;
+		free dest;
+		dest is grown;
+		cap is want;
+	[end]
+}
+
+phi.CoreInflate:Library
+{
+	const int RAW: 0;
+	const int ZLIB: 1;
+	const int GZIP: 2;
+
+	# the limit when 0 is given: a program that expects more says so
+	const u32 DEFAULT_LIMIT: 64 * 1024 * 1024;
+
+	str error: [383];   # why the last call failed
+	u32 used;           # how many bytes of the input the last call's stream took
+
+	u16 length_base: 3 4 5 6 7 8 9 10 11 13 15 17 19 23 27 31 35 43 51 59 67 83 99 115 131 163 195 227 258;
+	u8 length_extra: 0 0 0 0 0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3 4 4 4 4 5 5 5 5 0;
+	u16 distance_base: 1 2 3 4 5 7 9 13 17 25 33 49 65 97 129 193 257 385 513 769 1025 1537 2049 3073
+		4097 6145 8193 12289 16385 24577;
+	u8 distance_extra: 0 0 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13;
+	u8 code_order: 16 17 18 0 8 7 9 6 10 5 11 4 12 3 13 2 14 1 15;
+
+	# DEFLATE data with no wrapper
+	[Raw: ptr<u8> data: 0; u32 length: 0; u32 limit: 0; ptr<u32> size_out: 0; : ptr<u8>]
+	[end: (Run: data length limit size_out RAW)]
+
+	# zlib data: DEFLATE with a 2-byte header and an Adler-32 check
+	[Zlib: ptr<u8> data: 0; u32 length: 0; u32 limit: 0; ptr<u32> size_out: 0; : ptr<u8>]
+	[end: (Run: data length limit size_out ZLIB)]
+
+	# gzip data: one or more members, each with its header and CRC-32 check
+	[Gzip: ptr<u8> data: 0; u32 length: 0; u32 limit: 0; ptr<u32> size_out: 0; : ptr<u8>]
+	[end: (Run: data length limit size_out GZIP)]
+
+	[Run: ptr<u8> data: 0; u32 length: 0; u32 limit: 0; ptr<u32> size_out: 0; int format: 0; : ptr<u8>]
+		error is '';
+		used is 0;
+		if size_out is not 0
+			size_out:0 is 0;
+		;;
+		if limit is 0
+			limit is DEFAULT_LIMIT;
+		;;
+		if limit > 0x7FFFFFFF
+			limit is 0x7FFFFFFF;
+		;;
+		ptr<CoreInflater> s: new CoreInflater;
+		if s is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		if call s.Go: data length limit format throws err
+			if err.kind is ErrorKind.THROWN
+				error is err.text;
+			;;
+			else
+				error is err.message;
+			;;
+			if s.dest is not 0
+				free s.dest;
+			;;
+			free s;
+			return 0;
+		;;
+		ptr<u8> result: s.dest;
+		if size_out is not 0
+			size_out:0 is s.size;
+		;;
+		used is s.used;
+		free s;
+	[end: result]
+}

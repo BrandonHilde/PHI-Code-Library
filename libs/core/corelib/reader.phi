@@ -1,0 +1,131 @@
+# Bounds-checked reading of a file that's in memory, in either byte order.
+#
+#   CoreReader r;                    # a plain struct: start it on the bytes
+#   call r.Start: bytes length;
+#   u32 magic: (r.U32BE);
+#   u32 count: (r.U16LE);
+#   if r.failed                      # a read went past the end
+#       ...
+#   ;;
+#
+# A read past the end never touches memory outside the data. It gives 0 and sets `failed`, which
+# stays set, and every read after it gives 0 too, so a parser can read a whole header and then check
+# `failed` once. Values are put together a byte at a time, so the same code is right on any CPU.
+
+struct.CoreReader
+{
+	ptr<u8> data;
+	u32 len;
+	u32 pos;
+	bln failed;
+
+	[Start: ptr<u8> bytes: 0; u32 length: 0;]
+		data is bytes;
+		len is length;
+		pos is 0;
+		failed is false;
+		if bytes is 0
+			len is 0;
+		;;
+	[end]
+
+	# how many bytes are left to read
+	[Left: : u32]
+	[end: len - pos]
+
+	# true if count more bytes are there; otherwise the reader fails, and stays at the end
+	[Take: u32 count: 0;]
+		if failed or count > len - pos
+			failed is true;
+			pos is len;
+			return false;
+		;;
+	[end: true]
+
+	[U8: : u32]
+		if (Take: 1) is false return 0;
+		u32 v: data:pos;
+		pos++;
+	[end: v]
+
+	[U16BE: : u32]
+		if (Take: 2) is false return 0;
+		u32 v: (data:pos << 8) | data:(pos + 1);
+		pos++ 2;
+	[end: v]
+
+	[U16LE: : u32]
+		if (Take: 2) is false return 0;
+		u32 v: data:pos | (data:(pos + 1) << 8);
+		pos++ 2;
+	[end: v]
+
+	[U24BE: : u32]
+		if (Take: 3) is false return 0;
+		u32 v: (data:pos << 16) | (data:(pos + 1) << 8) | data:(pos + 2);
+		pos++ 3;
+	[end: v]
+
+	[U32BE: : u32]
+		if (Take: 4) is false return 0;
+		u32 v: ((data:pos as u32) << 24) | (data:(pos + 1) << 16) | (data:(pos + 2) << 8) | data:(pos + 3);
+		pos++ 4;
+	[end: v]
+
+	[U32LE: : u32]
+		if (Take: 4) is false return 0;
+		u32 v: data:pos | (data:(pos + 1) << 8) | (data:(pos + 2) << 16) | ((data:(pos + 3) as u32) << 24);
+		pos++ 4;
+	[end: v]
+
+	[I8: : int]
+		int v: (U8) as int;
+		if v >= 0x80
+			v is v - 0x100;
+		;;
+	[end: v]
+
+	[I16BE: : int]
+		int v: (U16BE) as int;
+		if v >= 0x8000
+			v is v - 0x10000;
+		;;
+	[end: v]
+
+	[I16LE: : int]
+		int v: (U16LE) as int;
+		if v >= 0x8000
+			v is v - 0x10000;
+		;;
+	[end: v]
+
+	[I32BE: : int]
+	[end: (U32BE) as int]
+
+	[I32LE: : int]
+	[end: (U32LE) as int]
+
+	# where the next count bytes are, moving past them; 0 if they aren't all there
+	[Bytes: u32 count: 0; : ptr<u8>]
+		if (Take: count) is false return 0;
+		ptr<u8> at_here: data + pos;
+		pos++ count;
+	[end: at_here]
+
+	[Skip: u32 count: 0;]
+		if (Take: count)
+			pos++ count;
+		;;
+	[end]
+
+	# move to an offset from the start (the end itself is allowed)
+	[Seek: u32 offset: 0;]
+		if failed return;
+		if offset > len
+			failed is true;
+			pos is len;
+			return;
+		;;
+		pos is offset;
+	[end]
+}

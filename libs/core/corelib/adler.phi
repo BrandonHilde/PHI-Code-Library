@@ -1,0 +1,35 @@
+# Adler-32, the checksum at the end of a zlib stream (RFC 1950). CRC-32, which gzip and PNG use, is
+# the standard library's data.crc32.
+#
+#   u32 check: (CoreAdler.Of: data length);
+#   u32 more: (CoreAdler.Add: check rest rest_length);   # the same as one Of over both
+
+phi.CoreAdler:Library
+{
+	const u32 ADLER_MOD: 65521;
+
+	[Of: ptr<u8> data: 0; u32 length: 0; : u32]
+	[end: (Add: 1 data length)]
+
+	# the Adler-32 of what adler was the Adler-32 of, followed by length more bytes
+	[Add: u32 adler: 1; ptr<u8> data: 0; u32 length: 0; : u32]
+		u32 a: adler & 0xFFFF;
+		u32 b: adler >> 16;
+		u32 i: 0;
+		while i < length
+			# 5552 bytes is the most that can be added before b could pass 2^32
+			u32 chunk: length - i;
+			if chunk > 5552
+				chunk is 5552;
+			;;
+			ptr<u8> p: data + i;
+			while u32 k: 0; k < chunk; k++;
+				a++ p:k;
+				b++ a;
+			;;
+			a is a % ADLER_MOD;
+			b is b % ADLER_MOD;
+			i++ chunk;
+		;;
+	[end: (b << 16) | a]
+}

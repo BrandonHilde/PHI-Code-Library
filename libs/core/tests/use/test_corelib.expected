@@ -1,0 +1,6 @@
+version: 1
+zlib: 32 bytes: hello hello hello hello, corelib
+gzip: 9 bytes: gzip too\n
+damaged: 1, the Adler-32 check doesn't match the data
+reader: 1751477356 8303 left 26
+adler: 3294432221

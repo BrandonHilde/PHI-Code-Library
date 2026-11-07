@@ -1,0 +1,804 @@
+# made by tools/core/make_inflate_tests.py: what zlib says of each case in cases.bin
+good  zlib empty-zlib-0                          11 bytes  ok, 0 bytes
+good  zlib empty-zlib-1                           8 bytes  ok, 0 bytes
+good  zlib empty-zlib-2                           8 bytes  ok, 0 bytes
+good  zlib empty-zlib-3                           8 bytes  ok, 0 bytes
+good  zlib empty-zlib-4                           8 bytes  ok, 0 bytes
+good  zlib empty-zlib-5                           8 bytes  ok, 0 bytes
+good  zlib empty-zlib-6                           8 bytes  ok, 0 bytes
+good  zlib empty-zlib-7                           8 bytes  ok, 0 bytes
+good  zlib empty-zlib-8                           8 bytes  ok, 0 bytes
+good  zlib empty-zlib-9                           8 bytes  ok, 0 bytes
+good  raw  empty-raw-1                            2 bytes  ok, 0 bytes
+good  raw  empty-raw-6                            2 bytes  ok, 0 bytes
+good  raw  empty-raw-9                            2 bytes  ok, 0 bytes
+good  gzip empty-gzip-1                          20 bytes  ok, 0 bytes
+good  gzip empty-gzip-9                          20 bytes  ok, 0 bytes
+good  zlib one-zlib-0                            12 bytes  ok, 1 bytes
+good  zlib one-zlib-1                             9 bytes  ok, 1 bytes
+good  zlib one-zlib-2                             9 bytes  ok, 1 bytes
+good  zlib one-zlib-3                             9 bytes  ok, 1 bytes
+good  zlib one-zlib-4                             9 bytes  ok, 1 bytes
+good  zlib one-zlib-5                             9 bytes  ok, 1 bytes
+good  zlib one-zlib-6                             9 bytes  ok, 1 bytes
+good  zlib one-zlib-7                             9 bytes  ok, 1 bytes
+good  zlib one-zlib-8                             9 bytes  ok, 1 bytes
+good  zlib one-zlib-9                             9 bytes  ok, 1 bytes
+good  raw  one-raw-1                              3 bytes  ok, 1 bytes
+good  raw  one-raw-6                              3 bytes  ok, 1 bytes
+good  raw  one-raw-9                              3 bytes  ok, 1 bytes
+good  gzip one-gzip-1                            21 bytes  ok, 1 bytes
+good  gzip one-gzip-9                            21 bytes  ok, 1 bytes
+good  zlib text-zlib-0                        24064 bytes  ok, 24053 bytes
+good  zlib text-zlib-1                         9333 bytes  ok, 24053 bytes
+good  zlib text-zlib-2                         9324 bytes  ok, 24053 bytes
+good  zlib text-zlib-3                         9297 bytes  ok, 24053 bytes
+good  zlib text-zlib-4                         9181 bytes  ok, 24053 bytes
+good  zlib text-zlib-5                         9088 bytes  ok, 24053 bytes
+good  zlib text-zlib-6                         9088 bytes  ok, 24053 bytes
+good  zlib text-zlib-7                         9088 bytes  ok, 24053 bytes
+good  zlib text-zlib-8                         9088 bytes  ok, 24053 bytes
+good  zlib text-zlib-9                         9188 bytes  ok, 24053 bytes
+good  raw  text-raw-1                          9327 bytes  ok, 24053 bytes
+good  raw  text-raw-6                          9082 bytes  ok, 24053 bytes
+good  raw  text-raw-9                          9182 bytes  ok, 24053 bytes
+good  gzip text-gzip-1                         9345 bytes  ok, 24053 bytes
+good  gzip text-gzip-9                         9200 bytes  ok, 24053 bytes
+good  zlib random-zlib-0                       8203 bytes  ok, 8192 bytes
+good  zlib random-zlib-1                       8203 bytes  ok, 8192 bytes
+good  zlib random-zlib-2                       8203 bytes  ok, 8192 bytes
+good  zlib random-zlib-3                       8203 bytes  ok, 8192 bytes
+good  zlib random-zlib-4                       8203 bytes  ok, 8192 bytes
+good  zlib random-zlib-5                       8203 bytes  ok, 8192 bytes
+good  zlib random-zlib-6                       8203 bytes  ok, 8192 bytes
+good  zlib random-zlib-7                       8203 bytes  ok, 8192 bytes
+good  zlib random-zlib-8                       8203 bytes  ok, 8192 bytes
+good  zlib random-zlib-9                       8203 bytes  ok, 8192 bytes
+good  raw  random-raw-1                        8197 bytes  ok, 8192 bytes
+good  raw  random-raw-6                        8197 bytes  ok, 8192 bytes
+good  raw  random-raw-9                        8197 bytes  ok, 8192 bytes
+good  gzip random-gzip-1                       8215 bytes  ok, 8192 bytes
+good  gzip random-gzip-9                       8215 bytes  ok, 8192 bytes
+good  zlib zeros-zlib-0                       70016 bytes  ok, 70000 bytes
+good  zlib zeros-zlib-1                          91 bytes  ok, 70000 bytes
+good  zlib zeros-zlib-2                          91 bytes  ok, 70000 bytes
+good  zlib zeros-zlib-3                          91 bytes  ok, 70000 bytes
+good  zlib zeros-zlib-4                          91 bytes  ok, 70000 bytes
+good  zlib zeros-zlib-5                          91 bytes  ok, 70000 bytes
+good  zlib zeros-zlib-6                          91 bytes  ok, 70000 bytes
+good  zlib zeros-zlib-7                          91 bytes  ok, 70000 bytes
+good  zlib zeros-zlib-8                          91 bytes  ok, 70000 bytes
+good  zlib zeros-zlib-9                          91 bytes  ok, 70000 bytes
+good  raw  zeros-raw-1                           85 bytes  ok, 70000 bytes
+good  raw  zeros-raw-6                           85 bytes  ok, 70000 bytes
+good  raw  zeros-raw-9                           85 bytes  ok, 70000 bytes
+good  gzip zeros-gzip-1                         103 bytes  ok, 70000 bytes
+good  gzip zeros-gzip-9                         103 bytes  ok, 70000 bytes
+good  zlib runs-zlib-0                        20236 bytes  ok, 20225 bytes
+good  zlib runs-zlib-1                          337 bytes  ok, 20225 bytes
+good  zlib runs-zlib-2                          337 bytes  ok, 20225 bytes
+good  zlib runs-zlib-3                          337 bytes  ok, 20225 bytes
+good  zlib runs-zlib-4                          343 bytes  ok, 20225 bytes
+good  zlib runs-zlib-5                          344 bytes  ok, 20225 bytes
+good  zlib runs-zlib-6                          342 bytes  ok, 20225 bytes
+good  zlib runs-zlib-7                          342 bytes  ok, 20225 bytes
+good  zlib runs-zlib-8                          330 bytes  ok, 20225 bytes
+good  zlib runs-zlib-9                          326 bytes  ok, 20225 bytes
+good  raw  runs-raw-1                           331 bytes  ok, 20225 bytes
+good  raw  runs-raw-6                           336 bytes  ok, 20225 bytes
+good  raw  runs-raw-9                           320 bytes  ok, 20225 bytes
+good  gzip runs-gzip-1                          349 bytes  ok, 20225 bytes
+good  gzip runs-gzip-9                          338 bytes  ok, 20225 bytes
+good  zlib bytes-zlib-0                        4107 bytes  ok, 4096 bytes
+good  zlib bytes-zlib-1                         321 bytes  ok, 4096 bytes
+good  zlib bytes-zlib-2                         321 bytes  ok, 4096 bytes
+good  zlib bytes-zlib-3                         321 bytes  ok, 4096 bytes
+good  zlib bytes-zlib-4                         315 bytes  ok, 4096 bytes
+good  zlib bytes-zlib-5                         315 bytes  ok, 4096 bytes
+good  zlib bytes-zlib-6                         315 bytes  ok, 4096 bytes
+good  zlib bytes-zlib-7                         315 bytes  ok, 4096 bytes
+good  zlib bytes-zlib-8                         315 bytes  ok, 4096 bytes
+good  zlib bytes-zlib-9                         315 bytes  ok, 4096 bytes
+good  raw  bytes-raw-1                          315 bytes  ok, 4096 bytes
+good  raw  bytes-raw-6                          309 bytes  ok, 4096 bytes
+good  raw  bytes-raw-9                          309 bytes  ok, 4096 bytes
+good  gzip bytes-gzip-1                         333 bytes  ok, 4096 bytes
+good  gzip bytes-gzip-9                         327 bytes  ok, 4096 bytes
+good  zlib far-zlib-0                         35787 bytes  ok, 35771 bytes
+good  zlib far-zlib-1                          6167 bytes  ok, 35771 bytes
+good  zlib far-zlib-2                          6167 bytes  ok, 35771 bytes
+good  zlib far-zlib-3                          6167 bytes  ok, 35771 bytes
+good  zlib far-zlib-4                          6167 bytes  ok, 35771 bytes
+good  zlib far-zlib-5                          6167 bytes  ok, 35771 bytes
+good  zlib far-zlib-6                          6167 bytes  ok, 35771 bytes
+good  zlib far-zlib-7                          6167 bytes  ok, 35771 bytes
+good  zlib far-zlib-8                          6167 bytes  ok, 35771 bytes
+good  zlib far-zlib-9                          6167 bytes  ok, 35771 bytes
+good  raw  far-raw-1                           6161 bytes  ok, 35771 bytes
+good  raw  far-raw-6                           6161 bytes  ok, 35771 bytes
+good  raw  far-raw-9                           6161 bytes  ok, 35771 bytes
+good  gzip far-gzip-1                          6179 bytes  ok, 35771 bytes
+good  gzip far-gzip-9                          6179 bytes  ok, 35771 bytes
+good  zlib text-zlib-filtered                  9145 bytes  ok, 24053 bytes
+good  zlib runs-zlib-filtered                   370 bytes  ok, 20225 bytes
+good  zlib random-zlib-filtered                8203 bytes  ok, 8192 bytes
+good  zlib far-zlib-filtered                   6167 bytes  ok, 35771 bytes
+good  zlib text-zlib-huffman                  13593 bytes  ok, 24053 bytes
+good  zlib runs-zlib-huffman                  12911 bytes  ok, 20225 bytes
+good  zlib random-zlib-huffman                 8203 bytes  ok, 8192 bytes
+good  zlib far-zlib-huffman                   10156 bytes  ok, 35771 bytes
+good  zlib text-zlib-rle                      13593 bytes  ok, 24053 bytes
+good  zlib runs-zlib-rle                        312 bytes  ok, 20225 bytes
+good  zlib random-zlib-rle                     8203 bytes  ok, 8192 bytes
+good  zlib far-zlib-rle                        6167 bytes  ok, 35771 bytes
+good  zlib text-zlib-fixed                    11402 bytes  ok, 24053 bytes
+good  zlib runs-zlib-fixed                      401 bytes  ok, 20225 bytes
+good  zlib random-zlib-fixed                   8203 bytes  ok, 8192 bytes
+good  zlib far-zlib-fixed                      6527 bytes  ok, 35771 bytes
+good  zlib text-zlib-window-9                 13085 bytes  ok, 24053 bytes
+good  zlib text-zlib-window-10                12327 bytes  ok, 24053 bytes
+good  zlib text-zlib-window-11                11203 bytes  ok, 24053 bytes
+good  zlib text-zlib-window-12                 9929 bytes  ok, 24053 bytes
+good  zlib text-zlib-window-13                 9140 bytes  ok, 24053 bytes
+good  zlib text-zlib-window-14                 9067 bytes  ok, 24053 bytes
+good  zlib text-zlib-window-15                 9088 bytes  ok, 24053 bytes
+good  zlib text-zlib-memlevel-1               10022 bytes  ok, 24053 bytes
+good  zlib text-zlib-memlevel-9                9188 bytes  ok, 24053 bytes
+good  zlib text-zlib-flushes                   9722 bytes  ok, 24053 bytes
+good  gzip text-gzip-name                      9109 bytes  ok, 24053 bytes
+good  gzip text-gzip-every-field               9126 bytes  ok, 24053 bytes
+good  gzip text-gzip-empty-extra               9102 bytes  ok, 24053 bytes
+good  gzip text-gzip-two-members               9820 bytes  ok, 24053 bytes
+good  raw  text-raw-then-more                  9091 bytes  ok, 24053 bytes
+good  zlib text-zlib-then-more                 9097 bytes  ok, 24053 bytes
+good  gzip text-gzip-then-zeros                9108 bytes  ok, 24053 bytes
+good  zlib zeros-limit-exact                     91 bytes  ok, 70000 bytes
+bad   zlib zeros-limit-one-short                 91 bytes  bad
+bad   zlib bomb-40mb                          40777 bytes  bad
+good  raw  dynamic-one-distance-code            140 bytes  ok, 4 bytes
+good  raw  dynamic-no-distance-codes            139 bytes  ok, 2 bytes
+good  raw  dynamic-lone-end-code                139 bytes  ok, 0 bytes
+good  raw  dynamic-long-codes                   189 bytes  ok, 45 bytes
+good  raw  every-block-type                     164 bytes  ok, 23 bytes
+good  raw  fixed-longest-match                34512 bytes  ok, 33026 bytes
+bad   raw  block-type-3                           3 bytes  bad
+bad   raw  stored-bad-check                      10 bytes  bad
+bad   raw  stored-cut-short                      10 bytes  bad
+bad   raw  fixed-length-code-286                  3 bytes  bad
+bad   raw  fixed-length-code-287                  3 bytes  bad
+bad   raw  fixed-distance-code-30                 3 bytes  bad
+bad   raw  fixed-distance-code-31                 3 bytes  bad
+bad   raw  distance-before-start                  4 bytes  bad
+bad   raw  match-first                            3 bytes  bad
+bad   raw  no-end-of-block                        4 bytes  bad
+bad   raw  no-final-block                         7 bytes  bad
+bad   raw  empty-input                            0 bytes  bad
+bad   raw  litlen-oversubscribed                141 bytes  bad
+bad   raw  litlen-incomplete                    141 bytes  bad
+bad   raw  distance-oversubscribed              143 bytes  bad
+bad   raw  distance-incomplete                  143 bytes  bad
+bad   raw  missing-end-of-block                 141 bytes  bad
+bad   raw  code-lengths-incomplete               76 bytes  bad
+bad   raw  code-lengths-oversubscribed           44 bytes  bad
+bad   raw  repeat-with-nothing-before           140 bytes  bad
+bad   raw  repeat-past-the-end                   16 bytes  bad
+bad   raw  too-many-length-codes                141 bytes  bad
+bad   raw  too-many-distance-codes              141 bytes  bad
+bad   zlib zlib-bad-header-check               1505 bytes  bad
+bad   zlib zlib-method-7                       1505 bytes  bad
+bad   zlib zlib-window-too-big                 1505 bytes  bad
+bad   zlib zlib-preset-dictionary              1509 bytes  bad
+bad   zlib zlib-bad-adler                      1505 bytes  bad
+bad   zlib zlib-no-adler                       1501 bytes  bad
+bad   zlib zlib-one-byte                          1 bytes  bad
+bad   gzip gzip-bad-magic                      1517 bytes  bad
+bad   gzip gzip-method-7                       1517 bytes  bad
+bad   gzip gzip-reserved-flag                  1517 bytes  bad
+bad   gzip gzip-bad-crc                        1517 bytes  bad
+bad   gzip gzip-bad-size                       1517 bytes  bad
+bad   gzip gzip-no-trailer                     1509 bytes  bad
+bad   gzip gzip-name-unended                     13 bytes  bad
+bad   gzip gzip-extra-too-long                   15 bytes  bad
+bad   gzip gzip-bad-header-crc                 1519 bytes  bad
+bad   gzip gzip-header-only                      10 bytes  bad
+bad   gzip gzip-second-member-broken           3033 bytes  bad
+fuzz  raw  fuzz-000                             304 bytes  bad
+fuzz  raw  fuzz-001                             668 bytes  ok, 1195 bytes
+fuzz  raw  fuzz-002                              11 bytes  bad
+fuzz  raw  fuzz-003                             482 bytes  bad
+fuzz  raw  fuzz-004                             669 bytes  bad
+fuzz  raw  fuzz-005                            1306 bytes  bad
+fuzz  raw  fuzz-006                            1301 bytes  ok, 2502 bytes
+fuzz  raw  fuzz-007                             668 bytes  ok, 1208 bytes
+fuzz  raw  fuzz-008                            1350 bytes  bad
+fuzz  raw  fuzz-009                             139 bytes  bad
+fuzz  raw  fuzz-010                            1297 bytes  ok, 2492 bytes
+fuzz  raw  fuzz-011                             135 bytes  bad
+fuzz  raw  fuzz-012                             189 bytes  bad
+fuzz  raw  fuzz-013                             668 bytes  bad
+fuzz  raw  fuzz-014                             138 bytes  bad
+fuzz  raw  fuzz-015                             306 bytes  bad
+fuzz  raw  fuzz-016                             139 bytes  bad
+fuzz  raw  fuzz-017                            1350 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-018                             201 bytes  ok, 31 bytes
+fuzz  raw  fuzz-019                            1306 bytes  ok, 2501 bytes
+fuzz  raw  fuzz-020                             199 bytes  ok, 299 bytes
+fuzz  raw  fuzz-021                             156 bytes  bad
+fuzz  raw  fuzz-022                             189 bytes  ok, 46 bytes
+fuzz  raw  fuzz-023                             481 bytes  bad
+fuzz  raw  fuzz-024                             668 bytes  bad
+fuzz  raw  fuzz-025                             164 bytes  bad
+fuzz  raw  fuzz-026                               3 bytes  bad
+fuzz  raw  fuzz-027                              39 bytes  ok, 2000 bytes
+fuzz  raw  fuzz-028                              39 bytes  ok, 1594 bytes
+fuzz  raw  fuzz-029                             195 bytes  ok, 290 bytes
+fuzz  raw  fuzz-030                             452 bytes  bad
+fuzz  raw  fuzz-031                             481 bytes  ok, 800 bytes
+fuzz  raw  fuzz-032                             139 bytes  bad
+fuzz  raw  fuzz-033                             432 bytes  bad
+fuzz  raw  fuzz-034                             155 bytes  bad
+fuzz  raw  fuzz-035                            1351 bytes  ok, 2502 bytes
+fuzz  raw  fuzz-036                            1350 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-037                             141 bytes  bad
+fuzz  raw  fuzz-038                            1350 bytes  bad
+fuzz  raw  fuzz-039                            1307 bytes  ok, 2502 bytes
+fuzz  raw  fuzz-040                              39 bytes  ok, 2002 bytes
+fuzz  raw  fuzz-041                              74 bytes  bad
+fuzz  raw  fuzz-042                             139 bytes  bad
+fuzz  raw  fuzz-043                            1343 bytes  bad
+fuzz  raw  fuzz-044                             140 bytes  bad
+fuzz  raw  fuzz-045                             684 bytes  bad
+fuzz  raw  fuzz-046                             669 bytes  ok, 1203 bytes
+fuzz  raw  fuzz-047                             668 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-048                             201 bytes  ok, 300 bytes
+fuzz  raw  fuzz-049                             668 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-050                             139 bytes  bad
+fuzz  raw  fuzz-051                             140 bytes  bad
+fuzz  raw  fuzz-052                              36 bytes  bad
+fuzz  raw  fuzz-053                             140 bytes  bad
+fuzz  raw  fuzz-054                             127 bytes  bad
+fuzz  raw  fuzz-055                             735 bytes  ok, 810 bytes
+fuzz  raw  fuzz-056                             195 bytes  ok, 293 bytes
+fuzz  raw  fuzz-057                             482 bytes  ok, 801 bytes
+fuzz  raw  fuzz-058                             141 bytes  bad
+fuzz  raw  fuzz-059                             185 bytes  bad
+fuzz  raw  fuzz-060                              60 bytes  bad
+fuzz  raw  fuzz-061                            1307 bytes  ok, 2497 bytes
+fuzz  raw  fuzz-062                             481 bytes  ok, 800 bytes
+fuzz  raw  fuzz-063                             481 bytes  bad
+fuzz  raw  fuzz-064                            1300 bytes  bad
+fuzz  raw  fuzz-065                             692 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-066                             668 bytes  bad
+fuzz  raw  fuzz-067                             134 bytes  bad
+fuzz  raw  fuzz-068                             141 bytes  bad
+fuzz  raw  fuzz-069                              39 bytes  ok, 2000 bytes
+fuzz  raw  fuzz-070                            1300 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-071                             200 bytes  ok, 302 bytes
+fuzz  raw  fuzz-072                            1300 bytes  ok, 2499 bytes
+fuzz  raw  fuzz-073                             139 bytes  bad
+fuzz  raw  fuzz-074                              39 bytes  bad
+fuzz  raw  fuzz-075                             668 bytes  bad
+fuzz  raw  fuzz-076                             199 bytes  bad
+fuzz  raw  fuzz-077                             668 bytes  ok, 1201 bytes
+fuzz  raw  fuzz-078                             201 bytes  bad
+fuzz  raw  fuzz-079                               6 bytes  bad
+fuzz  raw  fuzz-080                             189 bytes  bad
+fuzz  raw  fuzz-081                             668 bytes  bad
+fuzz  raw  fuzz-082                            1306 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-083                            1306 bytes  bad
+fuzz  raw  fuzz-084                             196 bytes  bad
+fuzz  raw  fuzz-085                              61 bytes  bad
+fuzz  raw  fuzz-086                             199 bytes  ok, 300 bytes
+fuzz  raw  fuzz-087                             201 bytes  bad
+fuzz  raw  fuzz-088                            1306 bytes  ok, 2498 bytes
+fuzz  raw  fuzz-089                             139 bytes  bad
+fuzz  raw  fuzz-090                            1307 bytes  bad
+fuzz  raw  fuzz-091                            1188 bytes  bad
+fuzz  raw  fuzz-092                             165 bytes  bad
+fuzz  raw  fuzz-093                             189 bytes  bad
+fuzz  raw  fuzz-094                            1306 bytes  ok, 2504 bytes
+fuzz  raw  fuzz-095                             134 bytes  bad
+fuzz  raw  fuzz-096                             669 bytes  ok, 1204 bytes
+fuzz  raw  fuzz-097                             481 bytes  bad
+fuzz  raw  fuzz-098                              40 bytes  bad
+fuzz  raw  fuzz-099                             131 bytes  bad
+fuzz  raw  fuzz-100                             199 bytes  bad
+fuzz  raw  fuzz-101                            1300 bytes  bad
+fuzz  raw  fuzz-102                             165 bytes  bad
+fuzz  raw  fuzz-103                             140 bytes  bad
+fuzz  raw  fuzz-104                             164 bytes  bad
+fuzz  raw  fuzz-105                            1300 bytes  ok, 2487 bytes
+fuzz  raw  fuzz-106                             665 bytes  bad
+fuzz  raw  fuzz-107                             600 bytes  bad
+fuzz  raw  fuzz-108                             666 bytes  ok, 1196 bytes
+fuzz  raw  fuzz-109                            1306 bytes  bad
+fuzz  raw  fuzz-110                             189 bytes  ok, 46 bytes
+fuzz  raw  fuzz-111                             668 bytes  ok, 1202 bytes
+fuzz  raw  fuzz-112                             669 bytes  ok, 1201 bytes
+fuzz  raw  fuzz-113                             196 bytes  bad
+fuzz  raw  fuzz-114                             139 bytes  bad
+fuzz  raw  fuzz-115                             154 bytes  bad
+fuzz  raw  fuzz-116                             481 bytes  ok, 800 bytes
+fuzz  raw  fuzz-117                             140 bytes  bad
+fuzz  raw  fuzz-118                            1351 bytes  ok, 2501 bytes
+fuzz  raw  fuzz-119                            1300 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-120                             668 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-121                             693 bytes  bad
+fuzz  raw  fuzz-122                              39 bytes  ok, 2000 bytes
+fuzz  raw  fuzz-123                            1300 bytes  bad
+fuzz  raw  fuzz-124                            1342 bytes  bad
+fuzz  raw  fuzz-125                              75 bytes  bad
+fuzz  raw  fuzz-126                             136 bytes  bad
+fuzz  raw  fuzz-127                              39 bytes  ok, 1745 bytes
+fuzz  raw  fuzz-128                            1300 bytes  bad
+fuzz  raw  fuzz-129                             661 bytes  bad
+fuzz  raw  fuzz-130                             735 bytes  ok, 800 bytes
+fuzz  raw  fuzz-131                             195 bytes  bad
+fuzz  raw  fuzz-132                             140 bytes  bad
+fuzz  raw  fuzz-133                             159 bytes  bad
+fuzz  raw  fuzz-134                             182 bytes  ok, 38 bytes
+fuzz  raw  fuzz-135                             201 bytes  bad
+fuzz  raw  fuzz-136                             139 bytes  bad
+fuzz  raw  fuzz-137                             482 bytes  ok, 802 bytes
+fuzz  raw  fuzz-138                             736 bytes  ok, 801 bytes
+fuzz  raw  fuzz-139                             668 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-140                             164 bytes  bad
+fuzz  raw  fuzz-141                             185 bytes  ok, 43 bytes
+fuzz  raw  fuzz-142                             164 bytes  bad
+fuzz  raw  fuzz-143                             135 bytes  bad
+fuzz  raw  fuzz-144                             668 bytes  ok, 1198 bytes
+fuzz  raw  fuzz-145                            1301 bytes  bad
+fuzz  raw  fuzz-146                             668 bytes  ok, 1194 bytes
+fuzz  raw  fuzz-147                              39 bytes  bad
+fuzz  raw  fuzz-148                             568 bytes  bad
+fuzz  raw  fuzz-149                             364 bytes  bad
+fuzz  raw  fuzz-150                            1304 bytes  ok, 2507 bytes
+fuzz  raw  fuzz-151                             482 bytes  ok, 801 bytes
+fuzz  raw  fuzz-152                             692 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-153                             165 bytes  bad
+fuzz  raw  fuzz-154                             479 bytes  ok, 796 bytes
+fuzz  raw  fuzz-155                             110 bytes  bad
+fuzz  raw  fuzz-156                             667 bytes  ok, 1198 bytes
+fuzz  raw  fuzz-157                             201 bytes  bad
+fuzz  raw  fuzz-158                             668 bytes  bad
+fuzz  raw  fuzz-159                               2 bytes  bad
+fuzz  raw  fuzz-160                             197 bytes  ok, 295 bytes
+fuzz  raw  fuzz-161                            1350 bytes  ok, 2504 bytes
+fuzz  raw  fuzz-162                             692 bytes  bad
+fuzz  raw  fuzz-163                             664 bytes  bad
+fuzz  raw  fuzz-164                              25 bytes  bad
+fuzz  raw  fuzz-165                            1350 bytes  bad
+fuzz  raw  fuzz-166                             200 bytes  ok, 301 bytes
+fuzz  raw  fuzz-167                             201 bytes  ok, 300 bytes
+fuzz  raw  fuzz-168                             166 bytes  bad
+fuzz  raw  fuzz-169                             481 bytes  ok, 800 bytes
+fuzz  raw  fuzz-170                             189 bytes  bad
+fuzz  raw  fuzz-171                             190 bytes  bad
+fuzz  raw  fuzz-172                             199 bytes  ok, 300 bytes
+fuzz  raw  fuzz-173                             660 bytes  bad
+fuzz  raw  fuzz-174                             141 bytes  bad
+fuzz  raw  fuzz-175                             735 bytes  bad
+fuzz  raw  fuzz-176                             692 bytes  ok, 1207 bytes
+fuzz  raw  fuzz-177                             139 bytes  bad
+fuzz  raw  fuzz-178                             669 bytes  ok, 1202 bytes
+fuzz  raw  fuzz-179                            1300 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-180                            1300 bytes  bad
+fuzz  raw  fuzz-181                             200 bytes  ok, 301 bytes
+fuzz  raw  fuzz-182                              28 bytes  bad
+fuzz  raw  fuzz-183                             199 bytes  bad
+fuzz  raw  fuzz-184                             202 bytes  ok, 302 bytes
+fuzz  raw  fuzz-185                               6 bytes  bad
+fuzz  raw  fuzz-186                             200 bytes  ok, 300 bytes
+fuzz  raw  fuzz-187                             139 bytes  bad
+fuzz  raw  fuzz-188                            1300 bytes  bad
+fuzz  raw  fuzz-189                            1306 bytes  ok, 2501 bytes
+fuzz  raw  fuzz-190                              39 bytes  ok, 2000 bytes
+fuzz  raw  fuzz-191                              25 bytes  bad
+fuzz  raw  fuzz-192                             429 bytes  bad
+fuzz  raw  fuzz-193                             668 bytes  bad
+fuzz  raw  fuzz-194                             197 bytes  bad
+fuzz  raw  fuzz-195                             199 bytes  ok, 299 bytes
+fuzz  raw  fuzz-196                             140 bytes  bad
+fuzz  raw  fuzz-197                            1347 bytes  bad
+fuzz  raw  fuzz-198                             220 bytes  bad
+fuzz  raw  fuzz-199                             156 bytes  bad
+fuzz  raw  fuzz-200                             684 bytes  bad
+fuzz  raw  fuzz-201                             139 bytes  bad
+fuzz  raw  fuzz-202                            1306 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-203                             734 bytes  ok, 799 bytes
+fuzz  raw  fuzz-204                             140 bytes  bad
+fuzz  raw  fuzz-205                            1300 bytes  bad
+fuzz  raw  fuzz-206                            1346 bytes  bad
+fuzz  raw  fuzz-207                             482 bytes  ok, 802 bytes
+fuzz  raw  fuzz-208                             195 bytes  ok, 292 bytes
+fuzz  raw  fuzz-209                            1307 bytes  ok, 2502 bytes
+fuzz  raw  fuzz-210                            1307 bytes  bad
+fuzz  raw  fuzz-211                            1300 bytes  bad
+fuzz  raw  fuzz-212                             189 bytes  bad
+fuzz  raw  fuzz-213                             139 bytes  bad
+fuzz  raw  fuzz-214                             139 bytes  bad
+fuzz  raw  fuzz-215                             481 bytes  ok, 799 bytes
+fuzz  raw  fuzz-216                            1307 bytes  ok, 2502 bytes
+fuzz  raw  fuzz-217                             477 bytes  ok, 793 bytes
+fuzz  raw  fuzz-218                            1350 bytes  bad
+fuzz  raw  fuzz-219                             196 bytes  ok, 296 bytes
+fuzz  raw  fuzz-220                             278 bytes  bad
+fuzz  raw  fuzz-221                             199 bytes  bad
+fuzz  raw  fuzz-222                             477 bytes  ok, 794 bytes
+fuzz  raw  fuzz-223                             139 bytes  bad
+fuzz  raw  fuzz-224                             728 bytes  ok, 793 bytes
+fuzz  raw  fuzz-225                             139 bytes  bad
+fuzz  raw  fuzz-226                             140 bytes  bad
+fuzz  raw  fuzz-227                             735 bytes  ok, 800 bytes
+fuzz  raw  fuzz-228                             482 bytes  bad
+fuzz  raw  fuzz-229                             200 bytes  ok, 301 bytes
+fuzz  raw  fuzz-230                              37 bytes  bad
+fuzz  raw  fuzz-231                             668 bytes  bad
+fuzz  raw  fuzz-232                             189 bytes  bad
+fuzz  raw  fuzz-233                              39 bytes  ok, 2000 bytes
+fuzz  raw  fuzz-234                             692 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-235                             684 bytes  ok, 890 bytes
+fuzz  raw  fuzz-236                             669 bytes  ok, 1195 bytes
+fuzz  raw  fuzz-237                             200 bytes  ok, 302 bytes
+fuzz  raw  fuzz-238                              32 bytes  bad
+fuzz  raw  fuzz-239                             140 bytes  bad
+fuzz  raw  fuzz-240                             199 bytes  bad
+fuzz  raw  fuzz-241                             547 bytes  bad
+fuzz  raw  fuzz-242                             199 bytes  ok, 300 bytes
+fuzz  raw  fuzz-243                            1306 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-244                             201 bytes  ok, 301 bytes
+fuzz  raw  fuzz-245                             140 bytes  bad
+fuzz  raw  fuzz-246                             729 bytes  ok, 794 bytes
+fuzz  raw  fuzz-247                             139 bytes  bad
+fuzz  raw  fuzz-248                             476 bytes  ok, 793 bytes
+fuzz  raw  fuzz-249                             201 bytes  bad
+fuzz  raw  fuzz-250                            1346 bytes  bad
+fuzz  raw  fuzz-251                             457 bytes  bad
+fuzz  raw  fuzz-252                            1300 bytes  bad
+fuzz  raw  fuzz-253                              39 bytes  ok, 1720 bytes
+fuzz  raw  fuzz-254                             136 bytes  bad
+fuzz  raw  fuzz-255                            1306 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-256                            1304 bytes  bad
+fuzz  raw  fuzz-257                             200 bytes  ok, 302 bytes
+fuzz  raw  fuzz-258                             191 bytes  ok, 286 bytes
+fuzz  raw  fuzz-259                              39 bytes  ok, 1298 bytes
+fuzz  raw  fuzz-260                             180 bytes  bad
+fuzz  raw  fuzz-261                             139 bytes  bad
+fuzz  raw  fuzz-262                             481 bytes  bad
+fuzz  raw  fuzz-263                             527 bytes  bad
+fuzz  raw  fuzz-264                             139 bytes  bad
+fuzz  raw  fuzz-265                             200 bytes  ok, 303 bytes
+fuzz  raw  fuzz-266                             189 bytes  bad
+fuzz  raw  fuzz-267                              40 bytes  bad
+fuzz  raw  fuzz-268                             199 bytes  ok, 301 bytes
+fuzz  raw  fuzz-269                             335 bytes  bad
+fuzz  raw  fuzz-270                             665 bytes  bad
+fuzz  raw  fuzz-271                             139 bytes  bad
+fuzz  raw  fuzz-272                             692 bytes  bad
+fuzz  raw  fuzz-273                             268 bytes  bad
+fuzz  raw  fuzz-274                             736 bytes  ok, 839 bytes
+fuzz  raw  fuzz-275                             137 bytes  bad
+fuzz  raw  fuzz-276                             160 bytes  bad
+fuzz  raw  fuzz-277                             139 bytes  bad
+fuzz  raw  fuzz-278                            1348 bytes  ok, 2497 bytes
+fuzz  raw  fuzz-279                              36 bytes  bad
+fuzz  raw  fuzz-280                             192 bytes  ok, 289 bytes
+fuzz  raw  fuzz-281                              39 bytes  ok, 1858 bytes
+fuzz  raw  fuzz-282                             669 bytes  ok, 1201 bytes
+fuzz  raw  fuzz-283                             139 bytes  bad
+fuzz  raw  fuzz-284                             139 bytes  bad
+fuzz  raw  fuzz-285                             669 bytes  ok, 1202 bytes
+fuzz  raw  fuzz-286                             134 bytes  bad
+fuzz  raw  fuzz-287                              35 bytes  bad
+fuzz  raw  fuzz-288                             164 bytes  bad
+fuzz  raw  fuzz-289                              39 bytes  ok, 2000 bytes
+fuzz  raw  fuzz-290                              63 bytes  bad
+fuzz  raw  fuzz-291                             164 bytes  ok, 23 bytes
+fuzz  raw  fuzz-292                             140 bytes  bad
+fuzz  raw  fuzz-293                              21 bytes  bad
+fuzz  raw  fuzz-294                            1306 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-295                             735 bytes  ok, 800 bytes
+fuzz  raw  fuzz-296                             199 bytes  ok, 299 bytes
+fuzz  raw  fuzz-297                            1306 bytes  bad
+fuzz  raw  fuzz-298                            1306 bytes  bad
+fuzz  raw  fuzz-299                             622 bytes  bad
+fuzz  raw  fuzz-300                              45 bytes  bad
+fuzz  raw  fuzz-301                            1300 bytes  ok, 2501 bytes
+fuzz  raw  fuzz-302                             139 bytes  bad
+fuzz  raw  fuzz-303                             347 bytes  bad
+fuzz  raw  fuzz-304                             201 bytes  bad
+fuzz  raw  fuzz-305                             200 bytes  bad
+fuzz  raw  fuzz-306                             200 bytes  ok, 301 bytes
+fuzz  raw  fuzz-307                              42 bytes  bad
+fuzz  raw  fuzz-308                             284 bytes  bad
+fuzz  raw  fuzz-309                             139 bytes  bad
+fuzz  raw  fuzz-310                             199 bytes  ok, 299 bytes
+fuzz  raw  fuzz-311                             173 bytes  bad
+fuzz  raw  fuzz-312                             735 bytes  ok, 900 bytes
+fuzz  raw  fuzz-313                             692 bytes  ok, 1199 bytes
+fuzz  raw  fuzz-314                             736 bytes  ok, 801 bytes
+fuzz  raw  fuzz-315                             164 bytes  bad
+fuzz  raw  fuzz-316                            1307 bytes  ok, 2504 bytes
+fuzz  raw  fuzz-317                             473 bytes  ok, 783 bytes
+fuzz  raw  fuzz-318                             481 bytes  ok, 800 bytes
+fuzz  raw  fuzz-319                             189 bytes  bad
+fuzz  raw  fuzz-320                             138 bytes  bad
+fuzz  raw  fuzz-321                            1300 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-322                              63 bytes  bad
+fuzz  raw  fuzz-323                             189 bytes  bad
+fuzz  raw  fuzz-324                             201 bytes  bad
+fuzz  raw  fuzz-325                             668 bytes  bad
+fuzz  raw  fuzz-326                             200 bytes  ok, 303 bytes
+fuzz  raw  fuzz-327                             201 bytes  bad
+fuzz  raw  fuzz-328                             481 bytes  bad
+fuzz  raw  fuzz-329                             189 bytes  bad
+fuzz  raw  fuzz-330                              21 bytes  bad
+fuzz  raw  fuzz-331                             199 bytes  bad
+fuzz  raw  fuzz-332                             669 bytes  bad
+fuzz  raw  fuzz-333                             139 bytes  bad
+fuzz  raw  fuzz-334                             395 bytes  bad
+fuzz  raw  fuzz-335                             692 bytes  bad
+fuzz  raw  fuzz-336                             140 bytes  bad
+fuzz  raw  fuzz-337                             199 bytes  bad
+fuzz  raw  fuzz-338                             131 bytes  bad
+fuzz  raw  fuzz-339                             190 bytes  bad
+fuzz  raw  fuzz-340                              39 bytes  ok, 1306 bytes
+fuzz  raw  fuzz-341                             134 bytes  bad
+fuzz  raw  fuzz-342                              78 bytes  bad
+fuzz  raw  fuzz-343                             139 bytes  bad
+fuzz  raw  fuzz-344                             693 bytes  ok, 1202 bytes
+fuzz  raw  fuzz-345                             164 bytes  bad
+fuzz  raw  fuzz-346                             140 bytes  bad
+fuzz  raw  fuzz-347                             139 bytes  bad
+fuzz  raw  fuzz-348                             134 bytes  bad
+fuzz  raw  fuzz-349                             160 bytes  bad
+fuzz  raw  fuzz-350                             164 bytes  bad
+fuzz  raw  fuzz-351                             139 bytes  bad
+fuzz  raw  fuzz-352                             389 bytes  bad
+fuzz  raw  fuzz-353                             188 bytes  bad
+fuzz  raw  fuzz-354                             482 bytes  ok, 802 bytes
+fuzz  raw  fuzz-355                              50 bytes  bad
+fuzz  raw  fuzz-356                             201 bytes  ok, 299 bytes
+fuzz  raw  fuzz-357                             199 bytes  bad
+fuzz  raw  fuzz-358                            1306 bytes  ok, 2499 bytes
+fuzz  raw  fuzz-359                             477 bytes  ok, 793 bytes
+fuzz  raw  fuzz-360                              86 bytes  bad
+fuzz  raw  fuzz-361                            1350 bytes  bad
+fuzz  raw  fuzz-362                             692 bytes  ok, 1201 bytes
+fuzz  raw  fuzz-363                            1350 bytes  bad
+fuzz  raw  fuzz-364                             202 bytes  ok, 302 bytes
+fuzz  raw  fuzz-365                             668 bytes  ok, 1199 bytes
+fuzz  raw  fuzz-366                             139 bytes  bad
+fuzz  raw  fuzz-367                             134 bytes  bad
+fuzz  raw  fuzz-368                             141 bytes  bad
+fuzz  raw  fuzz-369                            1306 bytes  ok, 2499 bytes
+fuzz  raw  fuzz-370                             190 bytes  bad
+fuzz  raw  fuzz-371                            1351 bytes  ok, 2501 bytes
+fuzz  raw  fuzz-372                             200 bytes  ok, 302 bytes
+fuzz  raw  fuzz-373                            1300 bytes  ok, 2496 bytes
+fuzz  raw  fuzz-374                            1300 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-375                             140 bytes  bad
+fuzz  raw  fuzz-376                             735 bytes  bad
+fuzz  raw  fuzz-377                             667 bytes  ok, 1199 bytes
+fuzz  raw  fuzz-378                             139 bytes  bad
+fuzz  raw  fuzz-379                             481 bytes  ok, 800 bytes
+fuzz  raw  fuzz-380                             164 bytes  bad
+fuzz  raw  fuzz-381                            1350 bytes  ok, 2513 bytes
+fuzz  raw  fuzz-382                             199 bytes  bad
+fuzz  raw  fuzz-383                             667 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-384                            1301 bytes  ok, 2501 bytes
+fuzz  raw  fuzz-385                             692 bytes  bad
+fuzz  raw  fuzz-386                             290 bytes  bad
+fuzz  raw  fuzz-387                             130 bytes  bad
+fuzz  raw  fuzz-388                             164 bytes  bad
+fuzz  raw  fuzz-389                             189 bytes  bad
+fuzz  raw  fuzz-390                            1300 bytes  ok, 2486 bytes
+fuzz  raw  fuzz-391                             164 bytes  ok, 23 bytes
+fuzz  raw  fuzz-392                             189 bytes  bad
+fuzz  raw  fuzz-393                             669 bytes  bad
+fuzz  raw  fuzz-394                            1306 bytes  bad
+fuzz  raw  fuzz-395                             685 bytes  bad
+fuzz  raw  fuzz-396                            1350 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-397                             165 bytes  bad
+fuzz  raw  fuzz-398                             139 bytes  bad
+fuzz  raw  fuzz-399                             165 bytes  bad
+fuzz  raw  fuzz-400                             510 bytes  bad
+fuzz  raw  fuzz-401                            1306 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-402                            1300 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-403                             200 bytes  ok, 303 bytes
+fuzz  raw  fuzz-404                             140 bytes  bad
+fuzz  raw  fuzz-405                             132 bytes  bad
+fuzz  raw  fuzz-406                             141 bytes  bad
+fuzz  raw  fuzz-407                             139 bytes  bad
+fuzz  raw  fuzz-408                             135 bytes  bad
+fuzz  raw  fuzz-409                             161 bytes  bad
+fuzz  raw  fuzz-410                             736 bytes  ok, 801 bytes
+fuzz  raw  fuzz-411                              39 bytes  bad
+fuzz  raw  fuzz-412                             140 bytes  bad
+fuzz  raw  fuzz-413                             139 bytes  bad
+fuzz  raw  fuzz-414                             668 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-415                            1307 bytes  ok, 2502 bytes
+fuzz  raw  fuzz-416                              39 bytes  ok, 2000 bytes
+fuzz  raw  fuzz-417                             195 bytes  ok, 289 bytes
+fuzz  raw  fuzz-418                             260 bytes  bad
+fuzz  raw  fuzz-419                             140 bytes  bad
+fuzz  raw  fuzz-420                             380 bytes  bad
+fuzz  raw  fuzz-421                             687 bytes  bad
+fuzz  raw  fuzz-422                            1306 bytes  bad
+fuzz  raw  fuzz-423                             200 bytes  ok, 302 bytes
+fuzz  raw  fuzz-424                             140 bytes  bad
+fuzz  raw  fuzz-425                            1306 bytes  ok, 2501 bytes
+fuzz  raw  fuzz-426                              40 bytes  bad
+fuzz  raw  fuzz-427                             827 bytes  bad
+fuzz  raw  fuzz-428                             669 bytes  ok, 1202 bytes
+fuzz  raw  fuzz-429                              83 bytes  bad
+fuzz  raw  fuzz-430                             481 bytes  ok, 800 bytes
+fuzz  raw  fuzz-431                            1306 bytes  bad
+fuzz  raw  fuzz-432                             199 bytes  ok, 301 bytes
+fuzz  raw  fuzz-433                             668 bytes  bad
+fuzz  raw  fuzz-434                             106 bytes  bad
+fuzz  raw  fuzz-435                            1300 bytes  bad
+fuzz  raw  fuzz-436                            1350 bytes  ok, 2503 bytes
+fuzz  raw  fuzz-437                             668 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-438                            1306 bytes  ok, 2502 bytes
+fuzz  raw  fuzz-439                              63 bytes  bad
+fuzz  raw  fuzz-440                            1350 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-441                            1351 bytes  ok, 2504 bytes
+fuzz  raw  fuzz-442                            1350 bytes  ok, 2499 bytes
+fuzz  raw  fuzz-443                             193 bytes  ok, 287 bytes
+fuzz  raw  fuzz-444                            1306 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-445                             140 bytes  bad
+fuzz  raw  fuzz-446                             139 bytes  bad
+fuzz  raw  fuzz-447                             190 bytes  ok, 11 bytes
+fuzz  raw  fuzz-448                             193 bytes  ok, 286 bytes
+fuzz  raw  fuzz-449                             693 bytes  ok, 1196 bytes
+fuzz  raw  fuzz-450                              38 bytes  bad
+fuzz  raw  fuzz-451                             114 bytes  bad
+fuzz  raw  fuzz-452                             510 bytes  bad
+fuzz  raw  fuzz-453                              47 bytes  bad
+fuzz  raw  fuzz-454                            1305 bytes  ok, 2498 bytes
+fuzz  raw  fuzz-455                              39 bytes  bad
+fuzz  raw  fuzz-456                            1306 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-457                             735 bytes  bad
+fuzz  raw  fuzz-458                             139 bytes  bad
+fuzz  raw  fuzz-459                             201 bytes  bad
+fuzz  raw  fuzz-460                            1306 bytes  bad
+fuzz  raw  fuzz-461                            1300 bytes  bad
+fuzz  raw  fuzz-462                              84 bytes  bad
+fuzz  raw  fuzz-463                             674 bytes  bad
+fuzz  raw  fuzz-464                             139 bytes  bad
+fuzz  raw  fuzz-465                             199 bytes  bad
+fuzz  raw  fuzz-466                             201 bytes  ok, 300 bytes
+fuzz  raw  fuzz-467                             189 bytes  ok, 46 bytes
+fuzz  raw  fuzz-468                             668 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-469                             625 bytes  bad
+fuzz  raw  fuzz-470                             140 bytes  bad
+fuzz  raw  fuzz-471                             735 bytes  ok, 800 bytes
+fuzz  raw  fuzz-472                             473 bytes  ok, 786 bytes
+fuzz  raw  fuzz-473                            1306 bytes  bad
+fuzz  raw  fuzz-474                             668 bytes  bad
+fuzz  raw  fuzz-475                             668 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-476                             139 bytes  bad
+fuzz  raw  fuzz-477                             199 bytes  ok, 300 bytes
+fuzz  raw  fuzz-478                             139 bytes  bad
+fuzz  raw  fuzz-479                             140 bytes  bad
+fuzz  raw  fuzz-480                             199 bytes  bad
+fuzz  raw  fuzz-481                             672 bytes  bad
+fuzz  raw  fuzz-482                             189 bytes  bad
+fuzz  raw  fuzz-483                             162 bytes  bad
+fuzz  raw  fuzz-484                             199 bytes  bad
+fuzz  raw  fuzz-485                              32 bytes  ok, 1482 bytes
+fuzz  raw  fuzz-486                             668 bytes  ok, 1205 bytes
+fuzz  raw  fuzz-487                             481 bytes  ok, 800 bytes
+fuzz  raw  fuzz-488                              25 bytes  bad
+fuzz  raw  fuzz-489                             426 bytes  bad
+fuzz  raw  fuzz-490                             691 bytes  ok, 1198 bytes
+fuzz  raw  fuzz-491                             139 bytes  bad
+fuzz  raw  fuzz-492                             167 bytes  bad
+fuzz  raw  fuzz-493                             164 bytes  bad
+fuzz  raw  fuzz-494                             140 bytes  bad
+fuzz  raw  fuzz-495                             796 bytes  bad
+fuzz  raw  fuzz-496                             669 bytes  ok, 1202 bytes
+fuzz  raw  fuzz-497                             735 bytes  ok, 800 bytes
+fuzz  raw  fuzz-498                             201 bytes  ok, 300 bytes
+fuzz  raw  fuzz-499                             210 bytes  bad
+fuzz  raw  fuzz-500                             690 bytes  ok, 1197 bytes
+fuzz  raw  fuzz-501                             669 bytes  ok, 1202 bytes
+fuzz  raw  fuzz-502                             140 bytes  bad
+fuzz  raw  fuzz-503                             164 bytes  ok, 23 bytes
+fuzz  raw  fuzz-504                             686 bytes  bad
+fuzz  raw  fuzz-505                             139 bytes  bad
+fuzz  raw  fuzz-506                             693 bytes  ok, 1202 bytes
+fuzz  raw  fuzz-507                             190 bytes  bad
+fuzz  raw  fuzz-508                             164 bytes  bad
+fuzz  raw  fuzz-509                            1300 bytes  bad
+fuzz  raw  fuzz-510                            1306 bytes  bad
+fuzz  raw  fuzz-511                             201 bytes  bad
+fuzz  raw  fuzz-512                             199 bytes  ok, 301 bytes
+fuzz  raw  fuzz-513                             735 bytes  ok, 800 bytes
+fuzz  raw  fuzz-514                             139 bytes  bad
+fuzz  raw  fuzz-515                             129 bytes  bad
+fuzz  raw  fuzz-516                              40 bytes  bad
+fuzz  raw  fuzz-517                             164 bytes  bad
+fuzz  raw  fuzz-518                             481 bytes  bad
+fuzz  raw  fuzz-519                            1351 bytes  ok, 2502 bytes
+fuzz  raw  fuzz-520                             482 bytes  ok, 801 bytes
+fuzz  raw  fuzz-521                             481 bytes  bad
+fuzz  raw  fuzz-522                             663 bytes  bad
+fuzz  raw  fuzz-523                             164 bytes  bad
+fuzz  raw  fuzz-524                            1056 bytes  bad
+fuzz  raw  fuzz-525                             164 bytes  ok, 23 bytes
+fuzz  raw  fuzz-526                             477 bytes  ok, 793 bytes
+fuzz  raw  fuzz-527                             686 bytes  bad
+fuzz  raw  fuzz-528                            1300 bytes  ok, 2496 bytes
+fuzz  raw  fuzz-529                             199 bytes  ok, 300 bytes
+fuzz  raw  fuzz-530                            1302 bytes  ok, 2493 bytes
+fuzz  raw  fuzz-531                             693 bytes  ok, 1202 bytes
+fuzz  raw  fuzz-532                             661 bytes  bad
+fuzz  raw  fuzz-533                             736 bytes  ok, 809 bytes
+fuzz  raw  fuzz-534                             139 bytes  bad
+fuzz  raw  fuzz-535                             482 bytes  ok, 803 bytes
+fuzz  raw  fuzz-536                             139 bytes  bad
+fuzz  raw  fuzz-537                             139 bytes  bad
+fuzz  raw  fuzz-538                             735 bytes  ok, 800 bytes
+fuzz  raw  fuzz-539                             479 bytes  ok, 795 bytes
+fuzz  raw  fuzz-540                            1301 bytes  ok, 2501 bytes
+fuzz  raw  fuzz-541                             138 bytes  bad
+fuzz  raw  fuzz-542                            1300 bytes  bad
+fuzz  raw  fuzz-543                             187 bytes  bad
+fuzz  raw  fuzz-544                            1350 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-545                            1300 bytes  ok, 2500 bytes
+fuzz  raw  fuzz-546                             196 bytes  ok, 295 bytes
+fuzz  raw  fuzz-547                             482 bytes  ok, 802 bytes
+fuzz  raw  fuzz-548                             195 bytes  ok, 288 bytes
+fuzz  raw  fuzz-549                             199 bytes  bad
+fuzz  raw  fuzz-550                              35 bytes  ok, 1486 bytes
+fuzz  raw  fuzz-551                             187 bytes  bad
+fuzz  raw  fuzz-552                              24 bytes  bad
+fuzz  raw  fuzz-553                            1301 bytes  ok, 2497 bytes
+fuzz  raw  fuzz-554                             201 bytes  ok, 299 bytes
+fuzz  raw  fuzz-555                            1306 bytes  ok, 2499 bytes
+fuzz  raw  fuzz-556                             668 bytes  bad
+fuzz  raw  fuzz-557                             139 bytes  bad
+fuzz  raw  fuzz-558                             188 bytes  bad
+fuzz  raw  fuzz-559                             692 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-560                            1300 bytes  bad
+fuzz  raw  fuzz-561                             199 bytes  ok, 301 bytes
+fuzz  raw  fuzz-562                             735 bytes  ok, 800 bytes
+fuzz  raw  fuzz-563                             136 bytes  bad
+fuzz  raw  fuzz-564                             235 bytes  bad
+fuzz  raw  fuzz-565                             189 bytes  bad
+fuzz  raw  fuzz-566                             735 bytes  bad
+fuzz  raw  fuzz-567                             365 bytes  bad
+fuzz  raw  fuzz-568                              39 bytes  bad
+fuzz  raw  fuzz-569                             137 bytes  bad
+fuzz  raw  fuzz-570                             661 bytes  bad
+fuzz  raw  fuzz-571                              38 bytes  ok, 1581 bytes
+fuzz  raw  fuzz-572                              31 bytes  bad
+fuzz  raw  fuzz-573                              23 bytes  bad
+fuzz  raw  fuzz-574                              40 bytes  ok, 2001 bytes
+fuzz  raw  fuzz-575                             926 bytes  bad
+fuzz  raw  fuzz-576                              60 bytes  bad
+fuzz  raw  fuzz-577                             201 bytes  ok, 300 bytes
+fuzz  raw  fuzz-578                             665 bytes  bad
+fuzz  raw  fuzz-579                            1061 bytes  bad
+fuzz  raw  fuzz-580                             201 bytes  bad
+fuzz  raw  fuzz-581                             189 bytes  ok, 17 bytes
+fuzz  raw  fuzz-582                             164 bytes  bad
+fuzz  raw  fuzz-583                            1350 bytes  bad
+fuzz  raw  fuzz-584                            1300 bytes  bad
+fuzz  raw  fuzz-585                              77 bytes  bad
+fuzz  raw  fuzz-586                             133 bytes  bad
+fuzz  raw  fuzz-587                             721 bytes  bad
+fuzz  raw  fuzz-588                             668 bytes  bad
+fuzz  raw  fuzz-589                            1299 bytes  ok, 2489 bytes
+fuzz  raw  fuzz-590                            1349 bytes  ok, 2493 bytes
+fuzz  raw  fuzz-591                             164 bytes  bad
+fuzz  raw  fuzz-592                             193 bytes  ok, 290 bytes
+fuzz  raw  fuzz-593                             140 bytes  bad
+fuzz  raw  fuzz-594                             657 bytes  bad
+fuzz  raw  fuzz-595                            1306 bytes  bad
+fuzz  raw  fuzz-596                             193 bytes  ok, 286 bytes
+fuzz  raw  fuzz-597                             165 bytes  bad
+fuzz  raw  fuzz-598                             668 bytes  ok, 1200 bytes
+fuzz  raw  fuzz-599                             165 bytes  bad

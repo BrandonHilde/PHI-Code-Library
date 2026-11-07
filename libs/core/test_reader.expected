@@ -1,0 +1,28 @@
+corelib 1
+u8 1 u16be 515 u16le 1284 i8 -1 i16be -384 left 0
+past the end: 0 failed 1
+stays failed after seek: 1 0
+u32be 16909060 u32le 2164195077 failed 0
+i32le -2130772219
+u24be 263679 i16le -32514 pos 8
+a u32 with 3 left: 0 failed 1 pos 8
+bytes: 1 4 pos 4
+five more: 1 failed 1
+seek to the end: 0 left 0
+seek past it: 1
+skip past it: 1 pos 8
+no data: 0 failed 1
+lsb: 0 2 22 15
+looking past the end: 0 failed 0
+the last 4 bits: 0 failed 0
+one more: 0 failed 1
+msb: 1 1 20 15 failed 0
+one more: 0 failed 1
+release: 7 then the byte at 1 is 1
+release after looking ahead: 7 then the byte at 1 is 1
+msb 24 bits: 16711938 then 3 failed 0
+adler Wikipedia 300286872 (300286872)
+adler in two parts 300286872
+adler of nothing 1
+adler 100000 x FF 345649196 (345649196)
+adler 300 x 0..255 167277244 (167277244)

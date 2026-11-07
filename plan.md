@@ -6,7 +6,8 @@ and a **Font Library**, and more will follow.
 
 Written 2026-11-06. Status (2026-11-07): Phase 0 is done, and so is Phase 1's move (commit
 `2e9743f`). weblib builds here, and all its tests pass from here (38 of 38 runs as Linux programs,
-and the compiled test). Phase 1's tidying is left, and Phase 2 can start.
+and the compiled test). Phase 1's tidying is left. Phase 2's corelib is built and passes its
+tests, and waits only on imagelib to use it through the chain.
 
 | Library | File | What it does | Starts from |
 |---|---|---|---|
@@ -220,16 +221,21 @@ so the Linux run counts all of them. Leaving out those at 0% because they aren't
 
 Small on purpose: only what Image and Font both need.
 
-- [ ] `CoreReader`: bounds-checked reads, big and little endian, with a sticky failure
-- [ ] `CoreBits`: a bit reader in either bit order
-- [ ] `CoreInflate`: DEFLATE, zlib and gzip framing, with a limit on output size
-- [ ] Adler-32 (CRC-32 already exists as `data.crc32`)
+- [x] `CoreReader`: bounds-checked reads, big and little endian, with a sticky failure
+- [x] `CoreBits`: a bit reader in either bit order
+- [x] `CoreInflate`: DEFLATE, zlib and gzip framing, with a limit on output size
+- [x] Adler-32 (CRC-32 already exists as `data.crc32`)
 
 **Checked by:** streams from Python's `zlib` at every compression level, stored blocks and malformed
 streams, and a fuzz test.
 
 **Done when:** every reference stream inflates byte for byte, every malformed one fails cleanly, and
 imagelib's first test uses `corelib.philib` through the chain.
+**2026-11-07:** all but the last, which waits for imagelib. In [libs/core](libs/core): 160 of 160
+reference streams inflate as zlib does, byte for byte; 43 of 43 broken ones and 3,513 of 3,513 cut
+short are refused; zlib's verdict and corelib's agree on 600 of 600 fuzz cases; and 100,000 random
+changes, every value of the first 48 bytes, and noise all come back without a crash. It inflates about
+70 MB/s of text (zlib in C: about 6 times that).
 
 ### Phase 3: Image Library
 

@@ -1,0 +1,109 @@
+# Reading a file in memory a few bits at a time, in either bit order: least significant bit of
+# each byte first, as DEFLATE packs them, or most significant first, as JPEG and fonts' CFF do.
+#
+#   CoreBits b;
+#   call b.Start: bytes length false;        # true for most significant first
+#   u32 kind: (b.Bits: 3);
+#   if b.failed                              # it read past the end
+#       ...
+#   ;;
+#
+# Up to 24 bits at a time. Past the end of the data it reads zeros, and using one of them sets
+# `failed`, which stays set: so a decoder can look ahead further than the data goes (a short code
+# near the end) without that being a failure, and finds out when it actually uses a missing bit.
+
+struct.CoreBits
+{
+	ptr<u8> data;
+	u32 len;
+	u32 pos;            # the next byte to take into buf
+	u32 buf;            # bits taken from the data and not used yet: count of them
+	u32 count;
+	u32 fake;           # how many of those are zeros from past the end of the data
+	bln msb;            # most significant bit first
+	bln failed;
+
+	[Start: ptr<u8> bytes: 0; u32 length: 0; bln msb_first: false;]
+		data is bytes;
+		len is length;
+		if bytes is 0
+			len is 0;
+		;;
+		pos is 0;
+		buf is 0;
+		count is 0;
+		fake is 0;
+		msb is msb_first;
+		failed is false;
+	[end]
+
+	# at least n bits ready in buf (n at most 24)
+	[Fill: u32 n: 0;]
+		while count < n
+			u32 b: 0;
+			if pos < len
+				b is data:pos;
+				pos++;
+			;;
+			else
+				fake++ 8;
+			;;
+			if msb
+				buf is (buf << 8) | b;
+			;;
+			else
+				buf is buf | (b << count);
+			;;
+			count++ 8;
+		;;
+	[end]
+
+	# the next n bits, without using them
+	[Peek: u32 n: 0; : u32]
+		if count < n
+			call Fill: n;
+		;;
+		if msb
+			return (buf >> (count - n)) & ((1 << n) - 1);
+		;;
+	[end: buf & ((1 << n) - 1)]
+
+	[Drop: u32 n: 0;]
+		if count < n
+			call Fill: n;
+		;;
+		if msb is false
+			buf is buf >> n;
+		;;
+		count-- n;
+		if count < fake
+			failed is true;
+		;;
+	[end]
+
+	[Bits: u32 n: 0; : u32]
+		u32 v: (Peek: n);
+		call Drop: n;
+		if failed return 0;
+	[end: v]
+
+	[Bit: : u32]
+	[end: (Bits: 1)]
+
+	# skip to the start of the next byte
+	[AlignByte]
+		call Drop: count & 7;
+	[end]
+
+	# Gives back the whole bytes still waiting in buf, after AlignByte, so that pos is where the next
+	# unread byte is: for reading bytes directly, as DEFLATE's stored blocks and the trailers after
+	# it do.
+	[Release]
+		call AlignByte;
+		if failed return;
+		pos-- (count - fake) / 8;
+		buf is 0;
+		count is 0;
+		fake is 0;
+	[end]
+}

@@ -1,0 +1,89 @@
+# CoreReader, CoreBits and CoreAdler, on bytes whose values are worked out by hand (and Adler-32's
+# from Python's zlib.adler32).
+use corelib;
+
+phi.TestReader:Program
+{
+	call CoreLib.Start;
+	log 'corelib ' CoreLib.VERSION '\n';
+
+	# ---- CoreReader
+	u8 bytes: 0x01 0x02 0x03 0x04 0x05 0xFF 0xFE 0x80;
+	CoreReader r;
+	call r.Start: bytes 8;
+	log 'u8 ' (r.U8) ' u16be ' (r.U16BE) ' u16le ' (r.U16LE) ' i8 ' (r.I8) ' i16be ' (r.I16BE) ' left ' (r.Left) '\n';
+	log 'past the end: ' (r.U8) ' failed ' r.failed '\n';
+	call r.Seek: 0;
+	log 'stays failed after seek: ' r.failed ' ' (r.U8) '\n';
+
+	call r.Start: bytes 8;
+	log 'u32be ' (r.U32BE) ' u32le ' (r.U32LE) ' failed ' r.failed '\n';
+	call r.Start: bytes 8;
+	call r.Skip: 4;
+	log 'i32le ' (r.I32LE) '\n';
+	call r.Start: bytes 8;
+	call r.Skip: 3;
+	log 'u24be ' (r.U24BE) ' i16le ' (r.I16LE) ' pos ' r.pos '\n';
+	log 'a u32 with 3 left: ' (r.U32LE) ' failed ' r.failed ' pos ' r.pos '\n';
+
+	call r.Start: bytes 8;
+	ptr<u8> four: (r.Bytes: 4);
+	log 'bytes: ' four:0 ' ' four:3 ' pos ' r.pos '\n';
+	ptr<u8> five: (r.Bytes: 5);
+	log 'five more: ' (five is 0) ' failed ' r.failed '\n';
+
+	call r.Start: bytes 8;
+	call r.Seek: 8;
+	log 'seek to the end: ' r.failed ' left ' (r.Left) '\n';
+	call r.Seek: 9;
+	log 'seek past it: ' r.failed '\n';
+	call r.Start: bytes 8;
+	call r.Skip: 9;
+	log 'skip past it: ' r.failed ' pos ' r.pos '\n';
+	call r.Start: 0 100;
+	log 'no data: ' (r.U8) ' failed ' r.failed '\n';
+
+	# ---- CoreBits: 0xB4 is 10110100, 0x0F is 00001111
+	u8 two: 0xB4 0x0F;
+	CoreBits b;
+	call b.Start: two 2 false;
+	log 'lsb: ' (b.Bits: 1) ' ' (b.Bits: 2) ' ' (b.Bits: 5) ' ' (b.Bits: 4) '\n';
+	log 'looking past the end: ' (b.Peek: 8) ' failed ' b.failed '\n';
+	log 'the last 4 bits: ' (b.Bits: 4) ' failed ' b.failed '\n';
+	log 'one more: ' (b.Bit) ' failed ' b.failed '\n';
+
+	call b.Start: two 2 true;
+	log 'msb: ' (b.Bits: 1) ' ' (b.Bits: 2) ' ' (b.Bits: 5) ' ' (b.Bits: 8) ' failed ' b.failed '\n';
+	log 'one more: ' (b.Bit) ' failed ' b.failed '\n';
+
+	u8 four_bytes: 0xFF 0x01 0x02 0x03;
+	call b.Start: four_bytes 4 false;
+	log 'release: ' (b.Bits: 3);
+	call b.Release;
+	log ' then the byte at ' b.pos ' is ' four_bytes:(b.pos) '\n';
+	call b.Start: four_bytes 4 false;
+	u32 ahead: (b.Peek: 20);
+	log 'release after looking ahead: ' (b.Bits: 3);
+	call b.Release;
+	log ' then the byte at ' b.pos ' is ' four_bytes:(b.pos) '\n';
+	call b.Start: four_bytes 4 true;
+	log 'msb 24 bits: ' (b.Bits: 24) ' then ' (b.Bits: 8) ' failed ' b.failed '\n';
+
+	# ---- CoreAdler
+	ptr<u8> wiki: 'Wikipedia';
+	u32 a: (CoreAdler.Of: wiki 9);
+	log 'adler Wikipedia ' a ' (300286872)\n';
+	log 'adler in two parts ' (CoreAdler.Add: (CoreAdler.Of: wiki 4) wiki + 4 5) '\n';
+	log 'adler of nothing ' (CoreAdler.Of: 0 0) '\n';
+	ptr<u8> big: new u8[100000];
+	while u32 i: 0; i < 100000; i++;
+		big:i is 0xFF;
+	;;
+	log 'adler 100000 x FF ' (CoreAdler.Of: big 100000) ' (345649196)\n';
+	while u32 i: 0; i < 76800; i++;
+		big:i is (i & 255) as u8;
+	;;
+	log 'adler 300 x 0..255 ' (CoreAdler.Of: big 76800) ' (167277244)\n';
+	free big;
+	exit 0;
+}

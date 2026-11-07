@@ -1,0 +1,53 @@
+# corelib through corelib.philib alone, as a program using it has it: no source beside this, so a
+# test here proves the compiled library works (one beside the source would test the source).
+use corelib;
+
+phi.TestCorelib:Program
+{
+	call CoreLib.Start;
+	log 'version: ' CoreLib.VERSION '\n';
+
+	# zlib, from Python's zlib.compress(b'hello hello hello hello, corelib', 9)
+	u8 zlib_data: 120 218 203 72 205 201 201 87 200 64 39 117 20 146 243 139 82 115 50 147 0 196 93 11 221;
+	u32 size: 0;
+	ptr<u8> text: (CoreInflate.Zlib: zlib_data 25 0 addr size);
+	log 'zlib: ' size ' bytes: ';
+	call Show: text size;
+
+	# gzip, from Python's gzip.compress(b'gzip too\n', mtime=0)
+	u8 gzip_data: 31 139 8 0 0 0 0 0 2 255 75 175 202 44 80 40 201 207 231 2 0 200 123 48 146 9 0 0 0;
+	u32 more_size: 0;
+	ptr<u8> more: (CoreInflate.Gzip: gzip_data 29 0 addr more_size);
+	log 'gzip: ' more_size ' bytes: ';
+	call Show: more more_size;
+
+	# a bad one: the same zlib data with its last byte changed
+	zlib_data:24 is 0;
+	u32 bad_size: 0;
+	ptr<u8> bad: (CoreInflate.Zlib: zlib_data 25 0 addr bad_size);
+	log 'damaged: ' (bad is 0) ', ' CoreInflate.error '\n';
+
+	# the reader and Adler-32 on what came out
+	CoreReader r;
+	call r.Start: text size;
+	log 'reader: ' (r.U32BE) ' ' (r.U16LE) ' left ' (r.Left) '\n';
+	log 'adler: ' (CoreAdler.Of: text size) '\n';
+	free text;
+	free more;
+	exit 0;
+
+	[Show: ptr<u8> bytes: 0; u32 count: 0;]
+		while u32 i: 0; i < count; i++;
+			if bytes:i >= 32 and bytes:i < 127
+				log bytes:i as chr;
+			;;
+			elif bytes:i is 10
+				log '\\n';
+			;;
+			else
+				log '?';
+			;;
+		;;
+		log '\n';
+	[end]
+}

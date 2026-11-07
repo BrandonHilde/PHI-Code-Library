@@ -1,0 +1,181 @@
+# corelib's inflate against zlib. tests/inflate/cases.bin (made by tools/core/make_inflate_tests.py)
+# holds streams and what zlib says of each:
+#   good   must inflate to the data it was made from, byte for byte, and use the same bytes zlib did
+#   bad    must fail, and each says why
+#   fuzz   small streams with a few bits changed: corelib must agree with zlib on every one, both on
+#          whether it's good and, if it is, on what it inflates to
+# Then some good streams are cut short at many places, and every cut must fail.
+use corelib;
+use data.crc32;
+use memory.mem;
+
+phi.TestInflate:Program
+{
+	u32 cuts: 0;
+	u32 cuts_failed: 0;
+	call CoreLib.Start;
+
+	u32 sources_size: 0;
+	ptr<u8> sources_bytes: (Load: 'tests/inflate/sources.bin' addr sources_size);
+	ptr<u8> source_data[16];
+	u32 source_len[16];
+	CoreReader sr;
+	call sr.Start: sources_bytes sources_size;
+	u32 source_count: (sr.U32LE);
+	if source_count > 16
+		log 'sources.bin has too many sources\n';
+		exit 1;
+	;;
+	while u32 s: 0; s < source_count; s++;
+		call sr.Skip: (sr.U8);
+		source_len:s is (sr.U32LE);
+		source_data:s is (sr.Bytes: source_len:s);
+	;;
+	if sr.failed
+		log 'sources.bin is cut short\n';
+		exit 1;
+	;;
+
+	u32 cases_size: 0;
+	ptr<u8> cases_bytes: (Load: 'tests/inflate/cases.bin' addr cases_size);
+	CoreReader r;
+	call r.Start: cases_bytes cases_size;
+	u32 count: (r.U32LE);
+
+	u32 runs[3];
+	u32 right[3];
+	u32 fuzz_good: 0;
+	str group_names: 'good' 'bad' 'fuzz';
+	str bad_lines: '';
+
+	while u32 i: 0; i < count; i++;
+		u32 group: (r.U8);
+		int format: (r.U8) as int;
+		u32 name_len: (r.U8);
+		ptr<u8> name_at: (r.Bytes: name_len);
+		u32 limit: (r.U32LE);
+		u32 in_len: (r.U32LE);
+		ptr<u8> input: (r.Bytes: in_len);
+		bln want_ok: ((r.U8) is 1);
+		u32 want_len: (r.U32LE);
+		u32 want_crc: (r.U32LE);
+		u32 want_used: (r.U32LE);
+		int source: (r.I32LE);
+		if r.failed or group > 2 or format > 2
+			log 'cases.bin is cut short, or damaged\n';
+			exit 1;
+		;;
+		str name: '';
+		while u32 k: 0; k < name_len; k++;
+			name++ name_at:k as chr;
+		;;
+
+		u32 got_len: 0;
+		ptr<u8> got: (Inflate: format input in_len limit addr got_len);
+		runs:group++;
+		str wrong: '';
+		if want_ok and got is 0
+			wrong is 'zlib inflates it, but corelib says: ' CoreInflate.error;
+		;;
+		elif want_ok is false and got is not 0
+			wrong is 'zlib refuses it, but corelib inflates it to ' got_len ' bytes';
+		;;
+		elif want_ok
+			if got_len is not want_len
+				wrong is got_len ' bytes, where zlib has ' want_len;
+			;;
+			elif (Crc32.Of: got got_len) is not want_crc
+				wrong is 'what it inflates to differs from what zlib gives';
+			;;
+			elif source >= 0 and (Mem.Equal: got source_data:source got_len) is false
+				wrong is 'what it inflates to differs from its source';
+			;;
+			elif CoreInflate.used is not want_used
+				wrong is 'it used ' CoreInflate.used ' bytes, where zlib used ' want_used;
+			;;
+		;;
+		if wrong.len > 0
+			log 'WRONG ' group_names:group ' ' name ': ' wrong '\n';
+		;;
+		else
+			right:group++;
+			if group is 1
+				bad_lines++ '  ' name ': ' CoreInflate.error '\n';
+			;;
+			if group is 2 and want_ok
+				fuzz_good++;
+			;;
+		;;
+		if got is not 0
+			free got;
+		;;
+
+		# good streams cut short: every cut must fail
+		if group is 0 and (name is 'text-zlib-6' or name is 'text-gzip-9' or name is 'text-raw-6' or
+			name is 'every-block-type' or name is 'dynamic-long-codes' or name is 'text-gzip-every-field')
+			call Cuts: name format input in_len;
+		;;
+	;;
+	if r.failed or r.pos is not cases_size
+		log 'cases.bin is damaged\n';
+		exit 1;
+	;;
+
+	log 'good: ' right:0 ' of ' runs:0 ' inflate as zlib does, byte for byte\n';
+	log 'bad: ' right:1 ' of ' runs:1 ' refused:\n' bad_lines;
+	log 'fuzz: ' right:2 ' of ' runs:2 ' agree with zlib (' fuzz_good ' good, ' right:2 - fuzz_good ' bad)\n';
+	log 'cuts: ' cuts_failed ' of ' cuts ' refused\n';
+	log 'done\n';
+	exit 0;
+
+
+	# the stream cut short: to every length near the start and end, and every 13th between
+	[Cuts: str name; int format: 0; ptr<u8> input: 0; u32 length: 0;]
+		u32 at_len: 0;
+		while at_len < length
+			u32 got_len: 0;
+			ptr<u8> got: (Inflate: format input at_len 0 addr got_len);
+			cuts++;
+			if got is 0
+				cuts_failed++;
+			;;
+			else
+				log 'WRONG cut ' name ' to ' at_len ' bytes: it inflates to ' got_len ' bytes\n';
+				free got;
+			;;
+			if at_len < 64 or length - at_len <= 64
+				at_len++;
+			;;
+			else
+				at_len++ 13;
+			;;
+		;;
+	[end]
+
+	[Inflate: int format: 0; ptr<u8> input: 0; u32 length: 0; u32 limit: 0; ptr<u32> size_out: 0; : ptr<u8>]
+		if format is CoreInflate.RAW
+			return (CoreInflate.Raw: input length limit size_out);
+		;;
+		if format is CoreInflate.ZLIB
+			return (CoreInflate.Zlib: input length limit size_out);
+		;;
+	[end: (CoreInflate.Gzip: input length limit size_out)]
+
+	[Load: str path; ptr<u32> size_out: 0; : ptr<u8>]
+		int size: (OS.FileSize: path);
+		if size < 0
+			log 'cannot read ' path '\n';
+			exit 1;
+		;;
+		ptr<u8> buffer: new u8[size as u32 + 1];
+		if buffer is 0
+			log 'out of memory reading ' path '\n';
+			exit 1;
+		;;
+		if (OS.ReadFile: path buffer size) is not size
+			log 'short read of ' path '\n';
+			exit 1;
+		;;
+		size_out:0 is size as u32;
+	[end: buffer]
+}

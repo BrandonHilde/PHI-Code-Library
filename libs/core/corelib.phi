@@ -1,0 +1,21 @@
+# corelib: what imagelib and fontlib both need. Checked reading of bytes and bits, Adler-32, and
+# inflating DEFLATE, zlib and gzip data.
+#
+#   phi build corelib.phi --library      # corelib.philib, which a program includes with `use corelib;`
+#
+# README.md says which names are its API.
+
+use corelib.reader;
+use corelib.bits;
+use corelib.adler;
+use corelib.inflate;
+
+phi.CoreLib:Library
+{
+	const int VERSION: 1;
+
+	# Call this once, before anything else in the library. There's nothing to set up yet, but a
+	# program that calls it keeps working when there is.
+	[Start]
+	[end]
+}
