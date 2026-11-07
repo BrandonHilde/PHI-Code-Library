@@ -1,0 +1,632 @@
+# css-parsing-tests (Simon Sapin's, tests/css-parsing-tests/): the tokenizer, generic parsing, An+B
+# and colors against outside vectors. tools/css_parsing_tests.py makes the files read here.
+use weblib;
+use css.css;
+
+phi.TestCssSyntax:Program
+{
+	call Weblib.Start: 900000;
+	call Css.Start;
+	CssLex.unicode_ranges is true;
+
+	u32 mode_cv: 0;
+	call Suite: 'component_value_list' 1;
+	call Suite: 'one_component_value' 2;
+	call Suite: 'declaration_list' 3;
+	call Suite: 'one_declaration' 4;
+	call Suite: 'rule_list' 5;
+	call Suite: 'stylesheet' 6;
+	call Suite: 'one_rule' 7;
+	call Suite: 'blocks_contents' 8;
+	call Suite: 'An_B' 9;
+	CssLex.unicode_ranges is false;
+	call Suite: 'color_hexadecimal_3' 10;
+	call Suite: 'color_hexadecimal_4' 10;
+	call Suite: 'color_keywords_3' 10;
+	call Suite: 'color_keywords_4' 10;
+	call Suite: 'color_hsl_3' 10;
+	call Suite: 'color_hsl_4' 10;
+	call Suite: 'color_hwb_4' 10;
+	# these serialize as lab() and so on, and we keep 8-bit sRGB: only whether it's valid counts
+	call Suite: 'color_lab_4' 11;
+	call Suite: 'color_lch_4' 11;
+	call Suite: 'color_oklab_4' 11;
+	call Suite: 'color_oklch_4' 11;
+	call Suite: 'color_function_4' 11;
+	call Suite: 'color_functions_5' 11;
+	log 'all ' passed_all ' of ' total_all '\n';
+	exit 0;
+
+	u32 passed_all: 0;
+	u32 total_all: 0;
+	WlBuf got;
+	ptr<CssTok> t: 0;
+	ptr<CssToks> ts: 0;
+	const u32 SHOW: 12;
+
+	# ---- running a suite
+
+	[Suite: ptr<u8> name: 0; u32 mode: 0;]
+		str path: '';
+		path is 'tests/css-parsing-tests/converted/' name '.txt';
+		int size: (OS.FileSize: path);
+		if size < 0
+			log name ': no file\n';
+			return;
+		;;
+		ptr<u8> data: new u8[size + 1];
+		int read_n: (OS.ReadFile: path data size);
+		u32 pos: 0;
+		u32 passed: 0;
+		u32 total: 0;
+		u32 shown: 0;
+		WlBuf input;
+		WlBuf want;
+		while pos < read_n as u32
+			u32 start: pos;
+			while pos < read_n as u32 and data:pos is not 9
+				pos++;
+			;;
+			call Decode: data + start pos - start addr input;
+			pos++;
+			u32 start2: pos;
+			while pos < read_n as u32 and data:pos is not 10
+				pos++;
+			;;
+			call Decode: data + start2 pos - start2 addr want;
+			pos++;
+			call got.Clear;
+			bln ok: false;
+			if call ok is RunCase: mode input.data input.len want.data want.len throws err
+				log 'threw: ' err.text '\n';
+				ok is false;
+			;;
+			total++;
+			if ok
+				passed++;
+			;;
+			elif shown < SHOW
+				shown++;
+				log '  FAIL ' name ' case ' total ' input ';
+				call Show: input.data input.len 160;
+				log '\n    want ';
+				call Show: want.data want.len 300;
+				log '\n    got  ';
+				call Show: got.data got.len 300;
+				log '\n';
+			;;
+		;;
+		log name ': ' passed ' of ' total '\n';
+		passed_all++ passed;
+		total_all++ total;
+		call input.Free;
+		call want.Free;
+		free data;
+	[end]
+
+	[Show: ptr<u8> p: 0; u32 n: 0; u32 most: 0;]
+		WlBuf b;
+		u32 lim: n;
+		if lim > most
+			lim is most;
+		;;
+		while u32 i: 0; i < lim; i++;
+			u32 c: p:i;
+			if c >= 32 and c < 127
+				call b.Add: c as u8;
+			;;
+			else
+				call b.AddZ: '\\x';
+				call b.Add: (Hexd: c >> 4) as u8;
+				call b.Add: (Hexd: c & 15) as u8;
+			;;
+		;;
+		if b.data is not 0
+			log b.data;
+		;;
+		call b.Free;
+	[end]
+
+	[Hexd: u32 d: 0;]
+		if d < 10 return 48 + d;
+	[end: 55 + d]
+
+	[Decode: ptr<u8> p: 0; u32 n: 0; ptr<WlBuf> b: 0;]
+		call b.Clear;
+		call b.Reserve: n + 1;
+		u32 i: 0;
+		while i < n
+			if p:i is 92 and i + 3 < n and p:(i + 1) is 120
+				u32 hi: (WlText.HexValue: p:(i + 2)) as u32;
+				u32 lo: (WlText.HexValue: p:(i + 3)) as u32;
+				call b.Add: (hi * 16 + lo) as u8;
+				i++ 4;
+			;;
+			else
+				call b.Add: p:i;
+				i++;
+			;;
+		;;
+	[end]
+
+	[RunCase: u32 mode: 0; ptr<u8> input: 0; u32 n: 0; ptr<u8> want: 0; u32 want_n: 0;]
+		if mode >= 10
+			call ColorCase: input n mode;
+			if mode is 11
+				# valid or not is all that's asked
+				# (light-dark's expected value is a pair: a pair of nothing is nothing)
+				bln want_null: (WlText.EqZ: want want_n 'null') or (WlText.EqZ: want want_n '[null,null]');
+				bln got_null: (WlText.EqZ: got.data got.len 'null');
+				return want_null is got_null;
+			;;
+			# Their expected values keep fractions of a channel, as rgb(31.875, ...); we keep 8 bits,
+			# so what counts is that both come to the same 8 bits.
+			if (WlText.Eq: got.data got.len want want_n) return true;
+			if want_n < 2 or want:0 is not 34 or got.len < 2 or got.data:0 is not 34 return false;
+			if (CssColor.FromText: want + 1 want_n - 2) is false return false;
+			u32 theirs: CssColor.made;
+			if (CssColor.FromText: input n) is false return false;
+			return CssColor.made is theirs;
+		;;
+		ptr<CssToks> toks: (CssLex.Run: input n);
+		ts is toks;
+		t is toks.t;
+		when mode
+			is 1
+				call Range: 0 toks.n;
+			;;
+			is 2
+				call OneValue;
+			;;
+			is 3
+				call DeclList: 0 toks.n false;
+			;;
+			is 4
+				call OneDecl;
+			;;
+			is 5
+				call Rules: false;
+			;;
+			is 6
+				call Rules: true;
+			;;
+			is 7
+				call OneRule;
+			;;
+			is 8
+				call DeclList: 0 toks.n true;
+			;;
+			is 9
+				call AnB;
+			;;
+		;;
+		call CssLex.Free: toks;
+	[end: (WlText.Eq: got.data got.len want want_n)]
+
+	[ColorCase: ptr<u8> input: 0; u32 n: 0; u32 mode: 0;]
+		if (CssColor.FromText: input n)
+			WlBuf text;
+			call CssSer.Color: CssColor.made addr text;
+			call Quoted: text.data text.len;
+			call text.Free;
+		;;
+		else
+			call got.AddZ: 'null';
+		;;
+	[end]
+
+	# ---- canonical text
+
+	[Quoted: ptr<u8> p: 0; u32 n: 0;]
+		call got.Add: 34;
+		while u32 i: 0; i < n; i++;
+			u32 c: p:i;
+			if c >= 32 and c < 127 and c is not 92 and c is not 34
+				call got.Add: c as u8;
+			;;
+			else
+				call got.Add: 92;
+				call got.Add: 120;
+				call got.Add: (Hexd: c >> 4) as u8;
+				call got.Add: (Hexd: c & 15) as u8;
+			;;
+		;;
+		call got.Add: 34;
+	[end]
+
+	[Range: u32 from: 0; u32 to: 0;]
+		call got.Add: 91;
+		call Items: from to;
+		call got.Add: 93;
+	[end]
+
+	# the values, comma separated
+	[Items: u32 from: 0; u32 to: 0;]
+		u32 i: from;
+		bln first: true;
+		while i < to
+			if first is false
+				call got.Add: 44;
+			;;
+			first is false;
+			i is (Value: i);
+		;;
+	[end]
+
+	# one component value: what comes after it
+	[Value: u32 i: 0;]
+		ptr<CssTok> tk: addr t:i;
+		u32 type: tk.type;
+		when type
+			is CssLex.WS
+				call got.AddZ: '" "';
+			;;
+			is CssLex.COLON
+				call got.AddZ: '":"';
+			;;
+			is CssLex.SEMICOLON
+				call got.AddZ: '";"';
+			;;
+			is CssLex.COMMA
+				call got.AddZ: '","';
+			;;
+			is CssLex.CDO
+				call got.AddZ: '"<!--"';
+			;;
+			is CssLex.CDC
+				call got.AddZ: '"-->"';
+			;;
+			is CssLex.INCLUDE_MATCH
+				call got.AddZ: '"~="';
+			;;
+			is CssLex.DASH_MATCH
+				call got.AddZ: '"|="';
+			;;
+			is CssLex.PREFIX_MATCH
+				call got.AddZ: '"^="';
+			;;
+			is CssLex.SUFFIX_MATCH
+				call got.AddZ: '"$="';
+			;;
+			is CssLex.SUBSTRING_MATCH
+				call got.AddZ: '"*="';
+			;;
+			is CssLex.COLUMN
+				call got.AddZ: '"||"';
+			;;
+			is CssLex.DELIM
+				u8 one: tk.num as u8;
+				call Quoted: addr one 1;
+			;;
+			is CssLex.IDENT
+				call Pair: 'ident' tk;
+			;;
+			is CssLex.AT
+				call Pair: 'at-keyword' tk;
+			;;
+			is CssLex.URL
+				call Pair: 'url' tk;
+				if (tk.flag & CssLex.F_EOF) is not 0
+					call got.AddZ: ',["error","eof-in-url"]';
+				;;
+			;;
+			is CssLex.STRING
+				call Pair: 'string' tk;
+				if (tk.flag & CssLex.F_EOF) is not 0
+					call got.AddZ: ',["error","eof-in-string"]';
+				;;
+			;;
+			is CssLex.HASH
+				call got.AddZ: '["hash",';
+				call Quoted: tk.text tk.len;
+				if (tk.flag & CssLex.F_ID) is not 0
+					call got.AddZ: ',"id"]';
+				;;
+				else
+					call got.AddZ: ',"unrestricted"]';
+				;;
+			;;
+			is CssLex.BAD_STRING
+				call got.AddZ: '["error","bad-string"]';
+			;;
+			is CssLex.BAD_URL
+				call got.AddZ: '["error","bad-url"]';
+			;;
+			is CssLex.NUMBER
+				call Numeric: 'number' tk tk.stop - tk.start;
+				call got.Add: 93;
+			;;
+			is CssLex.PERCENTAGE
+				call Numeric: 'percentage' tk tk.stop - tk.start - 1;
+				call got.Add: 93;
+			;;
+			is CssLex.DIMENSION
+				call Numeric: 'dimension' tk tk.match;
+				call got.Add: 44;
+				call Quoted: tk.text tk.len;
+				call got.Add: 93;
+			;;
+			is CssLex.URANGE
+				call got.AddZ: '["unicode-range",';
+				call got.AddInt: tk.num as int;
+				call got.Add: 44;
+				call got.AddInt: tk.match as int;
+				call got.Add: 93;
+			;;
+			is CssLex.FUNCTION
+				call got.AddZ: '["function",';
+				call Quoted: tk.text tk.len;
+				call Block: i;
+				return (Next: i);
+			;;
+			is CssLex.LPAREN
+				call got.AddZ: '["()"';
+				call Block: i;
+				return (Next: i);
+			;;
+			is CssLex.LBRACKET
+				call got.AddZ: '["[]"';
+				call Block: i;
+				return (Next: i);
+			;;
+			is CssLex.LBRACE
+				call got.AddZ: '["{}"';
+				call Block: i;
+				return (Next: i);
+			;;
+			is CssLex.RPAREN
+				call got.AddZ: '["error",")"]';
+			;;
+			is CssLex.RBRACKET
+				call got.AddZ: '["error","]"]';
+			;;
+			is CssLex.RBRACE
+				call got.AddZ: '["error","}"]';
+			;;
+		;;
+	[end: i + 1]
+
+	[Next: u32 i: 0;]
+		u32 close: t:i.match;
+		if close >= ts.n return ts.n;
+	[end: close + 1]
+
+	# what's in a block, then its closing bracket
+	[Block: u32 i: 0;]
+		call WlStack.Check;
+		u32 close: t:i.match;
+		if close > i + 1
+			call got.Add: 44;
+			call Items: i + 1 close;
+		;;
+		call got.Add: 93;
+	[end]
+
+	[Pair: ptr<u8> name: 0; ptr<CssTok> tk: 0;]
+		call got.AddZ: '["';
+		call got.AddZ: name;
+		call got.AddZ: '",';
+		call Quoted: tk.text tk.len;
+		call got.Add: 93;
+	[end]
+
+	[Numeric: ptr<u8> name: 0; ptr<CssTok> tk: 0; u32 repr: 0;]
+		call got.AddZ: '["';
+		call got.AddZ: name;
+		call got.AddZ: '",';
+		call Quoted: ts.src + tk.start repr;
+		call got.Add: 44;
+		call CssNum.Add: addr got tk.num 6;
+		if (tk.flag & CssLex.F_INTEGER) is not 0
+			call got.AddZ: ',"integer"';
+		;;
+		else
+			call got.AddZ: ',"number"';
+		;;
+	[end]
+
+	[SkipWs: u32 i: 0; u32 to: 0;]
+		while i < to and t:i.type is CssLex.WS
+			i++;
+		;;
+	[end: i]
+
+	[OneValue]
+		u32 i: (SkipWs: 0 ts.n);
+		if i >= ts.n
+			call got.AddZ: '["error","empty"]';
+			return;
+		;;
+		u32 after: (Value: i);
+		u32 mark: got.len;
+		if (SkipWs: after ts.n) < ts.n
+			call got.Clear;
+			call got.AddZ: '["error","extra-input"]';
+		;;
+	[end]
+
+	[Decl: u32 from: 0; u32 to: 0;]
+		if (CssSyntax.Decl: t from to) is false return false;
+		bln imp: CssSyntax.important;
+		u32 vf: CssSyntax.value_from;
+		u32 vt: CssSyntax.value_to;
+		call got.AddZ: '["declaration",';
+		call Quoted: t:from.text t:from.len;
+		call got.Add: 44;
+		call Range: vf vt;
+		if imp
+			call got.AddZ: ',true]';
+		;;
+		else
+			call got.AddZ: ',false]';
+		;;
+	[end: true]
+
+	[OneDecl]
+		u32 i: (SkipWs: 0 ts.n);
+		if i >= ts.n
+			call got.AddZ: '["error","empty"]';
+			return;
+		;;
+		if (Decl: i ts.n) is false
+			call got.Clear;
+			call got.AddZ: '["error","invalid"]';
+		;;
+	[end]
+
+	[AtRule: u32 i: 0; u32 to: 0;]
+		u32 after: (CssSyntax.AtRule: t i to);
+		bln block: CssSyntax.has_block;
+		u32 pf: CssSyntax.prelude_from;
+		u32 pt: CssSyntax.prelude_to;
+		u32 bf: CssSyntax.block_from;
+		u32 bt: CssSyntax.block_to;
+		call got.AddZ: '["at-rule",';
+		call Quoted: t:i.text t:i.len;
+		call got.Add: 44;
+		call Range: pf pt;
+		call got.Add: 44;
+		if block
+			call Range: bf bt;
+		;;
+		else
+			call got.AddZ: 'null';
+		;;
+		call got.Add: 93;
+	[end: after]
+
+	[Qualified: u32 i: 0; u32 to: 0;]
+		u32 after: (CssSyntax.Qualified: t i to);
+		if CssSyntax.has_block is false
+			call got.AddZ: '["error","invalid"]';
+			return after;
+		;;
+		u32 pf: CssSyntax.prelude_from;
+		u32 pt: CssSyntax.prelude_to;
+		u32 bf: CssSyntax.block_from;
+		u32 bt: CssSyntax.block_to;
+		call got.AddZ: '["qualified rule",';
+		call Range: pf pt;
+		call got.Add: 44;
+		call Range: bf bt;
+		call got.Add: 93;
+	[end: after]
+
+	[Rules: bln top: false;]
+		call got.Add: 91;
+		bln first: true;
+		u32 i: 0;
+		while i < ts.n
+			u32 type: t:i.type;
+			if type is CssLex.WS or (top and (type is CssLex.CDO or type is CssLex.CDC))
+				i++;
+				continue;
+			;;
+			if first is false
+				call got.Add: 44;
+			;;
+			first is false;
+			if type is CssLex.AT
+				i is (AtRule: i ts.n);
+			;;
+			else
+				i is (Qualified: i ts.n);
+			;;
+		;;
+		call got.Add: 93;
+	[end]
+
+	[OneRule]
+		u32 i: (SkipWs: 0 ts.n);
+		if i >= ts.n
+			call got.AddZ: '["error","empty"]';
+			return;
+		;;
+		u32 after: 0;
+		if t:i.type is CssLex.AT
+			after is (AtRule: i ts.n);
+		;;
+		else
+			after is (Qualified: i ts.n);
+		;;
+		if (SkipWs: after ts.n) < ts.n
+			call got.Clear;
+			call got.AddZ: '["error","extra-input"]';
+		;;
+	[end]
+
+	# a list of declarations (and at-rules); with nested, qualified rules too
+	[DeclList: u32 from: 0; u32 to: 0; bln nested: false;]
+		call got.Add: 91;
+		bln first: true;
+		u32 i: from;
+		while i < to
+			u32 type: t:i.type;
+			if type is CssLex.WS or type is CssLex.SEMICOLON
+				i++;
+				continue;
+			;;
+			if first is false
+				call got.Add: 44;
+			;;
+			first is false;
+			if type is CssLex.AT
+				i is (AtRule: i to);
+				continue;
+			;;
+			u32 last: i;
+			bln has_brace: false;
+			while last < to and t:last.type is not CssLex.SEMICOLON
+				if t:last.type is CssLex.LBRACE
+					has_brace is true;
+				;;
+				last is (CssSyntax.After: t last);
+			;;
+			if last > to
+				last is to;
+			;;
+			u32 mark: got.len;
+			bln done: false;
+			if type is CssLex.IDENT and (nested is false or has_brace is false)
+				done is (Decl: i last);
+			;;
+			if done
+				i is last;
+				continue;
+			;;
+			got.len is mark;
+			if nested
+				# as a qualified rule, up to a block or a ;
+				u32 p: i;
+				bln block: false;
+				while p < to and t:p.type is not CssLex.SEMICOLON
+					if t:p.type is CssLex.LBRACE
+						block is true;
+						break;
+					;;
+					p is (CssSyntax.After: t p);
+				;;
+				if block
+					i is (Qualified: i to);
+					continue;
+				;;
+			;;
+			call got.AddZ: '["error","invalid"]';
+			i is last;
+		;;
+		call got.Add: 93;
+	[end]
+
+	[AnB]
+		u32 p: (SkipWs: 0 ts.n);
+		if p < ts.n and (CssAnB.Parse: t ts.src addr p ts.n) and (SkipWs: p ts.n) is ts.n
+			call got.Add: 91;
+			call got.AddInt: CssAnB.a;
+			call got.Add: 44;
+			call got.AddInt: CssAnB.b;
+			call got.Add: 93;
+			return;
+		;;
+		call got.AddZ: 'null';
+	[end]
+}

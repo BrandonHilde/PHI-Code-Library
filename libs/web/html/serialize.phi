@@ -1,0 +1,175 @@
+# The spec's HTML fragment serialization algorithm, without recursion: going down through children
+# and a template's contents, and back up by parent pointers (a template's contents point back at it
+# through their own `content`).
+
+use core.buf;
+use dom.dom;
+use html.tags;
+use html.names;
+
+phi.HtmlSerializer:Library
+{
+	# what's in node, not node itself
+	[Children: ptr<DomNode> node: 0; WlBuf output; bln scripting: false;]
+		if node.type is DomType.ELEMENT and (IsVoid: node) return;
+		ptr<DomNode> root: (Container: node);
+		ptr<DomNode> n: root.first_child;
+		while n is not 0
+			call OpenPart: n output scripting;
+			if n.type is DomType.ELEMENT and (IsVoid: n) is false
+				ptr<DomNode> holder: (Container: n);
+				ptr<DomNode> inside: holder.first_child;
+				if inside is not 0
+					n is inside;
+					continue;
+				;;
+				call ClosePart: n output;
+			;;
+			# on to the next one, closing what ends
+			while true
+				if n.next is not 0
+					n is n.next;
+					break;
+				;;
+				ptr<DomNode> up: n.parent;
+				if up is 0 or up is root return;
+				if up.type is DomType.FRAGMENT and up.content is not 0
+					up is up.content;
+				;;
+				call ClosePart: up output;
+				n is up;
+			;;
+		;;
+	[end]
+
+	# node itself and what's in it
+	[Outer: ptr<DomNode> node: 0; WlBuf output; bln scripting: false;]
+		if node.type is DomType.DOCUMENT or node.type is DomType.FRAGMENT
+			call Children: node output scripting;
+			return;
+		;;
+		call OpenPart: node output scripting;
+		if node.type is DomType.ELEMENT and (IsVoid: node) is false
+			call Children: node output scripting;
+			call ClosePart: node output;
+		;;
+	[end]
+
+	[Container: ptr<DomNode> node: 0;]
+		if node.type is DomType.ELEMENT and node.content is not 0 return node.content;
+	[end: node]
+
+	[IsVoid: ptr<DomNode> node: 0;]
+		if node.ns is not DomNs.HTML return false;
+	[end: (HtmlTags.flags:(node.tag.tag) & HtmlTag.F_VOID) is not 0]
+
+	[OpenPart: ptr<DomNode> n: 0; WlBuf output; bln scripting: false;]
+		DomType kind: n.type;
+		if kind is DomType.ELEMENT
+			call output.Add: '<';
+			call output.AddN: n.tag.text n.tag.len;
+			ptr<DomAttr> a: n.attrs;
+			while a is not 0
+				call output.Add: ' ';
+				if a.prefix is not 0 and a.prefix is not a.name
+					call output.AddN: a.prefix.text a.prefix.len;
+					call output.Add: ':';
+				;;
+				call output.AddN: a.name.text a.name.len;
+				call output.Add: '=';
+				call output.Add: 34;
+				call Escape: a.value a.value_len output true;
+				call output.Add: 34;
+				a is a.next;
+			;;
+			call output.Add: '>';
+		;;
+		elif kind is DomType.TEXT or kind is DomType.CDATA
+			if (ParentIsRaw: n scripting)
+				call output.AddN: n.text n.text_len;
+			;;
+			else
+				call Escape: n.text n.text_len output false;
+			;;
+		;;
+		elif kind is DomType.COMMENT
+			call output.AddN: '<!--' 4;
+			call output.AddN: n.text n.text_len;
+			call output.AddN: '-->' 3;
+		;;
+		elif kind is DomType.PI
+			call output.AddN: '<?' 2;
+			call output.AddN: n.tag.text n.tag.len;
+			call output.Add: ' ';
+			call output.AddN: n.text n.text_len;
+			call output.AddN: '?>' 2;
+		;;
+		elif kind is DomType.DOCTYPE
+			call output.AddN: '<!DOCTYPE ' 10;
+			call output.AddN: n.tag.text n.tag.len;
+			call output.Add: '>';
+		;;
+	[end]
+
+	[ClosePart: ptr<DomNode> n: 0; WlBuf output;]
+		call output.AddN: '</' 2;
+		call output.AddN: n.tag.text n.tag.len;
+		call output.Add: '>';
+	[end]
+
+	[ParentIsRaw: ptr<DomNode> n: 0; bln scripting: false;]
+		ptr<DomNode> p: n.parent;
+		if p is 0 or p.type is not DomType.ELEMENT or p.ns is not DomNs.HTML return false;
+		u32 t: p.tag.tag;
+		if t is HtmlTag.NOSCRIPT return scripting;
+	[end: (HtmlTags.flags:t & HtmlTag.F_RAWTEXT) is not 0]
+
+	# Escaping: & U+00A0 < > always, and " in an attribute. A run with nothing to escape goes across
+	# whole.
+	[Escape: ptr<u8> text: 0; u32 count: 0; WlBuf output; bln attr: false;]
+		u32 start: 0;
+		u32 i: 0;
+		while i < count
+			u32 c: text:i;
+			if c > '>' and c is not 0xC2
+				i++;
+				continue;
+			;;
+			u32 skip: 1;
+			if c is '&'
+				call Flush: text start i output;
+				call output.AddN: '&amp;' 5;
+			;;
+			elif c is '<'
+				call Flush: text start i output;
+				call output.AddN: '&lt;' 4;
+			;;
+			elif c is '>'
+				call Flush: text start i output;
+				call output.AddN: '&gt;' 4;
+			;;
+			elif c is 34 and attr
+				call Flush: text start i output;
+				call output.AddN: '&quot;' 6;
+			;;
+			elif c is 0xC2 and i + 1 < count and text:(i + 1) is 0xA0
+				call Flush: text start i output;
+				call output.AddN: '&nbsp;' 6;
+				skip is 2;
+			;;
+			else
+				i++;
+				continue;
+			;;
+			i is i + skip;
+			start is i;
+		;;
+		call Flush: text start count output;
+	[end]
+
+	[Flush: ptr<u8> text: 0; u32 from: 0; u32 to: 0; WlBuf output;]
+		if to > from
+			call output.AddN: text + from to - from;
+		;;
+	[end]
+}

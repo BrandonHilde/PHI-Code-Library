@@ -1,0 +1,1486 @@
+# The value parser: matching tokens against a property's grammar, and turning what matches into
+# CssVals. Grammars are text in CSS's value definition syntax (css/tables.phi), compiled the first
+# time a property is used. Matching is greedy with rollback, so `a? b` works but no choice made
+# earlier is ever revisited: CSS's grammars are written to be parsed that way.
+
+use memory.mem;
+use core.text;
+use core.buf;
+use core.atoms;
+use core.arena;
+use core.stack;
+use css.tables;
+use css.lexer;
+use css.values;
+use css.calc;
+use css.color;
+
+struct.CssGNode
+{
+	ptr<CssGNode> first;    # children; a macro reference's target is looked up by code
+	ptr<CssGNode> next;
+	u16 code;               # keyword, type or macro number
+	u8 type;
+	u8 min;
+	u8 max;                 # 255: no limit
+	u8 comma;               # the repeats are separated by commas
+}
+
+phi.CssGram:Library
+{
+	const u32 G_KW: 0;
+	const u32 G_TYPE: 1;
+	const u32 G_FUNC: 2;
+	const u32 G_COMMA: 3;
+	const u32 G_SLASH: 4;
+	const u32 G_SEQ: 5;
+	const u32 G_ALT: 6;
+	const u32 G_ANY: 7;     # ||
+	const u32 G_ALL: 8;     # &&
+	const u32 G_MACRO: 9;
+	const u32 G_EMPTY: 10;
+
+	WlArena arena;          # grammars live as long as the program
+	ptr<u8> g: 0;
+	u32 gn: 0;
+	u32 gi: 0;
+
+	# the grammar of a longhand
+	[Of: u32 prop: 0;]
+		ptr<CssPropInfo> p: addr CssProps.info:prop;
+		if p.compiled is 0
+			p.compiled is (Compile: p.grammar p.grammar_len) as ptr<u8>;
+		;;
+	[end: p.compiled as ptr<CssGNode>]
+
+	[Macro: u32 m: 0;]
+		if CssProps.macro_node:m is 0
+			CssProps.macro_node:m is (Compile: CssProps.macro_text:m CssProps.macro_len:m) as ptr<u8>;
+		;;
+	[end: CssProps.macro_node:m as ptr<CssGNode>]
+
+	[Compile: ptr<u8> text: 0; u32 n: 0;]
+		ptr<u8> saved_g: g;
+		u32 saved_n: gn;
+		u32 saved_i: gi;
+		g is text;
+		gn is n;
+		gi is 0;
+		ptr<CssGNode> root: (ParseAlt);
+		g is saved_g;
+		gn is saved_n;
+		gi is saved_i;
+	[end: root]
+
+	[New: u32 type: 0;]
+		ptr<CssGNode> x: (arena.Alloc: sizeof CssGNode) as ptr<CssGNode>;
+		x.type is type as u8;
+		x.min is 1;
+		x.max is 1;
+	[end: x]
+
+	[Blank]
+		while gi < gn and g:gi is 32
+			gi++;
+		;;
+	[end]
+
+	[AtEnd]
+		call Blank;
+		if gi >= gn return true;
+		u32 c: g:gi;
+	[end: c is 93 or c is 41]
+
+	[ParseAlt]
+		ptr<CssGNode> first: (ParseAny);
+		call Blank;
+		if gi >= gn or g:gi is not 124 or (gi + 1 < gn and g:(gi + 1) is 124) return first;
+		ptr<CssGNode> alt: (New: G_ALT);
+		alt.first is first;
+		ptr<CssGNode> last: first;
+		while true
+			call Blank;
+			if gi >= gn or g:gi is not 124 or (gi + 1 < gn and g:(gi + 1) is 124) break;
+			gi++;
+			ptr<CssGNode> more: (ParseAny);
+			last.next is more;
+			last is more;
+		;;
+	[end: alt]
+
+	[ParseAny]
+		ptr<CssGNode> first: (ParseAll);
+		call Blank;
+		if gi + 1 >= gn or g:gi is not 124 or g:(gi + 1) is not 124 return first;
+		ptr<CssGNode> any: (New: G_ANY);
+		any.first is first;
+		ptr<CssGNode> last: first;
+		while true
+			call Blank;
+			if gi + 1 >= gn or g:gi is not 124 or g:(gi + 1) is not 124 break;
+			gi++ 2;
+			ptr<CssGNode> more: (ParseAll);
+			last.next is more;
+			last is more;
+		;;
+	[end: any]
+
+	[ParseAll]
+		ptr<CssGNode> first: (ParseSeq);
+		call Blank;
+		if gi + 1 >= gn or g:gi is not 38 return first;
+		ptr<CssGNode> all: (New: G_ALL);
+		all.first is first;
+		ptr<CssGNode> last: first;
+		while true
+			call Blank;
+			if gi + 1 >= gn or g:gi is not 38 break;
+			gi++ 2;
+			ptr<CssGNode> more: (ParseSeq);
+			last.next is more;
+			last is more;
+		;;
+	[end: all]
+
+	[ParseSeq]
+		ptr<CssGNode> first: (ParseTerm);
+		if first is 0
+			return (New: G_EMPTY);
+		;;
+		ptr<CssGNode> more: (ParseTerm);
+		if more is 0 return first;
+		ptr<CssGNode> seq: (New: G_SEQ);
+		seq.first is first;
+		first.next is more;
+		ptr<CssGNode> last: more;
+		while true
+			more is (ParseTerm);
+			if more is 0 break;
+			last.next is more;
+			last is more;
+		;;
+	[end: seq]
+
+	[ParseTerm]
+		call Blank;
+		if gi >= gn return 0;
+		u32 c: g:gi;
+		ptr<CssGNode> node: 0;
+		if c is 124 or c is 38 or c is 93 or c is 41 return 0;
+		if c is 91
+			gi++;
+			node is (ParseAlt);
+			call Blank;
+			gi++;
+			# a bracket may already have its own repeats, inside: this one has its own node
+			ptr<CssGNode> wrap: (New: G_SEQ);
+			wrap.first is node;
+			node is wrap;
+		;;
+		elif c is 44
+			gi++;
+			node is (New: G_COMMA);
+		;;
+		elif c is 47
+			gi++;
+			node is (New: G_SLASH);
+		;;
+		elif c is 60
+			u32 from: gi + 1;
+			while g:gi is not 62
+				gi++;
+			;;
+			ptr<WlAtom> name: (WlAtoms.Get: g + from gi - from);
+			gi++;
+			node is (TypeNode: name);
+		;;
+		else
+			u32 from: gi;
+			while gi < gn and ((WlText.IsAlnum: g:gi) or g:gi is 45)
+				gi++;
+			;;
+			if gi is from
+				throw 'bad character in a CSS grammar';
+			;;
+			ptr<WlAtom> word: (WlAtoms.GetLower: g + from gi - from);
+			u32 kw: (word.prop >> 12) & 0xFFF;
+			if gi < gn and g:gi is 40
+				gi++;
+				node is (New: G_FUNC);
+				node.code is kw as u16;
+				node.first is (ParseAlt);
+				call Blank;
+				gi++;
+			;;
+			else
+				node is (New: G_KW);
+				node.code is kw as u16;
+			;;
+		;;
+		# what repeats it
+		while gi < gn
+			u32 m: g:gi;
+			if m is 63 or m is 42 or m is 43 or m is 35 or m is 123
+				if node.min is not 1 or node.max is not 1 or node.comma is not 0
+					ptr<CssGNode> outer: (New: G_SEQ);
+					outer.first is node;
+					node is outer;
+				;;
+			;;
+			if m is 63
+				node.min is 0;
+				gi++;
+			;;
+			elif m is 42
+				node.min is 0;
+				node.max is 255;
+				gi++;
+			;;
+			elif m is 43
+				node.max is 255;
+				gi++;
+			;;
+			elif m is 35
+				node.max is 255;
+				node.comma is 1;
+				gi++;
+			;;
+			elif m is 123
+				gi++;
+				u32 low: 0;
+				while g:gi >= 48 and g:gi <= 57
+					low is low * 10 + (g:gi - 48);
+					gi++;
+				;;
+				u32 high: low;
+				if g:gi is 44
+					gi++;
+					high is 0;
+					while g:gi >= 48 and g:gi <= 57
+						high is high * 10 + (g:gi - 48);
+						gi++;
+					;;
+				;;
+				gi++;
+				node.min is low as u8;
+				node.max is high as u8;
+			;;
+			else
+				break;
+			;;
+		;;
+	[end: node]
+
+	[TypeNode: ptr<WlAtom> name: 0;]
+		while u32 i: 1; i < CssProps.type_count; i++;
+			if CssProps.type_atoms:i is name
+				ptr<CssGNode> t: (New: G_TYPE);
+				t.code is i as u16;
+				return t;
+			;;
+		;;
+		while u32 m: 0; m < CssProps.macro_count; m++;
+			if CssProps.macro_names:m is name
+				ptr<CssGNode> r: (New: G_MACRO);
+				r.code is m as u16;
+				return r;
+			;;
+		;;
+		throw 'unknown type in a CSS grammar: ' name.text;
+	[end: 0 as ptr<CssGNode>]
+}
+
+phi.CssVp:Library
+{
+	const u32 MAX_ITEMS: 20000;
+
+	# the tokens being read
+	ptr<CssTok> t: 0;
+	u32 pos: 0;
+	u32 stop: 0;
+	ptr<u8> base_url: 0;    # what url()s are relative to
+
+	# while it's true, a top-level comma list stops after one item: a shorthand's layer
+	bln single: false;
+
+	# the values made so far
+	ptr<CssVal> vals: 0;
+	u32 vn: 0;
+	u32 vcap: 0;
+
+	[Emit]
+		if vn >= vcap
+			if vn >= MAX_ITEMS
+				throw 'CSS value too long';
+			;;
+			u32 room: vcap * 2;
+			if room is 0
+				room is 64;
+			;;
+			ptr<CssVal> grown: new CssVal[room];
+			if grown is 0
+				throw 'out of memory for a CSS value';
+			;;
+			if vals is not 0
+				call Mem.Copy: grown vals vn * sizeof CssVal;
+				free vals;
+			;;
+			vals is grown;
+			vcap is room;
+		;;
+		ptr<CssVal> v: addr vals:vn;
+		v.bits is 0;
+		v.code is 0;
+		v.kind is 0;
+		v.unit is 0;
+		vn++;
+	[end: v]
+
+	# back to how many values there were, letting go of what they held
+	[Cut: u32 mark: 0;]
+		while vn > mark
+			vn--;
+			call CssV.Release: addr vals:vn;
+		;;
+	[end]
+
+	[Skip]
+		while pos < stop and t:pos.type is CssLex.WS
+			pos++;
+		;;
+	[end]
+
+	# the keyword an ident or function token's name is; 0 if none
+	[Kw: ptr<CssTok> tk: 0;]
+		if tk.kw is 0
+			ptr<WlAtom> a: (WlAtoms.GetLower: tk.text tk.len);
+			u32 k: (a.prop >> 12) & 0xFFF;
+			if k is 0
+				k is 0xFFFF;
+			;;
+			tk.kw is k as u16;
+		;;
+		if tk.kw is 0xFFFF return 0;
+	[end: tk.kw as u32]
+
+	# ---- matching
+
+	[Match: ptr<CssGNode> g: 0;]
+		if g.max is 1
+			u32 at_pos: pos;
+			u32 mark: vn;
+			if (MatchOne: g) return true;
+			pos is at_pos;
+			call Cut: mark;
+			return g.min is 0;
+		;;
+		u32 count: 0;
+		while g.max is 255 or count < g.max
+			u32 save_pos: pos;
+			u32 save_vn: vn;
+			if g.comma is not 0 and count > 0
+				if single or pos >= stop or t:pos.type is not CssLex.COMMA break;
+				ptr<CssVal> sep: (Emit);
+				sep.kind is CssV.SEP as u8;
+				sep.code is 44;
+				pos++;
+				call Skip;
+			;;
+			if (MatchOne: g) is false
+				pos is save_pos;
+				call Cut: save_vn;
+				break;
+			;;
+			if pos is save_pos
+				break;
+			;;
+			count++;
+		;;
+	[end: count >= g.min]
+
+	[MatchOne: ptr<CssGNode> g: 0;]
+		u32 type: g.type;
+		if type is CssGram.G_KW
+			if pos < stop and t:pos.type is CssLex.IDENT and (Kw: addr t:pos) is g.code
+				call CssV.SetKw: (Emit) g.code;
+				pos++;
+				call Skip;
+				return true;
+			;;
+			return false;
+		;;
+		if type is CssGram.G_TYPE
+			if pos >= stop return false;
+			return (ParseType: g.code);
+		;;
+		if type is CssGram.G_MACRO
+			return (Match: (CssGram.Macro: g.code));
+		;;
+		if type is CssGram.G_ALT
+			ptr<CssGNode> kid: g.first;
+			while kid is not 0
+				u32 at_pos: pos;
+				u32 mark: vn;
+				if (Match: kid) and (pos is not at_pos or kid.min is 0)
+					return true;
+				;;
+				pos is at_pos;
+				call Cut: mark;
+				kid is kid.next;
+			;;
+			return false;
+		;;
+		if type is CssGram.G_SEQ
+			ptr<CssGNode> kid: g.first;
+			while kid is not 0
+				if (Match: kid) is false return false;
+				kid is kid.next;
+			;;
+			return true;
+		;;
+		if type is CssGram.G_FUNC
+			if pos >= stop or t:pos.type is not CssLex.FUNCTION or (Kw: addr t:pos) is not g.code return false;
+			call WlStack.Check;
+			u32 fn: pos;
+			u32 close: t:fn.match;
+			u32 saved_stop: stop;
+			u32 head: vn;
+			ptr<CssVal> f: (Emit);
+			f.kind is CssV.FUNC as u8;
+			f.code is g.code;
+			bln saved_single: single;
+			single is false;
+			stop is close;
+			pos is fn + 1;
+			call Skip;
+			bln ok: (Match: g.first);
+			if ok and pos is not stop
+				ok is false;
+			;;
+			stop is saved_stop;
+			single is saved_single;
+			if ok is false return false;
+			pos is close + 1;
+			if pos > stop
+				pos is stop;
+			;;
+			call Skip;
+			vals:head.bits is vn - head - 1;
+			return true;
+		;;
+		if type is CssGram.G_COMMA
+			if pos >= stop or t:pos.type is not CssLex.COMMA return false;
+			ptr<CssVal> sep: (Emit);
+			sep.kind is CssV.SEP as u8;
+			sep.code is 44;
+			pos++;
+			call Skip;
+			return true;
+		;;
+		if type is CssGram.G_SLASH
+			if pos >= stop or t:pos.type is not CssLex.DELIM or t:pos.num is not 47.0 return false;
+			ptr<CssVal> sep: (Emit);
+			sep.kind is CssV.SEP as u8;
+			sep.code is 47;
+			pos++;
+			call Skip;
+			return true;
+		;;
+		if type is CssGram.G_ANY or type is CssGram.G_ALL
+			return (MatchAnyAll: g);
+		;;
+	[end: type is CssGram.G_EMPTY]
+
+	[MatchAnyAll: ptr<CssGNode> g: 0;]
+		u32 done: 0;
+		u32 hits: 0;
+		bln progress: true;
+		while progress
+			progress is false;
+			ptr<CssGNode> kid: g.first;
+			u32 bit: 1;
+			while kid is not 0
+				if (done & bit) is 0
+					u32 at_pos: pos;
+					u32 mark: vn;
+					if (Match: kid) and pos is not at_pos
+						done is done | bit;
+						hits++;
+						progress is true;
+						break;
+					;;
+					pos is at_pos;
+					call Cut: mark;
+				;;
+				kid is kid.next;
+				bit is bit << 1;
+			;;
+		;;
+		if g.type is CssGram.G_ANY as u8
+			return hits > 0;
+		;;
+		# && : what's left over must be able to match nothing
+		ptr<CssGNode> kid: g.first;
+		u32 bit: 1;
+		while kid is not 0
+			if (done & bit) is 0 and kid.min is not 0 return false;
+			kid is kid.next;
+			bit is bit << 1;
+		;;
+	[end: true]
+
+	# ---- the terminal types
+
+	[ParseType: u32 type: 0;]
+		when type
+			is CssT.LP
+				return (Dim: CssCalc.M_LEN | CssCalc.M_PCT false);
+			;;
+			is CssT.LP0
+				return (Dim: CssCalc.M_LEN | CssCalc.M_PCT true);
+			;;
+			is CssT.LENGTH
+				return (Dim: CssCalc.M_LEN false);
+			;;
+			is CssT.LENGTH0
+				return (Dim: CssCalc.M_LEN true);
+			;;
+			is CssT.PCT
+				return (Dim: CssCalc.M_PCT false);
+			;;
+			is CssT.PCT0
+				return (Dim: CssCalc.M_PCT true);
+			;;
+			is CssT.NUMBER
+				return (Dim: CssCalc.M_NUM false);
+			;;
+			is CssT.NUMBER0
+				return (Dim: CssCalc.M_NUM true);
+			;;
+			is CssT.NUMPCT
+				return (Dim: CssCalc.M_NUM | CssCalc.M_PCT false);
+			;;
+			is CssT.NUMPCT0
+				return (Dim: CssCalc.M_NUM | CssCalc.M_PCT true);
+			;;
+			is CssT.NUM01
+				return (Dim: CssCalc.M_NUM true);
+			;;
+			is CssT.INT
+				return (Int: -2147483647);
+			;;
+			is CssT.INT0
+				return (Int: 0);
+			;;
+			is CssT.INT1
+				return (Int: 1);
+			;;
+			is CssT.COLOR
+				return (CssColor.ParseValue);
+			;;
+			is CssT.URL
+				return (Url);
+			;;
+			is CssT.STR
+				if t:pos.type is not CssLex.STRING return false;
+				call CssV.SetText: (Emit) CssV.STR t:pos.text t:pos.len;
+				pos++;
+				call Skip;
+				return true;
+			;;
+			is CssT.IDENT
+				return (Ident: false);
+			;;
+			is CssT.CUSTOM
+				return (Ident: true);
+			;;
+			is CssT.GRIDIDENT
+				if t:pos.type is CssLex.IDENT
+					u32 word: (Kw: addr t:pos);
+					if word is CssK.SPAN or word is CssK.AUTO return false;
+				;;
+				return (Ident: true);
+			;;
+			is CssT.DASHED
+				if t:pos.type is not CssLex.IDENT or t:pos.len < 3 or t:pos.text:0 is not 45 or t:pos.text:1 is not 45 return false;
+				return (Ident: false);
+			;;
+			is CssT.ANGLE
+				return (Dim: CssCalc.M_ANGLE false);
+			;;
+			is CssT.ANGLE0
+				# a plain zero is an angle in the places that have always allowed it
+				if t:pos.type is CssLex.NUMBER and t:pos.num is 0.0
+					ptr<CssVal> a: (Emit);
+					a.kind is CssV.ANGLE as u8;
+					a.unit is CssU.DEG as u8;
+					pos++;
+					call Skip;
+					return true;
+				;;
+				return (Dim: CssCalc.M_ANGLE false);
+			;;
+			is CssT.TIME
+				return (Dim: CssCalc.M_TIME false);
+			;;
+			is CssT.TIME0
+				return (Dim: CssCalc.M_TIME true);
+			;;
+			is CssT.FLEX
+				return (Dim: CssCalc.M_FLEX true);
+			;;
+			is CssT.RESOLUTION
+				return (Dim: CssCalc.M_RES true);
+			;;
+			is CssT.POSITION
+				return (Position);
+			;;
+			is CssT.RATIO
+				return (Ratio);
+			;;
+			is CssT.DISPLAY
+				return (Display);
+			;;
+			is CssT.FAMILY
+				return (Family);
+			;;
+			is CssT.FW
+				return (FontWeight);
+			;;
+			is CssT.AREAS
+				return (Areas);
+			;;
+			is CssT.LINENAMES
+				return (LineNames);
+			;;
+			is CssT.URANGE
+				return (URange);
+			;;
+		;;
+	[end: false]
+
+	# a number, percentage or dimension fitting the mask (or calc() of one)
+	[Dim: u32 mask: 0; bln nonneg: false;]
+		ptr<CssTok> tk: addr t:pos;
+		u32 type: tk.type;
+		if type is CssLex.DIMENSION
+			u32 unit: (CssProps.UnitOfKw: (Kw: tk));
+			if unit is 0 return false;
+			u32 m: (CssCalc.MaskOfUnit: unit);
+			if (m & mask) is 0 return false;
+			if nonneg and tk.num < 0.0 return false;
+			ptr<CssVal> v: (Emit);
+			v.kind is (KindOfMask: m) as u8;
+			v.unit is unit as u8;
+			call v.SetNum: tk.num;
+			pos++;
+			call Skip;
+			return true;
+		;;
+		if type is CssLex.NUMBER
+			if (mask & CssCalc.M_NUM) is not 0
+				if nonneg and tk.num < 0.0 return false;
+				call CssV.SetNumber: (Emit) CssV.NUM tk.num;
+				pos++;
+				call Skip;
+				return true;
+			;;
+			# a length can be written 0, without a unit
+			if (mask & CssCalc.M_LEN) is not 0 and tk.num is 0.0
+				call CssV.SetLen: (Emit) 0.0 CssU.PX;
+				pos++;
+				call Skip;
+				return true;
+			;;
+			return false;
+		;;
+		if type is CssLex.PERCENTAGE
+			if (mask & CssCalc.M_PCT) is 0 return false;
+			if nonneg and tk.num < 0.0 return false;
+			call CssV.SetNumber: (Emit) CssV.PCT tk.num;
+			pos++;
+			call Skip;
+			return true;
+		;;
+		if type is CssLex.FUNCTION
+			u32 kw: (Kw: tk);
+			if (CssCalc.IsMathFunc: kw) is false return false;
+			u32 close: tk.match;
+			if (CssCalc.Parse: t pos mask) is false return false;
+			ptr<CssVal> v: (Emit);
+			v.bits is CssCalc.result.bits;
+			v.code is CssCalc.result.code;
+			v.kind is CssCalc.result.kind;
+			v.unit is CssCalc.result.unit;
+			# out of range clamps, rather than being an error
+			if nonneg and v.kind is not CssV.CALC as u8 and (v.Num) < 0.0
+				call v.SetNum: 0.0;
+			;;
+			# a calc() that stayed one remembers that it mustn't come out below zero
+			if nonneg and v.kind is CssV.CALC as u8
+				v.unit is 1;
+			;;
+			pos is close + 1;
+			if pos > stop
+				pos is stop;
+			;;
+			call Skip;
+			return true;
+		;;
+	[end: false]
+
+	[KindOfMask: u32 m: 0;]
+		when m
+			is CssCalc.M_LEN
+				return CssV.LEN;
+			;;
+			is CssCalc.M_ANGLE
+				return CssV.ANGLE;
+			;;
+			is CssCalc.M_TIME
+				return CssV.TIME;
+			;;
+			is CssCalc.M_RES
+				return CssV.RES;
+			;;
+			is CssCalc.M_FLEX
+				return CssV.FLEX;
+			;;
+		;;
+	[end: CssV.NUM]
+
+	[Int: int low: 0;]
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is CssLex.NUMBER and (tk.flag & CssLex.F_INTEGER) is not 0
+			f64 x: tk.num;
+			if x < low return false;
+			if x > 2147483647.0
+				x is 2147483647.0;
+			;;
+			if x < -2147483647.0
+				x is -2147483647.0;
+			;;
+			call CssV.SetInt: (Emit) x as int;
+			pos++;
+			call Skip;
+			return true;
+		;;
+		if tk.type is CssLex.FUNCTION and (CssCalc.IsMathFunc: (Kw: tk))
+			u32 close: tk.match;
+			if (CssCalc.Parse: t pos CssCalc.M_NUM) is false return false;
+			if CssCalc.result.kind is not CssV.NUM as u8
+				call CssV.Release: addr CssCalc.result;
+				return false;
+			;;
+			f64 x: (CssCalc.result.Num);
+			if x < low
+				x is low;
+			;;
+			call CssV.SetInt: (Emit) (Float.Round: x) as int;
+			pos is close + 1;
+			if pos > stop
+				pos is stop;
+			;;
+			call Skip;
+			return true;
+		;;
+	[end: false]
+
+	[Url]
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is CssLex.URL
+			call SetUrl: (Emit) tk.text tk.len;
+			pos++;
+			call Skip;
+			return true;
+		;;
+		if tk.type is CssLex.FUNCTION and (Kw: tk) is CssK.URL
+			# url("..."), with nothing else that means anything to us
+			u32 close: tk.match;
+			u32 p: pos + 1;
+			while p < close and t:p.type is CssLex.WS
+				p++;
+			;;
+			if p >= close or t:p.type is not CssLex.STRING return false;
+			u32 q: p + 1;
+			while q < close and t:q.type is CssLex.WS
+				q++;
+			;;
+			if q is not close return false;
+			call SetUrl: (Emit) t:p.text t:p.len;
+			pos is close + 1;
+			if pos > stop
+				pos is stop;
+			;;
+			call Skip;
+			return true;
+		;;
+	[end: false]
+
+	# a URL value, resolved against the sheet's address
+	[SetUrl: ptr<CssVal> v: 0; ptr<u8> text: 0; u32 n: 0;]
+		if base_url is 0
+			call CssV.SetText: v CssV.URL text n;
+			return;
+		;;
+		WlBuf joined;
+		call CssUrl.Join: base_url text n addr joined;
+		call CssV.SetText: v CssV.URL joined.data joined.len;
+		call joined.Free;
+	[end]
+
+	# an identifier as written; a <custom-ident> can't be one of the words that mean something
+	# for every property
+	[Ident: bln custom: false;]
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is not CssLex.IDENT return false;
+		if custom
+			u32 kw: (Kw: tk);
+			if kw is CssK.INHERIT or kw is CssK.INITIAL or kw is CssK.UNSET or kw is CssK.REVERT or kw is CssK.REVERT_LAYER or kw is CssK.DEFAULT or kw is CssK.NONE return false;
+		;;
+		call CssV.SetText: (Emit) CssV.IDENT tk.text tk.len;
+		pos++;
+		call Skip;
+	[end: true]
+
+	[Ratio]
+		if (Dim: CssCalc.M_NUM true) is false return false;
+		if pos < stop and t:pos.type is CssLex.DELIM and t:pos.num is 47.0
+			ptr<CssVal> sep: (Emit);
+			sep.kind is CssV.SEP as u8;
+			sep.code is 47;
+			pos++;
+			call Skip;
+			if pos >= stop return false;
+			if (Dim: CssCalc.M_NUM true) is false return false;
+		;;
+	[end: true]
+
+	[FontWeight]
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is CssLex.NUMBER and (tk.num < 1.0 or tk.num > 1000.0) return false;
+		if (Dim: CssCalc.M_NUM true) is false return false;
+		ptr<CssVal> v: addr vals:(vn - 1);
+		if v.kind is CssV.NUM as u8 and ((v.Num) < 1.0 or (v.Num) > 1000.0)
+			call v.SetNum: 400.0;
+		;;
+	[end: true]
+
+	[Family]
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is CssLex.STRING
+			call CssV.SetText: (Emit) CssV.STR tk.text tk.len;
+			pos++;
+			call Skip;
+			return true;
+		;;
+		if tk.type is not CssLex.IDENT return false;
+		# several identifiers are one name, with single spaces
+		if pos + 1 >= stop or (t:(pos + 1).type is not CssLex.WS) or pos + 2 >= stop or t:(pos + 2).type is not CssLex.IDENT
+			call CssV.SetText: (Emit) CssV.IDENT tk.text tk.len;
+			pos++;
+			call Skip;
+			return true;
+		;;
+		WlBuf name;
+		while pos < stop and t:pos.type is CssLex.IDENT
+			if name.len > 0
+				call name.Add: 32;
+			;;
+			call name.AddN: t:pos.text t:pos.len;
+			pos++;
+			call Skip;
+		;;
+		call CssV.SetText: (Emit) CssV.IDENT name.data name.len;
+		call name.Free;
+	[end: true]
+
+	# the keywords display takes, with the two-word forms as the one word that means the same
+	[Display]
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is not CssLex.IDENT return false;
+		u32 a: (Kw: tk);
+		u32 at_pos: pos;
+		pos++;
+		call Skip;
+		u32 b: 0;
+		if pos < stop and t:pos.type is CssLex.IDENT
+			b is (Kw: addr t:pos);
+		;;
+		u32 r: (DisplayOf: a 0);
+		if b is not 0
+			u32 two: (DisplayOf: a b);
+			if two is not 0
+				r is two;
+				pos++;
+				call Skip;
+			;;
+		;;
+		if r is 0
+			pos is at_pos;
+			return false;
+		;;
+		call CssV.SetKw: (Emit) r;
+	[end: true]
+
+	[DisplayOf: u32 a: 0; u32 b: 0;]
+		if b is 0
+			when a
+				is CssK.NONE CssK.CONTENTS CssK.BLOCK CssK.INLINE CssK.INLINE_BLOCK CssK.FLOW_ROOT CssK.LIST_ITEM
+					return a;
+				;;
+				is CssK.TABLE CssK.INLINE_TABLE CssK.TABLE_ROW_GROUP CssK.TABLE_HEADER_GROUP CssK.TABLE_FOOTER_GROUP
+					return a;
+				;;
+				is CssK.TABLE_ROW CssK.TABLE_CELL CssK.TABLE_COLUMN_GROUP CssK.TABLE_COLUMN CssK.TABLE_CAPTION
+					return a;
+				;;
+				is CssK.FLEX CssK.INLINE_FLEX CssK.GRID CssK.INLINE_GRID CssK.RUBY CssK.RUBY_BASE CssK.RUBY_TEXT
+					return a;
+				;;
+				is CssK.RUBY_BASE_CONTAINER CssK.RUBY_TEXT_CONTAINER
+					return a;
+				;;
+				is CssK.FLOW
+					return CssK.INLINE;
+				;;
+				is CssK._WEBKIT_BOX CssK._WEBKIT_FLEX CssK._MOZ_BOX
+					return CssK.FLEX;
+				;;
+				is CssK._WEBKIT_INLINE_BOX CssK._WEBKIT_INLINE_FLEX
+					return CssK.INLINE_FLEX;
+				;;
+			;;
+			return 0;
+		;;
+		# an outer word and an inner one, in either order
+		if a is CssK.FLOW or a is CssK.FLOW_ROOT or a is CssK.FLEX or a is CssK.GRID or a is CssK.TABLE or a is CssK.RUBY
+			u32 swap: a;
+			a is b;
+			b is swap;
+		;;
+		if a is CssK.BLOCK
+			when b
+				is CssK.FLOW
+					return CssK.BLOCK;
+				;;
+				is CssK.FLOW_ROOT
+					return CssK.FLOW_ROOT;
+				;;
+				is CssK.FLEX CssK.GRID CssK.TABLE
+					return b;
+				;;
+			;;
+		;;
+		if a is CssK.INLINE
+			when b
+				is CssK.FLOW
+					return CssK.INLINE;
+				;;
+				is CssK.FLOW_ROOT
+					return CssK.INLINE_BLOCK;
+				;;
+				is CssK.FLEX
+					return CssK.INLINE_FLEX;
+				;;
+				is CssK.GRID
+					return CssK.INLINE_GRID;
+				;;
+				is CssK.TABLE
+					return CssK.INLINE_TABLE;
+				;;
+				is CssK.RUBY
+					return CssK.RUBY;
+				;;
+			;;
+		;;
+		if a is CssK.LIST_ITEM and (b is CssK.BLOCK or b is CssK.FLOW)
+			return CssK.LIST_ITEM;
+		;;
+		if b is CssK.LIST_ITEM and (a is CssK.BLOCK or a is CssK.FLOW)
+			return CssK.LIST_ITEM;
+		;;
+	[end: 0]
+
+	# Up to four parts: keywords and lengths, in the combinations <position> allows.
+	[Position]
+		u32 at_pos: pos;
+		u32 mark: vn;
+		u32 count: 0;
+		u32 first: 0;      # 1 horizontal, 2 vertical, 3 center, 4 a length or percentage
+		u32 second: 0;
+		u32 third: 0;
+		u32 fourth: 0;
+		while count < 4 and pos < stop
+			ptr<CssTok> tk: addr t:pos;
+			u32 part: 0;
+			if tk.type is CssLex.IDENT
+				u32 kw: (Kw: tk);
+				if kw is CssK.LEFT or kw is CssK.RIGHT
+					part is 1;
+				;;
+				elif kw is CssK.TOP or kw is CssK.BOTTOM
+					part is 2;
+				;;
+				elif kw is CssK.CENTER
+					part is 3;
+				;;
+				else
+					break;
+				;;
+				# past the second part, only an edge with an offset goes on
+				if count is 2 and (first is 3 or first is 4)
+					break;
+				;;
+				call CssV.SetKw: (Emit) kw;
+				pos++;
+				call Skip;
+			;;
+			else
+				# a third part is a length only where it's the offset of an edge
+				if count >= 2
+					if count is 2 and (first is 3 or first is 4 or second is 3 or second is 4) and not (first <= 2 and second is 4)
+						break;
+					;;
+					if count is 3 and (third is 3 or third is 4)
+						break;
+					;;
+				;;
+				if (Dim: CssCalc.M_LEN | CssCalc.M_PCT false) is false
+					break;
+				;;
+				part is 4;
+			;;
+			when count
+				is 0
+					first is part;
+				;;
+				is 1
+					second is part;
+				;;
+				is 2
+					third is part;
+				;;
+				else
+					fourth is part;
+				;;
+			;;
+			count++;
+		;;
+		bln ok: false;
+		when count
+			is 1
+				ok is true;
+			;;
+			is 2
+				# a length can't come before a horizontal edge or after a vertical one
+				ok is ((first is 1 or first is 3 or first is 4) and (second is 2 or second is 3 or second is 4));
+				if ok is false
+					ok is ((first is 2 or first is 3) and (second is 1 or second is 3));
+				;;
+			;;
+			is 3
+				# edge offset edge, or edge edge offset: on different axes
+				if first is 3
+					ok is ((second is 1 or second is 2) and third is 4);
+				;;
+				elif second is 4
+					ok is ((first is 1 and (third is 2 or third is 3)) or (first is 2 and (third is 1 or third is 3)));
+				;;
+				elif third is 4
+					ok is ((first is 1 and second is 2) or (first is 2 and second is 1) or (first <= 2 and second is 3));
+				;;
+			;;
+			is 4
+				ok is (second is 4 and fourth is 4 and ((first is 1 and third is 2) or (first is 2 and third is 1)));
+			;;
+		;;
+		if ok is false
+			pos is at_pos;
+			call Cut: mark;
+		;;
+	[end: ok]
+
+	# [ name name ]
+	[LineNames]
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is not CssLex.LBRACKET return false;
+		u32 close: tk.match;
+		u32 head: vn;
+		ptr<CssVal> f: (Emit);
+		f.kind is CssV.FUNC as u8;
+		u32 p: pos + 1;
+		while p < close
+			u32 ty: t:p.type;
+			if ty is CssLex.IDENT
+				if (Kw: addr t:p) is CssK.SPAN
+					call Cut: head;
+					return false;
+				;;
+				call CssV.SetText: (Emit) CssV.IDENT t:p.text t:p.len;
+			;;
+			elif ty is not CssLex.WS
+				call Cut: head;
+				return false;
+			;;
+			p++;
+		;;
+		vals:head.bits is vn - head - 1;
+		pos is close + 1;
+		if pos > stop
+			pos is stop;
+		;;
+		call Skip;
+	[end: true]
+
+	# grid-template-areas: strings, whose named cells make rectangles
+	[Areas]
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is CssLex.IDENT and (Kw: tk) is CssK.NONE
+			call CssV.SetKw: (Emit) CssK.NONE;
+			pos++;
+			call Skip;
+			return true;
+		;;
+		if tk.type is not CssLex.STRING return false;
+		u32 first: pos;
+		u32 rows: 0;
+		u32 columns: 0;
+		while pos < stop and t:pos.type is CssLex.STRING
+			u32 cells: (CountCells: addr t:pos);
+			if cells is 0 or (rows > 0 and cells is not columns) return false;
+			columns is cells;
+			rows++;
+			pos++;
+			call Skip;
+		;;
+		if rows * columns > 4096 or (AreasAreRectangles: first rows columns) is false return false;
+		u32 p: first;
+		while p < pos
+			if t:p.type is CssLex.STRING
+				call CssV.SetText: (Emit) CssV.STR t:p.text t:p.len;
+			;;
+			p++;
+		;;
+	[end: true]
+
+	[CountCells: ptr<CssTok> tk: 0;]
+		u32 cells: 0;
+		u32 i: 0;
+		while i < tk.len
+			u32 c: tk.text:i;
+			if (WlText.IsSpace: c)
+				i++;
+			;;
+			elif c is 46
+				while i < tk.len and tk.text:i is 46
+					i++;
+				;;
+				cells++;
+			;;
+			elif (CssLex.IsName: c)
+				while i < tk.len and (CssLex.IsName: tk.text:i)
+					i++;
+				;;
+				cells++;
+			;;
+			else
+				return 0;
+			;;
+		;;
+	[end: cells]
+
+	[AreasAreRectangles: u32 first: 0; u32 rows: 0; u32 columns: 0;]
+		ptr<ptr<WlAtom>> grid: new ptr<WlAtom>[rows * columns + 1];
+		if grid is 0
+			throw 'out of memory for grid areas';
+		;;
+		u32 row: 0;
+		u32 p: first;
+		while p < pos
+			if t:p.type is CssLex.STRING
+				ptr<CssTok> tk: addr t:p;
+				u32 i: 0;
+				u32 col: 0;
+				while i < tk.len
+					u32 c: tk.text:i;
+					if (WlText.IsSpace: c)
+						i++;
+					;;
+					elif c is 46
+						while i < tk.len and tk.text:i is 46
+							i++;
+						;;
+						col++;
+					;;
+					else
+						u32 from: i;
+						while i < tk.len and (CssLex.IsName: tk.text:i)
+							i++;
+						;;
+						grid:(row * columns + col) is (WlAtoms.Get: tk.text + from i - from);
+						col++;
+					;;
+				;;
+				row++;
+			;;
+			p++;
+		;;
+		bln ok: true;
+		u32 total: rows * columns;
+		while u32 k: 0; k < total and ok; k++;
+			ptr<WlAtom> name: grid:k;
+			if name is not 0
+				# the first time this name turns up is its top left corner
+				bln seen: false;
+				while u32 j: 0; j < k; j++;
+					if grid:j is name
+						seen is true;
+						break;
+					;;
+				;;
+				if seen is false
+					u32 x0: k % columns;
+					u32 y0: k / columns;
+					u32 w: 0;
+					while x0 + w < columns and grid:(y0 * columns + x0 + w) is name
+						w++;
+					;;
+					u32 h: 0;
+					while y0 + h < rows and grid:((y0 + h) * columns + x0) is name
+						h++;
+					;;
+					u32 cells: 0;
+					while u32 j: 0; j < total; j++;
+						if grid:j is name
+							cells++;
+							u32 xj: j % columns;
+							u32 yj: j / columns;
+							if xj < x0 or xj >= x0 + w or yj < y0 or yj >= y0 + h
+								ok is false;
+							;;
+						;;
+					;;
+					if cells is not w * h
+						ok is false;
+					;;
+				;;
+			;;
+		;;
+		free grid;
+	[end: ok]
+
+	# a unicode-range token, as two integers in a list
+	[URange]
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is not CssLex.URANGE return false;
+		if tk.match > 0x10FFFF or tk.num > tk.match return false;
+		call CssV.SetInt: (Emit) tk.num as int;
+		call CssV.SetInt: (Emit) tk.match as int;
+		pos++;
+		call Skip;
+	[end: true]
+
+	# ---- a whole value
+
+	CssVal parsed;
+
+	# Parses tokens from..to as a value of longhand prop. True means parsed holds it, with one
+	# reference that's now the caller's.
+	[Longhand: ptr<CssTok> tokens: 0; u32 from: 0; u32 to: 0; u32 prop: 0;]
+		t is tokens;
+		pos is from;
+		stop is to;
+		call Skip;
+		u32 mark: vn;
+		if pos >= stop return false;
+		bln ok: (Match: (CssGram.Of: prop));
+		if ok is false or pos is not stop
+			call Cut: mark;
+			return false;
+		;;
+		call TakeParsed: mark;
+	[end: true]
+
+	# the values from mark on, as one value in parsed
+	[TakeParsed: u32 mark: 0;]
+		u32 count: vn - mark;
+		if count is 1 and vals:mark.kind is not CssV.FUNC as u8 and vals:mark.kind is not CssV.SEP as u8
+			parsed.bits is vals:mark.bits;
+			parsed.code is vals:mark.code;
+			parsed.kind is vals:mark.kind;
+			parsed.unit is vals:mark.unit;
+		;;
+		else
+			parsed.bits is (CssCxs.NewList: addr vals:mark count);
+			parsed.code is 0;
+			parsed.kind is CssV.LIST as u8;
+			parsed.unit is 0;
+		;;
+		vn is mark;
+	[end]
+
+	# inherit, initial and the rest: their keyword if tokens from..to are just that, or 0
+	[WideKeyword: ptr<CssTok> tokens: 0; u32 from: 0; u32 to: 0;]
+		while from < to and tokens:from.type is CssLex.WS
+			from++;
+		;;
+		if from >= to or tokens:from.type is not CssLex.IDENT return 0;
+		u32 p: from + 1;
+		while p < to and tokens:p.type is CssLex.WS
+			p++;
+		;;
+		if p is not to return 0;
+		u32 kw: (Kw: addr tokens:from);
+		if kw is CssK.INHERIT or kw is CssK.INITIAL or kw is CssK.UNSET or kw is CssK.REVERT or kw is CssK.REVERT_LAYER return kw;
+	[end: 0]
+
+	# whether var() is anywhere in tokens from..to
+	[HasVar: ptr<CssTok> tokens: 0; u32 from: 0; u32 to: 0;]
+		while u32 i: from; i < to; i++;
+			if tokens:i.type is CssLex.FUNCTION and tokens:i.len is 3
+				if (WlText.EqNoCaseZ: tokens:i.text 3 'var') return true;
+			;;
+		;;
+	[end: false]
+}
+
+# resolving a relative URL against a base, as far as CSS needs
+phi.CssUrl:Library
+{
+	# whether it starts with a scheme
+	[HasScheme: ptr<u8> u: 0; u32 n: 0;]
+		if n is 0 or (WlText.IsAlpha: u:0) is false return false;
+		while u32 i: 1; i < n; i++;
+			u32 c: u:i;
+			if c is 58 return true;
+			if (WlText.IsAlnum: c) is false and c is not 43 and c is not 45 and c is not 46 return false;
+		;;
+	[end: false]
+
+	# where a zero-terminated base's path begins (after scheme://host), or -1 if it can't be a base
+	[Join: ptr<u8> base: 0; ptr<u8> rel: 0; u32 n: 0; ptr<WlBuf> b: 0;]
+		# surrounding whitespace doesn't count
+		while n > 0 and (WlText.IsSpace: rel:0)
+			rel is rel + 1;
+			n--;
+		;;
+		while n > 0 and (WlText.IsSpace: rel:(n - 1))
+			n--;
+		;;
+		u32 base_len: (WlText.LenZ: base);
+		if (HasScheme: rel n) or base_len is 0
+			call b.AddN: rel n;
+			return;
+		;;
+		if (HasScheme: base base_len) is false
+			call b.AddN: rel n;
+			return;
+		;;
+		# scheme:
+		u32 colon: 0;
+		while base:colon is not 58
+			colon++;
+		;;
+		u32 path: colon + 1;
+		bln hierarchical: path + 1 < base_len and base:path is 47 and base:(path + 1) is 47;
+		if hierarchical
+			path++ 2;
+			while path < base_len and base:path is not 47 and base:path is not 63 and base:path is not 35
+				path++;
+			;;
+		;;
+		if n is 0
+			# only its fragment goes
+			u32 whole: 0;
+			while whole < base_len and base:whole is not 35
+				whole++;
+			;;
+			call b.AddN: base whole;
+			return;
+		;;
+		if n >= 2 and rel:0 is 47 and rel:1 is 47
+			call b.AddN: base colon + 1;
+			call b.AddN: rel n;
+			return;
+		;;
+		if rel:0 is 35 or rel:0 is 63
+			u32 cut: path;
+			u32 limit: base_len;
+			u32 scan: 0;
+			while scan < base_len
+				if base:scan is 35 or (rel:0 is 63 and base:scan is 63)
+					limit is scan;
+					break;
+				;;
+				scan++;
+			;;
+			call b.AddN: base limit;
+			call b.AddN: rel n;
+			return;
+		;;
+		call b.AddN: base path;
+		if rel:0 is 47
+			call AddPath: b rel n;
+			return;
+		;;
+		# everything of the base's path up to its last slash
+		u32 path_stop: path;
+		while path_stop < base_len and base:path_stop is not 63 and base:path_stop is not 35
+			path_stop++;
+		;;
+		while path_stop > path and base:(path_stop - 1) is not 47
+			path_stop--;
+		;;
+		WlBuf whole_path;
+		if path_stop > path
+			call whole_path.AddN: base + path path_stop - path;
+		;;
+		else
+			call whole_path.Add: 47;
+		;;
+		call whole_path.AddN: rel n;
+		call AddPath: b whole_path.data whole_path.len;
+		call whole_path.Free;
+	[end]
+
+	# a path with its . and .. segments worked out; what follows ? or # stays as it is
+	[AddPath: ptr<WlBuf> b: 0; ptr<u8> p: 0; u32 n: 0;]
+		u32 root: b.len;
+		u32 i: 0;
+		while i < n
+			u32 c: p:i;
+			if c is 63 or c is 35 break;
+			# p:i is a slash; what segment follows?
+			u32 seg: i + 1;
+			u32 seg_stop: seg;
+			while seg_stop < n and p:seg_stop is not 47 and p:seg_stop is not 63 and p:seg_stop is not 35
+				seg_stop++;
+			;;
+			u32 len: seg_stop - seg;
+			if len is 1 and p:seg is 46
+				if seg_stop >= n or p:seg_stop is not 47
+					call b.Add: 47;
+				;;
+			;;
+			elif len is 2 and p:seg is 46 and p:(seg + 1) is 46
+				while b.len > root
+					b.len--;
+					if b.data:(b.len) is 47 break;
+				;;
+				b.data:(b.len) is 0;
+				if seg_stop >= n or p:seg_stop is not 47
+					call b.Add: 47;
+				;;
+			;;
+			else
+				call b.Add: 47;
+				call b.AddN: p + seg len;
+			;;
+			i is seg_stop;
+		;;
+		if i < n
+			call b.AddN: p + i n - i;
+		;;
+	[end]
+}

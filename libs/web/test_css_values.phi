@@ -1,0 +1,557 @@
+# Parsing and validating values: what each property takes, what it refuses, how shorthands expand,
+# and how declarations read back as text. Expected answers written by hand.
+use weblib;
+use css.css;
+
+phi.TestCssValues:Program
+{
+	call Weblib.Start: 900000;
+	call Css.Start;
+
+	# ---- every property in the table: its initial value is valid, and nonsense isn't
+	u32 nonsense_ok: 0;
+	WlBuf any_word;
+	while u32 p: 0; p < CssP.LONGHANDS; p++;
+		ptr<u8> name: (Css.PropertyName: p);
+		u32 n: (WlText.LenZ: name);
+		ptr<CssPropInfo> info: addr CssProps.info:p;
+		call Say: name (Css.SupportsProperty: name n info.initial info.initial_len);
+		call Say: name (Css.SupportsProperty: name n '1px 2 #fff "s" 3deg url(a) / , %' 32) is false;
+		# some properties do take any word: they're the ones that name things
+		if (Css.SupportsProperty: name n 'qqq' 3)
+			if nonsense_ok > 0
+				call any_word.Add: 32;
+			;;
+			call any_word.AddZ: name;
+			nonsense_ok++;
+		;;
+	;;
+	log 'properties taking any word: ' any_word.data '\n';
+	call any_word.Free;
+
+	# ---- longhands
+	call V: 'display' 'block' 'block';
+	call V: 'display' 'BLOCK' 'block';
+	call V: 'display' 'inline flex' 'inline-flex';
+	call V: 'display' 'block flow' 'block';
+	call V: 'display' 'block flow-root' 'flow-root';
+	call V: 'display' 'flow-root inline' 'inline-block';
+	call V: 'display' '-webkit-box' 'flex';
+	call V: 'display' 'flex flex' 0;
+	call V: 'display' 'none block' 0;
+	call V: 'display' 'nonsense' 0;
+	call V: 'display' '1' 0;
+	call V: 'position' 'sticky' 'sticky';
+	call V: 'float' 'inline-start' 'inline-start';
+	call V: 'width' '0' '0px';
+	call V: 'width' '10px' '10px';
+	call V: 'width' '-10px' 0;
+	call V: 'width' '10' 0;
+	call V: 'width' '50%' '50%';
+	call V: 'width' 'auto' 'auto';
+	call V: 'width' 'min-content' 'min-content';
+	call V: 'width' 'fit-content(10px)' 'fit-content(10px)';
+	call V: 'width' 'fit-content(red)' 0;
+	call V: 'width' '10px 20px' 0;
+	call V: 'width' 'calc(10px + 5%)' 'calc(5% + 10px)';
+	call V: 'width' 'calc(10px + 5)' 0;
+	call V: 'width' 'calc(10px +5px)' 0;
+	call V: 'width' 'calc(10px*2)' '20px';
+	call V: 'width' 'calc(1em + 1em)' '2em';
+	call V: 'width' 'calc()' 0;
+	call V: 'width' 'calc(1px / 0px)' 0;
+	call V: 'width' 'calc(1px * 2px)' 0;
+	call V: 'width' 'min(1px)' '1px';
+	call V: 'width' 'clamp(1px, 2px)' 0;
+	call V: 'max-width' 'none' 'none';
+	call V: 'min-width' 'none' 0;
+	call V: 'margin-top' '-5px' '-5px';
+	call V: 'margin-top' 'auto' 'auto';
+	call V: 'padding-top' '-5px' 0;
+	call V: 'padding-top' 'auto' 0;
+	call V: 'z-index' '3' '3';
+	call V: 'z-index' '-3' '-3';
+	call V: 'z-index' '1.5' 0;
+	call V: 'z-index' 'auto' 'auto';
+	call V: 'order' '1e2' 0;
+	call V: 'opacity' '0.5' '0.5';
+	call V: 'opacity' '50%' '50%';
+	call V: 'opacity' 'none' 0;
+	call V: 'color' 'red' 'rgb(255, 0, 0)';
+	call V: 'color' 'RED' 'rgb(255, 0, 0)';
+	call V: 'color' '#abc' 'rgb(170, 187, 204)';
+	call V: 'color' '#abcd' 'rgba(170, 187, 204, 0.867)';
+	call V: 'color' '#aabbcc' 'rgb(170, 187, 204)';
+	call V: 'color' '#aabbcc80' 'rgba(170, 187, 204, 0.5)';
+	call V: 'color' '#ab' 0;
+	call V: 'color' '#abcde' 0;
+	call V: 'color' '#gggggg' 0;
+	call V: 'color' 'transparent' 'rgba(0, 0, 0, 0)';
+	call V: 'color' 'currentcolor' 'currentcolor';
+	call V: 'color' 'currentColor' 'currentcolor';
+	call V: 'color' 'rgb(1, 2, 3)' 'rgb(1, 2, 3)';
+	call V: 'color' 'rgb(1 2 3)' 'rgb(1, 2, 3)';
+	call V: 'color' 'rgb(1 2 3 / 50%)' 'rgba(1, 2, 3, 0.5)';
+	call V: 'color' 'rgba(1, 2, 3, 0.5)' 'rgba(1, 2, 3, 0.5)';
+	call V: 'color' 'rgb(100%, 0%, 50%)' 'rgb(255, 0, 128)';
+	call V: 'color' 'rgb(1, 2%, 3)' 0;
+	call V: 'color' 'rgb(1 2, 3)' 0;
+	call V: 'color' 'rgb(1, 2)' 0;
+	call V: 'color' 'rgb(300, -5, 3)' 'rgb(255, 0, 3)';
+	call V: 'color' 'hsl(120, 100%, 50%)' 'rgb(0, 255, 0)';
+	call V: 'color' 'hsl(120deg 100% 50%)' 'rgb(0, 255, 0)';
+	call V: 'color' 'hsla(0.5turn, 100%, 50%, 0.25)' 'rgba(0, 255, 255, 0.25)';
+	call V: 'color' 'hsl(120, 100, 50)' 0;
+	call V: 'color' 'hwb(0 0% 0%)' 'rgb(255, 0, 0)';
+	call V: 'color' 'canvastext' 'rgb(0, 0, 0)';
+	call V: 'color' 'notacolor' 0;
+	call V: 'color' 'rgb(calc(1 + 1), 2, 3)' 'rgb(2, 2, 3)';
+	call V: 'background-color' 'color-mix(in srgb, red, blue)' 'rgb(128, 0, 128)';
+	call V: 'border-top-style' 'dashed' 'dashed';
+	call V: 'border-top-width' 'thin' 'thin';
+	call V: 'border-top-width' '-1px' 0;
+	call V: 'font-size' 'medium' 'medium';
+	call V: 'font-size' '120%' '120%';
+	call V: 'font-size' '-1px' 0;
+	call V: 'font-weight' '700' '700';
+	call V: 'font-weight' 'bolder' 'bolder';
+	call V: 'font-weight' '0' 0;
+	call V: 'font-weight' '1001' 0;
+	call V: 'font-family' 'Arial' 'Arial';
+	call V: 'font-family' '"Times New Roman", serif' '"Times New Roman", serif';
+	call V: 'font-family' 'Times New Roman, serif' 'Times New Roman, serif';
+	call V: 'font-family' 'Arial,' 0;
+	call V: 'font-family' '1' 0;
+	call V: 'line-height' '1.5' '1.5';
+	call V: 'line-height' '0' '0';
+	call V: 'line-height' '-1' 0;
+	call V: 'line-height' 'normal' 'normal';
+	call V: 'text-align' 'justify' 'justify';
+	call V: 'text-indent' '5px hanging' '5px hanging';
+	call V: 'white-space' 'pre-wrap' 'pre-wrap';
+	call V: 'vertical-align' '-2px' '-2px';
+	call V: 'list-style-type' 'upper-roman' 'upper-roman';
+	call V: 'list-style-type' 'my-style' 'my-style';
+	call V: 'list-style-type' '"x"' '"x"';
+	call V: 'cursor' 'pointer' 'pointer';
+	call V: 'cursor' 'url(a.png), pointer' 'url("a.png"), pointer';
+	call V: 'cursor' 'url(a.png) 1 2, auto' 'url("a.png") 1 2, auto';
+	call V: 'cursor' 'url(a.png)' 0;
+	call V: 'flex-grow' '-1' 0;
+	call V: 'flex-basis' 'content' 'content';
+	call V: 'justify-content' 'space-between' 'space-between';
+	call V: 'justify-content' 'safe center' 'safe center';
+	call V: 'align-items' 'first baseline' 'first baseline';
+	call V: 'align-items' 'nonsense' 0;
+	call V: 'box-shadow' 'none' 'none';
+	call V: 'box-shadow' '1px 2px' '1px 2px';
+	call V: 'box-shadow' '1px 2px 3px 4px red' '1px 2px 3px 4px rgb(255, 0, 0)';
+	call V: 'box-shadow' 'inset 1px 2px red, 0 0 3px blue' 'inset 1px 2px rgb(255, 0, 0), 0px 0px 3px rgb(0, 0, 255)';
+	call V: 'box-shadow' 'red 1px 2px inset' 'rgb(255, 0, 0) 1px 2px inset';
+	call V: 'box-shadow' '1px' 0;
+	call V: 'box-shadow' '1px 2px 3px 4px 5px' 0;
+	call V: 'box-shadow' 'none, 1px 2px' 0;
+	call V: 'text-shadow' '1px 1px 2px black' '1px 1px 2px rgb(0, 0, 0)';
+	call V: 'text-shadow' '1px 1px 2px 3px' 0;
+	call V: 'transform' 'none' 'none';
+	call V: 'transform' 'translate(10px, 20%) rotate(45deg) scale(2)' 'translate(10px, 20%) rotate(45deg) scale(2)';
+	call V: 'transform' 'matrix(1, 0, 0, 1, 0, 0)' 'matrix(1, 0, 0, 1, 0, 0)';
+	call V: 'transform' 'matrix(1, 0, 0, 1, 0)' 0;
+	call V: 'transform' 'rotate(0)' 'rotate(0deg)';
+	call V: 'transform' 'rotate(10px)' 0;
+	call V: 'transform' 'nonsense(1)' 0;
+	call V: 'transform' 'translateX(1px) none' 0;
+	call V: 'transform-origin' 'left top' 'left top';
+	call V: 'transform-origin' '50% 50% 10px' '50% 50% 10px';
+	call V: 'transition-property' 'opacity, width' 'opacity, width';
+	call V: 'transition-duration' '1s, 200ms' '1s, 200ms';
+	call V: 'transition-duration' '-1s' 0;
+	call V: 'transition-delay' '-1s' '-1s';
+	call V: 'transition-timing-function' 'cubic-bezier(0.1, 0.2, 0.3, 0.4)' 'cubic-bezier(0.1, 0.2, 0.3, 0.4)';
+	call V: 'transition-timing-function' 'steps(4, end)' 'steps(4, end)';
+	call V: 'transition-timing-function' 'steps(0)' 0;
+	call V: 'animation-iteration-count' 'infinite, 3' 'infinite, 3';
+	call V: 'animation-name' 'none, spin' 'none, spin';
+	call V: 'filter' 'blur(2px) brightness(50%)' 'blur(2px) brightness(50%)';
+	call V: 'filter' 'drop-shadow(1px 2px 3px red)' 'drop-shadow(1px 2px 3px rgb(255, 0, 0))';
+	call V: 'filter' 'blur(-1px)' 0;
+	call V: 'background-image' 'none, url(a.png)' 'none, url("a.png")';
+	call V: 'background-image' 'linear-gradient(red, blue)' 'linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))';
+	call V: 'background-image' 'linear-gradient(to right, red 10%, blue)' 'linear-gradient(to right, rgb(255, 0, 0) 10%, rgb(0, 0, 255))';
+	call V: 'background-image' 'linear-gradient(45deg, red, blue)' 'linear-gradient(45deg, rgb(255, 0, 0), rgb(0, 0, 255))';
+	call V: 'background-image' 'radial-gradient(circle at center, red, blue)' 'radial-gradient(circle at center, rgb(255, 0, 0), rgb(0, 0, 255))';
+	call V: 'background-image' 'conic-gradient(from 0deg, red, blue)' 'conic-gradient(from 0deg, rgb(255, 0, 0), rgb(0, 0, 255))';
+	call V: 'background-image' 'linear-gradient(nonsense)' 0;
+	call V: 'background-position' 'left 10px top 20px' 'left 10px top 20px';
+	call V: 'background-position' 'center' 'center';
+	call V: 'background-position' 'top left' 'top left';
+	call V: 'background-position' '10px left' 0;
+	call V: 'background-position' 'top 10px' 0;
+	call V: 'background-position' 'left right' 0;
+	call V: 'background-size' 'cover, 10px auto' 'cover, 10px auto';
+	call V: 'background-repeat' 'repeat no-repeat' 'repeat no-repeat';
+	call V: 'border-top-left-radius' '1px 2px' '1px 2px';
+	call V: 'border-top-left-radius' '-1px' 0;
+	call V: 'aspect-ratio' '16 / 9' '16 / 9';
+	call V: 'aspect-ratio' '1.5' '1.5';
+	call V: 'aspect-ratio' 'auto 1 / 2' 'auto 1 / 2';
+	call V: 'aspect-ratio' '1 /' 0;
+	call V: 'object-fit' 'cover' 'cover';
+	call V: 'content' 'none' 'none';
+	call V: 'content' '"a" attr(x) counter(n) open-quote' '"a" attr(x) counter(n) open-quote';
+	call V: 'content' 'counters(n, ".", upper-roman)' 'counters(n, ".", upper-roman)';
+	call V: 'content' '"a" / "alt"' '"a" / "alt"';
+	call V: 'content' 'attr(1)' 0;
+	call V: 'content' 'nonsense' 0;
+	call V: 'counter-reset' 'a 1 b' 'a 1 b';
+	call V: 'counter-reset' 'none a' 0;
+	call V: 'grid-template-columns' '100px 1fr auto' '100px 1fr auto';
+	call V: 'grid-template-columns' 'repeat(3, 1fr)' 'repeat(3, 1fr)';
+	call V: 'grid-template-columns' 'repeat(auto-fill, minmax(100px, 1fr))' 'repeat(auto-fill, minmax(100px, 1fr))';
+	call V: 'grid-template-columns' '[a] 1fr [b c] 2fr [d]' '[a] 1fr [b c] 2fr [d]';
+	call V: 'grid-template-columns' '-1fr' 0;
+	call V: 'grid-template-areas' '"a a" "b c"' '"a a" "b c"';
+	call V: 'grid-template-areas' '"a b" "b a"' 0;
+	call V: 'grid-template-areas' '"a" "b c"' 0;
+	call V: 'grid-template-areas' '"a . ." ". . ."' '"a . ." ". . ."';
+	call V: 'grid-row-start' 'span 2' 'span 2';
+	call V: 'grid-row-start' '2 foo' '2 foo';
+	call V: 'grid-row-start' 'span' 0;
+	call V: 'grid-auto-flow' 'column dense' 'column dense';
+	call V: 'will-change' 'transform, opacity' 'transform, opacity';
+	call V: 'pointer-events' 'none' 'none';
+	call V: 'table-layout' 'fixed' 'fixed';
+	# unknown properties are ignored; prefixes and other names work
+	call V: 'nonsense' '1' 0;
+	call V: '-webkit-transform' 'none' 'none';
+	call V: '-moz-transform' 'none' 0;
+	call V: 'word-wrap' 'break-word' 'break-word';
+	call V: 'MARGIN-TOP' '1px' '1px';
+	# the words for every property
+	call V: 'width' 'inherit' 'inherit';
+	call V: 'width' 'INITIAL' 'initial';
+	call V: 'width' 'unset' 'unset';
+	call V: 'width' 'revert' 'revert';
+	call V: 'width' 'revert-layer' 'revert-layer';
+	call V: 'width' 'inherit 1px' 0;
+	# var() waits
+	call V: 'width' 'var(--x)' 'var(--x)';
+	call V: 'width' 'var(--x) nonsense' 'var(--x) nonsense';
+	call V: 'width' 'var(--x' 'var(--x';
+	call V: '--custom' ' anything { goes } here ' 'anything { goes } here';
+	call V: '--custom' '' '';
+	call V: '--custom' '1 ; 2' 0;
+	call V: '--custom' '!' 0;
+	call V: '--custom' ')' 0;
+	call V: '--Case' 'x' 'x';
+
+	# ---- shorthands
+	call E: 'margin' '1px' 'margin-top' '1px';
+	call E: 'margin' '1px' 'margin-left' '1px';
+	call E: 'margin' '1px 2px' 'margin-right' '2px';
+	call E: 'margin' '1px 2px' 'margin-bottom' '1px';
+	call E: 'margin' '1px 2px 3px' 'margin-left' '2px';
+	call E: 'margin' '1px 2px 3px' 'margin-bottom' '3px';
+	call E: 'margin' '1px 2px 3px 4px' 'margin-left' '4px';
+	call E: 'margin' 'auto' 'margin-left' 'auto';
+	call E: 'margin' '1px 2px 3px 4px 5px' 'margin-left' 0;
+	call E: 'padding' '-1px' 'padding-top' 0;
+	call E: 'inset' '1px 2px' 'left' '2px';
+	call E: 'border-width' 'thin 2px' 'border-left-width' '2px';
+	call E: 'border-style' 'solid dashed' 'border-bottom-style' 'solid';
+	call E: 'border-color' 'red blue' 'border-left-color' 'rgb(0, 0, 255)';
+	call E: 'border' '1px solid red' 'border-top-width' '1px';
+	call E: 'border' '1px solid red' 'border-left-style' 'solid';
+	call E: 'border' 'red 1px solid' 'border-right-color' 'rgb(255, 0, 0)';
+	call E: 'border' 'solid' 'border-top-width' 'medium';
+	call E: 'border' 'solid' 'border-top-color' 'currentcolor';
+	call E: 'border' 'solid' 'border-image-source' 'none';
+	call E: 'border' '1px' 'border-top-style' 'none';
+	call E: 'border' 'solid solid' 'border-top-style' 0;
+	call E: 'border' 'nonsense' 'border-top-style' 0;
+	call E: 'border' 'none' 'border-bottom-style' 'none';
+	call E: 'border-top' '2px dotted' 'border-top-style' 'dotted';
+	call E: 'border-top' '2px dotted' 'border-top-color' 'currentcolor';
+	call E: 'border-left' 'blue' 'border-left-color' 'rgb(0, 0, 255)';
+	call E: 'border-radius' '1px' 'border-bottom-left-radius' '1px';
+	call E: 'border-radius' '1px 2px' 'border-top-right-radius' '2px';
+	call E: 'border-radius' '1px 2px 3px' 'border-bottom-left-radius' '2px';
+	call E: 'border-radius' '1px 2px 3px 4px' 'border-bottom-left-radius' '4px';
+	call E: 'border-radius' '1px / 2px' 'border-top-left-radius' '1px 2px';
+	call E: 'border-radius' '1px 2px / 3px 4px' 'border-top-right-radius' '2px 4px';
+	call E: 'border-radius' '1px /' 'border-top-left-radius' 0;
+	call E: 'outline' '1px solid red' 'outline-color' 'rgb(255, 0, 0)';
+	call E: 'outline' 'solid' 'outline-width' 'medium';
+	call E: 'overflow' 'hidden' 'overflow-x' 'hidden';
+	call E: 'overflow' 'hidden' 'overflow-y' 'hidden';
+	call E: 'overflow' 'hidden scroll' 'overflow-y' 'scroll';
+	call E: 'overflow' 'hidden scroll auto' 'overflow-y' 0;
+	call E: 'gap' '1px' 'column-gap' '1px';
+	call E: 'gap' '1px 2px' 'column-gap' '2px';
+	call E: 'gap' 'normal 2px' 'row-gap' 'normal';
+	call E: 'place-items' 'center' 'justify-items' 'center';
+	call E: 'place-items' 'center start' 'justify-items' 'start';
+	call E: 'place-content' 'space-between center' 'align-content' 'space-between';
+	call E: 'place-self' 'auto center' 'justify-self' 'center';
+	call E: 'flex-flow' 'row wrap' 'flex-wrap' 'wrap';
+	call E: 'flex-flow' 'wrap' 'flex-direction' 'row';
+	call E: 'flex-flow' 'wrap row' 'flex-direction' 'row';
+	call E: 'flex' '1' 'flex-grow' '1';
+	call E: 'flex' '1' 'flex-shrink' '1';
+	call E: 'flex' '1' 'flex-basis' '0%';
+	call E: 'flex' '2 3' 'flex-shrink' '3';
+	call E: 'flex' '2 3 10px' 'flex-basis' '10px';
+	call E: 'flex' '10px' 'flex-grow' '1';
+	call E: 'flex' '10px' 'flex-basis' '10px';
+	call E: 'flex' 'auto' 'flex-basis' 'auto';
+	call E: 'flex' 'auto' 'flex-grow' '1';
+	call E: 'flex' 'none' 'flex-grow' '0';
+	call E: 'flex' 'none' 'flex-shrink' '0';
+	call E: 'flex' 'none' 'flex-basis' 'auto';
+	call E: 'flex' '1 1 0' 'flex-basis' '0px';
+	call E: 'flex' '1 1 1 1' 'flex-basis' 0;
+	call E: 'flex' '-1' 'flex-grow' 0;
+	call E: 'list-style' 'square' 'list-style-type' 'square';
+	call E: 'list-style' 'square' 'list-style-position' 'outside';
+	call E: 'list-style' 'none' 'list-style-type' 'none';
+	call E: 'list-style' 'none' 'list-style-image' 'none';
+	call E: 'list-style' 'inside url(a.png)' 'list-style-image' 'url("a.png")';
+	call E: 'text-decoration' 'underline dotted red' 'text-decoration-line' 'underline';
+	call E: 'text-decoration' 'underline dotted red' 'text-decoration-style' 'dotted';
+	call E: 'text-decoration' 'underline overline' 'text-decoration-line' 'underline overline';
+	call E: 'text-decoration' 'none' 'text-decoration-color' 'currentcolor';
+	call E: 'font' '12px Arial' 'font-size' '12px';
+	call E: 'font' '12px Arial' 'font-family' 'Arial';
+	call E: 'font' '12px Arial' 'font-style' 'normal';
+	call E: 'font' '12px Arial' 'line-height' 'normal';
+	call E: 'font' 'italic small-caps bold condensed 12px/1.5 "A B", serif' 'font-style' 'italic';
+	call E: 'font' 'italic small-caps bold condensed 12px/1.5 "A B", serif' 'font-variant-caps' 'small-caps';
+	call E: 'font' 'italic small-caps bold condensed 12px/1.5 "A B", serif' 'font-weight' 'bold';
+	call E: 'font' 'italic small-caps bold condensed 12px/1.5 "A B", serif' 'font-stretch' 'condensed';
+	call E: 'font' 'italic small-caps bold condensed 12px/1.5 "A B", serif' 'line-height' '1.5';
+	call E: 'font' 'italic small-caps bold condensed 12px/1.5 "A B", serif' 'font-family' '"A B", serif';
+	call E: 'font' 'bold 700 12px a' 'font-size' 0;
+	call E: 'font' '12px' 'font-size' 0;
+	call E: 'font' 'Arial' 'font-family' 0;
+	call E: 'font' '700 1em a' 'font-weight' '700';
+	call E: 'font' 'caption' 'font-size' '13px';
+	call E: 'background' 'red' 'background-color' 'rgb(255, 0, 0)';
+	call E: 'background' 'red' 'background-image' 'none';
+	call E: 'background' 'red' 'background-position' '0% 0%';
+	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-image' 'url("a.png")';
+	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-repeat' 'no-repeat';
+	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-position' 'center';
+	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-size' 'cover';
+	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-attachment' 'fixed';
+	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-origin' 'padding-box';
+	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-clip' 'content-box';
+	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-color' 'rgb(0, 0, 255)';
+	call E: 'background' 'border-box' 'background-origin' 'border-box';
+	call E: 'background' 'border-box' 'background-clip' 'border-box';
+	call E: 'background' 'url(a), url(b) repeat-x, red' 'background-image' 'url("a"), url("b"), none';
+	call E: 'background' 'url(a), url(b) repeat-x, red' 'background-repeat' 'repeat, repeat-x, repeat';
+	call E: 'background' 'url(a), url(b) repeat-x, red' 'background-color' 'rgb(255, 0, 0)';
+	call E: 'background' 'red, url(b)' 'background-color' 0;
+	call E: 'background' 'none' 'background-image' 'none';
+	call E: 'background' 'nonsense' 'background-image' 0;
+	call E: 'transition' 'opacity 1s' 'transition-property' 'opacity';
+	call E: 'transition' 'opacity 1s' 'transition-duration' '1s';
+	call E: 'transition' 'opacity 1s' 'transition-delay' '0s';
+	call E: 'transition' 'opacity 1s' 'transition-timing-function' 'ease';
+	call E: 'transition' '1s 2s ease-in opacity' 'transition-delay' '2s';
+	call E: 'transition' '1s 2s ease-in opacity' 'transition-timing-function' 'ease-in';
+	call E: 'transition' 'a 1s, b 2s linear' 'transition-property' 'a, b';
+	call E: 'transition' 'a 1s, b 2s linear' 'transition-duration' '1s, 2s';
+	call E: 'transition' 'a 1s, b 2s linear' 'transition-timing-function' 'ease, linear';
+	call E: 'transition' 'none' 'transition-property' 'none';
+	call E: 'transition' '1s 2s 3s' 'transition-duration' 0;
+	call E: 'animation' 'spin 1s infinite' 'animation-name' 'spin';
+	call E: 'animation' 'spin 1s infinite' 'animation-iteration-count' 'infinite';
+	call E: 'animation' 'spin 1s infinite' 'animation-direction' 'normal';
+	call E: 'animation' 'spin 1s 2s ease-out alternate both paused' 'animation-fill-mode' 'both';
+	call E: 'animation' 'spin 1s 2s ease-out alternate both paused' 'animation-play-state' 'paused';
+	call E: 'animation' 'spin 1s 2s ease-out alternate both paused' 'animation-delay' '2s';
+	call E: 'animation' 'a 1s, b 2s' 'animation-name' 'a, b';
+	call E: 'grid-row' '1 / 3' 'grid-row-end' '3';
+	call E: 'grid-row' '1' 'grid-row-end' 'auto';
+	call E: 'grid-row' 'a' 'grid-row-end' 'a';
+	call E: 'grid-column' 'span 2 / 4' 'grid-column-start' 'span 2';
+	call E: 'grid-area' 'a' 'grid-column-end' 'a';
+	call E: 'grid-area' '1 / 2 / 3 / 4' 'grid-column-end' '4';
+	call E: 'grid-area' '1 / 2' 'grid-row-end' 'auto';
+	call E: 'grid-area' 'a / b' 'grid-row-end' 'a';
+	call E: 'grid-area' 'a / b' 'grid-column-end' 'b';
+	call E: 'grid-area' '1 / 2 / 3 / 4 / 5' 'grid-row-start' 0;
+	call E: 'grid-template' '100px / 1fr 2fr' 'grid-template-columns' '1fr 2fr';
+	call E: 'grid-template' 'none' 'grid-template-rows' 'none';
+	call E: 'grid-template' '"a b" 10px "c d" / 1fr 2fr' 'grid-template-areas' '"a b" "c d"';
+	call E: 'grid-template' '"a b" 10px "c d" / 1fr 2fr' 'grid-template-rows' '10px auto';
+	call E: 'grid-template' '"a b" 10px "c d" / 1fr 2fr' 'grid-template-columns' '1fr 2fr';
+	call E: 'grid' 'auto-flow / 1fr 1fr' 'grid-auto-flow' 'row';
+	call E: 'grid' 'auto-flow / 1fr 1fr' 'grid-template-columns' '1fr 1fr';
+	call E: 'grid' '100px / auto-flow 50px' 'grid-auto-flow' 'column';
+	call E: 'grid' '100px / auto-flow 50px' 'grid-auto-columns' '50px';
+	call E: 'grid' '100px / 200px' 'grid-template-columns' '200px';
+	call E: 'columns' '3' 'column-count' '3';
+	call E: 'columns' '10px' 'column-width' '10px';
+	call E: 'column-rule' '1px solid red' 'column-rule-style' 'solid';
+	call E: 'font-variant' 'small-caps' 'font-variant-caps' 'small-caps';
+	call E: 'margin-inline' '1px 2px' 'margin-right' '2px';
+	call E: 'padding-block' '3px' 'padding-bottom' '3px';
+	call E: 'margin-inline-start' '4px' 'margin-left' '4px';
+	call E: 'inset-inline' '5px' 'right' '5px';
+	call E: 'border-inline' '1px solid' 'border-right-style' 'solid';
+	call E: 'margin' 'inherit' 'margin-top' 'inherit';
+	call E: 'all' 'initial' 'color' 'initial';
+	call E: 'all' 'unset' 'width' 'unset';
+	call E: 'margin' 'var(--x)' 'margin-top' '';
+
+	# ---- reading a whole block, and setting and removing
+	call Block;
+
+	# ---- number text
+	call Num: 0.1 '0.1';
+	call Num: 1.0 '1';
+	call Num: 100.0 '100';
+	call Num: 33.3333 '33.3333';
+	call Num: 1234567.0 '1234567';
+	call Num: 0.5 '0.5';
+	call Num: -2.25 '-2.25';
+	call Num: 0.000012 '0.000012';
+	call Num: 1.0e-7 '1e-7';
+	call Num: 1.0e20 '1e+20';
+
+	log 'values: ' passed ' passed, ' failed ' failed\n';
+	exit 0;
+
+	int passed: 0;
+	int failed: 0;
+
+	[Say: ptr<u8> what: 0; bln ok: false;]
+		if ok
+			passed++;
+		;;
+		else
+			failed++;
+			log 'FAIL ' what '\n';
+		;;
+	[end]
+
+	# property: value reads back as want; or with want 0, it's refused
+	[V: ptr<u8> prop: 0; ptr<u8> value: 0; ptr<u8> want: 0;]
+		call E: prop value prop want;
+	[end]
+
+	[E: ptr<u8> prop: 0; ptr<u8> value: 0; ptr<u8> read_prop: 0; ptr<u8> want: 0;]
+		CssDecls d;
+		bln ok: (Css.DeclSet: addr d prop (WlText.LenZ: prop) value (WlText.LenZ: value) false);
+		WlBuf text;
+		if ok
+			if (Css.DeclGet: addr d read_prop (WlText.LenZ: read_prop) addr text) is false
+				call text.AddZ: '(not there)';
+			;;
+		;;
+		if ok is (want is not 0) and (ok is false or (WlText.EqZ: text.data text.len want))
+			passed++;
+		;;
+		else
+			failed++;
+			log 'FAIL ' prop ': ' value ' -> ' read_prop ' want ';
+			if want is 0
+				log '(refused)';
+			;;
+			else
+				log want;
+			;;
+			log ' got ';
+			if ok is false
+				log '(refused)';
+			;;
+			elif text.data is not 0
+				log text.data;
+			;;
+			log '\n';
+		;;
+		call text.Free;
+		call d.FreeItems;
+	[end]
+
+	[Num: f64 v: 0.0; ptr<u8> want: 0;]
+		WlBuf text;
+		call CssNum.Add: addr text v 7;
+		if (WlText.EqZ: text.data text.len want)
+			passed++;
+		;;
+		else
+			failed++;
+			log 'FAIL number want ' want ' got ' text.data '\n';
+		;;
+		call text.Free;
+	[end]
+
+	[Block]
+		ptr<u8> source: 'color: red; margin: 1px 2px; width: bogus; --x: 1 ; height: 5px !important; color: blue; nonsense: 1; ;; { a:b } top: 1px; @foo bar; left: 2px';
+		ptr<CssDecls> d: (Css.ParseInline: source (WlText.LenZ: source) 0);
+		WlBuf text;
+		call Css.DeclText: d addr text;
+		ptr<u8> want: 'margin-top: 1px; margin-right: 2px; margin-bottom: 1px; margin-left: 2px; --x: 1; height: 5px !important; color: rgb(0, 0, 255); left: 2px;';
+		call Say: 'block text' (WlText.EqZ: text.data text.len want);
+		if (WlText.EqZ: text.data text.len want) is false
+			log '  got ' text.data '\n';
+		;;
+		call Say: 'count' (Css.DeclCount: d) is 8;
+		call Say: 'priority' (Css.DeclPriority: d 'height' 6);
+		call Say: 'priority no' (Css.DeclPriority: d 'color' 5) is false;
+		call Say: 'name' (WlText.EqZ: (Css.DeclName: d 0) 10 'margin-top');
+		call text.Clear;
+		call Say: 'shorthand reads' (Css.DeclGet: d 'margin' 6 addr text);
+		call Say: 'margin text' (WlText.EqZ: text.data text.len '1px 2px');
+		call text.Clear;
+		call Say: 'partial shorthand' (Css.DeclGet: d 'padding' 7 addr text) is false;
+		call Say: 'remove shorthand' (Css.DeclRemove: d 'margin' 6);
+		call Say: 'gone' (Css.DeclCount: d) is 4;
+		call Say: 'remove custom' (Css.DeclRemove: d '--x' 3);
+		call Say: 'remove absent' (Css.DeclRemove: d 'top' 3) is false;
+		# a later set replaces, and an invalid one changes nothing
+		call Say: 'set' (Css.DeclSet: d 'color' 5 'lime' 4 false);
+		call Say: 'set invalid' (Css.DeclSet: d 'color' 5 'xx' 2 false) is false;
+		call text.Clear;
+		call Css.DeclGet: d 'color' 5 addr text;
+		call Say: 'after set' (WlText.EqZ: text.data text.len 'rgb(0, 255, 0)');
+		call Say: 'semicolon refused' (Css.DeclSet: d 'top' 3 '1px; left: 2px' 14 false) is false;
+		call Say: 'important refused in a value' (Css.DeclSet: d 'top' 3 '1px !important' 14 false) is false;
+		call Say: 'important said separately' (Css.DeclSet: d 'top' 3 '1px' 3 true);
+		call Say: 'priority set' (Css.DeclPriority: d 'top' 3);
+		call Css.FreeDecls: d;
+		call text.Free;
+
+		# the element's style object: writes go to the attribute, and back
+		ptr<DomDocument> doc: (Dom.NewDocument);
+		ptr<DomNode> el: (Dom.CreateElementZ: doc 'div');
+		call Dom.Append: doc.root el;
+		call Dom.SetAttrZ: el 'style' 'color: red; width: 1px';
+		WlBuf got;
+		call Say: 'style get' (Css.StyleGet: el 'color' 5 addr got);
+		call Say: 'style get text' (WlText.EqZ: got.data got.len 'rgb(255, 0, 0)');
+		el.flags is 0;
+		call Say: 'style set' (Css.StyleSet: el 'height' 6 '2px' 3 false);
+		call Say: 'style set dirties' (el.flags & Dom.DIRTY_STYLE) is not 0;
+		ptr<u8> attr_text: (Dom.AttrValue: el 'style');
+		call Say: 'attribute written' (WlText.EqZ: attr_text (WlText.LenZ: attr_text) 'color: rgb(255, 0, 0); width: 1px; height: 2px;');
+		call Say: 'style invalid' (Css.StyleSet: el 'height' 6 'xx' 2 false) is false;
+		call Say: 'style remove' (Css.StyleRemove: el 'width' 5);
+		call got.Clear;
+		call Css.StyleText: el addr got;
+		call Say: 'style text' (WlText.EqZ: got.data got.len 'color: rgb(255, 0, 0); height: 2px;');
+		call Css.StyleSetText: el 'margin: 3px' 11;
+		call got.Clear;
+		call Css.StyleGet: el 'margin-left' 11 addr got;
+		call Say: 'cssText set' (WlText.EqZ: got.data got.len '3px');
+		call got.Clear;
+		call Say: 'cleared by it' (Css.StyleGet: el 'color' 5 addr got) is false;
+		call got.Free;
+		ptr<CssDecls> own: el.inline_style as ptr<CssDecls>;
+		call Css.FreeDecls: own;
+		call Dom.FreeDocument: doc;
+	[end]
+}

@@ -1,0 +1,362 @@
+# Hostile input for the parser and the VM: random tokens, and the fixtures with bytes and pieces changed,
+# under a fixed seed. Nothing it does may take the program down: every input ends in a result or a JS
+# exception. What's parsed is run too, stopped by the poll hook after a few milliseconds. It runs at the
+# default 48 KB stack budget for half and 900 KB for the rest.
+#
+#   test_js_fuzz            as phi test runs it
+#   test_js_fuzz N          N inputs instead (it says which seed it's on, so a crash can be found)
+#
+# takes up to 300 seconds
+
+use js.js;
+use fs.fileinfo;
+
+phi.TestJsFuzz:Program
+{
+	call Js.Start: 48000;
+	input is new u8[ROOM];
+	corpus is new u8[ROOM];
+	int inputs: 12000;
+	bln verbose: false;
+	ptr<u8> arg: (OS.Arguments);
+	if arg is not 0 and arg:0 is not 0
+		inputs is 0;
+		u32 i: 0;
+		while arg:i >= '0' and arg:i <= '9'
+			inputs is inputs * 10 + ((arg:i - '0') as int);
+			i++;
+		;;
+		verbose is true;
+	;;
+	call LoadCorpus;
+	seed is 0x9E3779B97F4A7C15;
+	ptr<JsRuntime> rt: (Js.New);
+	call Setup: rt;
+	int parsed: 0;
+	while int n: 0; n < inputs; n++;
+		if verbose and n % 500 is 0
+			log 'input ' n ' parsed so far ' parsed '\n';
+		;;
+		WlStack.budget is 48000;
+		if (n & 1) is 1
+			WlStack.budget is 900000;
+		;;
+		u32 len: (Make: n);
+		# one run in nine also has the collector at every safepoint
+		call Js.SetStress: (n % 9) is 0;
+		if (Try: len (n % 3) is 0)
+			parsed++;
+		;;
+		call Js.SetStress: false;
+		# a fresh world now and then, as runs may have changed the builtins
+		if n % 64 is 63
+			call Js.Free: rt;
+			rt is (Js.New);
+			call Setup: rt;
+		;;
+	;;
+	call Js.Free: rt;
+	log 'inputs ' inputs ' all survived\n';
+	# the count depends on nothing but the seed, except that 900 KB can parse more than 48 KB
+	log 'some parsed ' (parsed > inputs / 50) '; some did not ' (parsed < inputs) '\n';
+	exit 0;
+
+	const u32 ROOM: 2000000;
+	ptr<u8> input: 0;
+	ptr<u8> corpus: 0;
+	u32 corpus_len: 0;
+	u64 seed: 0;
+	int deadline: 0;
+
+	[Next]
+		seed is seed ^ (seed << 13);
+		seed is seed ^ (seed >> 7);
+		seed is seed ^ (seed << 17);
+	[end: (seed >> 16) as u32]
+
+	[Below: u32 n: 0;]
+		if n is 0 return 0 as u32;
+	[end: (Next) % n]
+
+	[Setup: ptr<JsRuntime> rt: 0;]
+		call Js.SetPollHook: addr TimeUp 2000;
+	[end]
+
+	[TimeUp]
+	[end: (OS.GetTicks) > deadline]
+
+	[LoadCorpus]
+		ptr<FileInfo> entries: new FileInfo[256];
+		int count: (OS.ListFolder: 'tests/js' entries 256);
+		while int i: 0; i < count; i++;
+			ptr<u8> name: addr entries:i.name;
+			u32 n: (WlText.LenZ: name);
+			if n > 3 and (WlText.EqZ: name + n - 3 3 '.js')
+				WlBuf path;
+				call path.AddZ: 'tests/js/';
+				call path.AddZ: name;
+				int got: (OS.ReadFile: path.data corpus + corpus_len ROOM - corpus_len - 1);
+				call path.Free;
+				if got > 0
+					corpus_len is corpus_len + got as u32;
+				;;
+			;;
+		;;
+	[end]
+
+	# a token, as text
+	[Token: u32 which: 0;]
+		ptr<u8> t: 0;
+		when which
+			is 0
+				t is 'function ';
+			;;
+			is 1
+				t is 'class ';
+			;;
+			is 2
+				t is '=> ';
+			;;
+			is 3
+				t is 'async ';
+			;;
+			is 4
+				t is 'await ';
+			;;
+			is 5
+				t is 'yield ';
+			;;
+			is 6
+				t is '`a${';
+			;;
+			is 7
+				t is '}`';
+			;;
+			is 8
+				t is '...';
+			;;
+			is 9
+				t is '?.';
+			;;
+			is 10
+				t is '??';
+			;;
+			is 11
+				t is '**';
+			;;
+			is 12
+				t is 'let ';
+			;;
+			is 13
+				t is 'const ';
+			;;
+			is 14
+				t is 'for (';
+			;;
+			is 15
+				t is ' of ';
+			;;
+			is 16
+				t is ' in ';
+			;;
+			is 17
+				t is 'super';
+			;;
+			is 18
+				t is 'new.target';
+			;;
+			is 19
+				t is 'this';
+			;;
+			is 20
+				t is '#p';
+			;;
+			is 21
+				t is 'static ';
+			;;
+			is 22
+				t is 'get ';
+			;;
+			is 23
+				t is 'set ';
+			;;
+			is 24
+				t is 'try{';
+			;;
+			is 25
+				t is '}catch(e){';
+			;;
+			is 26
+				t is '}finally{';
+			;;
+			is 27
+				t is 'return ';
+			;;
+			is 28
+				t is 'break ';
+			;;
+			is 29
+				t is 'continue ';
+			;;
+			is 30
+				t is 'x: ';
+			;;
+			is 31
+				t is 'throw ';
+			;;
+			is 32
+				t is 'if(';
+			;;
+			is 33
+				t is 'else ';
+			;;
+			is 34
+				t is 'while(';
+			;;
+			is 35
+				t is 'switch(';
+			;;
+			is 36
+				t is 'case ';
+			;;
+			is 37
+				t is 'default:';
+			;;
+			is 38
+				t is 'extends ';
+			;;
+			is 39
+				t is '"use strict";';
+			;;
+			is 40
+				t is '\\u0061';
+			;;
+			is 41
+				t is '\xF0\x9F\x98\x80';
+			;;
+			is 42
+				t is '\xED\xA0\x80';
+			;;
+			is 43
+				t is '\xFF';
+			;;
+			is 44
+				t is '/*';
+			;;
+			is 45
+				t is '//';
+			;;
+			is 46
+				t is '/re/g';
+			;;
+			is 47
+				t is '0x';
+			;;
+			is 48
+				t is '1e';
+			;;
+			is 49
+				t is '1_0';
+			;;
+			else
+				ptr<u8> punct: '(){}[];,.+-*/%=<>!&|^~?:\n \t"0a';
+				one:0 is punct:(which % 30);
+				one:1 is 0;
+				t is addr one;
+			;;
+		;;
+	[end: t]
+
+	u8 one[2];
+
+	# makes input n: its length
+	[Make: int n: 0;]
+		u32 len: 0;
+		u32 kind: (Below: 4);
+		if kind is 0
+			# tokens at random
+			u32 count: (Below: 200);
+			while u32 i: 0; i < count and len + 32 < ROOM; i++;
+				ptr<u8> t: (Token: (Below: 90));
+				u32 tl: (WlText.LenZ: t);
+				call Mem.Copy: input + len t tl;
+				len is len + tl;
+			;;
+			return len;
+		;;
+		# a piece of the corpus, changed
+		u32 size: (Below: 1500) + 1;
+		u32 from: (Below: corpus_len);
+		# whole lines, which often parse, as a change or two then gets further in
+		while from > 0 and corpus:(from - 1) is not 10
+			from--;
+		;;
+		if from + size > corpus_len
+			size is corpus_len - from;
+		;;
+		while from + size < corpus_len and corpus:(from + size - 1) is not 10
+			size++;
+		;;
+		call Mem.Copy: input corpus + from size;
+		len is size;
+		u32 changes: (Below: 4);
+		while u32 c: 0; c < changes; c++;
+			u32 at_place: (Below: len + 1);
+			u32 what: (Below: 5);
+			if what is 0 and at_place < len
+				# a byte, any byte
+				input:at_place is (Below: 256) as u8;
+			;;
+			elif what is 1 and at_place < len
+				# a piece taken out
+				u32 cut: (Below: 40);
+				if at_place + cut > len
+					cut is len - at_place;
+				;;
+				call Mem.Move: input + at_place input + at_place + cut len - at_place - cut;
+				len is len - cut;
+			;;
+			elif what is 2 and len + 64 < 100000
+				# a token put in
+				ptr<u8> nt: (Token: (Below: 90));
+				u32 ntl: (WlText.LenZ: nt);
+				call Mem.Move: input + at_place + ntl input + at_place len - at_place;
+				call Mem.Copy: input + at_place nt ntl;
+				len is len + ntl;
+			;;
+			elif what is 3 and at_place < len and len + 2000 < 100000
+				# a piece repeated many times over, which is how nesting gets deep
+				u32 piece: (Below: 16) + 1;
+				if at_place + piece > len
+					piece is len - at_place;
+				;;
+				u32 times: (Below: 200);
+				while u32 k: 0; k < times and len + piece < 100000; k++;
+					call Mem.Move: input + at_place + piece input + at_place len - at_place;
+					len is len + piece;
+				;;
+			;;
+		;;
+	[end: len]
+
+	# one input: compiled, and sometimes run. True if it compiled.
+	[Try: u32 len: 0; bln run_it: false;]
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		ptr<JsCode> code: 0;
+		if call code is Js.Compile: input len 'fuzz' false throws err
+			call Js.TryCatchAll: addr t err;
+			return false;
+		;;
+		if run_it
+			deadline is (OS.GetTicks) + 5;
+			u64 r: 0;
+			JsTryState t2;
+			call Js.TryBegin: addr t2;
+			if call r is Js.RunCode: code throws err2
+				call Js.TryCatchAll: addr t2 err2;
+			;;
+			call Js.RunJobs;
+		;;
+	[end: true]
+}

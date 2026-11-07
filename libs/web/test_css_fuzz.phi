@@ -1,0 +1,233 @@
+# Hostile CSS, with a fixed seed: random bytes, random pieces of real CSS, and damaged real sheets,
+# through everything public. Nothing here should crash, hang or fail to come back: that's the test.
+use weblib;
+use css.css;
+use css.testdom;
+
+phi.TestCssFuzz:Program
+{
+	call Weblib.Start: 900000;
+	call Css.Start;
+
+	doc is (CssTestDom.Build: 'html#h(head(style) body#b.c(div#a.x.y[title=t][style=color:red;--z:1](p#p1("t") p#p2 span#s) ul(li li li) form(input[type=text] input[type=checkbox][checked] select(option)) a[href=u] table(tr(td td))))');
+	e is (Css.NewEngine: doc);
+	e.on_import is addr Importer;
+	call text.AddZ: 'p { color: red; }';
+	call Everything;
+	u32 held_before: (CssCxs.Live);
+
+	# ---- random bytes
+	while int i: 0; i < 1500; i++;
+		call text.Clear;
+		u32 n: (Rand) % 200;
+		while u32 k: 0; k < n; k++;
+			call text.Add: ((Rand) & 255) as u8;
+		;;
+		call Everything;
+	;;
+	log 'random bytes done\n';
+
+	# ---- pieces of CSS strung together at random
+	while int i: 0; i < 6000; i++;
+		call text.Clear;
+		u32 n: (Rand) % 40;
+		while u32 k: 0; k < n; k++;
+			call text.AddZ: (Piece);
+			if ((Rand) & 3) is 0
+				call text.Add: 32;
+			;;
+		;;
+		call Everything;
+	;;
+	log 'random pieces done\n';
+
+	# ---- a real sheet with damage to it
+	ptr<u8> real: '@import "a.css"; @media (min-width: 1px) and (max-width: 99px), print { .x > p:first-child::before { content: "a" attr(b) counter(c); color: rgb(1 2 3 / 50%) !important; margin: calc(1px + 2% * 3) auto; background: url(a.png) no-repeat center / cover, linear-gradient(to right, red 10%, blue); } } @supports (display: grid) and (not (color: nope)) { #a[title~="t" i]:not(.y, :is(p, :has(> span + span))) { --v: var(--w, 1px) 2; width: var(--v); transition: all 1s ease-in-out 2s, color 3s; grid-template: "a b" 1fr "c d" 2fr / 1fr 2fr; font: italic 700 12px/1.5 "A B", serif; } } @font-face { font-family: F; src: url(f.woff2) format("woff2"), local(G); unicode-range: U+0-7f; font-weight: 100 900; } @keyframes k { from { top: 0; } 50.5% { top: 1px; } to { top: 2px; } } @layer a, b.c; @layer b { @layer c { p { flex: 1 1 0; } } } body { margin: 0 !important; }';
+	u32 real_n: (WlText.LenZ: real);
+	while int i: 0; i < 2000; i++;
+		call text.Clear;
+		call text.AddN: real real_n;
+		u32 hits: 1 + (Rand) % 8;
+		while u32 k: 0; k < hits; k++;
+			u32 place: (Rand) % text.len;
+			u32 how: (Rand) % 4;
+			if how is 0
+				text.data:place is ((Rand) & 255) as u8;
+			;;
+			elif how is 1
+				text.data:place is 40;
+			;;
+			elif how is 2
+				text.data:place is 125;
+			;;
+			else
+				# cut it off
+				text.len is place + 1;
+				text.data:(text.len) is 0;
+			;;
+		;;
+		call Everything;
+	;;
+	log 'damaged sheets done\n';
+
+	# ---- what's big on purpose
+	call Build: '(' 200000 '';
+	call Build: '[' 200000 '';
+	call Build: '{' 200000 '';
+	call Build: 'a{' 100000 '';
+	call Build: '@media screen{' 100000 '';
+	call Build: 'calc(' 100000 '';
+	call Build: 'p{width:calc((' 50000 '';
+	call Build: ':is(' 100000 '';
+	call Build: ':not(' 100000 '';
+	call Build: 'a ' 200000 '{color:red}';
+	call Build: 'a>' 200000 'b{color:red}';
+	call Build: 'a+' 200000 'b{color:red}';
+	call Build: '.x' 200000 '{color:red}';
+	call Build: 'a,' 200000 'b{color:red}';
+	call Build: 'a{color:red;}' 20000 '';
+	call Build: '@layer x{' 5000 '';
+	call Build: '@layer a' 5000 ';';
+	call Build: '@supports (a:b) and ' 50000 '(c:d){}';
+	call Build: '@supports not (' 100000 '';
+	call Build: '@media not (' 100000 '';
+	call Build: '\x5C' 200000 '';
+	call Build: '"' 200000 '';
+	call Build: 'url(' 200000 '';
+	call Build: '/*' 200000 '';
+	call Build: 'p{--x:var(--x);--y:' 20000 '';
+	call Build: 'p{color:var(--a,' 100000 '';
+	call Build: 'p{background:' 50000 'url(a),';
+	call Build: 'p{transform:rotate(1deg) ' 100000 '}';
+	call Build: 'p{width:min(1px,' 2000 '';
+	call Build: 'p{width:calc(1px + ' 100000 '1px)}';
+	call Build: 'p{grid-template-areas:"a" ' 20000 '}';
+	call Build: 'p{font-family:a,' 100000 'b}';
+	log 'big ones done\n';
+
+	# ---- imports that go round in a circle, and a cycle of custom properties in the thousands
+	import_loops is true;
+	call text.Clear;
+	call text.AddZ: '@import "self.css"; p { color: red; }';
+	call Everything;
+	import_loops is false;
+	call text.Clear;
+	call text.AddZ: 'p {';
+	while int i: 0; i < 20000; i++;
+		call text.AddZ: '--a';
+		call text.AddInt: i;
+		call text.AddZ: ':var(--a';
+		call text.AddInt: (i + 1) % 20000;
+		call text.AddZ: ');';
+	;;
+	call text.AddZ: 'color:var(--a0, red); }';
+	call Everything;
+	log 'chains done\n';
+
+	call text.Clear;
+	call text.AddZ: 'p { color: red; }';
+	call Everything;
+	log 'values held at the start, some: ' (held_before > 0) '\n';
+	log 'values leaked: ' ((CssCxs.Live) as int - held_before as int) '\n';
+	call e.Free;
+	call Dom.FreeDocument: doc;
+	log 'survived ' rounds ' rounds\n';
+	exit 0;
+
+	ptr<DomDocument> doc: 0;
+	ptr<CssEngine> e: 0;
+	WlBuf text;
+	u32 seed: 0x1234ABCD;
+	u32 rounds: 0;
+	bln import_loops: false;
+
+	[Rand]
+		seed is seed ^ (seed << 13);
+		seed is seed ^ (seed >> 17);
+		seed is seed ^ (seed << 5);
+	[end: seed]
+
+	[Importer: ptr<CssEngine> en: 0; ptr<CssImport> im: 0;]
+		if import_loops
+			call Css.ImportDone: en im text.data text.len;
+		;;
+	[end]
+
+	[Build: ptr<u8> piece: 0; u32 count: 0; ptr<u8> tail: 0;]
+		call text.Clear;
+		while u32 i: 0; i < count; i++;
+			call text.AddZ: piece;
+		;;
+		call text.AddZ: tail;
+		call Everything;
+	[end]
+
+	[Piece]
+		ptr<u8> list: 'a|.x|#a|{|}|(|)|[|]|;|:|,|>|+|~|*|/|!important|@media|@supports|@import|@layer|@font-face|@keyframes|calc(|var(--x|--x|url(|"s"|1px|50%|0|-1.5e3|color|margin|background|font|grid|flex|transition|animation|border|all|inherit|revert|:not(|:is(|:has(|:nth-child(|::before|p|div|red|rgb(|min(|#fff|content|attr(| ';
+		u32 want: (Rand) % 58;
+		u32 at_i: 0;
+		u32 pos: 0;
+		while at_i < want
+			while list:pos is not 124 and list:pos is not 0
+				pos++;
+			;;
+			if list:pos is 0 break;
+			pos++;
+			at_i++;
+		;;
+		call piece.Clear;
+		while list:pos is not 124 and list:pos is not 0
+			call piece.Add: list:pos;
+			pos++;
+		;;
+	[end: piece.data]
+
+	WlBuf piece;
+
+	# the text as a sheet, a style attribute, a selector, a value, a query
+	[Everything]
+		rounds++;
+		ptr<CssSheet> sheet: (Css.ParseSheet: text.data text.len 'http://x.test/');
+		if sheet is not 0
+			call e.AddSheet: sheet;
+			if (e.Update) is false
+				log 'Update failed: ' CssError.text '\n';
+			;;
+			# read some back: a browser would
+			ptr<DomNode> n: doc.root;
+			while n is not 0
+				if n.type is DomType.ELEMENT
+					WlBuf got;
+					ptr<CssComputed> s: (Css.StyleOf: n);
+					call CssSer.Computed: s CssP.COLOR addr got;
+					call CssSer.Computed: s CssP.MARGIN_TOP addr got;
+					call CssSer.Computed: s CssP.BACKGROUND_IMAGE addr got;
+					call CssSer.Computed: s CssP.TRANSFORM addr got;
+					call CssSer.Computed: s CssP.WIDTH addr got;
+					call got.Free;
+				;;
+				n is (Dom.Next: n doc.root);
+			;;
+			call e.RemoveSheet: sheet;
+			call e.Update;
+			call Css.FreeSheet: sheet;
+		;;
+		if text.len < 100000
+			ptr<CssDecls> d: (Css.ParseInline: text.data text.len 0);
+			WlBuf back;
+			call Css.DeclText: d addr back;
+			call back.Free;
+			call Css.FreeDecls: d;
+			call Css.Query: doc.root text.data text.len;
+			call Css.Matches: (Dom.DocumentElement: doc) text.data text.len;
+			call Css.Supports: text.data text.len;
+			call Css.MatchMedia: e text.data text.len;
+			call Css.ParseColor: text.data text.len;
+			CssDecls temp;
+			call Css.DeclSet: addr temp 'width' 5 text.data text.len false;
+			call Css.DeclSet: addr temp 'background' 10 text.data text.len false;
+			call Css.DeclSet: addr temp '--c' 3 text.data text.len false;
+			call temp.FreeItems;
+		;;
+	[end]
+}

@@ -1,0 +1,392 @@
+# A runtime: one JS world, with its own heap, globals and stack. JsRt.r is the current one, and
+# Js.Use switches. Everything in here is reachable through that one pointer, except the VM's
+# registers (JsVm.sp and friends), which Js.Use saves and loads.
+
+# names the engine itself looks up, interned once per runtime
+struct.JsAtomSet
+{
+	ptr<JsStr> length;
+	ptr<JsStr> prototype;
+	ptr<JsStr> constructor;
+	ptr<JsStr> name;
+	ptr<JsStr> message;
+	ptr<JsStr> stack;
+	ptr<JsStr> cause;
+	ptr<JsStr> errors;
+	ptr<JsStr> callee;
+	ptr<JsStr> caller;
+	ptr<JsStr> arguments;
+	ptr<JsStr> value;
+	ptr<JsStr> writable;
+	ptr<JsStr> enumerable;
+	ptr<JsStr> configurable;
+	ptr<JsStr> get;
+	ptr<JsStr> set;
+	ptr<JsStr> next;
+	ptr<JsStr> done;
+	ptr<JsStr> return_;
+	ptr<JsStr> throw_;
+	ptr<JsStr> then;
+	ptr<JsStr> resolve;
+	ptr<JsStr> reject;
+	ptr<JsStr> toString;
+	ptr<JsStr> valueOf;
+	ptr<JsStr> proto;
+	ptr<JsStr> raw;
+	ptr<JsStr> default_;
+	ptr<JsStr> eval;
+	ptr<JsStr> anonymous;
+	ptr<JsStr> global_this;
+	ptr<JsStr> undefined;
+	ptr<JsStr> null;
+	ptr<JsStr> true_;
+	ptr<JsStr> false_;
+	ptr<JsStr> object;
+	ptr<JsStr> boolean;
+	ptr<JsStr> number;
+	ptr<JsStr> string;
+	ptr<JsStr> symbol;
+	ptr<JsStr> function;
+	ptr<JsStr> bigint;
+	ptr<JsStr> async;
+	ptr<JsStr> await;
+	ptr<JsStr> yield;
+	ptr<JsStr> let;
+	ptr<JsStr> static;
+	ptr<JsStr> of;
+	ptr<JsStr> target;
+	ptr<JsStr> meta;
+	ptr<JsStr> as_;
+	ptr<JsStr> from;
+	ptr<JsStr> use_strict;
+	ptr<JsStr> this_var;       # the hidden variables: this, new.target
+	ptr<JsStr> nt_var;
+	ptr<JsStr> index;
+	ptr<JsStr> input;
+	ptr<JsStr> nan;
+	ptr<JsStr> infinity;
+	ptr<JsStr> neg_infinity;
+	ptr<JsStr> zero;
+}
+
+# the well-known symbols
+struct.JsSymSet
+{
+	ptr<JsSym> iterator;
+	ptr<JsSym> asyncIterator;
+	ptr<JsSym> hasInstance;
+	ptr<JsSym> toPrimitive;
+	ptr<JsSym> toStringTag;
+	ptr<JsSym> species;
+	ptr<JsSym> isConcatSpreadable;
+	ptr<JsSym> match;
+	ptr<JsSym> matchAll;
+	ptr<JsSym> replace;
+	ptr<JsSym> search;
+	ptr<JsSym> split;
+	ptr<JsSym> unscopables;
+}
+
+# the objects the engine needs by name. All are marked by the collector, so a builtin's author
+# can add a field here for a prototype of their own.
+struct.JsProtoSet
+{
+	ptr<JsObj> object;
+	ptr<JsObj> function;
+	ptr<JsObj> array;
+	ptr<JsObj> string;
+	ptr<JsObj> number;
+	ptr<JsObj> boolean;
+	ptr<JsObj> symbol;
+	ptr<JsObj> bigint;
+	ptr<JsObj> error;
+	ptr<JsObj> type_error;
+	ptr<JsObj> range_error;
+	ptr<JsObj> reference_error;
+	ptr<JsObj> syntax_error;
+	ptr<JsObj> eval_error;
+	ptr<JsObj> uri_error;
+	ptr<JsObj> internal_error;
+	ptr<JsObj> aggregate_error;
+	ptr<JsObj> iterator;
+	ptr<JsObj> async_iterator;
+	ptr<JsObj> array_iterator;
+	ptr<JsObj> string_iterator;
+	ptr<JsObj> generator_function;
+	ptr<JsObj> generator;
+	ptr<JsObj> async_function;
+	ptr<JsObj> async_generator_function;
+	ptr<JsObj> async_generator;
+	ptr<JsObj> async_from_sync_iterator;
+	ptr<JsObj> promise;
+	ptr<JsObj> promise_ctor;
+	ptr<JsObj> array_values;       # Array.prototype.values
+	ptr<JsObj> array_iter_next;    # %ArrayIteratorPrototype%.next
+	ptr<JsObj> throw_type_error;   # %ThrowTypeError%
+	ptr<JsObj> reserved_a;         # for builtins written later: Map, Set, Date, RegExp ...
+	ptr<JsObj> reserved_b;
+	ptr<JsObj> reserved_c;
+	ptr<JsObj> reserved_d;
+	ptr<JsObj> regexp;
+	ptr<JsObj> regexp_exec;
+	ptr<JsObj> typed_array;
+	ptr<JsObj> regexp_string_iterator;
+	ptr<JsObj> map_iterator;
+	ptr<JsObj> set_iterator;
+	ptr<JsObj> date;
+	ptr<JsObj> map;
+	ptr<JsObj> set;
+	ptr<JsObj> weakmap;
+	ptr<JsObj> weakset;
+	ptr<JsObj> weakref;
+	ptr<JsObj> arraybuffer;
+	ptr<JsObj> dataview;
+	ptr<JsObj> proxy_ctor;
+}
+
+struct.JsRootFn
+{
+	method<> fn;
+}
+
+struct.JsRuntime
+{
+	# what the collector looks after
+	ptr<JsCell> all;
+	u32 allocated;           # bytes since the last collection
+	u32 threshold;
+	u32 live;                # bytes kept by the last collection
+	u32 collections;
+	ptr<ptr<JsCell>> mark_stack;
+	u32 mark_top;
+	u32 mark_cap;
+	bln mark_overflow;
+	ptr<ptr<JsObj>> weak_list;   # objects with weak hooks seen in this collection
+	u32 weak_count;
+	u32 weak_cap;
+
+	ptr<ptr<u64>> root_slots;    # Js.AddRoot
+	u32 root_count;
+	u32 root_cap;
+	ptr<JsRootFn> root_fns;      # Js.AddRootFn
+	u32 root_fn_count;
+	u32 root_fn_cap;
+
+	# strings
+	ptr<ptr<JsStr>> intern;
+	u32 intern_cap;
+	u32 intern_used;             # with tombstones
+	u32 intern_count;
+	ptr<ptr<JsStr>> unit_strs;
+	ptr<JsStr> walk_str;
+	u32 walk_unit;
+	u32 walk_off;
+	ptr<ptr<JsStr>> flat_stack;
+	u32 flat_stack_cap;
+	u32 sym_hash;
+
+	# the VM
+	ptr<u64> stack;
+	ptr<u64> stack_limit;
+	ptr<JsFrame> frames;
+	ptr<JsFrame> frame_limit;
+	ptr<u64> saved_sp;
+	ptr<JsFrame> saved_fr;
+	ptr<u32> saved_pc;
+	ptr<u64> saved_bp;
+	ptr<u64> saved_k;
+	int saved_fuel;
+
+	# the world
+	ptr<JsObj> global;
+	ptr<JsObj> global_lex;       # let, const and class at a script's top level
+	ptr<JsObj> sym_registry;     # Symbol.for
+	u64 exception;
+	u64 oom_error;               # made beforehand, as there may be no room to make it then
+	u32 memory_limit;            # what a collection may find alive before it's a RangeError
+	u32 heap_ceiling;            # about what the heap can hold: a collection comes well before it
+	bln has_exception;
+	bln uncatchable;             # the exception is an interrupt: no handler sees it
+
+	# promise jobs: a ring of JsJob
+	ptr<JsJob> jobs;
+	u32 job_head;
+	u32 job_count;
+	u32 job_cap;
+
+	# hooks a host or a later builtin fills in
+	method<ptr<u8> u32> console_hook;                  # text and its length: console.log
+	method<ptr<JsStr> ptr<JsStr>: u64> regexp_hook;    # pattern, flags: what a regex literal makes
+	method<ptr<JsStr> ptr<JsStr>> regexp_check_hook;   # at compile time: throws SyntaxError if it's a bad regex
+	method<u64 u64 int> reject_hook;                   # promise, reason, 0 rejected and unhandled / 1 handled later
+	method<:bln> poll_hook;                            # asked now and then while running; true stops the script
+
+	bln stress;
+	bln interrupted;
+	int fuel_period;
+	u32 next_class_id;
+
+	JsAtomSet atoms;
+	JsSymSet syms;
+	JsProtoSet protos;
+}
+
+phi.JsRt:Library
+{
+	ptr<JsRuntime> r: 0;
+	ptr<JsAtomSet> A: 0;
+	ptr<JsSymSet> S: 0;
+	ptr<JsProtoSet> P: 0;
+	ptr<JsStr> blank: 0;
+
+	const u32 STACK_SLOTS: 262144;   # 2 MB
+	const u32 STACK_SLACK: 8192;     # past the limit: room for what's pushed without a check
+	const u32 MAX_FRAMES: 8000;
+
+	# Makes a runtime current and sets up everything it needs (see Js.New for the public face)
+	[Create]
+		ptr<JsRuntime> rt: new JsRuntime;
+		if rt is 0
+			throw 'out of memory for a runtime';
+		;;
+		ptr<u64> st: new u64[STACK_SLOTS + STACK_SLACK];
+		ptr<JsFrame> fr: new JsFrame[MAX_FRAMES + 8];
+		ptr<ptr<JsStr>> units: new ptr<JsStr>[128];
+		if st is 0 or fr is 0 or units is 0
+			throw 'out of memory for a runtime';
+		;;
+		rt.stack is st;
+		rt.stack_limit is st + STACK_SLOTS * 8;
+		rt.frames is fr;
+		rt.frame_limit is (fr as ptr<u8>) + MAX_FRAMES * sizeof JsFrame;
+		rt.unit_strs is units;
+		rt.threshold is 8000000;
+		rt.exception is JsV.UNDEF;
+		rt.oom_error is JsV.UNDEF;
+		rt.memory_limit is 1500000000;
+		# a 32-bit PHI program on Windows has a 128 MB heap, shared with the DOM and CSS; a 64-bit one
+		# has far more than this engine counts. If it turns out to be less, JsGc.HeapFull learns that.
+		rt.heap_ceiling is 3000000000;
+		if sizeof ptr<u8> is 4
+			rt.heap_ceiling is 100000000;
+		;;
+		rt.fuel_period is 20000;
+		rt.global_lex is 0;
+		call Load: rt;
+		JsVm.sp is st;
+		JsVm.bp is st;
+		JsVm.fr is fr;
+		JsVm.fuel is rt.fuel_period;
+		JsVm.pc is 0;
+		JsVm.K is 0;
+		JsVm.nt is JsV.UNDEF;
+		JsGc.no_gc is 0;
+		blank is 0;
+		blank is (JsStrs.Intern: 'x' 0);
+		call InitAtoms;
+		call InitSyms;
+	[end: rt]
+
+	[Load: ptr<JsRuntime> rt: 0;]
+		r is rt;
+		A is addr rt.atoms;
+		S is addr rt.syms;
+		P is addr rt.protos;
+		if rt.atoms.length is not 0
+			blank is (JsStrs.Intern: 'x' 0);
+		;;
+	[end]
+
+	[Keyword: ptr<u8> text: 0; u32 id: 0;]
+		ptr<JsStr> s: (JsStrs.InternZ: text);
+		s.flags is s.flags | ((id << 8) as u16);
+	[end]
+
+	[InitAtoms]
+		ptr<JsAtomSet> a: A;
+		a.length is (JsStrs.InternZ: 'length');
+		a.prototype is (JsStrs.InternZ: 'prototype');
+		a.constructor is (JsStrs.InternZ: 'constructor');
+		a.name is (JsStrs.InternZ: 'name');
+		a.message is (JsStrs.InternZ: 'message');
+		a.stack is (JsStrs.InternZ: 'stack');
+		a.cause is (JsStrs.InternZ: 'cause');
+		a.errors is (JsStrs.InternZ: 'errors');
+		a.callee is (JsStrs.InternZ: 'callee');
+		a.caller is (JsStrs.InternZ: 'caller');
+		a.arguments is (JsStrs.InternZ: 'arguments');
+		a.value is (JsStrs.InternZ: 'value');
+		a.writable is (JsStrs.InternZ: 'writable');
+		a.enumerable is (JsStrs.InternZ: 'enumerable');
+		a.configurable is (JsStrs.InternZ: 'configurable');
+		a.get is (JsStrs.InternZ: 'get');
+		a.set is (JsStrs.InternZ: 'set');
+		a.next is (JsStrs.InternZ: 'next');
+		a.done is (JsStrs.InternZ: 'done');
+		a.return_ is (JsStrs.InternZ: 'return');
+		a.throw_ is (JsStrs.InternZ: 'throw');
+		a.then is (JsStrs.InternZ: 'then');
+		a.resolve is (JsStrs.InternZ: 'resolve');
+		a.reject is (JsStrs.InternZ: 'reject');
+		a.toString is (JsStrs.InternZ: 'toString');
+		a.valueOf is (JsStrs.InternZ: 'valueOf');
+		a.proto is (JsStrs.InternZ: '__proto__');
+		a.raw is (JsStrs.InternZ: 'raw');
+		a.default_ is (JsStrs.InternZ: 'default');
+		a.eval is (JsStrs.InternZ: 'eval');
+		a.anonymous is (JsStrs.InternZ: 'anonymous');
+		a.global_this is (JsStrs.InternZ: 'globalThis');
+		a.undefined is (JsStrs.InternZ: 'undefined');
+		a.null is (JsStrs.InternZ: 'null');
+		a.true_ is (JsStrs.InternZ: 'true');
+		a.false_ is (JsStrs.InternZ: 'false');
+		a.object is (JsStrs.InternZ: 'object');
+		a.boolean is (JsStrs.InternZ: 'boolean');
+		a.number is (JsStrs.InternZ: 'number');
+		a.string is (JsStrs.InternZ: 'string');
+		a.symbol is (JsStrs.InternZ: 'symbol');
+		a.function is (JsStrs.InternZ: 'function');
+		a.bigint is (JsStrs.InternZ: 'bigint');
+		a.async is (JsStrs.InternZ: 'async');
+		a.await is (JsStrs.InternZ: 'await');
+		a.yield is (JsStrs.InternZ: 'yield');
+		a.let is (JsStrs.InternZ: 'let');
+		a.static is (JsStrs.InternZ: 'static');
+		a.of is (JsStrs.InternZ: 'of');
+		a.target is (JsStrs.InternZ: 'target');
+		a.meta is (JsStrs.InternZ: 'meta');
+		a.as_ is (JsStrs.InternZ: 'as');
+		a.from is (JsStrs.InternZ: 'from');
+		a.use_strict is (JsStrs.InternZ: 'use strict');
+		a.this_var is (JsStrs.InternZ: '%this');
+		a.nt_var is (JsStrs.InternZ: '%new.target');
+		a.index is (JsStrs.InternZ: 'index');
+		a.input is (JsStrs.InternZ: 'input');
+		a.nan is (JsStrs.InternZ: 'NaN');
+		a.infinity is (JsStrs.InternZ: 'Infinity');
+		a.neg_infinity is (JsStrs.InternZ: '-Infinity');
+		a.zero is (JsStrs.InternZ: '0');
+		call JsLex.InternKeywords;
+	[end]
+
+	[NewSym: ptr<u8> description: 0;]
+		ptr<JsStr> d: (JsStrs.InternZ: description);
+	[end: (JsObjs.NewSymbol: d)]
+
+	[InitSyms]
+		ptr<JsSymSet> s: S;
+		s.iterator is (NewSym: 'Symbol.iterator');
+		s.asyncIterator is (NewSym: 'Symbol.asyncIterator');
+		s.hasInstance is (NewSym: 'Symbol.hasInstance');
+		s.toPrimitive is (NewSym: 'Symbol.toPrimitive');
+		s.toStringTag is (NewSym: 'Symbol.toStringTag');
+		s.species is (NewSym: 'Symbol.species');
+		s.isConcatSpreadable is (NewSym: 'Symbol.isConcatSpreadable');
+		s.match is (NewSym: 'Symbol.match');
+		s.matchAll is (NewSym: 'Symbol.matchAll');
+		s.replace is (NewSym: 'Symbol.replace');
+		s.search is (NewSym: 'Symbol.search');
+		s.split is (NewSym: 'Symbol.split');
+		s.unscopables is (NewSym: 'Symbol.unscopables');
+	[end]
+}

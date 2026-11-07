@@ -1,0 +1,152 @@
+# Finding named character references in the table of entities.phi: its lines are sorted, so the
+# names that start with what's been read so far are always one run of lines, which narrows by
+# binary search with each byte. The index of where each line starts is made on first use.
+
+use html.entities;
+
+phi.HtmlEntities:Library
+{
+	ptr<u32> offs: 0;
+
+	# what Lookup found
+	int found: -1;              # which line; -1 if nothing matched
+	u32 found_len: 0;           # how many bytes of the input its name is
+	bln need_more: false;       # the input ended while a longer name was still possible
+
+	[Index]
+		ptr<u32> table: new u32[HtmlEntityData.COUNT + 1];
+		if table is 0
+			throw 'out of memory for the entity index';
+		;;
+		ptr<u8> b: HtmlEntityData.blob;
+		u32 i: 0;
+		u32 line: 0;
+		table:0 is 0;
+		while b:i is not 0
+			if b:i is 10
+				line++;
+				table:line is i + 1;
+			;;
+			i++;
+		;;
+		offs is table;
+	[end]
+
+	# The longest name that starts at text (n bytes are there). at_end says no more will come.
+	[Lookup: ptr<u8> text: 0; u32 n: 0; bln at_end: false;]
+		if offs is 0
+			call Index;
+		;;
+		found is -1;
+		found_len is 0;
+		need_more is false;
+		ptr<u8> b: HtmlEntityData.blob;
+		ptr<u32> o: offs;
+		u32 lo: 0;
+		u32 hi: HtmlEntityData.COUNT;
+		u32 k: 0;
+		while true
+			if k >= n
+				if at_end is false
+					need_more is true;
+				;;
+				return;
+			;;
+			u32 c: text:k;
+			if c is 0 or c is ':' return;
+			# the first line in the run whose byte k is at least c
+			u32 a: lo;
+			u32 z: hi;
+			while a < z
+				u32 mid: (a + z) / 2;
+				u32 m: b:(o:mid + k);
+				if m is ':'
+					m is 0;
+				;;
+				if m < c
+					a is mid + 1;
+				;;
+				else
+					z is mid;
+				;;
+			;;
+			lo is a;
+			# the first whose byte k is past c
+			z is hi;
+			while a < z
+				u32 mid2: (a + z) / 2;
+				u32 m2: b:(o:mid2 + k);
+				if m2 is ':'
+					m2 is 0;
+				;;
+				if m2 <= c
+					a is mid2 + 1;
+				;;
+				else
+					z is mid2;
+				;;
+			;;
+			hi is a;
+			if lo >= hi return;
+			k++;
+			# the line that ends here sorts first in the run
+			if b:(o:lo + k) is ':'
+				found is lo as int;
+				found_len is k;
+				lo++;
+				if lo >= hi return;
+			;;
+		;;
+	[end]
+
+	# The characters of a line, as UTF-8 written to into (at most 8 bytes); how many.
+	[Decode: u32 line: 0; ptr<u8> into_buf: 0;]
+		ptr<u8> b: HtmlEntityData.blob;
+		u32 i: offs:line;
+		while b:i is not ':'
+			i++;
+		;;
+		i++;
+		u32 written: 0;
+		while true
+			u32 cp: 0;
+			while (b:i >= '0' and b:i <= '9') or (b:i >= 'a' and b:i <= 'f')
+				u32 d: b:i;
+				if d >= 'a'
+					d is d - 'a' + 10;
+				;;
+				else
+					d is d - '0';
+				;;
+				cp is cp * 16 + d;
+				i++;
+			;;
+			written is written + (Encode: cp into_buf + written);
+			if b:i is not ',' break;
+			i++;
+		;;
+	[end: written]
+
+	# a code point as UTF-8; how many bytes
+	[Encode: u32 cp: 0; ptr<u8> to: 0;]
+		if cp < 0x80
+			to:0 is cp as u8;
+			return 1;
+		;;
+		if cp < 0x800
+			to:0 is (0xC0 | (cp >> 6)) as u8;
+			to:1 is (0x80 | (cp & 63)) as u8;
+			return 2;
+		;;
+		if cp < 0x10000
+			to:0 is (0xE0 | (cp >> 12)) as u8;
+			to:1 is (0x80 | ((cp >> 6) & 63)) as u8;
+			to:2 is (0x80 | (cp & 63)) as u8;
+			return 3;
+		;;
+		to:0 is (0xF0 | (cp >> 18)) as u8;
+		to:1 is (0x80 | ((cp >> 12) & 63)) as u8;
+		to:2 is (0x80 | ((cp >> 6) & 63)) as u8;
+		to:3 is (0x80 | (cp & 63)) as u8;
+	[end: 4]
+}

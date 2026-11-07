@@ -1,0 +1,98 @@
+# Symbol.
+
+phi.JsSymbolBuiltins:Library
+{
+	[Init]
+		ptr<JsObj> proto: (JsObjs.NewObject);
+		JsRt.P.symbol is proto;
+		ptr<JsNativeFn> c: (Js.DefineClass: 'Symbol' addr Construct 0 proto);
+		ptr<JsObj> co: c as ptr<JsObj>;
+		ptr<JsSymSet> s: JsRt.S;
+		call Js.Define: co 'iterator' (JsV.Sym: s.iterator) 0;
+		call Js.Define: co 'asyncIterator' (JsV.Sym: s.asyncIterator) 0;
+		call Js.Define: co 'hasInstance' (JsV.Sym: s.hasInstance) 0;
+		call Js.Define: co 'toPrimitive' (JsV.Sym: s.toPrimitive) 0;
+		call Js.Define: co 'toStringTag' (JsV.Sym: s.toStringTag) 0;
+		call Js.Define: co 'species' (JsV.Sym: s.species) 0;
+		call Js.Define: co 'isConcatSpreadable' (JsV.Sym: s.isConcatSpreadable) 0;
+		call Js.Define: co 'match' (JsV.Sym: s.match) 0;
+		call Js.Define: co 'matchAll' (JsV.Sym: s.matchAll) 0;
+		call Js.Define: co 'replace' (JsV.Sym: s.replace) 0;
+		call Js.Define: co 'search' (JsV.Sym: s.search) 0;
+		call Js.Define: co 'split' (JsV.Sym: s.split) 0;
+		call Js.Define: co 'unscopables' (JsV.Sym: s.unscopables) 0;
+		call Js.DefineNative: co 'for' addr For 1;
+		call Js.DefineNative: co 'keyFor' addr KeyFor 1;
+		call Js.DefineNative: proto 'toString' addr ToString 0;
+		call Js.DefineNative: proto 'valueOf' addr ValueOf 0;
+		call Js.DefineGetter: proto 'description' addr Description 0;
+		ptr<JsNativeFn> tp: (JsObjs.NewNative: addr ValueOf '[Symbol.toPrimitive]' 1 false);
+		call JsObjs.DefineValue: proto s.toPrimitive as ptr<u8> (JsV.Obj: tp as ptr<JsObj>) JsObjs.C;
+		call JsObjs.DefineValue: proto s.toStringTag as ptr<u8> (Js.NewStringZ: 'Symbol') JsObjs.C;
+	[end]
+
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		if (JsV.IsObj: (Js.NewTarget))
+			call JsErr.Type: 'Symbol is not a constructor';
+		;;
+		u64 d: (Js.Arg: args argc 0);
+		ptr<JsStr> ds: 0;
+		if d is not JsV.UNDEF
+			ds is (JsOps.ToStr: d);
+		;;
+	[end: (JsV.Sym: (JsObjs.NewSymbol: ds))]
+
+	[For: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> key: (JsOps.ToStr: (Js.Arg: args argc 0));
+		ptr<JsStr> a: (JsStrs.InternStr: key);
+		ptr<JsObj> reg: JsRt.r.sym_registry;
+		ptr<JsProp> p: (JsObjs.Find: reg a as ptr<u8>);
+		if p is not 0 return p.value;
+		ptr<JsSym> s: (JsObjs.NewSymbol: a);
+		s.flags is JsStrs.SYM_REGISTERED as u16;
+		u64 v: (JsV.Sym: s);
+		call JsObjs.AddProp: reg a as ptr<u8> v JsObjs.WEC;
+	[end: v]
+
+	[KeyFor: ptr<u64> args: 0; int argc: 0;]
+		u64 v: (Js.Arg: args argc 0);
+		if not (JsV.IsSym: v)
+			call JsErr.Type: 'Symbol.keyFor requires a symbol';
+		;;
+		ptr<JsSym> s: (JsV.AsSym: v);
+		if (s.flags & JsStrs.SYM_REGISTERED) is 0 return JsV.UNDEF;
+	[end: (JsV.Str: s.desc)]
+
+	[ThisSym: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsSym: t) return t;
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.kind is JsGc.K_BOXED and (JsV.IsSym: o.slot)
+				return o.slot;
+			;;
+		;;
+		call JsErr.Type: 'Symbol.prototype method requires that this be a Symbol';
+	[end: JsV.UNDEF]
+
+	[ToString: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsSym> s: (JsV.AsSym: (ThisSym: args));
+		WlBuf b;
+		call b.AddZ: 'Symbol(';
+		if s.desc is not 0
+			ptr<JsStr> ds: (JsStrs.Flat: s.desc);
+			call b.AddN: ds.data ds.bytes;
+		;;
+		call b.Add: ')';
+		u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: r]
+
+	[ValueOf: ptr<u64> args: 0; int argc: 0;]
+	[end: (ThisSym: args)]
+
+	[Description: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsSym> s: (JsV.AsSym: (ThisSym: args));
+		if s.desc is 0 return JsV.UNDEF;
+	[end: (JsV.Str: s.desc)]
+}

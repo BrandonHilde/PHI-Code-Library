@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>First title</title>
+<link rel="stylesheet" href="site.css">
+<script src="lib.js"></script>
+<style>
+  #box { display: block; width: 50%; color: #102030; font-size: 20px; }
+  .fresh { color: rgb(200, 100, 50); margin-top: 2em; }
+  p { margin: 1em 0; }
+</style>
+</head>
+<body>
+<h1 id="top" class="a b">Hello</h1>
+<p class="linked" data-user-name="ada">Some <b>bold</b> text</p>
+<div id="box" style="padding: 3px">box</div>
+<ul id="list"><li>one</li><li>two</li><li>three</li></ul>
+<button id="go" onclick="console.log('inline handler', event.type, this.id); return false;">Go</button>
+<a class="out" href="next.html">next</a>
+<script>
+var log = console.log;
+log('lib says', window.fromLib);
+
+// finding things, and changing them
+var box = document.getElementById('box');
+log('tag', box.tagName, box.nodeName, box.nodeType, box.id);
+log('style attr', box.style.padding, box.getAttribute('style'));
+box.style.backgroundColor = 'red';
+log('after set', box.style.backgroundColor, '|', box.getAttribute('style'));
+
+var head1 = document.querySelector('#top');
+log('classList', head1.classList.length, head1.classList.contains('b'), head1.classList.value);
+head1.classList.add('c');
+head1.classList.remove('a');
+head1.classList.toggle('d');
+log('className', head1.className);
+
+var p = document.querySelector('p.linked');
+log('dataset', p.dataset.userName, JSON.stringify(Object.keys(p.dataset)));
+p.dataset.fooBar = 'baz';
+log('attr', p.getAttribute('data-foo-bar'));
+log('text', p.textContent, '|', p.innerHTML);
+
+// live and static lists
+var items = document.getElementsByTagName('li');
+var kids = document.getElementById('list').children;
+var fixed = document.querySelectorAll('li');
+log('lists', items.length, kids.length, fixed.length, items[1].textContent, items.item(2).textContent);
+var li = document.createElement('li');
+li.textContent = 'four';
+document.getElementById('list').appendChild(li);
+log('after add', items.length, kids.length, fixed.length);
+log('iterate', Array.from(fixed).map(function (x) { return x.textContent; }).join(','));
+var seen = [];
+for (var k of items) seen.push(k.textContent);
+log('for-of', seen.join(','));
+fixed.forEach(function (n, i) { seen[i] = i; });
+
+// building things
+var d = document.createElement('div');
+d.id = 'added';
+d.className = 'fresh';
+d.innerHTML = '<span>made <i>here</i></span> &amp; there';
+document.body.appendChild(d);
+log('innerHTML', d.innerHTML, d.children.length, d.firstChild.nodeName, d.lastChild.nodeType);
+log('closest', d.querySelector('i').closest('div').id, d.matches('.fresh'), d.parentNode === document.body);
+var c = d.cloneNode(true);
+c.id = 'copy';
+log('clone', c.outerHTML);
+d.insertAdjacentHTML('beforeend', '<u>end</u>');
+log('adjacent', d.lastChild.tagName);
+d.querySelector('u').remove();
+try { document.querySelector('[['); } catch (e) { log('bad selector', e.name); }
+try { d.appendChild(document.body); } catch (e) { log('cycle', e.name); }
+log('title', document.title);
+document.title = 'Second title';
+log('title now', document.title, document.querySelector('title').textContent);
+log('body', document.body.tagName, document.documentElement.tagName, document.head.tagName);
+log('instanceof', d instanceof HTMLElement, d instanceof Element, d instanceof Node, d instanceof EventTarget, document instanceof Document);
+
+// events: capture, target, bubble, stopping, once
+var order = [];
+var list = document.getElementById('list');
+var first = list.firstChild;
+document.addEventListener('ping', function (e) { order.push('doc capture'); }, true);
+list.addEventListener('ping', function (e) { order.push('list capture ' + e.eventPhase); }, true);
+first.addEventListener('ping', function (e) { order.push('target ' + e.eventPhase + ' ' + (e.target === first)); });
+first.addEventListener('ping', function (e) { order.push('once'); }, { once: true });
+list.addEventListener('ping', function (e) { order.push('list bubble ' + e.eventPhase + ' ' + (e.currentTarget === list)); });
+window.addEventListener('ping', function (e) { order.push('window'); });
+first.dispatchEvent(new CustomEvent('ping', { bubbles: true, detail: 5 }));
+log('events', order.join(' / '));
+order.length = 0;
+first.dispatchEvent(new Event('ping'));
+log('no bubble', order.join(' / '));
+list.addEventListener('stop', function (e) { e.stopPropagation(); e.preventDefault(); order.push('stopped'); });
+document.addEventListener('stop', function () { order.push('should not run'); });
+order.length = 0;
+var result = first.dispatchEvent(new Event('stop', { bubbles: true, cancelable: true }));
+log('stop', result, order.join(' / '));
+first.addEventListener('boom', function () { throw new Error('in a listener'); });
+first.addEventListener('boom', function () { log('next listener still ran'); });
+first.dispatchEvent(new Event('boom'));
+
+// timers, promises and order
+setTimeout(function (a, b) { log('timeout', a, b); }, 10, 'x', 'y');
+var n = 0;
+var iv = setInterval(function () { n++; log('interval', n); if (n === 2) clearInterval(iv); }, 50);
+var cancelled = setTimeout(function () { log('should not fire'); }, 20);
+clearTimeout(cancelled);
+requestAnimationFrame(function (t) { log('frame', typeof t); });
+Promise.resolve().then(function () { log('microtask'); });
+queueMicrotask(function () { log('queued microtask'); });
+log('sync end');
+
+// fetch and XHR
+fetch('data.json').then(function (r) { log('fetch', r.status, r.ok); return r.json(); }).then(function (j) { log('json', j.answer); });
+fetch('nothing').then(function (r) { log('fetch 404', r.status, r.ok); });
+var x = new XMLHttpRequest();
+x.onload = function () { log('xhr', x.status, x.responseText, x.readyState); };
+x.open('GET', 'data.json');
+x.send();
+
+// the window
+log('window', window === globalThis, innerWidth, innerHeight, typeof navigator.userAgent, location.pathname, location.host);
+localStorage.setItem('k', 1);
+log('storage', localStorage.getItem('k'), localStorage.getItem('none'), localStorage.length);
+log('btoa', btoa('hello'), atob('aGVsbG8='));
+log('matchMedia', matchMedia('(min-width: 500px)').matches, matchMedia('(min-width: 900px)').matches);
+log('computed', getComputedStyle(box).color, getComputedStyle(box).display);
+
+document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
+window.addEventListener('load', function () { log('load', document.readyState); });
+document.getElementById('go').addEventListener('click', function (e) { log('listener', e.type, e.defaultPrevented, e.clientX); });
+
+document.write('<p id="written">written</p>');
+log('written', document.getElementById('written').textContent);
+</script>
+<p>after the script</p>
+</body>
+</html>

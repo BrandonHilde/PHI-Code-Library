@@ -1,0 +1,158 @@
+# String, the minimum to run and test the engine. The rest goes on JsRt.P.string with
+# Js.DefineNative; JsStrs has what they'll need (UnitAt, Slice, IndexOf, Compare, FromUnit).
+
+phi.JsStringBuiltins:Library
+{
+	[Init]
+		ptr<JsObj> proto: (JsObjs.Alloc: sizeof JsObj JsGc.K_BOXED JsRt.P.object);
+		proto.slot is (JsV.Str: JsRt.blank);
+		proto.flags is JsObjs.F_SPECIAL as u16;
+		JsRt.P.string is proto;
+		ptr<JsNativeFn> c: (Js.DefineClass: 'String' addr Construct 1 proto);
+		ptr<JsObj> co: c as ptr<JsObj>;
+		call Js.DefineNative: co 'fromCharCode' addr FromCharCode 1;
+		call Js.DefineNative: proto 'charCodeAt' addr CharCodeAt 1;
+		call Js.DefineNative: proto 'charAt' addr CharAt 1;
+		call Js.DefineNative: proto 'slice' addr Slice 2;
+		call Js.DefineNative: proto 'indexOf' addr IndexOf 1;
+		call Js.DefineNative: proto 'toString' addr ValueOf 0;
+		call Js.DefineNative: proto 'valueOf' addr ValueOf 0;
+		call Js.DefineSymbolNative: proto JsRt.S.iterator '[Symbol.iterator]' addr Iterator 0;
+		# %StringIteratorPrototype%
+		ptr<JsObj> ip: (JsObjs.NewWithProto: JsRt.P.iterator);
+		JsRt.P.string_iterator is ip;
+		call Js.DefineNative: ip 'next' addr IterNext 0;
+		call JsObjs.DefineValue: ip JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'String Iterator') JsObjs.C;
+		if JsBuiltins.string_iter_class is 0
+			JsBuiltins.string_iter_class is (JsObjs.NewClass: 'String Iterator');
+			JsBuiltins.string_iter_class.trace is addr JsArrayBuiltins.TraceIter;
+			JsBuiltins.string_iter_class.finalize is addr JsArrayBuiltins.FreeIter;
+		;;
+	[end]
+
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		ptr<JsStr> s: JsRt.blank;
+		if argc > 0
+			if not (JsV.IsObj: nt) and (JsV.IsSym: args:0)
+				# String(symbol) is the one place a symbol becomes text
+				ptr<JsSym> sy: (JsV.AsSym: args:0);
+				WlBuf b;
+				call b.AddZ: 'Symbol(';
+				if sy.desc is not 0
+					ptr<JsStr> ds: (JsStrs.Flat: sy.desc);
+					call b.AddN: ds.data ds.bytes;
+				;;
+				call b.Add: ')';
+				s is (JsStrs.New: b.data b.len);
+				call b.Free;
+				return (JsV.Str: s);
+			;;
+			s is (JsOps.ToStr: args:0);
+		;;
+		if not (JsV.IsObj: nt)
+			return (JsV.Str: s);
+		;;
+		ptr<JsObj> box: (JsOps.ToObject: (JsV.Str: s));
+		box.proto is (JsOps.ProtoFromCtor: nt JsRt.P.string);
+	[end: (JsV.Obj: box)]
+
+	[FromCharCode: ptr<u64> args: 0; int argc: 0;]
+		if argc is 1
+			return (JsV.Str: (JsStrs.FromUnit: (JsOps.ToUint32: args:0) & 0xFFFF));
+		;;
+		WlBuf b;
+		while int i: 0; i < argc; i++;
+			call JsStrs.BufAddUnit: addr b (JsOps.ToUint32: args:i) & 0xFFFF;
+		;;
+		u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: r]
+
+	# `this` as a string, as String.prototype's methods take it
+	[ThisStr: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if t is JsV.UNDEF or t is JsV.NULL
+			call JsErr.Type: 'String.prototype method called on null or undefined';
+		;;
+	[end: (JsOps.ToStr: t)]
+
+	[CharCodeAt: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (ThisStr: args);
+		f64 i: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		if i < 0.0 or i >= (s.len as f64)
+			return JsV.NAN;
+		;;
+	[end: (JsV.Int: (JsStrs.UnitAt: s i as u32) as int)]
+
+	[CharAt: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (ThisStr: args);
+		f64 i: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		if i < 0.0 or i >= (s.len as f64)
+			return (JsV.Str: JsRt.blank);
+		;;
+	[end: (JsV.Str: (JsStrs.FromUnit: (JsStrs.UnitAt: s i as u32)))]
+
+	[Slice: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (ThisStr: args);
+		f64 len: s.len as f64;
+		f64 from: (JsOps.RelativeIndex: (Js.Arg: args argc 0) len 0.0);
+		f64 upto: (JsOps.RelativeIndex: (Js.Arg: args argc 1) len len);
+	[end: (JsV.Str: (JsStrs.Slice: s from as u32 upto as u32))]
+
+	[IndexOf: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (ThisStr: args);
+		ptr<JsStr> needle: (JsOps.ToStr: (Js.Arg: args argc 0));
+		f64 pos: (JsOps.ToInteger: (Js.Arg: args argc 1));
+		if pos < 0.0
+			pos is 0.0;
+		;;
+		if pos > (s.len as f64)
+			pos is s.len as f64;
+		;;
+	[end: (JsV.Int: (JsStrs.IndexOf: s needle pos as u32))]
+
+	[ValueOf: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsStr: t) return t;
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.kind is JsGc.K_BOXED and (JsV.IsStr: o.slot)
+				return o.slot;
+			;;
+		;;
+		call JsErr.Type: 'String.prototype.valueOf requires that this be a String';
+	[end: JsV.UNDEF]
+
+	[Iterator: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (ThisStr: args);
+		ptr<JsArrayIter> ai: new JsArrayIter;
+		if ai is 0
+			throw 'out of memory';
+		;;
+		ai.target is (JsV.Str: s);
+		ptr<JsObj> it: (JsObjs.NewHost: JsBuiltins.string_iter_class JsRt.P.string_iterator ai as ptr<u8>);
+	[end: (JsV.Obj: it)]
+
+	[IterNext: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if not (JsV.IsObj: t)
+			call JsErr.Type: 'next method called on something that is not a String Iterator';
+		;;
+		ptr<JsObj> io: (JsV.AsObj: t);
+		if io.cls is not JsBuiltins.string_iter_class
+			call JsErr.Type: 'next method called on something that is not a String Iterator';
+		;;
+		ptr<JsArrayIter> ai: io.data as ptr<JsArrayIter>;
+		if ai.target is JsV.UNDEF
+			return (JsBuiltins.IterResult: JsV.UNDEF true);
+		;;
+		ptr<JsStr> s: (JsV.AsStr: ai.target);
+		if ai.index >= s.len
+			ai.target is JsV.UNDEF;
+			return (JsBuiltins.IterResult: JsV.UNDEF true);
+		;;
+		u32 cp: (JsStrs.CodeAt: s ai.index);
+		ai.index is ai.index + JsStrs.units_taken;
+	[end: (JsBuiltins.IterResult: (JsV.Str: (JsStrs.FromCode: cp)) false)]
+}

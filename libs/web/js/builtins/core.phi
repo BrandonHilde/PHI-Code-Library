@@ -1,0 +1,140 @@
+# The builtins' starting point: sets the global object up, in the order each part needs the last,
+# and has what the parts share. A new builtin goes in a file of its own in this folder, with an Init
+# method called from here (and a `use` in js/js.phi).
+
+struct.JsArrayIter
+{
+	u64 target;
+	u32 index;
+	u32 kind;              # 0 keys, 1 values, 2 entries
+}
+
+phi.JsBuiltins:Library
+{
+	ptr<JsClass> array_iter_class: 0;
+	ptr<JsClass> string_iter_class: 0;
+	bln eval_strict: false;   # set just before a strict direct eval: eval's code starts strict
+
+	[Init]
+		ptr<JsRuntime> r: JsRt.r;
+		call JsOp.Start;
+		# what every other object hangs from
+		ptr<JsObj> op: (JsObjs.NewWithProto: 0);
+		JsRt.P.object is op;
+		ptr<JsNativeFn> fp: (JsObjs.Alloc: sizeof JsNativeFn JsGc.K_NATIVE op) as ptr<JsNativeFn>;
+		fp.o.flags is (JsObjs.F_CALLABLE | JsObjs.F_LAZY | JsObjs.F_SPECIAL) as u16;
+		fp.fn is addr FunctionProtoCall;
+		fp.data is JsV.UNDEF;
+		fp.data2 is JsV.UNDEF;
+		JsRt.P.function is fp as ptr<JsObj>;
+		r.global is (JsObjs.NewObject);
+		r.global_lex is (JsObjs.NewWithProto: 0);
+		r.sym_registry is (JsObjs.NewWithProto: 0);
+		ptr<JsObj> g: r.global;
+		call JsObjs.DefineValue: g JsRt.A.global_this as ptr<u8> (JsV.Obj: g) JsObjs.WC;
+		call JsObjs.DefineValue: g JsRt.A.undefined as ptr<u8> JsV.UNDEF 0;
+		call JsObjs.DefineValue: g JsRt.A.nan as ptr<u8> JsV.NAN 0;
+		call JsObjs.DefineValue: g JsRt.A.infinity as ptr<u8> (JsV.Double: (WlNum.FromBits: 0x7FF0000000000000)) 0;
+		call Js.DefineNativeSafe: g 'eval' addr GlobalEval 1;
+		call Js.DefineNative: g 'isNaN' addr GlobalIsNaN 1;
+		call Js.DefineNative: g 'isFinite' addr GlobalIsFinite 1;
+		call JsObjectBuiltins.Init;
+		call JsFunctionBuiltins.Init;
+		call JsErrorBuiltins.Init;
+		call JsSymbolBuiltins.Init;
+		call JsIteratorBuiltins.Init;
+		call JsArrayBuiltins.Init;
+		call JsStringBuiltins.Init;
+		call JsNumberBuiltins.Init;
+		call JsPromises.Init;
+		call JsMath.Init;
+		call JsArrayMore.Init;
+		call JsStringMore.Init;
+		call JsCollections.Init;
+		call JsJson.Init;
+		call JsGlobals.Init;
+		call JsRegExp.Init;
+		call JsProxy.Init;
+		call JsDate.Init;
+		call JsTyped.Init;
+		call InitConsole;
+		r.oom_error is (JsV.Obj: (JsErr.Make: JsRt.P.range_error 'Out of memory'));
+	[end]
+
+	[FunctionProtoCall: ptr<u64> args: 0; int argc: 0;]
+	[end: JsV.UNDEF]
+
+	# eval: always as global code, whoever calls it
+	[GlobalEval: ptr<u64> args: 0; int argc: 0;]
+		bln strict: eval_strict;
+		eval_strict is false;
+		u64 src: (Js.Arg: args argc 0);
+		if not (JsV.IsStr: src) return src;
+		ptr<JsStr> s: (JsStrs.Flat: (JsV.AsStr: src));
+		ptr<JsCode> code: (Js.CompileEval: s.data s.bytes strict);
+	[end: (Js.RunCode: code)]
+
+	[GlobalIsNaN: ptr<u64> args: 0; int argc: 0;]
+		f64 x: (JsOps.ToNumber: (Js.Arg: args argc 0));
+	[end: (JsV.Bool: x is not x)]
+
+	[GlobalIsFinite: ptr<u64> args: 0; int argc: 0;]
+		f64 x: (JsOps.ToNumber: (Js.Arg: args argc 0));
+	[end: (JsV.Bool: x is x and (WlNum.IsFinite: x))]
+
+	# ---- console ----
+
+	[InitConsole]
+		ptr<JsObj> c: (JsObjs.NewObject);
+		call JsObjs.DefineZ: JsRt.r.global 'console' (JsV.Obj: c) JsObjs.WC;
+		call Js.DefineNative: c 'log' addr ConsoleLog 0;
+		call Js.DefineNative: c 'error' addr ConsoleLog 0;
+		call Js.DefineNative: c 'warn' addr ConsoleLog 0;
+		call Js.DefineNative: c 'info' addr ConsoleLog 0;
+		call Js.DefineNative: c 'debug' addr ConsoleLog 0;
+	[end]
+
+	# The arguments as text, with spaces between, to the host's console_hook.
+	[ConsoleLog: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		if r.console_hook is 0 return JsV.UNDEF;
+		WlBuf b;
+		while int i: 0; i < argc; i++;
+			if i > 0
+				call b.Add: 32;
+			;;
+			u64 v: args:i;
+			if (JsV.IsSym: v)
+				call b.AddZ: 'Symbol(';
+				ptr<JsSym> sy: (JsV.AsSym: v);
+				if sy.desc is not 0
+					ptr<JsStr> ds: (JsStrs.Flat: sy.desc);
+					call b.AddN: ds.data ds.bytes;
+				;;
+				call b.Add: ')';
+			;;
+			else
+				call Js.TextOf: v addr b;
+			;;
+		;;
+		call r.console_hook: b.data b.len;
+		call b.Free;
+	[end: JsV.UNDEF]
+
+	# ---- helpers ----
+
+	# an object with value and done, as iterators give
+	[IterResult: u64 value: 0; bln done_now: false;]
+		ptr<JsObj> o: (JsObjs.NewObject);
+		call JsObjs.AddProp: o JsRt.A.value as ptr<u8> value JsObjs.WEC;
+		call JsObjs.AddProp: o JsRt.A.done as ptr<u8> (JsV.Bool: done_now) JsObjs.WEC;
+	[end: (JsV.Obj: o)]
+
+	# whether for-of over an array can skip the protocol: nobody's changed how arrays iterate
+	[ArrayIterPristine]
+		ptr<JsProp> a: (JsObjs.Find: JsRt.P.array JsRt.S.iterator as ptr<u8>);
+		if a is 0 or (JsV.AsPtr: a.value) as ptr<JsObj> is not JsRt.P.array_values return false;
+		ptr<JsProp> n: (JsObjs.Find: JsRt.P.array_iterator JsRt.A.next as ptr<u8>);
+		if n is 0 return false;
+	[end: (JsV.AsPtr: n.value) as ptr<JsObj> is JsRt.P.array_iter_next]
+}

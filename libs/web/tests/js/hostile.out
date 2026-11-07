@@ -1,0 +1,33 @@
+RangeError
+4294967295
+RangeError
+4294967295 undefined
+RangeError
+4000000001 4000000000
+0 undefined
+true
+5
+RangeError
+30000
+100000
+true
+TypeError
+undefined
+false
+0
+0,[object Object],1,2,null,undefined,true,1e+21
+TypeError TypeError TypeError
+restored 1
+0
+back 1
+1,2,3
+renamed
+0 false
+true true
+object 1
+undefined
+false
+object true true
+1
+2 true undefined
+false false

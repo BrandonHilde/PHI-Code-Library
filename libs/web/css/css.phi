@@ -1,0 +1,639 @@
+# The CSS layer's public face. Nothing here lets an error reach the caller: a failure comes back as
+# false, -1 or 0, with the reason in Css.error.
+#
+#   ptr<CssSheet> sheet: (Css.ParseSheet: bytes len 'https://example.com/a.css');
+#   ptr<CssEngine> e: (Css.NewEngine: doc);           # or (CssEngine.New) by the contract's name
+#   call e.AddSheet: sheet;
+#   call e.SetViewport: 1024.0 768.0;
+#   call e.Update;
+#   ptr<CssComputed> s: (Css.StyleOf: node);
+#   if (s.Display) is CssK.BLOCK ...
+#
+# querySelector and friends:
+#
+#   ptr<DomNode> first: (Css.Query: root text len);   # 0 if none, or invalid: Css.invalid says which
+#   CssNodeList found;
+#   int count: (Css.QueryAll: root text len addr found);   # -1 if the selector's invalid
+#   call found.Free;
+#   bln yes: (Css.Matches: element text len);
+#
+# The JS style object:
+#
+#   call Css.StyleGet: element 'margin-top' 10 addr buffer;     # adds its value; false if not set
+#   bln ok: (Css.StyleSet: element name n value m false);       # false if the value's invalid
+#   call Css.StyleRemove: element name n;
+#   call Css.StyleText: element addr buffer;                    # cssText
+#   call Css.StyleSetText: element text n;
+#
+# And getComputedStyle: (Css.ComputedText: node name n addr buffer), after e.Update.
+
+use memory.mem;
+use core.text;
+use core.buf;
+use core.atoms;
+use core.arena;
+use core.stack;
+use dom.dom;
+use css.tables;
+use css.lexer;
+use css.values;
+use css.calc;
+use css.color;
+use css.vp;
+use css.decls;
+use css.selector;
+use css.sheet;
+use css.style;
+use css.cssserialize;
+use css.ua;
+use css.cascade;
+
+struct.CssNodeList
+{
+	ptr<ptr<DomNode>> items;
+	u32 count;
+	u32 cap;
+
+	[Add: ptr<DomNode> n: 0;]
+		if count >= cap
+			u32 room: cap * 2;
+			if room is 0
+				room is 16;
+			;;
+			ptr<ptr<DomNode>> grown: new ptr<DomNode>[room];
+			if grown is 0
+				throw 'out of memory for a list of nodes';
+			;;
+			if items is not 0
+				call Mem.Copy: grown items count * sizeof ptr<DomNode>;
+				free items;
+			;;
+			items is grown;
+			cap is room;
+		;;
+		items:count is n;
+		count++;
+	[end]
+
+	[Free]
+		if items is not 0
+			free items;
+		;;
+		items is 0;
+		count is 0;
+		cap is 0;
+	[end]
+}
+
+# a parsed selector kept for next time: JS asks for the same few again and again
+struct.CssSelCache
+{
+	WlArena arena;
+	ptr<CssSelList> list;
+	ptr<u8> text;
+	u32 len;
+	bln valid;
+}
+
+phi.Css:Library
+{
+	const u32 PE_BEFORE: 1;
+	const u32 PE_AFTER: 2;
+
+	ptr<u8> error: 0;       # why the last thing failed
+	bln invalid: false;     # the last selector asked about couldn't be parsed
+
+	[Start]
+		call Dom.Start;
+		call CssProps.Start;
+	[end]
+
+	[Fail: ptr<u8> message: 0;]
+		call CssError.Set: message;
+		error is CssError.text;
+	[end]
+
+	# ---- sheets
+
+	# never 0 unless memory ran out; CSS that makes no sense is just dropped, as the spec says
+	[ParseSheet: ptr<u8> bytes: 0; u32 len: 0; ptr<u8> base_url: 0;]
+		ptr<CssSheet> s: 0;
+		if call s is CssSheetP.Parse: bytes len base_url throws err
+			call Fail: err.text;
+			return 0;
+		;;
+	[end: s]
+
+	[FreeSheet: ptr<CssSheet> sheet: 0;]
+		if call CssSheetP.Free: sheet throws err
+			call Fail: err.text;
+		;;
+	[end]
+
+	# a block of declarations from a style attribute's text (the caller's: Css.FreeDecls)
+	[ParseInline: ptr<u8> bytes: 0; u32 len: 0; ptr<u8> base_url: 0;]
+		ptr<CssDecls> d: new CssDecls;
+		if d is 0 return 0;
+		if call CssInline.Parse: d bytes len base_url throws err
+			call Fail: err.text;
+		;;
+	[end: d]
+
+	[FreeDecls: ptr<CssDecls> d: 0;]
+		if d is 0 return;
+		call d.FreeItems;
+		free d;
+	[end]
+
+	# ---- engines
+
+	[NewEngine: ptr<DomDocument> doc: 0;]
+		ptr<CssEngine> e: 0;
+		if call e is CssCascade.New: doc throws err
+			call Fail: err.text;
+			return 0;
+		;;
+	[end: e]
+
+	# the host's answer to e.on_import (now, or whenever it arrives)
+	[ImportDone: ptr<CssEngine> e: 0; ptr<CssImport> im: 0; ptr<u8> bytes: 0; u32 len: 0;]
+		if im is 0 or im.sheet is not 0 return false;
+		ptr<CssSheet> s: 0;
+		if call s is CssSheetP.Parse: bytes len im.url throws err
+			call Fail: err.text;
+			return false;
+		;;
+		im.sheet is s;
+		if e is not 0
+			e.needs_index is true;
+			e.all_dirty is true;
+		;;
+	[end: true]
+
+	# the @keyframes of this name that apply, the last one written: 0 if there's none
+	[FindKeyframes: ptr<CssEngine> e: 0; ptr<u8> name: 0; u32 n: 0;]
+		if e is 0 return 0;
+		ptr<WlAtom> atom: (WlAtoms.Get: name n);
+		u32 i: e.frame_count;
+		while i > 0
+			i--;
+			ptr<CssKeyframes> set: e.frames:i;
+			if set.name is atom return set;
+		;;
+	[end: 0 as ptr<CssKeyframes>]
+
+	# ---- selectors
+
+	const u32 CACHE: 32;
+	ptr<CssSelCache> sel_cache: 0;
+
+	# the selector parsed, or 0 if it's invalid
+	[Selector: ptr<u8> text: 0; u32 len: 0;]
+		invalid is false;
+		if sel_cache is 0
+			sel_cache is new CssSelCache[CACHE];
+			if sel_cache is 0
+				throw 'out of memory for selectors';
+			;;
+		;;
+		ptr<CssSelCache> slot: addr sel_cache:((WlText.Hash: text len) & (CACHE - 1));
+		if slot.text is not 0 and (WlText.Eq: slot.text slot.len text len)
+			if slot.valid return slot.list;
+			invalid is true;
+			return 0;
+		;;
+		call slot.arena.Free;
+		slot.list is 0;
+		slot.valid is false;
+		slot.text is (slot.arena.Text: text len);
+		slot.len is len;
+		ptr<CssToks> toks: (CssLex.Run: text len);
+		slot.list is (CssSel.ParseList: toks 0 toks.n addr slot.arena);
+		call CssLex.Free: toks;
+		slot.valid is (slot.list is not 0);
+		if slot.valid is false
+			invalid is true;
+		;;
+	[end: slot.list]
+
+	[Matches: ptr<DomNode> element: 0; ptr<u8> text: 0; u32 len: 0;]
+		bln yes: false;
+		if call yes is MatchesInner: element text len throws err
+			call Fail: err.text;
+			return false;
+		;;
+	[end: yes]
+
+	[MatchesInner: ptr<DomNode> element: 0; ptr<u8> text: 0; u32 len: 0;]
+		call Start;
+		if element is 0 or element.type is not DomType.ELEMENT return false;
+		ptr<CssSelList> list: (Selector: text len);
+		if list is 0 return false;
+		CssSel.scope_node is element;
+		bln yes: (CssSel.AnyOf: list element);
+		CssSel.scope_node is 0;
+	[end: yes]
+
+	# the nearest element from this one up that matches: element.closest()
+	[Closest: ptr<DomNode> element: 0; ptr<u8> text: 0; u32 len: 0;]
+		ptr<DomNode> n: element;
+		while n is not 0 and n.type is DomType.ELEMENT
+			if (Matches: n text len) return n;
+			if invalid return 0;
+			n is n.parent;
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	[Query: ptr<DomNode> root: 0; ptr<u8> text: 0; u32 len: 0;]
+		ptr<DomNode> found: 0;
+		if call found is QueryInner: root text len 0 throws err
+			call Fail: err.text;
+			return 0;
+		;;
+	[end: found]
+
+	# how many it found, or -1 for an invalid selector
+	[QueryAll: ptr<DomNode> root: 0; ptr<u8> text: 0; u32 len: 0; ptr<CssNodeList> results: 0;]
+		if call QueryInner: root text len results throws err
+			call Fail: err.text;
+			return -1;
+		;;
+		if invalid return -1;
+	[end: results.count as int]
+
+	[QueryInner: ptr<DomNode> root: 0; ptr<u8> text: 0; u32 len: 0; ptr<CssNodeList> results: 0;]
+		call Start;
+		if root is 0 return 0;
+		ptr<CssSelList> list: (Selector: text len);
+		if list is 0 return 0;
+		CssSel.scope_node is root;
+		if root.type is DomType.DOCUMENT
+			CssSel.scope_node is 0;
+		;;
+		ptr<DomNode> n: (Dom.Next: root root);
+		while n is not 0
+			if n.type is DomType.ELEMENT and (CssSel.AnyOf: list n)
+				if results is 0
+					CssSel.scope_node is 0;
+					return n;
+				;;
+				call results.Add: n;
+			;;
+			n is (Dom.Next: n root);
+		;;
+		CssSel.scope_node is 0;
+	[end: 0 as ptr<DomNode>]
+
+	# ---- @supports, from text: CSS.supports()
+
+	[Supports: ptr<u8> text: 0; u32 len: 0;]
+		bln said: false;
+		if call said is SupportsInner: text len throws err
+			call Fail: err.text;
+			return false;
+		;;
+	[end: said]
+
+	[SupportsInner: ptr<u8> text: 0; u32 len: 0;]
+		call Start;
+		ptr<CssToks> toks: (CssLex.Run: text len);
+		bln said: (CssSupports.Eval: toks 0 toks.n);
+		call CssLex.Free: toks;
+	[end: said]
+
+	# CSS.supports(property, value)
+	[SupportsProperty: ptr<u8> name: 0; u32 name_len: 0; ptr<u8> value: 0; u32 value_len: 0;]
+		call Start;
+		CssDecls temp;
+		bln ok: (DeclSet: addr temp name name_len value value_len false);
+		call temp.FreeItems;
+	[end: ok]
+
+	# whether a media query list holds right now: matchMedia()
+	[MatchMedia: ptr<CssEngine> e: 0; ptr<u8> text: 0; u32 len: 0;]
+		bln yes: false;
+		if call yes is MatchMediaInner: e text len throws err
+			call Fail: err.text;
+			return false;
+		;;
+	[end: yes]
+
+	[MatchMediaInner: ptr<CssEngine> e: 0; ptr<u8> text: 0; u32 len: 0;]
+		call Start;
+		WlArena temp;
+		ptr<CssToks> toks: (CssLex.Run: text len);
+		ptr<CssMediaList> list: (CssMq.ParseList: toks 0 toks.n addr temp);
+		bln yes: (CssMq.Matches: list addr e.env);
+		call CssLex.Free: toks;
+		call temp.Free;
+	[end: yes]
+
+	# ---- reading computed styles
+
+	# The node's style, never 0: a text node has its parent's, and anything without one yet the
+	# initial style. Call e.Update first.
+	[StyleOf: ptr<DomNode> node: 0;]
+		ptr<DomNode> n: node;
+		while n is not 0
+			if n.style is not 0
+				return n.style as ptr<CssComputed>;
+			;;
+			if n.type is DomType.ELEMENT break;
+			n is n.parent;
+		;;
+	[end: CssStyles.initial]
+
+	# one of the pseudo-element's styles (Css.PE_BEFORE, Css.PE_AFTER, or any CssSel.PE_*): 0 if
+	# no rule makes one. A ::before or ::after box exists only if (Css.HasContent: style).
+	[PseudoOf: ptr<DomNode> node: 0; u32 which: 0;]
+		if node is 0 or node.style is 0 return 0;
+		ptr<CssComputed> s: node.style as ptr<CssComputed>;
+	[end: (s.Pseudo: which)]
+
+	[HasContent: ptr<CssComputed> s: 0;]
+		if s is 0 return false;
+		ptr<CssVal> v: (s.Val: CssP.CONTENT);
+		if v.kind is CssV.KW as u8 and (v.code is CssK.NONE as u16 or v.code is CssK.NORMAL as u16) return false;
+	[end: (s.Display) is not CssK.NONE]
+
+	# The text of a ::before or ::after's content with attr() and strings worked out (counters
+	# and quotes aren't: they want layout's state). Adds it to out.
+	[ContentText: ptr<DomNode> node: 0; ptr<CssComputed> s: 0; ptr<WlBuf> output: 0;]
+		ptr<CssVal> v: (s.Val: CssP.CONTENT);
+		ptr<CssVal> items: (CssV.Items: v);
+		u32 n: CssV.item_count;
+		u32 i: 0;
+		while i < n
+			ptr<CssVal> it: addr items:i;
+			u32 kind: it.kind;
+			if kind is CssV.SEP break;
+			if kind is CssV.STR
+				call output.AddN: (CssV.Text: it) (CssV.TextLen: it);
+			;;
+			if kind is CssV.FUNC
+				if it.code is CssK.ATTR as u16 and it.bits >= 1
+					ptr<CssVal> name: addr items:(i + 1);
+					ptr<DomAttr> a: (Dom.Attr: node (WlAtoms.Get: (CssV.Text: name) (CssV.TextLen: name)));
+					if a is not 0
+						call output.AddN: a.value a.value_len;
+					;;
+					elif it.bits >= 3 and items:(i + 3).kind is CssV.STR as u8
+						call output.AddN: (CssV.Text: addr items:(i + 3)) (CssV.TextLen: addr items:(i + 3));
+					;;
+				;;
+				i++ it.bits;
+			;;
+			i++;
+		;;
+	[end]
+
+	# the property's value as getComputedStyle reads it (custom properties too): whether it has one
+	[ComputedText: ptr<DomNode> node: 0; ptr<u8> name: 0; u32 name_len: 0; ptr<WlBuf> b: 0;]
+		bln ok: false;
+		if call ok is ComputedInner: node name name_len b throws err
+			call Fail: err.text;
+			return false;
+		;;
+	[end: ok]
+
+	[ComputedInner: ptr<DomNode> node: 0; ptr<u8> name: 0; u32 name_len: 0; ptr<WlBuf> b: 0;]
+		call Start;
+		ptr<CssComputed> s: (StyleOf: node);
+		if s is 0 return false;
+		if name_len > 2 and name:0 is 45 and name:1 is 45
+			u32 cx: (CssStyles.FindVar: s.vars (WlAtoms.Get: name name_len));
+			if cx is 0 return false;
+			ptr<CssCx> value: (CssCxs.At: cx);
+			call b.AddN: value.text value.len;
+			return true;
+		;;
+		int id: (CssProps.Find: name name_len);
+		if id < 0 return false;
+		call CssSer.Computed: s id as u32 b;
+	[end: true]
+
+	# How many longhands getComputedStyle lists, and their names, for iterating over them.
+	[LonghandCount]
+	[end: CssP.LONGHANDS]
+
+	[PropertyName: u32 prop: 0;]
+		call Start;
+		if prop >= CssP.COUNT return 0;
+	[end: (CssProps.Name: prop)]
+
+	# a property's number, for (s.Val: n) and the rest: -1 if there's no such property
+	[PropertyId: ptr<u8> name: 0; u32 n: 0;]
+		call Start;
+	[end: (CssProps.Find: name n)]
+
+	# ---- a block of declarations: what element.style reads and writes
+
+	# parses `name: value` and sets it. False if the property's unknown or the value's invalid, and
+	# then the block hasn't changed.
+	[DeclSet: ptr<CssDecls> d: 0; ptr<u8> name: 0; u32 name_len: 0; ptr<u8> value: 0; u32 value_len: 0; bln important: false;]
+		bln ok: false;
+		if call ok is DeclSetInner: d name name_len value value_len important throws err
+			call Fail: err.text;
+			return false;
+		;;
+	[end: ok]
+
+	[DeclSetInner: ptr<CssDecls> d: 0; ptr<u8> name: 0; u32 name_len: 0; ptr<u8> value: 0; u32 value_len: 0; bln important: false;]
+		call Start;
+		ptr<CssToks> toks: (CssLex.Run: value value_len);
+		# a ; or !important at the top level isn't part of a value here
+		bln ok: true;
+		u32 i: 0;
+		while i < toks.n
+			u32 type: toks.t:i.type;
+			if type is CssLex.SEMICOLON or (type is CssLex.DELIM and toks.t:i.num is 33.0 and (name_len < 2 or name:0 is not 45 or name:1 is not 45))
+				ok is false;
+				break;
+			;;
+			i is (CssSyntax.After: toks.t i);
+		;;
+		if ok
+			ok is (CssDeclP.One: d toks name name_len 0 toks.n important false);
+		;;
+		call CssLex.Free: toks;
+	[end: ok]
+
+	# adds its value's text to b: whether it had one
+	[DeclGet: ptr<CssDecls> d: 0; ptr<u8> name: 0; u32 name_len: 0; ptr<WlBuf> b: 0;]
+		bln ok: false;
+		if call ok is DeclGetInner: d name name_len b throws err
+			call Fail: err.text;
+			return false;
+		;;
+	[end: ok]
+
+	[DeclGetInner: ptr<CssDecls> d: 0; ptr<u8> name: 0; u32 name_len: 0; ptr<WlBuf> b: 0;]
+		call Start;
+		if d is 0 return false;
+		if name_len > 2 and name:0 is 45 and name:1 is 45
+			ptr<CssDecl> one: (d.FindCustom: (WlAtoms.Get: name name_len));
+			if one is 0 return false;
+			call CssSer.Value: addr one.val b;
+			return true;
+		;;
+		int id: (CssProps.Find: name name_len);
+		if id < 0 return false;
+	[end: (CssSer.Declared: d id as u32 b)]
+
+	[DeclPriority: ptr<CssDecls> d: 0; ptr<u8> name: 0; u32 name_len: 0;]
+		call Start;
+		if d is 0 return false;
+		ptr<CssDecl> one: 0;
+		if name_len > 2 and name:0 is 45 and name:1 is 45
+			one is (d.FindCustom: (WlAtoms.Get: name name_len));
+		;;
+		else
+			int id: (CssProps.Find: name name_len);
+			if id < 0 return false;
+			u32 prop: id as u32;
+			if (CssProps.IsShorthand: prop)
+				ptr<CssPropInfo> info: addr CssProps.info:prop;
+				if info.sub_count is 0 return false;
+				one is (d.Find: info.subs:0);
+			;;
+			else
+				one is (d.Find: prop);
+			;;
+		;;
+		if one is 0 return false;
+	[end: one.important is not 0]
+
+	[DeclRemove: ptr<CssDecls> d: 0; ptr<u8> name: 0; u32 name_len: 0;]
+		call Start;
+		if d is 0 return false;
+		if name_len > 2 and name:0 is 45 and name:1 is 45
+			return (d.Remove: CssP.CUSTOM (WlAtoms.Get: name name_len));
+		;;
+		int id: (CssProps.Find: name name_len);
+		if id < 0 return false;
+	[end: (RemoveProp: d id as u32)]
+
+	[RemoveProp: ptr<CssDecls> d: 0; u32 prop: 0;]
+		if (CssProps.IsShorthand: prop) is false
+			return (d.Remove: prop 0);
+		;;
+		bln any: false;
+		ptr<CssPropInfo> info: addr CssProps.info:prop;
+		while u32 i: 0; i < info.sub_count; i++;
+			if (RemoveProp: d info.subs:i)
+				any is true;
+			;;
+		;;
+	[end: any]
+
+	[DeclText: ptr<CssDecls> d: 0; ptr<WlBuf> b: 0;]
+		if d is 0 return;
+		if call CssSer.Block: d b throws err
+			call Fail: err.text;
+		;;
+	[end]
+
+	[DeclCount: ptr<CssDecls> d: 0;]
+		if d is 0 return 0;
+	[end: d.count]
+
+	# the name of the block's i-th declaration: element.style[i]
+	[DeclName: ptr<CssDecls> d: 0; u32 i: 0;]
+		if d is 0 or i >= d.count return 0;
+		ptr<CssDecl> one: addr d.items:i;
+		if one.prop is CssP.CUSTOM as u16
+			return one.name.text;
+		;;
+	[end: (CssProps.Name: one.prop)]
+
+	# ---- an element's style attribute, for the JS `style` object. Each writes the attribute back,
+	# which marks the element dirty, as DOM changes do.
+
+	# the element's block, made if it has none
+	[StyleDecls: ptr<DomNode> element: 0;]
+		call Start;
+		ptr<CssDecls> d: element.inline_style as ptr<CssDecls>;
+		ptr<DomAttr> a: (Dom.AttrZ: element 'style');
+		if d is 0
+			d is new CssDecls;
+			if d is 0 return 0;
+			element.inline_style is d as ptr<u8>;
+		;;
+		if a is not 0 and (d.src is 0 or (WlText.Eq: d.src d.src_len a.value a.value_len) is false)
+			call d.Clear;
+			if d.src is not 0
+				free d.src;
+			;;
+			d.src is (WlText.Dup: a.value a.value_len);
+			d.src_len is a.value_len;
+			if call CssInline.Parse: d a.value a.value_len element.doc.url throws err
+				call Fail: err.text;
+			;;
+		;;
+	[end: d]
+
+	[StyleChanged: ptr<DomNode> element: 0; ptr<CssDecls> d: 0;]
+		WlBuf text;
+		call CssSer.Block: d addr text;
+		if d.src is not 0
+			free d.src;
+		;;
+		d.src is (WlText.Dup: text.data text.len);
+		d.src_len is text.len;
+		call Dom.SetAttr: element (WlAtoms.GetZ: 'style') text.data text.len;
+		call text.Free;
+	[end]
+
+	[StyleGet: ptr<DomNode> element: 0; ptr<u8> name: 0; u32 n: 0; ptr<WlBuf> b: 0;]
+	[end: (DeclGet: (StyleDecls: element) name n b)]
+
+	[StyleSet: ptr<DomNode> element: 0; ptr<u8> name: 0; u32 n: 0; ptr<u8> value: 0; u32 m: 0; bln important: false;]
+		ptr<CssDecls> d: (StyleDecls: element);
+		if d is 0 return false;
+		if (DeclSet: d name n value m important) is false return false;
+		if call StyleChanged: element d throws err
+			call Fail: err.text;
+			return false;
+		;;
+	[end: true]
+
+	[StyleRemove: ptr<DomNode> element: 0; ptr<u8> name: 0; u32 n: 0;]
+		ptr<CssDecls> d: (StyleDecls: element);
+		if d is 0 return false;
+		if (DeclRemove: d name n) is false return false;
+		if call StyleChanged: element d throws err
+			call Fail: err.text;
+			return false;
+		;;
+	[end: true]
+
+	[StyleText: ptr<DomNode> element: 0; ptr<WlBuf> b: 0;]
+		call DeclText: (StyleDecls: element) b;
+	[end]
+
+	[StyleSetText: ptr<DomNode> element: 0; ptr<u8> text: 0; u32 n: 0;]
+		if call Dom.SetAttr: element (WlAtoms.GetZ: 'style') text n throws err
+			call Fail: err.text;
+		;;
+	[end]
+
+	# ---- a value as text
+
+	[ValueText: ptr<CssVal> v: 0; ptr<WlBuf> b: 0;]
+		if call CssSer.Value: v b throws err
+			call Fail: err.text;
+		;;
+	[end]
+
+	# what a color's text means: true, and its 0xRRGGBBAA in Css.color_value
+	u32 color_value: 0;
+
+	[ParseColor: ptr<u8> text: 0; u32 n: 0;]
+		bln ok: false;
+		if call ok is CssColor.FromText: text n throws err
+			call Fail: err.text;
+			return false;
+		;;
+		color_value is CssColor.made;
+	[end: ok]
+}

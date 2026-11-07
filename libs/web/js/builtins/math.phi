@@ -1,0 +1,651 @@
+# Math. PHI gives Sqrt, Sin, Cos, Floor, Ceil, Round and Trunc; the rest are the x87's own, each run in
+# its extended precision and rounded once as it's stored, so the results are as right as it can make them.
+
+phi.JsMath:Library
+{
+	f64 js_m_x: 0.0;
+	f64 js_m_y: 0.0;
+	f64 js_m_r: 0.0;
+	u16 js_m_ext: 0x037F;
+	u16 js_m_dbl: 0x027F;
+	u64 rng0: 0;
+	u64 rng1: 0;
+
+	const u32 ABS: 1;
+	const u32 CEIL: 2;
+	const u32 FLOOR: 3;
+	const u32 ROUND: 4;
+	const u32 TRUNC: 5;
+	const u32 SIGN: 6;
+	const u32 SQRT: 7;
+	const u32 CBRT: 8;
+	const u32 EXP: 9;
+	const u32 EXPM1: 10;
+	const u32 LOG: 11;
+	const u32 LOG2: 12;
+	const u32 LOG10: 13;
+	const u32 LOG1P: 14;
+	const u32 SIN: 15;
+	const u32 COS: 16;
+	const u32 TAN: 17;
+	const u32 ASIN: 18;
+	const u32 ACOS: 19;
+	const u32 ATAN: 20;
+	const u32 SINH: 21;
+	const u32 COSH: 22;
+	const u32 TANH: 23;
+	const u32 ASINH: 24;
+	const u32 ACOSH: 25;
+	const u32 ATANH: 26;
+	const u32 FROUND: 27;
+
+	[Init]
+		ptr<JsObj> m: (JsObjs.NewObject);
+		call JsObjs.DefineZ: JsRt.r.global 'Math' (JsV.Obj: m) JsObjs.WC;
+		call JsObjs.DefineValue: m JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'Math') JsObjs.C;
+		call Js.Define: m 'E' (JsV.Double: 2.718281828459045) 0;
+		call Js.Define: m 'LN10' (JsV.Double: 2.302585092994046) 0;
+		call Js.Define: m 'LN2' (JsV.Double: 0.6931471805599453) 0;
+		call Js.Define: m 'LOG10E' (JsV.Double: 0.4342944819032518) 0;
+		call Js.Define: m 'LOG2E' (JsV.Double: 1.4426950408889634) 0;
+		call Js.Define: m 'PI' (JsV.Double: 3.141592653589793) 0;
+		call Js.Define: m 'SQRT1_2' (JsV.Double: 0.7071067811865476) 0;
+		call Js.Define: m 'SQRT2' (JsV.Double: 1.4142135623730951) 0;
+		call One: m 'abs' ABS;
+		call One: m 'ceil' CEIL;
+		call One: m 'floor' FLOOR;
+		call One: m 'round' ROUND;
+		call One: m 'trunc' TRUNC;
+		call One: m 'sign' SIGN;
+		call One: m 'sqrt' SQRT;
+		call One: m 'cbrt' CBRT;
+		call One: m 'exp' EXP;
+		call One: m 'expm1' EXPM1;
+		call One: m 'log' LOG;
+		call One: m 'log2' LOG2;
+		call One: m 'log10' LOG10;
+		call One: m 'log1p' LOG1P;
+		call One: m 'sin' SIN;
+		call One: m 'cos' COS;
+		call One: m 'tan' TAN;
+		call One: m 'asin' ASIN;
+		call One: m 'acos' ACOS;
+		call One: m 'atan' ATAN;
+		call One: m 'sinh' SINH;
+		call One: m 'cosh' COSH;
+		call One: m 'tanh' TANH;
+		call One: m 'asinh' ASINH;
+		call One: m 'acosh' ACOSH;
+		call One: m 'atanh' ATANH;
+		call One: m 'fround' FROUND;
+		call Js.DefineNative: m 'atan2' addr Atan2 2;
+		call Js.DefineNative: m 'pow' addr PowFn 2;
+		call Js.DefineNative: m 'max' addr Max 2;
+		call Js.DefineNative: m 'min' addr Min 2;
+		call Js.DefineNative: m 'hypot' addr Hypot 2;
+		call Js.DefineNative: m 'imul' addr Imul 2;
+		call Js.DefineNative: m 'clz32' addr Clz32 1;
+		call Js.DefineNative: m 'random' addr Random 0;
+		rng0 is (OS.GetTicks) as u64;
+		rng0 is rng0 * 6364136223846793005 + 1442695040888963407;
+		rng1 is ((OS.Now) as u64) * 1099511628211 + 0x9E3779B97F4A7C15;
+	[end]
+
+	[One: ptr<JsObj> m: 0; ptr<u8> name: 0; u32 id: 0;]
+		ptr<JsNativeFn> f: (Js.DefineNative: m name addr Unary 1);
+		f.magic is id;
+	[end]
+
+	[Inf]
+	[end: (WlNum.FromBits: 0x7FF0000000000000)]
+
+	[Nan]
+	[end: (WlNum.FromBits: 0x7FF8000000000000)]
+
+	[Unary: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u32 id: self.magic;
+		f64 x: (JsOps.ToNumber: (Js.Arg: args argc 0));
+		if x is not x
+			return JsV.NAN;
+		;;
+		f64 r: (Compute: id x);
+	[end: (JsV.Num: r)]
+
+	[Compute: u32 id: 0; f64 x: 0.0;]
+		bln finite: (WlNum.IsFinite: x);
+		when id
+			is ABS
+				return (Float.Abs: x);
+			;;
+			is FLOOR
+				if x is 0.0 or not finite return x;
+				return (Float.Floor: x);
+			;;
+			is CEIL
+				if x is 0.0 or not finite return x;
+				if x < 0.0 and x > -1.0
+					return (NegZero);
+				;;
+				return (Float.Ceil: x);
+			;;
+			is TRUNC
+				if x is 0.0 or not finite return x;
+				if x < 0.0 and x > -1.0
+					return (NegZero);
+				;;
+				return (Float.Trunc: x);
+			;;
+			is ROUND
+				if x is 0.0 or not finite return x;
+				if x < 0.0 and x >= -0.5
+					return (NegZero);
+				;;
+				f64 fl: (Float.Floor: x);
+				if x - fl >= 0.5
+					return fl + 1.0;
+				;;
+				return fl;
+			;;
+			is SIGN
+				if x > 0.0 return 1.0;
+				if x < 0.0 return -1.0;
+				return x;
+			;;
+			is SQRT
+				if x < 0.0 return (Nan);
+				if x is 0.0 or not finite return x;
+				return (Float.Sqrt: x);
+			;;
+			is CBRT
+				if x is 0.0 or not finite return x;
+				f64 ax: (Float.Abs: x);
+				f64 c: (ExpX: (LogX: ax) / 3.0);
+				# one step of Newton's method makes whole cubes come out exact
+				c is c - (c * c * c - ax) / (3.0 * c * c);
+				if x < 0.0
+					return c * -1.0;
+				;;
+				return c;
+			;;
+			is EXP
+				if not finite
+					if x > 0.0 return x;
+					return 0.0;
+				;;
+				return (ExpX: x);
+			;;
+			is EXPM1
+				if x is 0.0 return x;
+				if not finite
+					if x > 0.0 return x;
+					return -1.0;
+				;;
+				if (Float.Abs: x) < 0.5
+					js_m_x is x;
+					call JsX87Expm1;
+					return js_m_r;
+				;;
+				return (ExpX: x) - 1.0;
+			;;
+			is LOG
+				return (LogRange: x);
+			;;
+			is LOG2
+				if x <= 0.0 or not finite
+					return (LogRange: x);
+				;;
+				js_m_x is x;
+				call JsX87Log2;
+				return js_m_r;
+			;;
+			is LOG10
+				if x <= 0.0 or not finite
+					return (LogRange: x);
+				;;
+				js_m_x is x;
+				call JsX87Log10;
+				return js_m_r;
+			;;
+			is LOG1P
+				if x is 0.0 return x;
+				if x < -1.0 return (Nan);
+				if x is -1.0
+					return (Inf) * -1.0;
+				;;
+				if not finite return x;
+				if (Float.Abs: x) < 0.29
+					js_m_x is x;
+					call JsX87Log1p;
+					return js_m_r;
+				;;
+				return (LogX: 1.0 + x);
+			;;
+			is SIN
+				if x is 0.0 return x;
+				if not finite return (Nan);
+				return (Float.Sin: (Reduce: x));
+			;;
+			is COS
+				if not finite return (Nan);
+				return (Float.Cos: (Reduce: x));
+			;;
+			is TAN
+				if x is 0.0 return x;
+				if not finite return (Nan);
+				js_m_x is (Reduce: x);
+				call JsX87Tan;
+				return js_m_r;
+			;;
+			is ASIN
+				if x is 0.0 return x;
+				if x > 1.0 or x < -1.0 return (Nan);
+				return (Atan2X: x (Float.Sqrt: (1.0 - x) * (1.0 + x)));
+			;;
+			is ACOS
+				if x > 1.0 or x < -1.0 return (Nan);
+				if x is 1.0 return 0.0;
+				return (Atan2X: (Float.Sqrt: (1.0 - x) * (1.0 + x)) x);
+			;;
+			is ATAN
+				if x is 0.0 return x;
+				return (Atan2X: x 1.0);
+			;;
+			is SINH
+				if x is 0.0 or not finite return x;
+				if (Float.Abs: x) < 0.00001
+					return x;
+				;;
+				f64 e1: (ExpX: x);
+				if e1 is (Inf) return x * (Inf);
+				return (e1 - 1.0 / e1) / 2.0;
+			;;
+			is COSH
+				if not finite return (Inf);
+				f64 e2: (ExpX: x);
+				return (e2 + 1.0 / e2) / 2.0;
+			;;
+			is TANH
+				if x is 0.0 return x;
+				if x > 22.0 return 1.0;
+				if x < -22.0 return -1.0;
+				f64 e3: (ExpX: x);
+				f64 ie: 1.0 / e3;
+				return (e3 - ie) / (e3 + ie);
+			;;
+			is ASINH
+				if x is 0.0 or not finite return x;
+				f64 ab: (Float.Abs: x);
+				f64 ash: (LogX: ab + (Float.Sqrt: ab * ab + 1.0));
+				if x < 0.0
+					return ash * -1.0;
+				;;
+				return ash;
+			;;
+			is ACOSH
+				if x < 1.0 return (Nan);
+				if not finite return x;
+				return (LogX: x + (Float.Sqrt: x * x - 1.0));
+			;;
+			is ATANH
+				if x is 0.0 return x;
+				if x > 1.0 or x < -1.0 return (Nan);
+				if x is 1.0 return (Inf);
+				if x is -1.0
+					return (Inf) * -1.0;
+				;;
+				return (LogX: (1.0 + x) / (1.0 - x)) / 2.0;
+			;;
+			is FROUND
+				f32 single: x as f32;
+				return single as f64;
+			;;
+		;;
+	[end: (Nan)]
+
+	[NegZero]
+		f64 zero: 0.0;
+	[end: zero * -1.0]
+
+	# The x87 only takes angles below 2^63. Past that, an approximate reduction is all that's on offer.
+	[Reduce: f64 x: 0.0;]
+		if (Float.Abs: x) < 9000000000000000000.0 return x;
+	[end: x % 6.283185307179586]
+
+	[LogRange: f64 x: 0.0;]
+		if x < 0.0 return (Nan);
+		if x is 0.0
+			return (Inf) * -1.0;
+		;;
+		if not (WlNum.IsFinite: x) return x;
+	[end: (LogX: x)]
+
+	[LogX: f64 x: 0.0;]
+		js_m_x is x;
+		call JsX87Ln;
+	[end: js_m_r]
+
+	[ExpX: f64 x: 0.0;]
+		if x > 709.8
+			return (Inf);
+		;;
+		if x < -745.2
+			return 0.0;
+		;;
+		js_m_x is x;
+		call JsX87Exp;
+	[end: js_m_r]
+
+	[Atan2X: f64 y: 0.0; f64 x: 0.0;]
+		js_m_y is y;
+		js_m_x is x;
+		call JsX87Atan2;
+	[end: js_m_r]
+
+	[Atan2: ptr<u64> args: 0; int argc: 0;]
+		f64 y: (JsOps.ToNumber: (Js.Arg: args argc 0));
+		f64 x: (JsOps.ToNumber: (Js.Arg: args argc 1));
+		if y is not y or x is not x
+			return JsV.NAN;
+		;;
+	[end: (JsV.Num: (Atan2X: y x))]
+
+	[PowFn: ptr<u64> args: 0; int argc: 0;]
+		f64 x: (JsOps.ToNumber: (Js.Arg: args argc 0));
+		f64 y: (JsOps.ToNumber: (Js.Arg: args argc 1));
+	[end: (JsV.Num: (JsMathCore.Pow: x y))]
+
+	# every argument is converted, even past a NaN, since conversions can be seen
+	[Max: ptr<u64> args: 0; int argc: 0;]
+		f64 best: (Inf) * -1.0;
+		bln nan_seen: false;
+		while int i: 0; i < argc; i++;
+			f64 x: (JsOps.ToNumber: args:i);
+			if x is not x
+				nan_seen is true;
+			;;
+			elif x > best or (x is 0.0 and best is 0.0 and not (WlNum.IsNegative: x))
+				best is x;
+			;;
+		;;
+		if nan_seen
+			return JsV.NAN;
+		;;
+	[end: (JsV.Num: best)]
+
+	[Min: ptr<u64> args: 0; int argc: 0;]
+		f64 best: (Inf);
+		bln nan_seen: false;
+		while int i: 0; i < argc; i++;
+			f64 x: (JsOps.ToNumber: args:i);
+			if x is not x
+				nan_seen is true;
+			;;
+			elif x < best or (x is 0.0 and best is 0.0 and (WlNum.IsNegative: x))
+				best is x;
+			;;
+		;;
+		if nan_seen
+			return JsV.NAN;
+		;;
+	[end: (JsV.Num: best)]
+
+	[Hypot: ptr<u64> args: 0; int argc: 0;]
+		f64 big: 0.0;
+		bln inf_seen: false;
+		bln nan_seen: false;
+		# scaled by the largest, so the squares can't overflow
+		ptr<u64> st: JsVm.sp;
+		while int i: 0; i < argc; i++;
+			f64 x: (Float.Abs: (JsOps.ToNumber: args:i));
+			if x is not x
+				nan_seen is true;
+			;;
+			elif not (WlNum.IsFinite: x)
+				inf_seen is true;
+			;;
+			elif x > big
+				big is x;
+			;;
+			call Js.Push: (JsV.Double: x);
+		;;
+		if inf_seen
+			return (JsV.Double: (Inf));
+		;;
+		if nan_seen
+			return JsV.NAN;
+		;;
+		if big is 0.0
+			return JsV.INT_BASE;
+		;;
+		f64 sum: 0.0;
+		while int j: 0; j < argc; j++;
+			f64 s: (JsV.AsNum: st:j) / big;
+			sum is sum + s * s;
+		;;
+	[end: (JsV.Num: big * (Float.Sqrt: sum))]
+
+	[Imul: ptr<u64> args: 0; int argc: 0;]
+		u32 a: (JsOps.ToUint32: (Js.Arg: args argc 0));
+		u32 b: (JsOps.ToUint32: (Js.Arg: args argc 1));
+		u32 product: a * b;
+	[end: (JsV.Int: product as int)]
+
+	[Clz32: ptr<u64> args: 0; int argc: 0;]
+		u32 v: (JsOps.ToUint32: (Js.Arg: args argc 0));
+		int n: 32;
+		while v > 0
+			v is v >> 1;
+			n--;
+		;;
+	[end: (JsV.Int: n)]
+
+	# xorshift128+: quick and good enough; Math.random isn't for secrets
+	[Random: ptr<u64> args: 0; int argc: 0;]
+		u64 s1: rng0;
+		u64 s0: rng1;
+		rng0 is s0;
+		s1 is s1 ^ (s1 << 23);
+		rng1 is s1 ^ s0 ^ (s1 >> 17) ^ (s0 >> 26);
+		u64 mixed: rng1 + s0;
+		# the top 53 bits as a fraction
+		u64 bits: mixed >> 11;
+		f64 r: (bits as f64) / 9007199254740992.0;
+	[end: (JsV.Double: r)]
+}
+
+asm.JsX87Ln
+{
+	fldcw [{js_m_ext}]
+	fldln2
+	fld qword [{js_m_x}]
+	fyl2x
+	fstp qword [{js_m_r}]
+	fldcw [{js_m_dbl}]
+	ret
+}
+
+x64.JsX87Ln
+{
+	fldcw [rel {js_m_ext}]
+	fldln2
+	fld qword [rel {js_m_x}]
+	fyl2x
+	fstp qword [rel {js_m_r}]
+	fldcw [rel {js_m_dbl}]
+	ret
+}
+
+asm.JsX87Log2
+{
+	fldcw [{js_m_ext}]
+	fld1
+	fld qword [{js_m_x}]
+	fyl2x
+	fstp qword [{js_m_r}]
+	fldcw [{js_m_dbl}]
+	ret
+}
+
+x64.JsX87Log2
+{
+	fldcw [rel {js_m_ext}]
+	fld1
+	fld qword [rel {js_m_x}]
+	fyl2x
+	fstp qword [rel {js_m_r}]
+	fldcw [rel {js_m_dbl}]
+	ret
+}
+
+asm.JsX87Log10
+{
+	fldcw [{js_m_ext}]
+	fldlg2
+	fld qword [{js_m_x}]
+	fyl2x
+	fstp qword [{js_m_r}]
+	fldcw [{js_m_dbl}]
+	ret
+}
+
+x64.JsX87Log10
+{
+	fldcw [rel {js_m_ext}]
+	fldlg2
+	fld qword [rel {js_m_x}]
+	fyl2x
+	fstp qword [rel {js_m_r}]
+	fldcw [rel {js_m_dbl}]
+	ret
+}
+
+asm.JsX87Log1p
+{
+	fldcw [{js_m_ext}]
+	fldln2
+	fld qword [{js_m_x}]
+	fyl2xp1
+	fstp qword [{js_m_r}]
+	fldcw [{js_m_dbl}]
+	ret
+}
+
+x64.JsX87Log1p
+{
+	fldcw [rel {js_m_ext}]
+	fldln2
+	fld qword [rel {js_m_x}]
+	fyl2xp1
+	fstp qword [rel {js_m_r}]
+	fldcw [rel {js_m_dbl}]
+	ret
+}
+
+asm.JsX87Exp
+{
+	fldcw [{js_m_ext}]
+	fld qword [{js_m_x}]
+	fldl2e
+	fmulp st1, st0
+	fld st0
+	frndint
+	fsub st1, st0
+	fxch st1
+	f2xm1
+	fld1
+	faddp st1, st0
+	fscale
+	fstp st1
+	fstp qword [{js_m_r}]
+	fldcw [{js_m_dbl}]
+	ret
+}
+
+x64.JsX87Exp
+{
+	fldcw [rel {js_m_ext}]
+	fld qword [rel {js_m_x}]
+	fldl2e
+	fmulp st1, st0
+	fld st0
+	frndint
+	fsub st1, st0
+	fxch st1
+	f2xm1
+	fld1
+	faddp st1, st0
+	fscale
+	fstp st1
+	fstp qword [rel {js_m_r}]
+	fldcw [rel {js_m_dbl}]
+	ret
+}
+
+asm.JsX87Expm1
+{
+	fldcw [{js_m_ext}]
+	fld qword [{js_m_x}]
+	fldl2e
+	fmulp st1, st0
+	f2xm1
+	fstp qword [{js_m_r}]
+	fldcw [{js_m_dbl}]
+	ret
+}
+
+x64.JsX87Expm1
+{
+	fldcw [rel {js_m_ext}]
+	fld qword [rel {js_m_x}]
+	fldl2e
+	fmulp st1, st0
+	f2xm1
+	fstp qword [rel {js_m_r}]
+	fldcw [rel {js_m_dbl}]
+	ret
+}
+
+asm.JsX87Tan
+{
+	fldcw [{js_m_ext}]
+	fld qword [{js_m_x}]
+	fptan
+	fstp st0
+	fstp qword [{js_m_r}]
+	fldcw [{js_m_dbl}]
+	ret
+}
+
+x64.JsX87Tan
+{
+	fldcw [rel {js_m_ext}]
+	fld qword [rel {js_m_x}]
+	fptan
+	fstp st0
+	fstp qword [rel {js_m_r}]
+	fldcw [rel {js_m_dbl}]
+	ret
+}
+
+asm.JsX87Atan2
+{
+	fldcw [{js_m_ext}]
+	fld qword [{js_m_y}]
+	fld qword [{js_m_x}]
+	fpatan
+	fstp qword [{js_m_r}]
+	fldcw [{js_m_dbl}]
+	ret
+}
+
+x64.JsX87Atan2
+{
+	fldcw [rel {js_m_ext}]
+	fld qword [rel {js_m_y}]
+	fld qword [rel {js_m_x}]
+	fpatan
+	fstp qword [rel {js_m_r}]
+	fldcw [rel {js_m_dbl}]
+	ret
+}

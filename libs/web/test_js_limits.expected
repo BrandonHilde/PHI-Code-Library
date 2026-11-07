@@ -1,0 +1,61 @@
+budget 48000
+recursion: RangeError
+getter recursion: RangeError
+native recursion: RangeError
+generator recursion: RangeError
+recovered, times: 5
+parens: SyntaxError
+arrays: SyntaxError
+blocks: SyntaxError
+functions: SyntaxError
+unary: SyntaxError
+assignments: SyntaxError
+arrows: SyntaxError
+classes: SyntaxError
+templates: SyntaxError
+patterns: SyntaxError
+a long sum: 200001
+a chain of calls: true
+long list: [object Object]
+after a collection: 300000
+a deep rope: 98
+a rope both ways: 400000
+read after a collection: 99
+interrupted: InternalError
+after that: still fine
+stack by arguments: RangeError
+stack by spread: RangeError
+too much alive: RangeError
+after letting go: plenty again
+a string too long: RangeError
+budget 900000
+recursion: RangeError
+getter recursion: RangeError
+native recursion: RangeError
+generator recursion: RangeError
+recovered, times: 5
+parens: SyntaxError
+arrays: SyntaxError
+blocks: SyntaxError
+functions: SyntaxError
+unary: SyntaxError
+assignments: SyntaxError
+arrows: SyntaxError
+classes: SyntaxError
+templates: SyntaxError
+patterns: SyntaxError
+a long sum: 200001
+a chain of calls: true
+long list: [object Object]
+after a collection: 300000
+a deep rope: 98
+a rope both ways: 400000
+read after a collection: 99
+interrupted: InternalError
+after that: still fine
+stack by arguments: RangeError
+stack by spread: RangeError
+too much alive: RangeError
+after letting go: plenty again
+a string too long: RangeError
+done

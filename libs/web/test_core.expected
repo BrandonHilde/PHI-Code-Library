@@ -1,0 +1,21 @@
+float 1 0
+99 111 117 110 116 58 32 45 52 50 32 195 169 226 130 172 240 159 152 128 len 20
+grown 10020 1 0
+cleared 0
+97/1 233/2 8364/3 128512/4 65533/1 65533/1 65533/1 65533/1 65533/1 65533/1 
+atoms 1 1 div 3
+after growth 1 1
+arena 7 1
+stack: too much recursion deep 1
+classes 3 bb 1 0
+byid 1
+text [one two three]
+moved [two threeone ]
+removed [threeone ] 1
+walked 7 of 9 changes 17
+cycle: a node cannot go inside itself
+self: a node cannot go inside itself
+deep 200001
+gone 0 1 second
+wrapper 65531
+done

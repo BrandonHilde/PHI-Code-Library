@@ -1,0 +1,117 @@
+# For tests: a DOM from a compact description, since CSS's tests shouldn't lean on the HTML parser.
+#
+#   html(head() body(div#a.x.y[data-k=v]("some text" p() p.z)))
+#
+# Each element is name#id.class[attr=value], then ( children ) if it has any; "text" is a text node.
+# Anything goes in a [ ] value up to the ]. It's for tests, and doesn't check much.
+
+use core.text;
+use core.buf;
+use core.atoms;
+use dom.dom;
+
+phi.CssTestDom:Library
+{
+	ptr<u8> p: 0;
+	u32 n: 0;
+	u32 i: 0;
+
+	[Build: ptr<u8> text: 0;]
+		ptr<DomDocument> doc: (Dom.NewDocument);
+		p is text;
+		n is (WlText.LenZ: text);
+		i is 0;
+		ptr<DomNode> parent: doc.root;
+		while i < n
+			u32 c: p:i;
+			if c is 32 or c is 10 or c is 9
+				i++;
+			;;
+			elif c is 41
+				parent is parent.parent;
+				i++;
+			;;
+			elif c is 34
+				i++;
+				u32 from: i;
+				while i < n and p:i is not 34
+					i++;
+				;;
+				call Dom.Append: parent (Dom.CreateText: doc p + from i - from);
+				i++;
+			;;
+			else
+				ptr<DomNode> e: (Element: doc);
+				call Dom.Append: parent e;
+				if i < n and p:i is 40
+					i++;
+					parent is e;
+				;;
+			;;
+		;;
+	[end: doc]
+
+	[IsName: u32 c: 0;]
+	[end: (WlText.IsAlnum: c) or c is 45 or c is 95]
+
+	[Element: ptr<DomDocument> doc: 0;]
+		u32 from: i;
+		while i < n and (IsName: p:i)
+			i++;
+		;;
+		if i is from
+			throw 'testdom: expected a name at ' i;
+		;;
+		ptr<DomNode> e: (Dom.CreateElement: doc (WlAtoms.Get: p + from i - from));
+		while i < n
+			u32 c: p:i;
+			if c is 35
+				i++;
+				u32 f: i;
+				while i < n and (IsName: p:i)
+					i++;
+				;;
+				call Dom.SetAttr: e (WlAtoms.GetZ: 'id') p + f i - f;
+			;;
+			elif c is 46
+				i++;
+				u32 f: i;
+				while i < n and (IsName: p:i)
+					i++;
+				;;
+				ptr<DomAttr> have: (Dom.AttrZ: e 'class');
+				WlBuf joined;
+				if have is not 0
+					call joined.AddN: have.value have.value_len;
+					call joined.Add: 32;
+				;;
+				call joined.AddN: p + f i - f;
+				call Dom.SetAttr: e (WlAtoms.GetZ: 'class') joined.data joined.len;
+				call joined.Free;
+			;;
+			elif c is 91
+				i++;
+				u32 f: i;
+				while i < n and p:i is not 93 and p:i is not 61
+					i++;
+				;;
+				ptr<WlAtom> name: (WlAtoms.Get: p + f i - f);
+				if p:i is 61
+					i++;
+					u32 v: i;
+					while i < n and p:i is not 93
+						i++;
+					;;
+					call Dom.SetAttr: e name p + v i - v;
+				;;
+				else
+					call Dom.SetAttr: e name 0 0;
+				;;
+				i++;
+			;;
+			else
+				break;
+			;;
+		;;
+	[end: e]
+}

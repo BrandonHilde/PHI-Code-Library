@@ -1,0 +1,671 @@
+# Reflect and Proxy. A proxy is a host object with every hook, in three classes so that a proxy of a function
+# can be called and one of a constructor can be used with new. Each trap's result is checked against what the
+# target has promised, as the spec's invariants require.
+
+struct.JsProxyData
+{
+	u64 target;            # null once revoked
+	u64 handler;
+}
+
+phi.JsProxy:Library
+{
+	ptr<JsClass> plain_class: 0;
+	ptr<JsClass> call_class: 0;
+	ptr<JsClass> ctor_class: 0;
+
+	[Init]
+		if plain_class is 0
+			plain_class is (MakeClass);
+			call_class is (MakeClass);
+			call_class.call_fn is addr HookCall;
+			ctor_class is (MakeClass);
+			ctor_class.call_fn is addr HookCall;
+			ctor_class.construct is addr HookConstruct;
+		;;
+		# Proxy has no prototype property
+		ptr<JsNativeFn> pc: (JsObjs.NewNative: addr Construct 'Proxy' 2 false);
+		pc.o.flags is pc.o.flags | JsObjs.F_CTOR as u16;
+		JsRt.P.proxy_ctor is pc as ptr<JsObj>;
+		call JsObjs.DefineZ: JsRt.r.global 'Proxy' (JsV.Obj: pc as ptr<JsObj>) JsObjs.WC;
+		call Js.DefineNative: pc as ptr<JsObj> 'revocable' addr Revocable 2;
+		ptr<JsObj> r: (JsObjs.NewObject);
+		call JsObjs.DefineZ: JsRt.r.global 'Reflect' (JsV.Obj: r) JsObjs.WC;
+		call JsObjs.DefineValue: r JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'Reflect') JsObjs.C;
+		call Js.DefineNativeSafe: r 'apply' addr RApply 3;
+		call Js.DefineNativeSafe: r 'construct' addr RConstruct 2;
+		call Js.DefineNative: r 'defineProperty' addr RDefine 3;
+		call Js.DefineNative: r 'deleteProperty' addr RDelete 2;
+		call Js.DefineNative: r 'get' addr RGet 2;
+		call Js.DefineNative: r 'getOwnPropertyDescriptor' addr RGetOwn 2;
+		call Js.DefineNative: r 'getPrototypeOf' addr RGetProto 1;
+		call Js.DefineNative: r 'has' addr RHas 2;
+		call Js.DefineNative: r 'isExtensible' addr RIsExt 1;
+		call Js.DefineNative: r 'ownKeys' addr ROwnKeys 1;
+		call Js.DefineNative: r 'preventExtensions' addr RPreventExt 1;
+		call Js.DefineNative: r 'set' addr RSet 3;
+		call Js.DefineNative: r 'setPrototypeOf' addr RSetProto 2;
+	[end]
+
+	[MakeClass]
+		ptr<JsClass> c: (JsObjs.NewClass: 'Object');
+		c.trace is addr Trace;
+		c.finalize is addr Finalize;
+		c.get is addr HookGet;
+		c.set is addr HookSet;
+		c.has_key is addr HookHas;
+		c.del is addr HookDelete;
+		c.keys is addr HookKeys;
+		c.get_own is addr HookGetOwn;
+		c.define is addr HookDefine;
+		c.get_proto is addr HookGetProto;
+		c.set_proto is addr HookSetProto;
+		c.is_extensible is addr HookIsExt;
+		c.prevent_ext is addr HookPreventExt;
+	[end: c]
+
+	[Is: ptr<JsObj> o: 0;]
+	[end: o.cls is not 0 and (o.cls is plain_class or o.cls is call_class or o.cls is ctor_class)]
+
+	# the target, for IsArray; a revoked proxy is an error, as the spec says
+	[TargetOf: ptr<JsObj> o: 0;]
+		ptr<JsProxyData> d: o.data as ptr<JsProxyData>;
+		if d.target is JsV.NULL
+			call JsErr.Type: 'Cannot perform this operation on a revoked proxy';
+		;;
+	[end: d.target]
+
+	[Trace: ptr<JsObj> o: 0;]
+		ptr<JsProxyData> d: o.data as ptr<JsProxyData>;
+		call Js.Mark: d.target;
+		call Js.Mark: d.handler;
+	[end]
+
+	[Finalize: ptr<JsObj> o: 0;]
+		free o.data;
+	[end]
+
+	[Make: u64 target: 0; u64 handler: 0;]
+		if not (JsV.IsObj: target) or not (JsV.IsObj: handler)
+			call JsErr.Type: 'Cannot create proxy with a non-object as target or handler';
+		;;
+		ptr<JsProxyData> d: new JsProxyData;
+		if d is 0
+			throw 'out of memory';
+		;;
+		d.target is target;
+		d.handler is handler;
+		ptr<JsClass> cl: plain_class;
+		if (JsOps.IsConstructor: target)
+			cl is ctor_class;
+		;;
+		elif (JsOps.IsCallable: target)
+			cl is call_class;
+		;;
+		# a proxy has no prototype of its own: every hook goes through its handler
+		ptr<JsObj> o: (JsObjs.NewHost: cl 0 d as ptr<u8>);
+	[end: o]
+
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		if not (JsV.IsObj: (Js.NewTarget))
+			call JsErr.Type: 'Constructor Proxy requires new';
+		;;
+	[end: (JsV.Obj: (Make: (Js.Arg: args argc 0) (Js.Arg: args argc 1)))]
+
+	[Revocable: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> p: (Make: (Js.Arg: args argc 0) (Js.Arg: args argc 1));
+		ptr<JsObj> result: (JsObjs.NewObject);
+		call JsObjs.CreateData: result (JsObjs.KeyZ: 'proxy') (JsV.Obj: p);
+		ptr<JsNativeFn> rv: (JsObjs.NewNative: addr Revoke '' 0 false);
+		rv.data is (JsV.Obj: p);
+		call JsObjs.CreateData: result (JsObjs.KeyZ: 'revoke') (JsV.Obj: rv as ptr<JsObj>);
+	[end: (JsV.Obj: result)]
+
+	[Revoke: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		if self.data is not JsV.NULL
+			ptr<JsObj> p: (JsV.AsObj: self.data);
+			self.data is JsV.NULL;
+			ptr<JsProxyData> d: p.data as ptr<JsProxyData>;
+			d.target is JsV.NULL;
+			d.handler is JsV.NULL;
+		;;
+	[end: JsV.UNDEF]
+
+	# the trap of this name, undefined if the handler has none; a revoked proxy is an error
+	[Trap: ptr<JsProxyData> d: 0; ptr<u8> name: 0;]
+		call WlStack.Check;
+		if d.handler is JsV.NULL
+			call JsErr.Type: ('Cannot perform ' name ' on a revoked proxy');
+		;;
+	[end: (JsOps.GetMethod: d.handler (JsStrs.InternZ: name) as ptr<u8>)]
+
+	[DataOf: ptr<JsObj> o: 0;]
+	[end: o.data as ptr<JsProxyData>]
+
+	[Target: ptr<JsProxyData> d: 0;]
+	[end: (JsV.AsObj: d.target)]
+
+	# ---- the hooks ----
+
+	[HookGet: ptr<JsObj> o: 0; u64 key: 0; u64 recv: 0; ptr<u64> output: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'get');
+		ptr<JsObj> tg: (Target: d);
+		if t is JsV.UNDEF
+			output:0 is (JsObjs.Get: tg key recv);
+			return 1;
+		;;
+		u64 v: (JsVm.Call3: t d.handler d.target (JsObjs.KeyToValue: key) recv);
+		JsDesc own;
+		if (JsObjs.GetOwn: tg key addr own) and (own.flags & JsObjs.C) is 0
+			if (own.flags & JsObjs.ACC) is 0 and (own.flags & JsObjs.W) is 0
+				if not (JsOps.SameValue: v own.value)
+					call JsErr.Type: 'proxy get: value differs from a read-only, non-configurable property';
+				;;
+			;;
+			elif (own.flags & JsObjs.ACC) is not 0 and own.getter is JsV.UNDEF and v is not JsV.UNDEF
+				call JsErr.Type: 'proxy get: a non-configurable accessor without a getter must read as undefined';
+			;;
+		;;
+		output:0 is v;
+	[end: 1]
+
+	[HookSet: ptr<JsObj> o: 0; u64 key: 0; u64 v: 0; u64 recv: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'set');
+		ptr<JsObj> tg: (Target: d);
+		if t is JsV.UNDEF
+			if (JsObjs.Set: tg key v recv) return 1;
+			return -1;
+		;;
+		call Js.Push: d.target;
+		call Js.Push: (JsObjs.KeyToValue: key);
+		call Js.Push: v;
+		call Js.Push: recv;
+		if not (JsOps.ToBool: (Js.CallThrowing: t d.handler 4))
+			return -1;
+		;;
+		JsDesc own;
+		if (JsObjs.GetOwn: tg key addr own) and (own.flags & JsObjs.C) is 0
+			if (own.flags & JsObjs.ACC) is 0 and (own.flags & JsObjs.W) is 0
+				if not (JsOps.SameValue: v own.value)
+					call JsErr.Type: 'proxy set: value differs from a read-only, non-configurable property';
+				;;
+			;;
+			elif (own.flags & JsObjs.ACC) is not 0 and own.setter is JsV.UNDEF
+				call JsErr.Type: 'proxy set: a non-configurable accessor without a setter can not be set';
+			;;
+		;;
+	[end: 1]
+
+	[HookHas: ptr<JsObj> o: 0; u64 key: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'has');
+		ptr<JsObj> tg: (Target: d);
+		if t is JsV.UNDEF
+			if (JsObjs.Has: tg key) return 1;
+			return -1;
+		;;
+		if (JsOps.ToBool: (JsVm.Call2: t d.handler d.target (JsObjs.KeyToValue: key)))
+			return 1;
+		;;
+		JsDesc own;
+		if (JsObjs.GetOwn: tg key addr own)
+			if (own.flags & JsObjs.C) is 0
+				call JsErr.Type: 'proxy has: a non-configurable property can not be hidden';
+			;;
+			if not (JsObjs.IsExtensible: tg)
+				call JsErr.Type: 'proxy has: a property of a non-extensible target can not be hidden';
+			;;
+		;;
+	[end: -1]
+
+	[HookDelete: ptr<JsObj> o: 0; u64 key: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'deleteProperty');
+		ptr<JsObj> tg: (Target: d);
+		if t is JsV.UNDEF
+			if (JsObjs.Delete: tg key) return 1;
+			return -1;
+		;;
+		if not (JsOps.ToBool: (JsVm.Call2: t d.handler d.target (JsObjs.KeyToValue: key)))
+			return -1;
+		;;
+		JsDesc own;
+		if (JsObjs.GetOwn: tg key addr own)
+			if (own.flags & JsObjs.C) is 0
+				call JsErr.Type: 'proxy deleteProperty: a non-configurable property can not be deleted';
+			;;
+			if not (JsObjs.IsExtensible: tg)
+				call JsErr.Type: 'proxy deleteProperty: a property of a non-extensible target can not be deleted';
+			;;
+		;;
+	[end: 1]
+
+	[HookKeys: ptr<JsObj> o: 0; ptr<JsObj> list: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'ownKeys');
+		ptr<JsObj> tg: (Target: d);
+		if t is JsV.UNDEF
+			ptr<JsObj> direct: (JsObjs.OwnKeys: tg);
+			while u32 a: 0; a < direct.length; a++;
+				call JsObjs.ArrayPush: list direct.elems:a;
+			;;
+			return;
+		;;
+		u64 rv: (JsVm.Call1: t d.handler d.target);
+		if not (JsV.IsObj: rv)
+			call JsErr.Type: 'proxy ownKeys: the result is not an object';
+		;;
+		ptr<JsObj> ro: (JsV.AsObj: rv);
+		f64 len: (JsArrayBuiltins.LengthOf: ro);
+		f64 i: 0.0;
+		while i < len
+			u64 k: (JsObjs.Get: ro (JsArrayBuiltins.IndexKey: i) rv);
+			if not (JsV.IsStr: k) and not (JsV.IsSym: k)
+				call JsErr.Type: 'proxy ownKeys: each key must be a string or a symbol';
+			;;
+			while u32 j: 0; j < list.length; j++;
+				if (JsOps.SameValue: list.elems:j k)
+					call JsErr.Type: 'proxy ownKeys: the result has a duplicate key';
+				;;
+			;;
+			call JsObjs.ArrayPush: list k;
+			i is i + 1.0;
+		;;
+		bln ext: (JsObjs.IsExtensible: tg);
+		ptr<JsObj> tkeys: (JsObjs.OwnKeys: tg);
+		u32 matched: 0;
+		JsDesc own;
+		while u32 m: 0; m < tkeys.length; m++;
+			u64 kv: tkeys.elems:m;
+			bln must: not ext;
+			if not must and (JsObjs.GetOwn: tg (JsObjs.KeyOf: kv) addr own)
+				must is (own.flags & JsObjs.C) is 0;
+			;;
+			bln found: false;
+			while u32 n: 0; n < list.length; n++;
+				if (JsOps.SameValue: list.elems:n kv)
+					found is true;
+					break;
+				;;
+			;;
+			if found
+				matched++;
+			;;
+			elif must
+				call JsErr.Type: 'proxy ownKeys: the result leaves out a key it must include';
+			;;
+		;;
+		if not ext and matched is not list.length
+			call JsErr.Type: 'proxy ownKeys: the result has a key a non-extensible target does not';
+		;;
+	[end]
+
+	[HookGetOwn: ptr<JsObj> o: 0; u64 key: 0; ptr<JsDesc> out_desc: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'getOwnPropertyDescriptor');
+		ptr<JsObj> tg: (Target: d);
+		if t is JsV.UNDEF
+			if (JsObjs.GetOwn: tg key out_desc) return 1;
+			return -1;
+		;;
+		u64 rv: (JsVm.Call2: t d.handler d.target (JsObjs.KeyToValue: key));
+		if not (JsV.IsObj: rv) and rv is not JsV.UNDEF
+			call JsErr.Type: 'proxy getOwnPropertyDescriptor: the result must be an object or undefined';
+		;;
+		JsDesc own;
+		bln has_own: (JsObjs.GetOwn: tg key addr own);
+		if rv is JsV.UNDEF
+			if has_own
+				if (own.flags & JsObjs.C) is 0
+					call JsErr.Type: 'proxy getOwnPropertyDescriptor: a non-configurable property can not be hidden';
+				;;
+				if not (JsObjs.IsExtensible: tg)
+					call JsErr.Type: 'proxy getOwnPropertyDescriptor: a property of a non-extensible target can not be hidden';
+				;;
+			;;
+			return -1;
+		;;
+		bln ext: (JsObjs.IsExtensible: tg);
+		call JsObjectBuiltins.ToDesc: rv out_desc;
+		u32 f: out_desc.flags;
+		# completed: what wasn't said is off
+		if (f & (JsObjs.H_GET | JsObjs.H_SET)) is not 0
+			f is f | JsObjs.ACC;
+		;;
+		out_desc.flags is f;
+		if not has_own and not ext
+			call JsErr.Type: 'proxy getOwnPropertyDescriptor: a new property on a non-extensible target';
+		;;
+		if (f & JsObjs.C) is 0
+			if not has_own or (own.flags & JsObjs.C) is not 0
+				call JsErr.Type: 'proxy getOwnPropertyDescriptor: non-configurable, but the target says otherwise';
+			;;
+			if (f & JsObjs.ACC) is 0 and (f & JsObjs.W) is 0 and (own.flags & JsObjs.W) is not 0
+				call JsErr.Type: 'proxy getOwnPropertyDescriptor: read-only, but the target says otherwise';
+			;;
+		;;
+		if has_own and (own.flags & JsObjs.C) is 0
+			if (f & JsObjs.C) is not 0
+				call JsErr.Type: 'proxy getOwnPropertyDescriptor: incompatible with the target';
+			;;
+			if (f & JsObjs.ACC) is not (own.flags & JsObjs.ACC)
+				call JsErr.Type: 'proxy getOwnPropertyDescriptor: incompatible with the target';
+			;;
+		;;
+	[end: 1]
+
+	# a descriptor object saying only what d says
+	[PartialDesc: ptr<JsDesc> d: 0;]
+		ptr<JsObj> o: (JsObjs.NewObject);
+		u32 f: d.flags;
+		if (f & JsObjs.H_VALUE) is not 0
+			call JsObjs.AddProp: o JsRt.A.value as ptr<u8> d.value JsObjs.WEC;
+		;;
+		if (f & JsObjs.H_W) is not 0
+			call JsObjs.AddProp: o JsRt.A.writable as ptr<u8> (JsV.Bool: (f & JsObjs.W) is not 0) JsObjs.WEC;
+		;;
+		if (f & JsObjs.H_GET) is not 0
+			call JsObjs.AddProp: o JsRt.A.get as ptr<u8> d.getter JsObjs.WEC;
+		;;
+		if (f & JsObjs.H_SET) is not 0
+			call JsObjs.AddProp: o JsRt.A.set as ptr<u8> d.setter JsObjs.WEC;
+		;;
+		if (f & JsObjs.H_E) is not 0
+			call JsObjs.AddProp: o JsRt.A.enumerable as ptr<u8> (JsV.Bool: (f & JsObjs.E) is not 0) JsObjs.WEC;
+		;;
+		if (f & JsObjs.H_C) is not 0
+			call JsObjs.AddProp: o JsRt.A.configurable as ptr<u8> (JsV.Bool: (f & JsObjs.C) is not 0) JsObjs.WEC;
+		;;
+	[end: (JsV.Obj: o)]
+
+	[HookDefine: ptr<JsObj> o: 0; u64 key: 0; ptr<JsDesc> desc: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'defineProperty');
+		ptr<JsObj> tg: (Target: d);
+		if t is JsV.UNDEF
+			if (JsObjs.DefineOwn: tg key desc) return 1;
+			return -1;
+		;;
+		u64 dv: (PartialDesc: desc);
+		if not (JsOps.ToBool: (JsVm.Call3: t d.handler d.target (JsObjs.KeyToValue: key) dv))
+			return -1;
+		;;
+		JsDesc own;
+		bln has_own: (JsObjs.GetOwn: tg key addr own);
+		bln says_nonconfig: (desc.flags & JsObjs.H_C) is not 0 and (desc.flags & JsObjs.C) is 0;
+		if not has_own
+			if not (JsObjs.IsExtensible: tg)
+				call JsErr.Type: 'proxy defineProperty: a new property on a non-extensible target';
+			;;
+			if says_nonconfig
+				call JsErr.Type: 'proxy defineProperty: non-configurable, but the target has no such property';
+			;;
+		;;
+		else
+			if says_nonconfig and (own.flags & JsObjs.C) is not 0
+				call JsErr.Type: 'proxy defineProperty: non-configurable, but the target says otherwise';
+			;;
+			if (own.flags & JsObjs.C) is 0
+				if (desc.flags & JsObjs.H_C) is not 0 and (desc.flags & JsObjs.C) is not 0
+					call JsErr.Type: 'proxy defineProperty: incompatible with the target';
+				;;
+				if (own.flags & JsObjs.ACC) is 0 and (own.flags & JsObjs.W) is 0
+					if (desc.flags & JsObjs.H_W) is not 0 and (desc.flags & JsObjs.W) is not 0
+						call JsErr.Type: 'proxy defineProperty: incompatible with the target';
+					;;
+					if (desc.flags & JsObjs.H_VALUE) is not 0 and not (JsOps.SameValue: desc.value own.value)
+						call JsErr.Type: 'proxy defineProperty: incompatible with the target';
+					;;
+				;;
+			;;
+		;;
+	[end: 1]
+
+	[HookGetProto: ptr<JsObj> o: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'getPrototypeOf');
+		ptr<JsObj> tg: (Target: d);
+		if t is JsV.UNDEF
+			ptr<JsObj> p: (JsObjs.ProtoOf: tg);
+			if p is 0
+				return JsV.NULL;
+			;;
+			return (JsV.Obj: p);
+		;;
+		u64 rv: (JsVm.Call1: t d.handler d.target);
+		if not (JsV.IsObj: rv) and rv is not JsV.NULL
+			call JsErr.Type: 'proxy getPrototypeOf: the result must be an object or null';
+		;;
+		if not (JsObjs.IsExtensible: tg)
+			ptr<JsObj> real: (JsObjs.ProtoOf: tg);
+			u64 rp: JsV.NULL;
+			if real is not 0
+				rp is (JsV.Obj: real);
+			;;
+			if rp is not rv
+				call JsErr.Type: 'proxy getPrototypeOf: differs from a non-extensible target';
+			;;
+		;;
+	[end: rv]
+
+	[HookSetProto: ptr<JsObj> o: 0; u64 v: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'setPrototypeOf');
+		ptr<JsObj> tg: (Target: d);
+		ptr<JsObj> pv: 0;
+		if (JsV.IsObj: v)
+			pv is (JsV.AsObj: v);
+		;;
+		if t is JsV.UNDEF
+			if (JsObjs.SetProtoOf: tg pv) return 1;
+			return -1;
+		;;
+		if not (JsOps.ToBool: (JsVm.Call2: t d.handler d.target v))
+			return -1;
+		;;
+		if not (JsObjs.IsExtensible: tg) and (JsObjs.ProtoOf: tg) is not pv
+			call JsErr.Type: 'proxy setPrototypeOf: differs from a non-extensible target';
+		;;
+	[end: 1]
+
+	[HookIsExt: ptr<JsObj> o: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'isExtensible');
+		ptr<JsObj> tg: (Target: d);
+		if t is JsV.UNDEF
+			if (JsObjs.IsExtensible: tg) return 1;
+			return -1;
+		;;
+		bln said: (JsOps.ToBool: (JsVm.Call1: t d.handler d.target));
+		if said is not (JsObjs.IsExtensible: tg)
+			call JsErr.Type: 'proxy isExtensible: differs from the target';
+		;;
+		if said return 1;
+	[end: -1]
+
+	[HookPreventExt: ptr<JsObj> o: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'preventExtensions');
+		ptr<JsObj> tg: (Target: d);
+		if t is JsV.UNDEF
+			if (JsObjs.PreventExtensions: tg) return 1;
+			return -1;
+		;;
+		if not (JsOps.ToBool: (JsVm.Call1: t d.handler d.target))
+			return -1;
+		;;
+		if (JsObjs.IsExtensible: tg)
+			call JsErr.Type: 'proxy preventExtensions: the target is still extensible';
+		;;
+	[end: 1]
+
+	[ArgsArray: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> a: (JsObjs.NewArray: argc as u32);
+		while int i: 0; i < argc; i++;
+			call JsObjs.ArrayPush: a args:i;
+		;;
+	[end: (JsV.Obj: a)]
+
+	[HookCall: ptr<JsObj> o: 0; ptr<u64> args: 0; int argc: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'apply');
+		u64 this_v: args:(-1);
+		if t is JsV.UNDEF
+			while int i: 0; i < argc; i++;
+				call Js.Push: args:i;
+			;;
+			return (Js.CallThrowing: d.target this_v argc);
+		;;
+	[end: (JsVm.Call3: t d.handler d.target this_v (ArgsArray: args argc))]
+
+	[HookConstruct: ptr<JsObj> o: 0; ptr<u64> args: 0; int argc: 0; u64 nt: 0;]
+		ptr<JsProxyData> d: (DataOf: o);
+		u64 t: (Trap: d 'construct');
+		if t is JsV.UNDEF
+			u64 use_nt: nt;
+			if (JsV.IsObj: nt) and (JsV.AsObj: nt) is o
+				use_nt is d.target;
+			;;
+			while int i: 0; i < argc; i++;
+				call Js.Push: args:i;
+			;;
+			return (ConstructWith: d.target argc use_nt);
+		;;
+		u64 r: (JsVm.Call3: t d.handler d.target (ArgsArray: args argc) nt);
+		if not (JsV.IsObj: r)
+			call JsErr.Type: 'proxy construct: the result must be an object';
+		;;
+	[end: r]
+
+	# Js.Construct with a new.target of its own; the arguments have been pushed
+	[ConstructWith: u64 fn: 0; int argc: 0; u64 nt: 0;]
+		u32 n: argc as u32;
+		call JsVm.CheckStack: 2;
+		ptr<u64> args: JsVm.sp - n * 8;
+		call Mem.Move: (args + 16) as ptr<u8> args as ptr<u8> n * 8;
+		args:0 is fn;
+		args:1 is JsV.UNDEF;
+		JsVm.sp++ 16;
+	[end: (JsVm.InvokeNew: n nt)]
+
+	# ---- Reflect ----
+
+	[Obj: u64 v: 0; ptr<u8> who: 0;]
+		if not (JsV.IsObj: v)
+			call JsErr.Type: ('Reflect.' who ' called on a non-object');
+		;;
+	[end: (JsV.AsObj: v)]
+
+	# pushes each element of an array-like; how many
+	[PushList: u64 list: 0;]
+		if not (JsV.IsObj: list)
+			call JsErr.Type: 'The arguments list must be an object';
+		;;
+		ptr<JsObj> o: (JsV.AsObj: list);
+		f64 len: (JsArrayBuiltins.LengthOf: o);
+		if len > 200000.0
+			call JsErr.Range: 'Too many arguments';
+		;;
+		int n: len as int;
+		while int i: 0; i < n; i++;
+			call Js.Push: (JsObjs.GetIndex: o i as u32 list);
+		;;
+	[end: n]
+
+	[RApply: ptr<u64> args: 0; int argc: 0;]
+		u64 f: (Js.Arg: args argc 0);
+		if not (JsOps.IsCallable: f)
+			call JsErr.Type: 'Reflect.apply: the target is not a function';
+		;;
+		u64 this_v: (Js.Arg: args argc 1);
+		int n: (PushList: (Js.Arg: args argc 2));
+	[end: (Js.CallThrowing: f this_v n)]
+
+	[RConstruct: ptr<u64> args: 0; int argc: 0;]
+		u64 f: (Js.Arg: args argc 0);
+		if not (JsOps.IsConstructor: f)
+			call JsErr.Type: 'Reflect.construct: the target is not a constructor';
+		;;
+		u64 nt: f;
+		if argc >= 3
+			nt is args:2;
+			if not (JsOps.IsConstructor: nt)
+				call JsErr.Type: 'Reflect.construct: newTarget is not a constructor';
+			;;
+		;;
+		int n: (PushList: (Js.Arg: args argc 1));
+	[end: (ConstructWith: f n nt)]
+
+	[RDefine: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (Obj: (Js.Arg: args argc 0) 'defineProperty');
+		u64 k: (JsObjs.KeyOf: (Js.Arg: args argc 1));
+		JsDesc d;
+		call JsObjectBuiltins.ToDesc: (Js.Arg: args argc 2) addr d;
+	[end: (JsV.Bool: (JsObjs.DefineOwn: o k addr d))]
+
+	[RDelete: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (Obj: (Js.Arg: args argc 0) 'deleteProperty');
+	[end: (JsV.Bool: (JsObjs.Delete: o (JsObjs.KeyOf: (Js.Arg: args argc 1))))]
+
+	[RGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (Obj: (Js.Arg: args argc 0) 'get');
+		u64 k: (JsObjs.KeyOf: (Js.Arg: args argc 1));
+		u64 recv: args:0;
+		if argc >= 3
+			recv is args:2;
+		;;
+	[end: (JsObjs.Get: o k recv)]
+
+	[RGetOwn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (Obj: (Js.Arg: args argc 0) 'getOwnPropertyDescriptor');
+		u64 k: (JsObjs.KeyOf: (Js.Arg: args argc 1));
+		JsDesc d;
+		if not (JsObjs.GetOwn: o k addr d)
+			return JsV.UNDEF;
+		;;
+	[end: (JsObjectBuiltins.FromDesc: addr d)]
+
+	[RGetProto: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> p: (JsObjs.ProtoOf: (Obj: (Js.Arg: args argc 0) 'getPrototypeOf'));
+		if p is 0
+			return JsV.NULL;
+		;;
+	[end: (JsV.Obj: p)]
+
+	[RHas: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (Obj: (Js.Arg: args argc 0) 'has');
+	[end: (JsV.Bool: (JsObjs.Has: o (JsObjs.KeyOf: (Js.Arg: args argc 1))))]
+
+	[RIsExt: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Bool: (JsObjs.IsExtensible: (Obj: (Js.Arg: args argc 0) 'isExtensible')))]
+
+	[ROwnKeys: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Obj: (JsObjs.OwnKeys: (Obj: (Js.Arg: args argc 0) 'ownKeys')))]
+
+	[RPreventExt: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Bool: (JsObjs.PreventExtensions: (Obj: (Js.Arg: args argc 0) 'preventExtensions')))]
+
+	[RSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (Obj: (Js.Arg: args argc 0) 'set');
+		u64 k: (JsObjs.KeyOf: (Js.Arg: args argc 1));
+		u64 recv: args:0;
+		if argc >= 4
+			recv is args:3;
+		;;
+	[end: (JsV.Bool: (JsObjs.Set: o k (Js.Arg: args argc 2) recv))]
+
+	[RSetProto: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (Obj: (Js.Arg: args argc 0) 'setPrototypeOf');
+		u64 p: (Js.Arg: args argc 1);
+		if not (JsV.IsObj: p) and p is not JsV.NULL
+			call JsErr.Type: 'Object prototype may only be an Object or null';
+		;;
+		ptr<JsObj> po: 0;
+		if (JsV.IsObj: p)
+			po is (JsV.AsObj: p);
+		;;
+	[end: (JsV.Bool: (JsObjs.SetProtoOf: o po))]
+}

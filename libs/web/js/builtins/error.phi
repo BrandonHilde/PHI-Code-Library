@@ -1,0 +1,138 @@
+# Error and its kinds. One native serves all of them, told apart by its magic number.
+
+phi.JsErrorBuiltins:Library
+{
+	const u32 M_ERROR: 0;
+	const u32 M_TYPE: 1;
+	const u32 M_RANGE: 2;
+	const u32 M_REFERENCE: 3;
+	const u32 M_SYNTAX: 4;
+	const u32 M_EVAL: 5;
+	const u32 M_URI: 6;
+	const u32 M_INTERNAL: 7;
+	const u32 M_AGGREGATE: 8;
+
+	[Init]
+		ptr<JsObj> base: (JsObjs.NewObject);
+		JsRt.P.error is base;
+		ptr<JsNativeFn> ec: (Js.DefineClass: 'Error' addr Construct 1 base);
+		call Js.DefineNative: base 'toString' addr ToString 0;
+		call JsObjs.DefineValue: base JsRt.A.name as ptr<u8> (Js.NewStringZ: 'Error') JsObjs.WC;
+		call JsObjs.DefineValue: base JsRt.A.message as ptr<u8> (JsV.Str: JsRt.blank) JsObjs.WC;
+		ptr<JsProtoSet> P: JsRt.P;
+		P.type_error is (Kind: 'TypeError' M_TYPE ec);
+		P.range_error is (Kind: 'RangeError' M_RANGE ec);
+		P.reference_error is (Kind: 'ReferenceError' M_REFERENCE ec);
+		P.syntax_error is (Kind: 'SyntaxError' M_SYNTAX ec);
+		P.eval_error is (Kind: 'EvalError' M_EVAL ec);
+		P.uri_error is (Kind: 'URIError' M_URI ec);
+		P.internal_error is (Kind: 'InternalError' M_INTERNAL ec);
+		P.aggregate_error is (Kind: 'AggregateError' M_AGGREGATE ec);
+	[end]
+
+	[Kind: ptr<u8> name: 0; u32 magic: 0; ptr<JsNativeFn> base_ctor: 0;]
+		ptr<JsObj> proto: (JsObjs.NewWithProto: JsRt.P.error);
+		int nargs: 1;
+		if magic is M_AGGREGATE
+			nargs is 2;
+		;;
+		ptr<JsNativeFn> c: (Js.DefineClass: name addr Construct nargs proto);
+		c.magic is magic;
+		ptr<JsObj> co: c as ptr<JsObj>;
+		co.proto is base_ctor as ptr<JsObj>;
+		call JsObjs.DefineValue: proto JsRt.A.name as ptr<u8> (Js.NewStringZ: name) JsObjs.WC;
+		call JsObjs.DefineValue: proto JsRt.A.message as ptr<u8> (JsV.Str: JsRt.blank) JsObjs.WC;
+	[end: proto]
+
+	[DefaultProto: u32 magic: 0;]
+		ptr<JsProtoSet> P: JsRt.P;
+		when magic
+			is M_TYPE
+				return P.type_error;
+			;;
+			is M_RANGE
+				return P.range_error;
+			;;
+			is M_REFERENCE
+				return P.reference_error;
+			;;
+			is M_SYNTAX
+				return P.syntax_error;
+			;;
+			is M_EVAL
+				return P.eval_error;
+			;;
+			is M_URI
+				return P.uri_error;
+			;;
+			is M_INTERNAL
+				return P.internal_error;
+			;;
+			is M_AGGREGATE
+				return P.aggregate_error;
+			;;
+		;;
+	[end: P.error]
+
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		ptr<JsNativeFn> self_fn: (Js.CalleeOf: args);
+		u32 magic: self_fn.magic;
+		if not (JsV.IsObj: nt)
+			nt is args:(-2);
+		;;
+		ptr<JsObj> proto: (JsOps.ProtoFromCtor: nt (DefaultProto: magic));
+		ptr<JsObj> e: (JsObjs.Alloc: sizeof JsObj JsGc.K_ERROR proto);
+		int at_arg: 0;
+		if magic is M_AGGREGATE
+			at_arg is 1;
+		;;
+		u64 msg: (Js.Arg: args argc at_arg);
+		if msg is not JsV.UNDEF
+			call JsObjs.AddProp: e JsRt.A.message as ptr<u8> (JsV.Str: (JsOps.ToStr: msg)) JsObjs.WC;
+		;;
+		u64 opts: (Js.Arg: args argc at_arg + 1);
+		if (JsV.IsObj: opts)
+			ptr<JsObj> oo: (JsV.AsObj: opts);
+			if (JsObjs.Has: oo (JsV.Str: JsRt.A.cause))
+				call JsObjs.AddProp: e JsRt.A.cause as ptr<u8> (JsObjs.GetAtom: oo JsRt.A.cause as ptr<u8> opts) JsObjs.WC;
+			;;
+		;;
+		if magic is M_AGGREGATE
+			ptr<JsObj> list: (JsObjs.NewArray: 0);
+			call JsVm.GetIterValues: (Js.Arg: args argc 0);
+			while true
+				u64 r: (JsVm.Call0: JsVm.sp:(-1) JsVm.sp:(-2));
+				if not (JsV.IsObj: r)
+					call JsErr.Type: 'Iterator result is not an object';
+				;;
+				ptr<JsObj> ro: (JsV.AsObj: r);
+				if (JsOps.ToBool: (JsObjs.GetAtom: ro JsRt.A.done as ptr<u8> r)) break;
+				call JsObjs.ArrayPush: list (JsObjs.GetAtom: ro JsRt.A.value as ptr<u8> r);
+			;;
+			call JsObjs.AddProp: e JsRt.A.errors as ptr<u8> (JsV.Obj: list) JsObjs.WC;
+		;;
+		call JsErr.AddStack: e;
+	[end: (JsV.Obj: e)]
+
+	[ToString: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if not (JsV.IsObj: t)
+			call JsErr.Type: 'Error.prototype.toString requires that this be an object';
+		;;
+		ptr<JsObj> o: (JsV.AsObj: t);
+		u64 nv: (JsObjs.GetAtom: o JsRt.A.name as ptr<u8> t);
+		u64 mv: (JsObjs.GetAtom: o JsRt.A.message as ptr<u8> t);
+		ptr<JsStr> ns: (JsStrs.InternZ: 'Error');
+		if nv is not JsV.UNDEF
+			ns is (JsOps.ToStr: nv);
+		;;
+		ptr<JsStr> ms: JsRt.blank;
+		if mv is not JsV.UNDEF
+			ms is (JsOps.ToStr: mv);
+		;;
+		if ms.bytes is 0 return (JsV.Str: ns);
+		if ns.bytes is 0 return (JsV.Str: ms);
+		ptr<JsStr> sep: (JsStrs.InternZ: ': ');
+	[end: (JsV.Str: (JsStrs.Concat: (JsStrs.Concat: ns sep) ms))]
+}

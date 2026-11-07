@@ -1,0 +1,2983 @@
+# RegExp: a compiler from pattern to a small program, and a backtracking matcher that keeps its choices on a
+# stack on the heap, not on PHI's. So a pattern can't run the program's stack out, however it's written;
+# only lookaround recurses, once per level of nesting the pattern itself has, and that's budgeted. A
+# pattern that backtracks forever is stopped by Js.Interrupt, like any script.
+#
+# Jumps in a program are relative to where they stand, so a piece of compiled code can be moved without
+# changing it. That's how a quantifier wraps its atom, and how lookbehind puts terms in reverse order.
+
+struct.JsReProg
+{
+	ptr<u32> code;
+	u32 len;
+	ptr<u32> classes;      # for each class: pair count, negated, 4 words of ASCII bitmap, then its pairs sorted
+	u32 class_len;
+	u32 groups;            # capture groups, counting the whole match
+	u32 regs;              # groups * 2, then the counters and marks loops use
+	ptr<u32> names;        # for each named group: its number, its text's offset in name_text and its length
+	u32 name_count;
+	ptr<u8> name_text;
+	bln ignore_case;
+	bln multiline;
+	bln dot_all;
+	bln unicode;
+	bln global;
+	bln sticky;
+	bln has_indices;
+	bln unicode_sets;
+	u32 refs;
+	# what it was compiled from, for the cache
+	ptr<u8> key;
+	u32 key_len;
+}
+
+struct.JsRePayload
+{
+	ptr<JsReProg> prog;
+	u64 source;
+	u64 flags;
+}
+
+struct.JsReFrame
+{
+	u32 a;                 # CHOICE: pc.  UNDO: register.   RUN: pc
+	u32 b;                 # CHOICE: pos. UNDO: old value.  RUN: lowest pos
+	u32 c;                 # RUN: current pos
+	u32 kind;
+}
+
+struct.JsReMatchIter
+{
+	u64 regexp;
+	u64 text;
+	bln global;
+	bln unicode;
+	bln finished;
+}
+
+phi.JsReOp:Library
+{
+	const u32 CHAR: 0;
+	const u32 CLASS: 1;
+	const u32 ANY: 2;
+	const u32 ANY_ALL: 3;
+	const u32 SPLIT: 4;
+	const u32 JMP: 5;
+	const u32 SAVE: 6;
+	const u32 RUN: 7;
+	const u32 LOOP: 8;
+	const u32 INC: 9;
+	const u32 MATCH: 10;
+	const u32 CHAR_SLOW: 11;     # both directions, case and surrogate pairs
+	const u32 CLASS_SLOW: 12;
+	const u32 ANY_SLOW: 13;
+	const u32 CTR_SET: 14;
+	const u32 RESET: 15;
+	const u32 MARK: 16;
+	const u32 CHECK: 17;
+	const u32 BOL: 18;
+	const u32 EOL: 19;
+	const u32 WORDB: 20;
+	const u32 NWORDB: 21;
+	const u32 LOOK: 22;
+	const u32 LOOK_END: 23;
+	const u32 BACKREF: 24;
+
+	const u32 F_CHOICE: 0;
+	const u32 F_UNDO: 1;
+	const u32 F_RUN: 2;
+
+	const u32 ATOM_CHAR: 0;
+	const u32 ATOM_ANY: 1;
+	const u32 ATOM_ANY_ALL: 2;
+	const u32 ATOM_CLASS: 3;
+
+	const u32 INF: 0xFFFFFFFF;
+}
+
+# ---- case and categories, shared with String ----
+
+phi.JsCase:Library
+{
+	[Run: ptr<u32> t: 0; u32 count: 0; u32 c: 0;]
+		u32 lo: 0;
+		u32 hi: count / 4;
+		while lo < hi
+			u32 mid: (lo + hi) / 2;
+			u32 at_: mid * 4;
+			if c < t:at_
+				hi is mid;
+			;;
+			elif c > t:(at_ + 1)
+				lo is mid + 1;
+			;;
+			else
+				if ((c - t:at_) % t:(at_ + 2)) is 0
+					return c + t:(at_ + 3);
+				;;
+				return c;
+			;;
+		;;
+	[end: c]
+
+	[Upper: u32 c: 0;]
+		if c < 128
+			if c >= 97 and c <= 122 return c - 32;
+			return c;
+		;;
+	[end: (Run: addr JsCaseData.upper_runs:0 JsCaseData.upper_runs.len c)]
+
+	[Lower: u32 c: 0;]
+		if c < 128
+			if c >= 65 and c <= 90 return c + 32;
+			return c;
+		;;
+	[end: (Run: addr JsCaseData.lower_runs:0 JsCaseData.lower_runs.len c)]
+
+	# where a code point is in a table of specials, or -1
+	[Special: ptr<u32> t: 0; u32 count: 0; u32 c: 0;]
+		int lo: 0;
+		int hi: (count / 4) as int;
+		while lo < hi
+			int mid: (lo + hi) / 2;
+			u32 v: t:(mid * 4);
+			if c is v return mid * 4;
+			if c < v
+				hi is mid;
+			;;
+			else
+				lo is mid + 1;
+			;;
+		;;
+	[end: -1]
+}
+
+phi.JsRegExp:Library
+{
+	# ---- compiling: the pattern as units (or code points, with the u flag), and what's being made
+
+	ptr<u32> pat: 0;
+	u32 pat_len: 0;
+	u32 p: 0;
+	bln f_i: false;
+	bln f_m: false;
+	bln f_s: false;
+	bln f_u: false;
+	bln back: false;              # compiling lookbehind: terms run right to left
+	u32 total_groups: 0;
+	u32 next_group: 0;
+	u32 next_reg: 0;
+	bln has_names: false;
+
+	ptr<u32> code: 0;
+	u32 code_len: 0;
+	u32 code_cap: 0;
+	ptr<u32> pool: 0;
+	u32 pool_len: 0;
+	u32 pool_cap: 0;
+	ptr<u32> tmp: 0;              # a class's pairs while it's parsed
+	u32 tmp_len: 0;
+	u32 tmp_cap: 0;
+
+	ptr<u32> nm: 0;
+	u32 nm_count: 0;
+	WlBuf nm_text;
+
+	# what the last atom was, if it's one character wide
+	bln atom_single: false;
+	u32 atom_kind: 0;
+	u32 atom_arg: 0;
+
+	const u32 MAX_CODE: 2000000;
+	const u32 MAX_PATTERN: 2000000;
+	const u32 MAX_STACK: 8000000;
+
+	ptr<JsClass> re_class: 0;
+	ptr<JsClass> iter_class: 0;
+
+	# ---- the cache of compiled programs: a literal in a loop is compiled once
+
+	ptr<ptr<JsReProg>> cache: 0;
+	const u32 CACHE_SIZE: 128;
+
+	[Init]
+		if re_class is 0
+			re_class is (JsObjs.NewClass: 'RegExp');
+			re_class.trace is addr TraceRe;
+			re_class.finalize is addr FreeRe;
+			iter_class is (JsObjs.NewClass: 'RegExp String Iterator');
+			iter_class.trace is addr TraceIter;
+			iter_class.finalize is addr FreeIter;
+		;;
+		ptr<JsRuntime> r: JsRt.r;
+		r.regexp_hook is addr Literal;
+		r.regexp_check_hook is addr CheckLiteral;
+		ptr<JsObj> proto: (JsObjs.NewObject);
+		JsRt.P.regexp is proto;
+		ptr<JsNativeFn> c: (Js.DefineClass: 'RegExp' addr Construct 2 proto);
+		call Js.DefineSymbolGetter: c as ptr<JsObj> JsRt.S.species '[Symbol.species]' addr JsArrayBuiltins.Species 0;
+		ptr<JsNativeFn> ex: (Js.DefineNative: proto 'exec' addr Exec 1);
+		JsRt.P.regexp_exec is ex as ptr<JsObj>;
+		call Js.DefineNative: proto 'test' addr Test 1;
+		call Js.DefineNative: proto 'toString' addr ToString 0;
+		call Js.DefineNative: proto 'compile' addr CompileFn 2;
+		call Js.DefineGetter: proto 'source' addr SourceGet 0;
+		call Js.DefineGetter: proto 'flags' addr FlagsGet 0;
+		call FlagGetter: proto 'global' 'g';
+		call FlagGetter: proto 'ignoreCase' 'i';
+		call FlagGetter: proto 'multiline' 'm';
+		call FlagGetter: proto 'dotAll' 's';
+		call FlagGetter: proto 'unicode' 'u';
+		call FlagGetter: proto 'sticky' 'y';
+		call FlagGetter: proto 'hasIndices' 'd';
+		call FlagGetter: proto 'unicodeSets' 'v';
+		call Js.DefineSymbolNative: proto JsRt.S.match '[Symbol.match]' addr SymMatch 1;
+		call Js.DefineSymbolNative: proto JsRt.S.matchAll '[Symbol.matchAll]' addr SymMatchAll 1;
+		call Js.DefineSymbolNative: proto JsRt.S.replace '[Symbol.replace]' addr SymReplace 2;
+		call Js.DefineSymbolNative: proto JsRt.S.search '[Symbol.search]' addr SymSearch 1;
+		call Js.DefineSymbolNative: proto JsRt.S.split '[Symbol.split]' addr SymSplit 2;
+		ptr<JsObj> ip: (JsObjs.NewWithProto: JsRt.P.iterator);
+		JsRt.P.regexp_string_iterator is ip;
+		call Js.DefineNative: ip 'next' addr IterNext 0;
+		call JsObjs.DefineValue: ip JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'RegExp String Iterator') JsObjs.C;
+	[end]
+
+	[FlagGetter: ptr<JsObj> proto: 0; ptr<u8> name: 0; u32 flag: 0;]
+		call Js.DefineGetter: proto name addr FlagGet 0;
+		# which one it is, on the getter itself
+		JsDesc d;
+		if (JsObjs.GetOwn: proto (JsObjs.KeyZ: name) addr d)
+			ptr<JsNativeFn> g: (JsV.AsObj: d.getter) as ptr<JsNativeFn>;
+			g.magic is flag;
+		;;
+	[end]
+
+	# ---- code being made ----
+
+	[Word: u32 w: 0;]
+		if code_len >= code_cap
+			call GrowCode: 1;
+		;;
+		code:code_len is w;
+		code_len++;
+	[end]
+
+	[GrowCode: u32 extra: 0;]
+		if code_len + extra > MAX_CODE
+			call JsErr.Syntax: 'Invalid regular expression: too large';
+		;;
+		u32 room: code_cap * 2;
+		if room < 64
+			room is 64;
+		;;
+		if room < code_len + extra
+			room is code_len + extra;
+		;;
+		ptr<u32> grown: new u32[room];
+		if grown is 0
+			throw 'out of memory';
+		;;
+		if code is not 0
+			call Mem.Copy: grown as ptr<u8> code as ptr<u8> code_len * 4;
+			free code;
+		;;
+		code is grown;
+		code_cap is room;
+	[end]
+
+	# room for count words at place, moving what's after it along
+	[Insert: u32 place: 0; u32 count: 0;]
+		if code_len + count > code_cap
+			call GrowCode: count;
+		;;
+		u32 n: code_len - place;
+		if n > 0
+			call Mem.Move: (code as ptr<u8>) + (place + count) * 4 (code as ptr<u8>) + place * 4 n * 4;
+		;;
+		code_len is code_len + count;
+	[end]
+
+	[Bad: ptr<u8> why: 0;]
+		call JsErr.Syntax: ('Invalid regular expression: ' why);
+	[end]
+
+	# the unit or code point the op stands on: for the jump's offset, relative to the word after it
+	[Patch: u32 place: 0; u32 target: 0;]
+		code:place is target - (place + 1);
+	[end]
+
+	# ---- reading the pattern ----
+
+	[More]
+	[end: p < pat_len]
+
+	[Peek]
+		if p < pat_len return pat:p;
+	[end: 0xFFFFFFFF as u32]
+
+	[PeekAt: u32 n: 0;]
+		if p + n < pat_len return pat:(p + n);
+	[end: 0xFFFFFFFF as u32]
+
+	[Eat: u32 c: 0;]
+		if p < pat_len and pat:p is c
+			p++;
+			return true;
+		;;
+	[end: false]
+
+	# ---- first: how many groups, since \2 means something different depending on that ----
+
+	[CountGroups]
+		total_groups is 1;
+		has_names is false;
+		u32 i: 0;
+		bln in_class: false;
+		while i < pat_len
+			u32 c: pat:i;
+			if c is 92
+				i++ 2;
+				continue;
+			;;
+			if in_class
+				if c is ']'
+					in_class is false;
+				;;
+			;;
+			elif c is '['
+				in_class is true;
+			;;
+			elif c is '('
+				if i + 1 < pat_len and pat:(i + 1) is '?'
+					if i + 3 < pat_len and pat:(i + 2) is '<' and pat:(i + 3) is not '=' and pat:(i + 3) is not '!'
+						total_groups++;
+						has_names is true;
+					;;
+				;;
+				else
+					total_groups++;
+				;;
+			;;
+			i++;
+		;;
+	[end]
+
+	# ---- the grammar ----
+
+	# returns the least it can match, so a loop knows if its body can match nothing
+	[Disjunction]
+		call WlStack.Check;
+		u32 start: code_len;
+		u32 least: (Alternative);
+		if (Peek) is not '|'
+			return least;
+		;;
+		# chain the jumps at the ends of the alternatives through their own operands, patched at the end
+		u32 chain: 0;
+		while (Eat: '|')
+			call Insert: start 2;
+			code:start is JsReOp.SPLIT;
+			call Word: JsReOp.JMP;
+			u32 here: code_len;
+			call Word: chain;
+			chain is here + 1;
+			call Patch: start + 1 code_len;
+			start is code_len;
+			u32 other: (Alternative);
+			if other < least
+				least is other;
+			;;
+		;;
+		while chain is not 0
+			u32 place: chain - 1;
+			u32 following: code:place;
+			call Patch: place code_len;
+			chain is following;
+		;;
+	[end: least]
+
+	[Alternative]
+		u32 least: 0;
+		u32 alt_start: code_len;
+		while (More) and (Peek) is not '|' and (Peek) is not ')'
+			u32 term_start: code_len;
+			u32 m: (Term);
+			if m > 0x3FFFFFFF or least > 0x3FFFFFFF
+				least is 0x7FFFFFFF;
+			;;
+			else
+				least is least + m;
+			;;
+			# right to left: this term goes in front of the ones before it
+			if back and term_start > alt_start
+				call Rotate: alt_start term_start;
+			;;
+		;;
+	[end: least]
+
+	[Rotate: u32 from: 0; u32 mid: 0;]
+		u32 head: mid - from;
+		u32 tail: code_len - mid;
+		ptr<u32> saved: new u32[head];
+		if saved is 0
+			throw 'out of memory';
+		;;
+		call Mem.Copy: saved as ptr<u8> (code as ptr<u8>) + from * 4 head * 4;
+		call Mem.Move: (code as ptr<u8>) + from * 4 (code as ptr<u8>) + mid * 4 tail * 4;
+		call Mem.Copy: (code as ptr<u8>) + (from + tail) * 4 saved as ptr<u8> head * 4;
+		free saved;
+	[end]
+
+	[Term]
+		u32 c: (Peek);
+		atom_single is false;
+		if c is '^'
+			p++;
+			call Word: JsReOp.BOL;
+			return 0;
+		;;
+		if c is '$'
+			p++;
+			call Word: JsReOp.EOL;
+			return 0;
+		;;
+		if c is 92 and (PeekAt: 1) is 'b'
+			p++ 2;
+			call Word: JsReOp.WORDB;
+			return 0;
+		;;
+		if c is 92 and (PeekAt: 1) is 'B'
+			p++ 2;
+			call Word: JsReOp.NWORDB;
+			return 0;
+		;;
+		if c is '(' and (PeekAt: 1) is '?'
+			u32 d: (PeekAt: 2);
+			if d is '=' or d is '!'
+				p++ 3;
+				u32 start1: code_len;
+				call Look: d is '!' false;
+				# Annex B lets a lookahead take a quantifier, without the u flag
+				if not f_u
+					return (Quantifier: start1 0 next_group);
+				;;
+				return 0;
+			;;
+			if d is '<' and ((PeekAt: 3) is '=' or (PeekAt: 3) is '!')
+				bln negate: (PeekAt: 3) is '!';
+				p++ 4;
+				call Look: negate true;
+				return 0;
+			;;
+		;;
+		u32 start: code_len;
+		u32 caps_before: next_group;
+		u32 least: (Atom);
+	[end: (Quantifier: start least caps_before)]
+
+	[Look: bln negate: false; bln behind: false;]
+		bln was_back: back;
+		back is behind;
+		u32 head: code_len;
+		call Word: JsReOp.LOOK;
+		call Word: negate;
+		call Word: 0;
+		call Disjunction;
+		if not (Eat: ')')
+			call Bad: 'Unterminated group';
+		;;
+		call Word: JsReOp.LOOK_END;
+		call Patch: head + 2 code_len;
+		back is was_back;
+		atom_single is false;
+	[end]
+
+	[Digits: ptr<u32> value: 0;]
+		u32 start: p;
+		u64 v: 0;
+		while (More) and (Peek) >= '0' and (Peek) <= '9'
+			if v < 4294967295
+				v is v * 10 + ((Peek) - '0');
+			;;
+			p++;
+		;;
+		if v > 2147483647
+			v is 2147483647;
+		;;
+		value:0 is v as u32;
+	[end: p > start]
+
+	[Quantifier: u32 start: 0; u32 least: 0; u32 caps_before: 0;]
+		u32 q_min: 1;
+		u32 q_max: 1;
+		u32 c: (Peek);
+		bln quantified: true;
+		if c is '*'
+			p++;
+			q_min is 0;
+			q_max is JsReOp.INF;
+		;;
+		elif c is '+'
+			p++;
+			q_max is JsReOp.INF;
+		;;
+		elif c is '?'
+			p++;
+			q_min is 0;
+		;;
+		elif c is '{'
+			u32 save: p;
+			p++;
+			u32 lo: 0;
+			u32 hi: 0;
+			bln ok: (Digits: addr lo);
+			if ok
+				hi is lo;
+				if (Eat: ',')
+					if not (Digits: addr hi)
+						hi is JsReOp.INF;
+					;;
+				;;
+				ok is (Eat: '}');
+			;;
+			if not ok
+				if f_u
+					call Bad: 'Incomplete quantifier';
+				;;
+				p is save;
+				quantified is false;
+			;;
+			else
+				if hi < lo
+					call Bad: 'numbers out of order in {} quantifier';
+				;;
+				q_min is lo;
+				q_max is hi;
+			;;
+		;;
+		else
+			quantified is false;
+		;;
+		if not quantified
+			return least;
+		;;
+		bln greedy: not (Eat: '?');
+		call Wrap: start least caps_before q_min q_max greedy;
+		if q_min is 0
+			return 0;
+		;;
+		if least is 0
+			return 0;
+		;;
+		if q_min > 0x3FFFFFFF / least
+			return 0x7FFFFFFF;
+		;;
+	[end: q_min * least]
+
+	[Wrap: u32 start: 0; u32 least: 0; u32 caps_before: 0; u32 q_min: 0; u32 q_max: 0; bln greedy: true;]
+		if q_max is 0
+			code_len is start;
+			return;
+		;;
+		if q_min is 1 and q_max is 1
+			return;
+		;;
+		# one character at a time, wanting as many as it can: a scan, and one frame however many it takes
+		if atom_single and greedy and not f_u and not back and not f_i
+			code_len is start;
+			call Word: JsReOp.RUN;
+			call Word: q_min;
+			call Word: q_max;
+			call Word: atom_kind;
+			call Word: atom_arg;
+			return;
+		;;
+		u32 counter: next_reg;
+		next_reg++;
+		bln can_be_empty: least is 0;
+		u32 mark_reg: 0;
+		if can_be_empty
+			mark_reg is next_reg;
+			next_reg++;
+		;;
+		bln has_caps: next_group > caps_before;
+		u32 prefix: 3 + 6 + 2;
+		if has_caps
+			prefix is prefix + 3;
+		;;
+		if can_be_empty
+			prefix is prefix + 2;
+		;;
+		call Insert: start prefix;
+		u32 w: start;
+		code:w is JsReOp.CTR_SET;
+		code:(w + 1) is counter;
+		code:(w + 2) is 0;
+		w is w + 3;
+		u32 head: w;
+		code:w is JsReOp.LOOP;
+		code:(w + 1) is counter;
+		code:(w + 2) is q_min;
+		code:(w + 3) is q_max;
+		code:(w + 4) is greedy;
+		w is w + 6;
+		code:w is JsReOp.INC;
+		code:(w + 1) is counter;
+		w is w + 2;
+		if has_caps
+			code:w is JsReOp.RESET;
+			code:(w + 1) is caps_before * 2;
+			code:(w + 2) is next_group * 2;
+			w is w + 3;
+		;;
+		if can_be_empty
+			code:w is JsReOp.MARK;
+			code:(w + 1) is mark_reg;
+			w is w + 2;
+			call Word: JsReOp.CHECK;
+			call Word: mark_reg;
+			call Word: counter;
+			call Word: q_min;
+		;;
+		call Word: JsReOp.JMP;
+		u32 jump_at: code_len;
+		call Word: 0;
+		call Patch: jump_at head;
+		call Patch: head + 5 code_len;
+		atom_single is false;
+	[end]
+
+	[Atom]
+		u32 c: (Peek);
+		atom_single is false;
+		when c
+			is '.'
+				p++;
+				call EmitAny;
+				return 1;
+			;;
+			is '('
+				return (Group);
+			;;
+			is '['
+				p++;
+				u32 cl: (ParseClass);
+				call EmitClass: cl;
+				return 1;
+			;;
+			is 92
+				return (AtomEscape);
+			;;
+			is '*' '+' '?'
+				call Bad: 'Nothing to repeat';
+			;;
+			is ')'
+				call Bad: 'Unmatched )';
+			;;
+			is '{'
+				if f_u
+					call Bad: 'Nothing to repeat';
+				;;
+				# Annex B: { that isn't a quantifier is itself; one that is has nothing to repeat
+				u32 save: p;
+				p++;
+				u32 dummy: 0;
+				bln is_q: (Digits: addr dummy);
+				if is_q
+					if (Eat: ',')
+						call Digits: addr dummy;
+					;;
+					is_q is (Peek) is '}';
+				;;
+				p is save;
+				if is_q
+					call Bad: 'Nothing to repeat';
+				;;
+			;;
+			is ']' '}'
+				if f_u
+					call Bad: 'Lone quantifier brackets';
+				;;
+			;;
+		;;
+		p++;
+		call EmitChar: c;
+	[end: 1]
+
+	[Group]
+		p++;
+		u32 number: 0;
+		bln capture: true;
+		if (Peek) is '?'
+			if (PeekAt: 1) is ':'
+				p++ 2;
+				capture is false;
+			;;
+			elif (PeekAt: 1) is '<'
+				p++ 2;
+				call GroupName: next_group;
+			;;
+			else
+				call Bad: 'Invalid group';
+			;;
+		;;
+		if capture
+			number is next_group;
+			next_group++;
+			if back
+				call Word: JsReOp.SAVE;
+				call Word: number * 2 + 1;
+			;;
+			else
+				call Word: JsReOp.SAVE;
+				call Word: number * 2;
+			;;
+		;;
+		u32 least: (Disjunction);
+		if not (Eat: ')')
+			call Bad: 'Unterminated group';
+		;;
+		if capture
+			call Word: JsReOp.SAVE;
+			if back
+				call Word: number * 2;
+			;;
+			else
+				call Word: number * 2 + 1;
+			;;
+		;;
+		atom_single is false;
+	[end: least]
+
+	# <name> is next: read it, and note it against the group's number
+	[GroupName: u32 number: 0;]
+		u32 from: nm_text.len;
+		call ReadName;
+		# two groups can't share a name
+		u32 n: nm_text.len - from;
+		while u32 i: 0; i < nm_count; i++;
+			if nm:(i * 3 + 2) is n and (Mem.Equal: nm_text.data + nm:(i * 3 + 1) nm_text.data + from n)
+				call Bad: 'Duplicate capture group name';
+			;;
+		;;
+		if nm is 0
+			nm is new u32[total_groups * 3 + 3];
+			if nm is 0
+				throw 'out of memory';
+			;;
+		;;
+		nm:(nm_count * 3) is number;
+		nm:(nm_count * 3 + 1) is from;
+		nm:(nm_count * 3 + 2) is n;
+		nm_count++;
+	[end]
+
+	# adds what's between the angle brackets to nm_text, after the name-start check
+	[ReadName]
+		u32 start: nm_text.len;
+		while true
+			if not (More)
+				call Bad: 'Invalid capture group name';
+			;;
+			u32 c: pat:p;
+			p++;
+			if c is '>' break;
+			if c is 92
+				if not (Eat: 'u')
+					call Bad: 'Invalid capture group name';
+				;;
+				c is (UnicodeEscape);
+				if c is 0xFFFFFFFF
+					call Bad: 'Invalid Unicode escape';
+				;;
+			;;
+			# without the u flag, a pair of surrogates is one character of the name
+			if c >= 0xD800 and c <= 0xDBFF and (Peek) >= 0xDC00 and (Peek) <= 0xDFFF
+				c is 0x10000 + ((c - 0xD800) << 10) + ((Peek) - 0xDC00);
+				p++;
+			;;
+			bln first_char: nm_text.len is start;
+			bln ok: (WlText.IsAlpha: c) or c is '$' or c is '_';
+			if not first_char and c < 128
+				ok is ok or (WlText.IsDigit: c);
+			;;
+			if c >= 128
+				if first_char
+					ok is (JsUnicode.IsIdStart: c);
+				;;
+				else
+					ok is (JsUnicode.IsIdContinue: c) or c is 0x200C or c is 0x200D;
+				;;
+			;;
+			if not ok
+				call Bad: 'Invalid capture group name';
+			;;
+			call nm_text.AddCode: c;
+		;;
+		if nm_text.len is start
+			call Bad: 'Invalid capture group name';
+		;;
+	[end]
+
+	# after \u: the value, or 0xFFFFFFFF if it isn't one (nothing is taken then, without the u flag)
+	[UnicodeEscape]
+		u32 save: p;
+		if (Peek) is '{' and f_u
+			p++;
+			u64 v: 0;
+			u32 digits: 0;
+			while (More) and (WlText.IsHex: (Peek))
+				v is v * 16 + (WlText.HexValue: (Peek)) as u32;
+				if v > 0x10FFFF
+					call Bad: 'Invalid Unicode escape';
+				;;
+				p++;
+				digits++;
+			;;
+			if digits is 0 or not (Eat: '}')
+				call Bad: 'Invalid Unicode escape';
+			;;
+			return v as u32;
+		;;
+		u32 h: (Hex: 4);
+		if h is 0xFFFFFFFF
+			p is save;
+			return 0xFFFFFFFF as u32;
+		;;
+		# with the u flag, 😀 is one character
+		if f_u and h >= 0xD800 and h <= 0xDBFF and (Peek) is 92 and (PeekAt: 1) is 'u'
+			u32 s2: p;
+			p++ 2;
+			u32 l: (Hex: 4);
+			if l is not 0xFFFFFFFF and l >= 0xDC00 and l <= 0xDFFF
+				return 0x10000 + ((h - 0xD800) << 10) + (l - 0xDC00);
+			;;
+			p is s2;
+		;;
+	[end: h]
+
+	[Hex: u32 count: 0;]
+		if p + count > pat_len return 0xFFFFFFFF as u32;
+		u32 v: 0;
+		while u32 i: 0; i < count; i++;
+			u32 c: pat:(p + i);
+			if c > 127 or not (WlText.IsHex: c) return 0xFFFFFFFF as u32;
+			v is v * 16 + (WlText.HexValue: c) as u32;
+		;;
+		p++ count;
+	[end: v]
+
+	[AtomEscape]
+		p++;
+		if not (More)
+			call Bad: '\\ at end of pattern';
+		;;
+		u32 c: pat:p;
+		# a back reference, or (Annex B) an octal escape if there aren't that many groups
+		if c >= '1' and c <= '9'
+			u32 save: p;
+			u32 n: 0;
+			call Digits: addr n;
+			if n < total_groups
+				call Word: JsReOp.BACKREF;
+				call Word: n;
+				call Word: back;
+				return 0;
+			;;
+			if f_u
+				call Bad: 'Invalid escape';
+			;;
+			p is save;
+			if c >= '8'
+				p++;
+				call EmitChar: c;
+				return 1;
+			;;
+		;;
+		if c is 'k' and (f_u or has_names)
+			p++;
+			if not (Eat: '<')
+				call Bad: 'Invalid named reference';
+			;;
+			call EmitNamedRef;
+			return 0;
+		;;
+		u32 set_kind: (ClassEscapeKind: c);
+		if set_kind is not 0
+			p++;
+			tmp_len is 0;
+			call AddClassEscape: c;
+			u32 cl: (FinishClass: false);
+			call EmitClass: cl;
+			return 1;
+		;;
+		if (c is 'p' or c is 'P') and f_u
+			p++;
+			tmp_len is 0;
+			call PropertyEscape: c is 'P';
+			u32 cl2: (FinishClass: false);
+			call EmitClass: cl2;
+			return 1;
+		;;
+		call EmitChar: (CharEscape: false);
+	[end: 1]
+
+	# a reference to a group that may not have been seen yet, so it's found by a separate look through the names
+	[EmitNamedRef]
+		WlBuf name;
+		u32 from: nm_text.len;
+		call ReadName;
+		u32 n: nm_text.len - from;
+		u32 number: (FindGroupByName: nm_text.data + from n);
+		nm_text.len is from;
+		if number is 0
+			call Bad: 'Invalid named capture referenced';
+		;;
+		call Word: JsReOp.BACKREF;
+		call Word: number;
+		call Word: back;
+		atom_single is false;
+	[end]
+
+	# Group numbers count every '(' that captures, so walk the pattern to the group that has this name.
+	[FindGroupByName: ptr<u8> name: 0; u32 n: 0;]
+		u32 number: 1;
+		u32 i: 0;
+		bln in_class: false;
+		while i < pat_len
+			u32 c: pat:i;
+			if c is 92
+				i++ 2;
+				continue;
+			;;
+			if in_class
+				if c is ']'
+					in_class is false;
+				;;
+			;;
+			elif c is '['
+				in_class is true;
+			;;
+			elif c is '('
+				if i + 1 < pat_len and pat:(i + 1) is '?'
+					if i + 3 < pat_len and pat:(i + 2) is '<' and pat:(i + 3) is not '=' and pat:(i + 3) is not '!'
+						if (NameAt: i + 3 name n) return number;
+						number++;
+					;;
+				;;
+				else
+					number++;
+				;;
+			;;
+			i++;
+		;;
+	[end: 0 as u32]
+
+	# whether the name at i in the pattern, up to its '>', is this one. Written plainly, or an escape makes it not
+	# match, which only costs the odd pattern that refers to an escaped name by another spelling.
+	[NameAt: u32 i: 0; ptr<u8> name: 0; u32 n: 0;]
+		WlBuf b;
+		while i < pat_len and pat:i is not '>'
+			call b.AddCode: pat:i;
+			i++;
+		;;
+		bln same: (WlText.Eq: b.data b.len name n);
+		call b.Free;
+	[end: same]
+
+	# \d \D \s \S \w \W: non-zero
+	[ClassEscapeKind: u32 c: 0;]
+		if c is 'd' or c is 'D' or c is 's' or c is 'S' or c is 'w' or c is 'W'
+			return 1;
+		;;
+	[end: 0]
+
+	[Pair: u32 lo: 0; u32 hi: 0;]
+		if tmp_len + 2 > tmp_cap
+			u32 room: tmp_cap * 2;
+			if room < 32
+				room is 32;
+			;;
+			ptr<u32> grown: new u32[room];
+			if grown is 0
+				throw 'out of memory';
+			;;
+			if tmp is not 0
+				call Mem.Copy: grown as ptr<u8> tmp as ptr<u8> tmp_len * 4;
+				free tmp;
+			;;
+			tmp is grown;
+			tmp_cap is room;
+		;;
+		tmp:tmp_len is lo;
+		tmp:(tmp_len + 1) is hi;
+		tmp_len++ 2;
+	[end]
+
+	[AddClassEscape: u32 c: 0;]
+		when c
+			is 'd'
+				call Pair: '0' '9';
+			;;
+			is 'D'
+				call Pair: 0 47;
+				call Pair: 58 0x10FFFF;
+			;;
+			is 'w'
+				call AddWord;
+			;;
+			is 'W'
+				call Pair: 0 47;
+				call Pair: 58 64;
+				call Pair: 91 94;
+				call Pair: 96 96;
+				call Pair: 123 0x10FFFF;
+			;;
+			is 's'
+				call AddSpace;
+			;;
+			is 'S'
+				call Pair: 0 8;
+				call Pair: 14 31;
+				call Pair: 33 0x9F;
+				call Pair: 0xA1 0x167F;
+				call Pair: 0x1681 0x1FFF;
+				call Pair: 0x200B 0x2027;
+				call Pair: 0x202A 0x202E;
+				call Pair: 0x2030 0x205E;
+				call Pair: 0x2060 0x2FFF;
+				call Pair: 0x3001 0xFEFE;
+				call Pair: 0xFF00 0x10FFFF;
+			;;
+		;;
+	[end]
+
+	[AddWord]
+		call Pair: '0' '9';
+		call Pair: 'A' 'Z';
+		call Pair: '_' '_';
+		call Pair: 'a' 'z';
+	[end]
+
+	[AddSpace]
+		call Pair: 9 13;
+		call Pair: 32 32;
+		call Pair: 0xA0 0xA0;
+		call Pair: 0x1680 0x1680;
+		call Pair: 0x2000 0x200A;
+		call Pair: 0x2028 0x2029;
+		call Pair: 0x202F 0x202F;
+		call Pair: 0x205F 0x205F;
+		call Pair: 0x3000 0x3000;
+		call Pair: 0xFEFF 0xFEFF;
+	[end]
+
+	# \p{...} is next after the p. The general categories in the tables, and a few simple ones.
+	[PropertyEscape: bln negate: false;]
+		if not (Eat: '{')
+			call Bad: 'Invalid property name';
+		;;
+		WlBuf name;
+		while (More) and (Peek) is not '}'
+			if (Peek) > 127
+				call name.Free;
+				call Bad: 'Invalid property name';
+			;;
+			call name.Add: (Peek) as u8;
+			p++;
+		;;
+		if not (Eat: '}')
+			call name.Free;
+			call Bad: 'Invalid property name';
+		;;
+		ptr<u8> text: name.data;
+		u32 before: tmp_len;
+		# "General_Category=L" and "gc=L" name the same as "L"
+		if (StartsZ: text 'General_Category=')
+			text is text + 17;
+		;;
+		elif (StartsZ: text 'gc=')
+			text is text + 3;
+		;;
+		bln found: true;
+		if (SameZ: text 'L') or (SameZ: text 'Letter') or (SameZ: text 'Alphabetic') or (SameZ: text 'Alpha')
+			call Pair: 'A' 'Z';
+			call Pair: 'a' 'z';
+			call AddTable: addr JsCaseData.cat_l:0 JsCaseData.cat_l.len;
+		;;
+		elif (SameZ: text 'Lu') or (SameZ: text 'Uppercase_Letter') or (SameZ: text 'Uppercase')
+			call Pair: 'A' 'Z';
+			call AddTable: addr JsCaseData.cat_lu:0 JsCaseData.cat_lu.len;
+		;;
+		elif (SameZ: text 'Ll') or (SameZ: text 'Lowercase_Letter') or (SameZ: text 'Lowercase')
+			call Pair: 'a' 'z';
+			call AddTable: addr JsCaseData.cat_ll:0 JsCaseData.cat_ll.len;
+		;;
+		elif (SameZ: text 'N') or (SameZ: text 'Number')
+			call Pair: '0' '9';
+			call AddTable: addr JsCaseData.cat_n:0 JsCaseData.cat_n.len;
+		;;
+		elif (SameZ: text 'Nd') or (SameZ: text 'Decimal_Number')
+			call Pair: '0' '9';
+			call AddTable: addr JsCaseData.cat_nd:0 JsCaseData.cat_nd.len;
+		;;
+		elif (SameZ: text 'P') or (SameZ: text 'Punctuation')
+			call Pair: 33 35;
+			call Pair: 37 42;
+			call Pair: 44 47;
+			call Pair: 58 59;
+			call Pair: 63 64;
+			call Pair: 91 93;
+			call Pair: 95 95;
+			call Pair: 123 123;
+			call Pair: 125 125;
+			call AddTable: addr JsCaseData.cat_p:0 JsCaseData.cat_p.len;
+		;;
+		elif (SameZ: text 'S') or (SameZ: text 'Symbol')
+			call Pair: 36 36;
+			call Pair: 43 43;
+			call Pair: 60 62;
+			call Pair: 94 94;
+			call Pair: 96 96;
+			call Pair: 124 124;
+			call Pair: 126 126;
+			call AddTable: addr JsCaseData.cat_s:0 JsCaseData.cat_s.len;
+		;;
+		elif (SameZ: text 'Z') or (SameZ: text 'Separator') or (SameZ: text 'White_Space')
+			call Pair: 32 32;
+			call AddTable: addr JsCaseData.cat_z:0 JsCaseData.cat_z.len;
+		;;
+		elif (SameZ: text 'ASCII')
+			call Pair: 0 127;
+		;;
+		elif (SameZ: text 'Any')
+			call Pair: 0 0x10FFFF;
+		;;
+		else
+			found is false;
+		;;
+		call name.Free;
+		if not found
+			call Bad: 'Unsupported property name';
+		;;
+		if negate
+			call Complement: before;
+		;;
+	[end]
+
+	[StartsZ: ptr<u8> text: 0; ptr<u8> start: 0;]
+		u32 i: 0;
+		while start:i is not 0
+			if text:i is not start:i return false;
+			i++;
+		;;
+	[end: true]
+
+	[SameZ: ptr<u8> a: 0; ptr<u8> b: 0;]
+		u32 i: 0;
+		while b:i is not 0
+			if a:i is not b:i return false;
+			i++;
+		;;
+	[end: a:i is 0]
+
+	[AddTable: ptr<u32> t: 0; u32 count: 0;]
+		u32 i: 0;
+		while i < count
+			call Pair: t:i t:(i + 1);
+			i++ 2;
+		;;
+	[end]
+
+	# the pairs from `from` on, replaced by everything they don't cover
+	[Complement: u32 from: 0;]
+		call SortPairs: from;
+		u32 count: tmp_len - from;
+		ptr<u32> copy: new u32[count + 2];
+		if copy is 0
+			throw 'out of memory';
+		;;
+		if count > 0
+			call Mem.Copy: copy as ptr<u8> (tmp + from * 4) as ptr<u8> count * 4;
+		;;
+		tmp_len is from;
+		u32 next_lo: 0;
+		u32 i: 0;
+		while i < count
+			if copy:i > next_lo
+				call Pair: next_lo copy:i - 1;
+			;;
+			next_lo is copy:(i + 1) + 1;
+			i++ 2;
+		;;
+		if next_lo <= 0x10FFFF
+			call Pair: next_lo 0x10FFFF;
+		;;
+		free copy;
+	[end]
+
+	# sorted by start, and overlaps joined
+	[SortPairs: u32 from: 0;]
+		u32 n: (tmp_len - from) / 2;
+		ptr<u32> t: tmp + from * 4;
+		u32 gap: n / 2;
+		while gap > 0
+			u32 i: gap;
+			while i < n
+				u32 lo: t:(i * 2);
+				u32 hi: t:(i * 2 + 1);
+				u32 j: i;
+				while j >= gap and t:((j - gap) * 2) > lo
+					t:(j * 2) is t:((j - gap) * 2);
+					t:(j * 2 + 1) is t:((j - gap) * 2 + 1);
+					j is j - gap;
+				;;
+				t:(j * 2) is lo;
+				t:(j * 2 + 1) is hi;
+				i++;
+			;;
+			gap is gap / 2;
+		;;
+		if n is 0 return;
+		u32 w: 0;
+		u32 r: 1;
+		while r < n
+			if t:(r * 2) <= t:(w * 2 + 1) + 1
+				if t:(r * 2 + 1) > t:(w * 2 + 1)
+					t:(w * 2 + 1) is t:(r * 2 + 1);
+				;;
+			;;
+			else
+				w++;
+				t:(w * 2) is t:(r * 2);
+				t:(w * 2 + 1) is t:(r * 2 + 1);
+			;;
+			r++;
+		;;
+		tmp_len is from + (w + 1) * 2;
+	[end]
+
+	# [ has been read
+	[ParseClass]
+		bln negate: (Eat: '^');
+		tmp_len is 0;
+		while true
+			if not (More)
+				call Bad: 'Unterminated character class';
+			;;
+			if (Eat: ']') break;
+			u32 lo: (ClassAtom);
+			if (Peek) is '-' and (PeekAt: 1) is not ']' and (PeekAt: 1) is not 0xFFFFFFFF
+				p++;
+				u32 hi: (ClassAtom);
+				if lo is 0xFFFFFFFF or hi is 0xFFFFFFFF
+					# one side was a set, like [\d-x]: an error with the u flag, and otherwise the - is itself
+					if f_u
+						call Bad: 'Invalid character class';
+					;;
+					if lo is not 0xFFFFFFFF
+						call Pair: lo lo;
+					;;
+					if hi is not 0xFFFFFFFF
+						call Pair: hi hi;
+					;;
+					call Pair: '-' '-';
+				;;
+				else
+					if lo > hi
+						call Bad: 'Range out of order in character class';
+					;;
+					call Pair: lo hi;
+				;;
+			;;
+			elif lo is not 0xFFFFFFFF
+				call Pair: lo lo;
+			;;
+		;;
+	[end: (FinishClass: negate)]
+
+	# a character, or 0xFFFFFFFF if it was a set, which has been added to the pairs already
+	[ClassAtom]
+		u32 c: pat:p;
+		if c is not 92
+			p++;
+			return c;
+		;;
+		p++;
+		if not (More)
+			call Bad: '\\ at end of pattern';
+		;;
+		u32 e: pat:p;
+		if (ClassEscapeKind: e) is not 0
+			p++;
+			call AddClassEscape: e;
+			return 0xFFFFFFFF as u32;
+		;;
+		if (e is 'p' or e is 'P') and f_u
+			p++;
+			call PropertyEscape: e is 'P';
+			return 0xFFFFFFFF as u32;
+		;;
+		if e is 'b'
+			p++;
+			return 8;
+		;;
+		if e is '-' and f_u
+			p++;
+			return '-';
+		;;
+	[end: (CharEscape: true)]
+
+	# the character an escape stands for. p is at what follows the backslash.
+	[CharEscape: bln in_class: false;]
+		u32 c: pat:p;
+		p++;
+		when c
+			is 't'
+				return 9;
+			;;
+			is 'n'
+				return 10;
+			;;
+			is 'v'
+				return 11;
+			;;
+			is 'f'
+				return 12;
+			;;
+			is 'r'
+				return 13;
+			;;
+			is 'c'
+				u32 l: (Peek);
+				if l <= 127 and (WlText.IsAlpha: l)
+					p++;
+					return l % 32;
+				;;
+				if f_u
+					call Bad: 'Invalid unicode escape';
+				;;
+				# Annex B: in a class, digits and _ work too; elsewhere the backslash stands for itself
+				if in_class and l <= 127 and ((WlText.IsDigit: l) or l is '_')
+					p++;
+					return l % 32;
+				;;
+				p--;
+				return 92;
+			;;
+			is '0'
+				if not ((Peek) >= '0' and (Peek) <= '9')
+					return 0;
+				;;
+				if f_u
+					call Bad: 'Invalid decimal escape';
+				;;
+				p--;
+				return (Octal);
+			;;
+			is 'x'
+				u32 hx: (Hex: 2);
+				if hx is not 0xFFFFFFFF return hx;
+				if f_u
+					call Bad: 'Invalid escape';
+				;;
+				return 'x';
+			;;
+			is 'u'
+				u32 ux: (UnicodeEscape);
+				if ux is not 0xFFFFFFFF return ux;
+				if f_u
+					call Bad: 'Invalid Unicode escape';
+				;;
+				return 'u';
+			;;
+		;;
+		if c >= '1' and c <= '7' and not f_u
+			p--;
+			return (Octal);
+		;;
+		if f_u
+			# only the syntax characters and / may be escaped
+			if c <= 127 and (c is '^' or c is '$' or c is 92 or c is '.' or c is '*' or c is '+' or c is '?' or c is '(' or c is ')' or c is '[' or c is ']' or c is '{' or c is '}' or c is '|' or c is '/')
+				return c;
+			;;
+			call Bad: 'Invalid escape';
+		;;
+		# Annex B: \k without named groups is k
+	[end: c]
+
+	[Octal]
+		u32 v: 0;
+		int count: 0;
+		while count < 3 and (Peek) >= '0' and (Peek) <= '7'
+			u32 next_v: v * 8 + ((Peek) - '0');
+			if next_v > 255 break;
+			v is next_v;
+			p++;
+			count++;
+		;;
+	[end: v]
+
+	# what's in tmp becomes a class in the pool
+	[FinishClass: bln negate: false;]
+		call SortPairs: 0;
+		u32 need: pool_len + 6 + tmp_len;
+		if need > pool_cap
+			u32 room: pool_cap * 2;
+			if room < need
+				room is need;
+			;;
+			if room < 64
+				room is 64;
+			;;
+			ptr<u32> grown: new u32[room];
+			if grown is 0
+				throw 'out of memory';
+			;;
+			if pool is not 0
+				call Mem.Copy: grown as ptr<u8> pool as ptr<u8> pool_len * 4;
+				free pool;
+			;;
+			pool is grown;
+			pool_cap is room;
+		;;
+		u32 at_: pool_len;
+		pool:at_ is tmp_len / 2;
+		pool:(at_ + 1) is negate;
+		pool:(at_ + 2) is 0;
+		pool:(at_ + 3) is 0;
+		pool:(at_ + 4) is 0;
+		pool:(at_ + 5) is 0;
+		if tmp_len > 0
+			call Mem.Copy: (pool as ptr<u8>) + (at_ + 6) * 4 tmp as ptr<u8> tmp_len * 4;
+		;;
+		pool_len is need;
+		# the ASCII bitmap, with both cases set under the i flag
+		while u32 c: 0; c < 128; c++;
+			bln inside: (InPairs: pool + (at_ + 6) * 4 tmp_len / 2 c);
+			if not inside and f_i
+				inside is (InPairs: pool + (at_ + 6) * 4 tmp_len / 2 (JsCase.Lower: c)) or (InPairs: pool + (at_ + 6) * 4 tmp_len / 2 (JsCase.Upper: c));
+			;;
+			if inside
+				pool:(at_ + 2 + (c >> 5)) is pool:(at_ + 2 + (c >> 5)) | (1 << (c & 31));
+			;;
+		;;
+	[end: at_]
+
+	[InPairs: ptr<u32> t: 0; u32 n: 0; u32 c: 0;]
+		u32 lo: 0;
+		u32 hi: n;
+		while lo < hi
+			u32 mid: (lo + hi) / 2;
+			if c < t:(mid * 2)
+				hi is mid;
+			;;
+			elif c > t:(mid * 2 + 1)
+				lo is mid + 1;
+			;;
+			else
+				return true;
+			;;
+		;;
+	[end: false]
+
+	[Canon: u32 c: 0;]
+		if not m_i_unicode
+			u32 u: (JsCase.Upper: c);
+			if c >= 128 and u < 128 return c;
+			return u;
+		;;
+	[end: (JsCase.Lower: c)]
+
+	[EmitChar: u32 c: 0;]
+		atom_single is c <= 0xFFFF;
+		atom_kind is JsReOp.ATOM_CHAR;
+		atom_arg is c;
+		if not f_i and not back and (c <= 0xFFFF)
+			call Word: JsReOp.CHAR;
+			call Word: c;
+			return;
+		;;
+		m_i_unicode is f_u;
+		if f_i
+			c is (Canon: c);
+		;;
+		call Word: JsReOp.CHAR_SLOW;
+		call Word: c;
+		call Word: back;
+	[end]
+
+	[EmitAny]
+		atom_single is true;
+		atom_arg is 0;
+		atom_kind is JsReOp.ATOM_ANY;
+		if f_s
+			atom_kind is JsReOp.ATOM_ANY_ALL;
+		;;
+		if not f_u and not back
+			if f_s
+				call Word: JsReOp.ANY_ALL;
+			;;
+			else
+				call Word: JsReOp.ANY;
+			;;
+			return;
+		;;
+		call Word: JsReOp.ANY_SLOW;
+		call Word: f_s;
+		call Word: back;
+	[end]
+
+	[EmitClass: u32 at_: 0;]
+		atom_single is true;
+		atom_kind is JsReOp.ATOM_CLASS;
+		atom_arg is at_;
+		if not f_u and not back and not f_i
+			call Word: JsReOp.CLASS;
+			call Word: at_;
+			return;
+		;;
+		call Word: JsReOp.CLASS_SLOW;
+		call Word: at_;
+		call Word: back;
+	[end]
+
+	# ---- from pattern to program ----
+
+	[Compile: ptr<JsStr> pattern: 0; ptr<u8> flags: 0; u32 flags_len: 0;]
+		call JsStrs.Flat: pattern;
+		f_i is false;
+		f_m is false;
+		f_s is false;
+		f_u is false;
+		bln f_g: false;
+		bln f_y: false;
+		bln f_d: false;
+		bln f_v: false;
+		while u32 i: 0; i < flags_len; i++;
+			u32 fc: flags:i;
+			bln dup: false;
+			when fc
+				is 'g'
+					dup is f_g;
+					f_g is true;
+				;;
+				is 'i'
+					dup is f_i;
+					f_i is true;
+				;;
+				is 'm'
+					dup is f_m;
+					f_m is true;
+				;;
+				is 's'
+					dup is f_s;
+					f_s is true;
+				;;
+				is 'u'
+					dup is f_u or f_v;
+					f_u is true;
+				;;
+				is 'v'
+					dup is f_u or f_v;
+					f_u is true;
+					f_v is true;
+				;;
+				is 'y'
+					dup is f_y;
+					f_y is true;
+				;;
+				is 'd'
+					dup is f_d;
+					f_d is true;
+				;;
+				else
+					dup is true;
+				;;
+			;;
+			if dup
+				call JsErr.Syntax: 'Invalid flags supplied to RegExp constructor';
+			;;
+		;;
+		if pattern.len > MAX_PATTERN
+			call Bad: 'too long';
+		;;
+		call LoadPattern: pattern;
+		call CountGroups;
+		p is 0;
+		code_len is 0;
+		pool_len is 0;
+		back is false;
+		next_group is 1;
+		next_reg is total_groups * 2;
+		nm_count is 0;
+		call nm_text.Clear;
+		if nm is not 0
+			free nm;
+			nm is 0;
+		;;
+		call Word: JsReOp.SAVE;
+		call Word: 0;
+		call Disjunction;
+		if (More)
+			call Bad: 'Unmatched )';
+		;;
+		call Word: JsReOp.SAVE;
+		call Word: 1;
+		call Word: JsReOp.MATCH;
+		ptr<JsReProg> g: new JsReProg;
+		if g is 0
+			throw 'out of memory';
+		;;
+		g.code is new u32[code_len];
+		g.classes is new u32[pool_len + 1];
+		if g.code is 0 or g.classes is 0
+			throw 'out of memory';
+		;;
+		call Mem.Copy: g.code as ptr<u8> code as ptr<u8> code_len * 4;
+		g.len is code_len;
+		if pool_len > 0
+			call Mem.Copy: g.classes as ptr<u8> pool as ptr<u8> pool_len * 4;
+		;;
+		g.class_len is pool_len;
+		g.groups is total_groups;
+		g.regs is next_reg;
+		g.ignore_case is f_i;
+		g.multiline is f_m;
+		g.dot_all is f_s;
+		g.unicode is f_u;
+		g.global is f_g;
+		g.sticky is f_y;
+		g.has_indices is f_d;
+		g.unicode_sets is f_v;
+		if nm_count > 0
+			g.names is nm;
+			nm is 0;
+			g.name_count is nm_count;
+			g.name_text is (WlText.Dup: nm_text.data nm_text.len);
+		;;
+	[end: g]
+
+	[LoadPattern: ptr<JsStr> s: 0;]
+		pat_len is 0;
+		if pat is not 0
+			free pat;
+			pat is 0;
+		;;
+		pat is new u32[s.len + 1];
+		if pat is 0
+			throw 'out of memory';
+		;;
+		u32 i: 0;
+		while i < s.len
+			if f_u
+				pat:pat_len is (JsStrs.CodeAt: s i);
+				i++ JsStrs.units_taken;
+			;;
+			else
+				pat:pat_len is (JsStrs.UnitAt: s i);
+				i++;
+			;;
+			pat_len++;
+		;;
+	[end]
+
+	[FreeProg: ptr<JsReProg> g: 0;]
+		free g.code;
+		free g.classes;
+		if g.names is not 0
+			free g.names;
+		;;
+		if g.name_text is not 0
+			free g.name_text;
+		;;
+		if g.key is not 0
+			free g.key;
+		;;
+		free g;
+	[end]
+
+	[Release: ptr<JsReProg> g: 0;]
+		if g is 0 return;
+		g.refs--;
+		if g.refs is 0
+			call FreeProg: g;
+		;;
+	[end]
+
+	# a compiled program for this pattern and these flags, with a reference for the caller
+	[Get: ptr<JsStr> pattern: 0; ptr<JsStr> flags: 0;]
+		call JsStrs.Flat: pattern;
+		call JsStrs.Flat: flags;
+		if cache is 0
+			cache is new ptr<JsReProg>[CACHE_SIZE];
+			if cache is 0
+				throw 'out of memory';
+			;;
+		;;
+		u32 h: (WlText.Hash: pattern.data pattern.bytes) ^ ((WlText.Hash: flags.data flags.bytes) * 31);
+		u32 slot: h % CACHE_SIZE;
+		ptr<JsReProg> have: cache:slot;
+		u32 key_len: pattern.bytes + 1 + flags.bytes;
+		if have is not 0 and have.key_len is key_len and (Mem.Equal: have.key pattern.data pattern.bytes) and (Mem.Equal: have.key + pattern.bytes + 1 flags.data flags.bytes)
+			have.refs++;
+			return have;
+		;;
+		ptr<JsReProg> g: (Compile: pattern flags.data flags.bytes);
+		g.key is new u8[key_len + 1];
+		if g.key is 0
+			throw 'out of memory';
+		;;
+		call Mem.Copy: g.key pattern.data pattern.bytes;
+		if flags.bytes > 0
+			call Mem.Copy: g.key + pattern.bytes + 1 flags.data flags.bytes;
+		;;
+		g.key_len is key_len;
+		g.refs is 2;              # the cache's, and the caller's
+		if have is not 0
+			call Release: have;
+		;;
+		cache:slot is g;
+	[end: g]
+
+	# ---- matching ----
+
+	ptr<u32> m_code: 0;
+	ptr<u32> m_classes: 0;
+	ptr<u16> s: 0;
+	u32 n: 0;
+	ptr<int> regs: 0;
+	bln m_multiline: false;
+	bln m_i: false;
+	bln m_i_unicode: false;
+	bln m_unicode: false;
+	u32 pc: 0;
+	u32 pos: 0;
+
+	ptr<JsReFrame> bt: 0;
+	u32 bt_cap: 0;
+	u32 bt_top: 0;
+	u32 fuel: 0;
+
+	# the last string read, as units, so that a /g loop over one string doesn't copy it each time
+	ptr<JsStr> in_str: 0;
+	ptr<JsRuntime> in_rt: 0;
+	u32 in_collections: 0;
+	ptr<u16> in_units: 0;
+	u32 in_cap: 0;
+
+	# the runtime's going: a new string could have the same address as the one remembered
+	[ForgetInput]
+		in_str is 0;
+	[end]
+
+	[LoadInput: ptr<JsStr> subject: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		if in_str is subject and in_rt is r and in_collections is r.collections
+			s is in_units;
+			n is subject.len;
+			return;
+		;;
+		call JsStrs.Flat: subject;
+		u32 need: subject.len + 1;
+		if need > in_cap
+			if in_units is not 0
+				free in_units;
+			;;
+			u32 room: need;
+			if room < 256
+				room is 256;
+			;;
+			in_units is new u16[room];
+			in_cap is room;
+			if in_units is 0
+				in_cap is 0;
+				in_str is 0;
+				throw 'out of memory';
+			;;
+		;;
+		if (subject.flags & JsStrs.F_ASCII) is not 0
+			ptr<u8> b: subject.data;
+			while u32 i: 0; i < subject.len; i++;
+				in_units:i is b:i;
+			;;
+		;;
+		else
+			while u32 j: 0; j < subject.len; j++;
+				in_units:j is (JsStrs.UnitAt: subject j) as u16;
+			;;
+		;;
+		in_str is subject;
+		in_rt is r;
+		in_collections is r.collections;
+		s is in_units;
+		n is subject.len;
+	[end]
+
+	[Push: u32 a: 0; u32 b: 0; u32 c: 0; u32 kind: 0;]
+		if bt_top >= bt_cap
+			u32 room: bt_cap * 2;
+			if room < 1024
+				room is 1024;
+			;;
+			if room > MAX_STACK
+				if bt_cap >= MAX_STACK
+					call JsErr.Internal: 'Regular expression too complicated: its backtracking stack is full';
+				;;
+				room is MAX_STACK;
+			;;
+			ptr<JsReFrame> grown: new JsReFrame[room];
+			if grown is 0
+				throw 'out of memory';
+			;;
+			if bt is not 0
+				call Mem.Copy: grown as ptr<u8> bt as ptr<u8> bt_top * sizeof JsReFrame;
+				free bt;
+			;;
+			bt is grown;
+			bt_cap is room;
+		;;
+		ptr<JsReFrame> f: bt + bt_top * sizeof JsReFrame;
+		f.a is a;
+		f.b is b;
+		f.c is c;
+		f.kind is kind;
+		bt_top++;
+	[end]
+
+	[SetReg: u32 r: 0; int v: 0;]
+		call Push: r regs:r as u32 0 JsReOp.F_UNDO;
+		regs:r is v;
+	[end]
+
+	# Goes back to the latest choice left above base, setting pc and pos. False if there aren't any.
+	[Backtrack: u32 base: 0;]
+		while bt_top > base
+			ptr<JsReFrame> f: bt + (bt_top - 1) * sizeof JsReFrame;
+			u32 kind: f.kind;
+			if kind is JsReOp.F_UNDO
+				regs:(f.a) is f.b as int;
+				bt_top--;
+			;;
+			elif kind is JsReOp.F_CHOICE
+				pc is f.a;
+				pos is f.b;
+				bt_top--;
+				return true;
+			;;
+			else
+				# one fewer of a run; the frame stays while there are more to give back
+				pc is f.a;
+				f.c is f.c - 1;
+				pos is f.c;
+				if f.c is f.b
+					bt_top--;
+				;;
+				return true;
+			;;
+		;;
+	[end: false]
+
+	# whether a unit at this position fits the atom a RUN repeats
+	[AtomHas: u32 kind: 0; u32 arg: 0; u32 c: 0;]
+		when kind
+			is JsReOp.ATOM_CHAR
+				return c is arg;
+			;;
+			is JsReOp.ATOM_ANY
+				return c is not 10 and c is not 13 and c is not 0x2028 and c is not 0x2029;
+			;;
+			is JsReOp.ATOM_ANY_ALL
+				return true;
+			;;
+		;;
+	[end: (ClassHas: arg c)]
+
+	[ClassHas: u32 at_: 0; u32 c: 0;]
+		ptr<u32> cl: m_classes + at_ * 4;
+		bln negated: cl:1 is not 0;
+		if c < 128
+			bln b: (cl:(2 + (c >> 5)) & (1 << (c & 31))) is not 0;
+			return b is not negated;
+		;;
+		bln inside: (InPairs: cl + 24 cl:0 c);
+		if not inside and m_i
+			inside is (InPairs: cl + 24 cl:0 (JsCase.Lower: c)) or (InPairs: cl + 24 cl:0 (JsCase.Upper: c));
+		;;
+	[end: inside is not negated]
+
+	# The next character in a direction, by the unicode flag's rules; 0xFFFFFFFF at the edge. Moves pos.
+	[Read: bln backward: false;]
+		if backward
+			if pos is 0 return 0xFFFFFFFF as u32;
+			pos--;
+			u32 u: s:pos;
+			if m_unicode and u >= 0xDC00 and u <= 0xDFFF and pos > 0
+				u32 hi: s:(pos - 1);
+				if hi >= 0xD800 and hi <= 0xDBFF
+					pos--;
+					return 0x10000 + ((hi - 0xD800) << 10) + (u - 0xDC00);
+				;;
+			;;
+			return u;
+		;;
+		if pos >= n return 0xFFFFFFFF as u32;
+		u32 f: s:pos;
+		pos++;
+		if m_unicode and f >= 0xD800 and f <= 0xDBFF and pos < n
+			u32 lo: s:pos;
+			if lo >= 0xDC00 and lo <= 0xDFFF
+				pos++;
+				return 0x10000 + ((f - 0xD800) << 10) + (lo - 0xDC00);
+			;;
+		;;
+	[end: f]
+
+	[IsWordAt: u32 i: 0;]
+		if i >= n return false;
+		u32 c: s:i;
+		if c >= 128 return false;
+	[end: (WlText.IsAlnum: c) or c is '_']
+
+	[IsLineEnd: u32 c: 0;]
+	[end: c is 10 or c is 13 or c is 0x2028 or c is 0x2029]
+
+	# Runs the program from start_pc at start_pos. True: it reached MATCH or LOOK_END, with pos where it got to.
+	[Run: u32 start_pc: 0; u32 start_pos: 0;]
+		u32 base: bt_top;
+		pc is start_pc;
+		pos is start_pos;
+		ptr<u32> c: m_code;
+		while true
+			if fuel is 0
+				fuel is 65536;
+				call Js.Checkpoint;
+			;;
+			fuel--;
+			bln ok: true;
+			u32 op: c:pc;
+			when op
+				is JsReOp.CHAR
+					if pos < n and s:pos is c:(pc + 1)
+						pos++;
+						pc++ 2;
+					;;
+					else
+						ok is false;
+					;;
+				;;
+				is JsReOp.CLASS
+					if pos < n and (ClassHas: c:(pc + 1) s:pos)
+						pos++;
+						pc++ 2;
+					;;
+					else
+						ok is false;
+					;;
+				;;
+				is JsReOp.ANY
+					if pos < n and not (IsLineEnd: s:pos)
+						pos++;
+						pc++;
+					;;
+					else
+						ok is false;
+					;;
+				;;
+				is JsReOp.ANY_ALL
+					if pos < n
+						pos++;
+						pc++;
+					;;
+					else
+						ok is false;
+					;;
+				;;
+				is JsReOp.SPLIT
+					call Push: pc + 2 + c:(pc + 1) pos 0 JsReOp.F_CHOICE;
+					pc++ 2;
+				;;
+				is JsReOp.JMP
+					pc is pc + 2 + c:(pc + 1);
+				;;
+				is JsReOp.SAVE
+					call SetReg: c:(pc + 1) pos as int;
+					pc++ 2;
+				;;
+				is JsReOp.RUN
+					u32 run_min: c:(pc + 1);
+					u32 run_max: c:(pc + 2);
+					u32 kind: c:(pc + 3);
+					u32 arg: c:(pc + 4);
+					u32 first: pos;
+					u32 count: 0;
+					while count < run_max and pos < n and (AtomHas: kind arg s:pos)
+						pos++;
+						count++;
+					;;
+					if count < run_min
+						ok is false;
+					;;
+					else
+						pc++ 5;
+						if count > run_min
+							call Push: pc first + run_min pos JsReOp.F_RUN;
+						;;
+					;;
+				;;
+				is JsReOp.LOOP
+					u32 counter: c:(pc + 1);
+					u32 done_count: regs:counter as u32;
+					u32 exit_pc: pc + 6 + c:(pc + 5);
+					if done_count < c:(pc + 2)
+						pc++ 6;
+					;;
+					elif c:(pc + 3) is not JsReOp.INF and done_count >= c:(pc + 3)
+						pc is exit_pc;
+					;;
+					elif c:(pc + 4) is not 0
+						call Push: exit_pc pos 0 JsReOp.F_CHOICE;
+						pc++ 6;
+					;;
+					else
+						call Push: pc + 6 pos 0 JsReOp.F_CHOICE;
+						pc is exit_pc;
+					;;
+				;;
+				is JsReOp.INC
+					call SetReg: c:(pc + 1) regs:(c:(pc + 1)) + 1;
+					pc++ 2;
+				;;
+				is JsReOp.MATCH
+					return true;
+				;;
+				is JsReOp.LOOK_END
+					return true;
+				;;
+				else
+					ok is (Rest: op);
+				;;
+			;;
+			if not ok
+				if not (Backtrack: base)
+					return false;
+				;;
+			;;
+		;;
+	[end: false]
+
+	# the less common operations
+	[Rest: u32 op: 0;]
+		ptr<u32> c: m_code;
+		when op
+			is JsReOp.CHAR_SLOW
+				u32 want: c:(pc + 1);
+				u32 got: (Read: c:(pc + 2) is not 0);
+				if got is 0xFFFFFFFF return false;
+				if m_i
+					got is (Canon: got);
+				;;
+				if got is not want return false;
+				pc++ 3;
+				return true;
+			;;
+			is JsReOp.CLASS_SLOW
+				u32 at_: c:(pc + 1);
+				u32 got2: (Read: c:(pc + 2) is not 0);
+				if got2 is 0xFFFFFFFF return false;
+				if not (ClassHas: at_ got2) return false;
+				pc++ 3;
+				return true;
+			;;
+			is JsReOp.ANY_SLOW
+				u32 got3: (Read: c:(pc + 2) is not 0);
+				if got3 is 0xFFFFFFFF return false;
+				if c:(pc + 1) is 0 and (IsLineEnd: got3) return false;
+				pc++ 3;
+				return true;
+			;;
+			is JsReOp.CTR_SET
+				call SetReg: c:(pc + 1) c:(pc + 2) as int;
+				pc++ 3;
+				return true;
+			;;
+			is JsReOp.RESET
+				u32 r: c:(pc + 1);
+				while r < c:(pc + 2)
+					if regs:r is not -1
+						call SetReg: r (-1);
+					;;
+					r++;
+				;;
+				pc++ 3;
+				return true;
+			;;
+			is JsReOp.MARK
+				call SetReg: c:(pc + 1) pos as int;
+				pc++ 2;
+				return true;
+			;;
+			is JsReOp.CHECK
+				# the body matched nothing, and it's past what's required: that road doesn't lead anywhere
+				if regs:(c:(pc + 1)) is pos as int and regs:(c:(pc + 2)) as u32 > c:(pc + 3)
+					return false;
+				;;
+				pc++ 4;
+				return true;
+			;;
+			is JsReOp.BOL
+				if pos is 0 or (m_multiline and (IsLineEnd: s:(pos - 1)))
+					pc++;
+					return true;
+				;;
+				return false;
+			;;
+			is JsReOp.EOL
+				if pos is n or (m_multiline and (IsLineEnd: s:pos))
+					pc++;
+					return true;
+				;;
+				return false;
+			;;
+			is JsReOp.WORDB JsReOp.NWORDB
+				bln before: pos > 0 and (IsWordAt: pos - 1);
+				bln after: (IsWordAt: pos);
+				bln at_edge: before is not after;
+				if at_edge is (op is JsReOp.WORDB)
+					pc++;
+					return true;
+				;;
+				return false;
+			;;
+			is JsReOp.BACKREF
+				return (BackRef: c:(pc + 1) c:(pc + 2) is not 0);
+			;;
+			is JsReOp.LOOK
+				return (LookAround);
+			;;
+		;;
+		call JsErr.Internal: 'bad regular expression program';
+	[end: false]
+
+	[BackRef: u32 group: 0; bln backward: false;]
+		int from: regs:(group * 2);
+		int upto: regs:(group * 2 + 1);
+		if from < 0 or upto < 0
+			pc++ 3;
+			return true;
+		;;
+		u32 len: (upto - from) as u32;
+		if backward
+			if pos < len return false;
+		;;
+		elif pos + len > n
+			return false;
+		;;
+		u32 start: pos;
+		if backward
+			start is pos - len;
+		;;
+		while u32 i: 0; i < len; i++;
+			u32 a: s:(from as u32 + i);
+			u32 b: s:(start + i);
+			if m_i
+				a is (Canon: a);
+				b is (Canon: b);
+			;;
+			if a is not b return false;
+		;;
+		if backward
+			pos is start;
+		;;
+		else
+			pos is start + len;
+		;;
+		pc++ 3;
+	[end: true]
+
+	[LookAround]
+		call WlStack.Check;
+		ptr<u32> c: m_code;
+		bln negate: c:(pc + 1) is not 0;
+		u32 after: pc + 3 + c:(pc + 2);
+		u32 here: pos;
+		u32 base: bt_top;
+		bln matched: (Run: pc + 3 here);
+		if negate
+			if matched
+				# undo everything it did, and this road fails
+				while bt_top > base
+					ptr<JsReFrame> f: bt + (bt_top - 1) * sizeof JsReFrame;
+					if f.kind is JsReOp.F_UNDO
+						regs:(f.a) is f.b as int;
+					;;
+					bt_top--;
+				;;
+				return false;
+			;;
+			pc is after;
+			pos is here;
+			return true;
+		;;
+		if not matched return false;
+		# its captures stand, and can be undone later, but its choices are gone: an assertion is atomic
+		u32 w: base;
+		u32 r: base;
+		while r < bt_top
+			ptr<JsReFrame> rf: bt + r * sizeof JsReFrame;
+			if rf.kind is JsReOp.F_UNDO
+				ptr<JsReFrame> wf: bt + w * sizeof JsReFrame;
+				wf.a is rf.a;
+				wf.b is rf.b;
+				wf.c is rf.c;
+				wf.kind is rf.kind;
+				w++;
+			;;
+			r++;
+		;;
+		bt_top is w;
+		pc is after;
+		pos is here;
+	[end: true]
+
+	# A match from at or after `from` (only at it, if sticky). True: regs has the captures.
+	[Search: ptr<JsReProg> g: 0; ptr<JsStr> subject: 0; u32 from: 0; bln sticky: false; ptr<int> reg_mem: 0;]
+		call LoadInput: subject;
+		m_code is g.code;
+		m_classes is g.classes;
+		regs is reg_mem;
+		m_multiline is g.multiline;
+		m_i is g.ignore_case;
+		m_i_unicode is g.unicode;
+		m_unicode is g.unicode;
+		# a first character that can't be anything else lets most positions be skipped
+		bln first_char: false;
+		u32 want: 0;
+		if m_code:2 is JsReOp.CHAR
+			first_char is true;
+			want is m_code:3;
+		;;
+		u32 at_: from;
+		while at_ <= n
+			if first_char and not sticky
+				while at_ < n and s:at_ is not want
+					at_++;
+				;;
+				if at_ >= n
+					return false;
+				;;
+			;;
+			while u32 i: 0; i < g.regs; i++;
+				reg_mem:i is -1;
+			;;
+			bt_top is 0;
+			if (Run: 0 at_)
+				return true;
+			;;
+			if sticky return false;
+			at_++;
+			call Js.Checkpoint;
+		;;
+	[end: false]
+
+	# ---- the JS side ----
+
+	[TraceRe: ptr<JsObj> o: 0;]
+		ptr<JsRePayload> d: o.data as ptr<JsRePayload>;
+		call Js.Mark: d.source;
+		call Js.Mark: d.flags;
+	[end]
+
+	[FreeRe: ptr<JsObj> o: 0;]
+		ptr<JsRePayload> d: o.data as ptr<JsRePayload>;
+		call Release: d.prog;
+		free d;
+	[end]
+
+	[TraceIter: ptr<JsObj> o: 0;]
+		ptr<JsReMatchIter> d: o.data as ptr<JsReMatchIter>;
+		call Js.Mark: d.regexp;
+		call Js.Mark: d.text;
+	[end]
+
+	[FreeIter: ptr<JsObj> o: 0;]
+		free o.data;
+	[end]
+
+	[IsRe: u64 v: 0;]
+		if not (JsV.IsObj: v) return false;
+		ptr<JsObj> o: (JsV.AsObj: v);
+	[end: o.cls is re_class]
+
+	[Payload: u64 v: 0;]
+		ptr<JsObj> o: (JsV.AsObj: v);
+	[end: o.data as ptr<JsRePayload>]
+
+	# a regexp object, with a program for this pattern and these flags
+	[Create: ptr<JsStr> pattern: 0; ptr<JsStr> flags: 0; ptr<JsObj> proto: 0;]
+		ptr<JsReProg> g: (Get: pattern flags);
+		ptr<JsRePayload> d: new JsRePayload;
+		if d is 0
+			call Release: g;
+			throw 'out of memory';
+		;;
+		d.prog is g;
+		d.source is (JsV.Str: pattern);
+		d.flags is (JsV.Str: flags);
+		ptr<JsObj> o: (JsObjs.NewHost: re_class proto d as ptr<u8>);
+		call JsObjs.AddProp: o (JsStrs.InternZ: 'lastIndex') as ptr<u8> JsV.INT_BASE JsObjs.W;
+	[end: o]
+
+	[Literal: ptr<JsStr> pattern: 0; ptr<JsStr> flags: 0;]
+	[end: (JsV.Obj: (Create: pattern flags JsRt.P.regexp))]
+
+	[CheckLiteral: ptr<JsStr> pattern: 0; ptr<JsStr> flags: 0;]
+		ptr<JsReProg> g: (Get: pattern flags);
+		call Release: g;
+	[end]
+
+	# IsRegExp
+	[LooksLikeRe: u64 v: 0;]
+		if not (JsV.IsObj: v) return false;
+		u64 m: (JsObjs.GetAtom: (JsV.AsObj: v) JsRt.S.match as ptr<u8> v);
+		if m is not JsV.UNDEF
+			return (JsOps.ToBool: m);
+		;;
+	[end: (IsRe: v)]
+
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		u64 pattern: (Js.Arg: args argc 0);
+		u64 flags: (Js.Arg: args argc 1);
+		bln pattern_is_re: (LooksLikeRe: pattern);
+		if not (JsV.IsObj: nt)
+			# RegExp(re) with nothing else to do hands back re itself
+			if pattern_is_re and flags is JsV.UNDEF
+				u64 ctor: (JsObjs.GetAtom: (JsV.AsObj: pattern) JsRt.A.constructor as ptr<u8> pattern);
+				if ctor is args:(-2)
+					return pattern;
+				;;
+			;;
+		;;
+		u64 pv: pattern;
+		u64 fv: flags;
+		if (IsRe: pattern)
+			ptr<JsRePayload> d: (Payload: pattern);
+			pv is d.source;
+			if flags is JsV.UNDEF
+				fv is d.flags;
+			;;
+		;;
+		elif pattern_is_re
+			pv is (JsObjs.GetV: pattern (JsObjs.KeyZ: 'source'));
+			if flags is JsV.UNDEF
+				fv is (JsObjs.GetV: pattern (JsObjs.KeyZ: 'flags'));
+			;;
+		;;
+		ptr<JsStr> ps: JsRt.blank;
+		if pv is not JsV.UNDEF
+			ps is (JsOps.ToStr: pv);
+		;;
+		ptr<JsStr> fs: JsRt.blank;
+		if fv is not JsV.UNDEF
+			fs is (JsOps.ToStr: fv);
+		;;
+		ptr<JsObj> proto: JsRt.P.regexp;
+		if (JsV.IsObj: nt)
+			proto is (JsOps.ProtoFromCtor: nt JsRt.P.regexp);
+		;;
+	[end: (JsV.Obj: (Create: ps fs proto))]
+
+	[CompileFn: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if not (IsRe: t)
+			call JsErr.Type: 'RegExp.prototype.compile called on an incompatible receiver';
+		;;
+		u64 pattern: (Js.Arg: args argc 0);
+		u64 flags: (Js.Arg: args argc 1);
+		u64 pv: pattern;
+		u64 fv: flags;
+		if (IsRe: pattern)
+			if flags is not JsV.UNDEF
+				call JsErr.Type: 'Invalid flags supplied to RegExp.prototype.compile';
+			;;
+			ptr<JsRePayload> src: (Payload: pattern);
+			pv is src.source;
+			fv is src.flags;
+		;;
+		ptr<JsStr> ps: JsRt.blank;
+		if pv is not JsV.UNDEF
+			ps is (JsOps.ToStr: pv);
+		;;
+		ptr<JsStr> fs: JsRt.blank;
+		if fv is not JsV.UNDEF
+			fs is (JsOps.ToStr: fv);
+		;;
+		ptr<JsReProg> g: (Get: ps fs);
+		ptr<JsRePayload> d: (Payload: t);
+		call Release: d.prog;
+		d.prog is g;
+		d.source is (JsV.Str: ps);
+		d.flags is (JsV.Str: fs);
+		call SetLastIndex: t 0.0;
+	[end: t]
+
+	[LastIndexKey]
+	[end: (JsV.Str: (JsStrs.InternZ: 'lastIndex'))]
+
+	[SetLastIndex: u64 rv: 0; f64 v: 0.0;]
+		if not (JsObjs.SetV: rv (LastIndexKey) (JsV.Num: v))
+			call JsErr.Type: 'Cannot assign to read only property lastIndex';
+		;;
+	[end]
+
+	[GetLastIndex: u64 rv: 0;]
+	[end: (JsOps.ToLength: (JsObjs.GetV: rv (LastIndexKey)))]
+
+	ptr<int> reg_buf: 0;
+	u32 reg_cap: 0;
+
+	[RegsFor: u32 count: 0;]
+		if count > reg_cap
+			if reg_buf is not 0
+				free reg_buf;
+			;;
+			u32 room: count + 16;
+			reg_buf is new int[room];
+			reg_cap is room;
+			if reg_buf is 0
+				reg_cap is 0;
+				throw 'out of memory';
+			;;
+		;;
+	[end: reg_buf]
+
+	# RegExpBuiltinExec: an array of what matched, or null
+	[BuiltinExec: u64 rv: 0; ptr<JsStr> subject: 0;]
+		ptr<JsRePayload> d: (Payload: rv);
+		ptr<JsReProg> g: d.prog;
+		f64 last: (GetLastIndex: rv);
+		bln tracks: g.global or g.sticky;
+		if not tracks
+			last is 0.0;
+		;;
+		if last > (subject.len as f64)
+			if tracks
+				call SetLastIndex: rv 0.0;
+			;;
+			return JsV.NULL;
+		;;
+		ptr<int> r: (RegsFor: g.regs);
+		if not (Search: g subject last as u32 g.sticky r)
+			if tracks
+				call SetLastIndex: rv 0.0;
+			;;
+			return JsV.NULL;
+		;;
+		if tracks
+			call SetLastIndex: rv r:1 as f64;
+		;;
+		ptr<JsObj> a: (JsObjs.NewArray: g.groups);
+		while u32 i: 0; i < g.groups; i++;
+			call JsObjs.ArrayPush: a (Capture: subject r i);
+		;;
+		call JsObjs.CreateData: a (JsObjs.KeyZ: 'index') (JsV.Int: r:0);
+		call JsObjs.CreateData: a (JsObjs.KeyZ: 'input') (JsV.Str: subject);
+		u64 groups_v: JsV.UNDEF;
+		if g.name_count > 0
+			ptr<JsObj> gr: (JsObjs.NewWithProto: 0);
+			groups_v is (JsV.Obj: gr);
+			while u32 j: 0; j < g.name_count; j++;
+				u32 number: g.names:(j * 3);
+				ptr<JsStr> nm_s: (JsStrs.New: g.name_text + g.names:(j * 3 + 1) g.names:(j * 3 + 2));
+				call JsObjs.CreateData: gr (JsObjs.KeyOfStr: nm_s) (Capture: subject r number);
+			;;
+		;;
+		call JsObjs.CreateData: a (JsObjs.KeyZ: 'groups') groups_v;
+		if g.has_indices
+			call JsObjs.CreateData: a (JsObjs.KeyZ: 'indices') (Indices: g r);
+		;;
+	[end: (JsV.Obj: a)]
+
+	[Capture: ptr<JsStr> subject: 0; ptr<int> r: 0; u32 group: 0;]
+		int from: r:(group * 2);
+		int upto: r:(group * 2 + 1);
+		if from < 0 or upto < 0
+			return JsV.UNDEF;
+		;;
+	[end: (JsV.Str: (JsStrs.Slice: subject from as u32 upto as u32))]
+
+	[Indices: ptr<JsReProg> g: 0; ptr<int> r: 0;]
+		ptr<JsObj> list: (JsObjs.NewArray: g.groups);
+		while u32 i: 0; i < g.groups; i++;
+			call JsObjs.ArrayPush: list (IndexPair: r i);
+		;;
+		u64 groups_v: JsV.UNDEF;
+		if g.name_count > 0
+			ptr<JsObj> gr: (JsObjs.NewWithProto: 0);
+			groups_v is (JsV.Obj: gr);
+			while u32 j: 0; j < g.name_count; j++;
+				ptr<JsStr> nm_s: (JsStrs.New: g.name_text + g.names:(j * 3 + 1) g.names:(j * 3 + 2));
+				call JsObjs.CreateData: gr (JsObjs.KeyOfStr: nm_s) (IndexPair: r g.names:(j * 3));
+			;;
+		;;
+		call JsObjs.CreateData: list (JsObjs.KeyZ: 'groups') groups_v;
+	[end: (JsV.Obj: list)]
+
+	[IndexPair: ptr<int> r: 0; u32 group: 0;]
+		if r:(group * 2) < 0 or r:(group * 2 + 1) < 0
+			return JsV.UNDEF;
+		;;
+		ptr<JsObj> pair: (JsObjs.NewArray: 2);
+		call JsObjs.ArrayPush: pair (JsV.Int: r:(group * 2));
+		call JsObjs.ArrayPush: pair (JsV.Int: r:(group * 2 + 1));
+	[end: (JsV.Obj: pair)]
+
+	# RegExpExec: by the object's own exec, if a page has changed it
+	[ExecOf: u64 rv: 0; ptr<JsStr> subject: 0;]
+		u64 ex: (JsObjs.GetV: rv (JsObjs.KeyZ: 'exec'));
+		if (JsOps.IsCallable: ex) and (JsV.AsObj: ex) is not JsRt.P.regexp_exec
+			u64 made: (JsVm.Call1: ex rv (JsV.Str: subject));
+			if made is not JsV.NULL and not (JsV.IsObj: made)
+				call JsErr.Type: 'A custom exec must return an object or null';
+			;;
+			return made;
+		;;
+		if not (IsRe: rv)
+			call JsErr.Type: 'RegExp.prototype.exec called on an incompatible receiver';
+		;;
+	[end: (BuiltinExec: rv subject)]
+
+	[ThisObject: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if not (JsV.IsObj: t)
+			call JsErr.Type: 'RegExp method called on an incompatible receiver';
+		;;
+	[end: t]
+
+	[Exec: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if not (IsRe: t)
+			call JsErr.Type: 'RegExp.prototype.exec called on an incompatible receiver';
+		;;
+	[end: (BuiltinExec: t (JsOps.ToStr: (Js.Arg: args argc 0)))]
+
+	[Test: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (ThisObject: args);
+		ptr<JsStr> subject: (JsOps.ToStr: (Js.Arg: args argc 0));
+	[end: (JsV.Bool: (ExecOf: t subject) is not JsV.NULL)]
+
+	[ToString: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (ThisObject: args);
+		WlBuf b;
+		call b.Add: '/';
+		call Js.TextOf: (JsObjs.GetV: t (JsObjs.KeyZ: 'source')) addr b;
+		call b.Add: '/';
+		call Js.TextOf: (JsObjs.GetV: t (JsObjs.KeyZ: 'flags')) addr b;
+		u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: r]
+
+	# the pattern, as it could be written between slashes
+	[SourceGet: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if not (IsRe: t)
+			if (JsV.IsObj: t) and (JsV.AsObj: t) is JsRt.P.regexp
+				return (Js.NewStringZ: '(?:)');
+			;;
+			call JsErr.Type: 'RegExp.prototype.source getter called on an incompatible receiver';
+		;;
+		ptr<JsRePayload> d: (Payload: t);
+		ptr<JsStr> ps: (JsStrs.Flat: (JsV.AsStr: d.source));
+		if ps.bytes is 0
+			return (Js.NewStringZ: '(?:)');
+		;;
+		WlBuf b;
+		bln in_cls: false;
+		ptr<u8> q: ps.data;
+		u32 i: 0;
+		while i < ps.bytes
+			u32 c: q:i;
+			if c is 92 and i + 1 < ps.bytes
+				call b.Add: 92;
+				i++;
+				c is q:i;
+				if c is 10
+					call b.Add: 'n';
+				;;
+				elif c is 13
+					call b.Add: 'r';
+				;;
+				else
+					call b.Add: c as u8;
+				;;
+			;;
+			elif c is 10
+				call b.Add: 92;
+				call b.Add: 'n';
+			;;
+			elif c is 13
+				call b.Add: 92;
+				call b.Add: 'r';
+			;;
+			elif c is '/' and not in_cls
+				call b.Add: 92;
+				call b.Add: '/';
+			;;
+			else
+				if c is '['
+					in_cls is true;
+				;;
+				elif c is ']'
+					in_cls is false;
+				;;
+				call b.Add: c as u8;
+			;;
+			i++;
+		;;
+		u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: r]
+
+	[FlagsGet: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (ThisObject: args);
+		WlBuf b;
+		call FlagChar: t 'hasIndices' 'd' addr b;
+		call FlagChar: t 'global' 'g' addr b;
+		call FlagChar: t 'ignoreCase' 'i' addr b;
+		call FlagChar: t 'multiline' 'm' addr b;
+		call FlagChar: t 'dotAll' 's' addr b;
+		call FlagChar: t 'unicode' 'u' addr b;
+		call FlagChar: t 'unicodeSets' 'v' addr b;
+		call FlagChar: t 'sticky' 'y' addr b;
+		u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: r]
+
+	[FlagChar: u64 t: 0; ptr<u8> name: 0; u32 c: 0; ptr<WlBuf> b: 0;]
+		if (JsOps.ToBool: (JsObjs.GetV: t (JsObjs.KeyZ: name)))
+			call b.Add: c as u8;
+		;;
+	[end]
+
+	[FlagGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u64 t: args:(-1);
+		if not (IsRe: t)
+			if (JsV.IsObj: t) and (JsV.AsObj: t) is JsRt.P.regexp
+				return JsV.UNDEF;
+			;;
+			call JsErr.Type: 'RegExp flag getter called on an incompatible receiver';
+		;;
+		ptr<JsRePayload> d: (Payload: t);
+		ptr<JsReProg> g: d.prog;
+		bln v: false;
+		when self.magic
+			is 'g'
+				v is g.global;
+			;;
+			is 'i'
+				v is g.ignore_case;
+			;;
+			is 'm'
+				v is g.multiline;
+			;;
+			is 's'
+				v is g.dot_all;
+			;;
+			is 'u'
+				v is g.unicode;
+			;;
+			is 'y'
+				v is g.sticky;
+			;;
+			is 'd'
+				v is g.has_indices;
+			;;
+			is 'v'
+				v is g.unicode_sets;
+			;;
+		;;
+	[end: (JsV.Bool: v)]
+
+	# AdvanceStringIndex
+	[Advance: ptr<JsStr> subject: 0; f64 i: 0.0; bln unicode: false;]
+		if not unicode or i + 1.0 >= (subject.len as f64)
+			return i + 1.0;
+		;;
+		call JsStrs.CodeAt: subject i as u32;
+	[end: i + (JsStrs.units_taken as f64)]
+
+	[FlagsText: u64 t: 0;]
+	[end: (JsOps.ToStr: (JsObjs.GetV: t (JsObjs.KeyZ: 'flags')))]
+
+	[HasFlag: ptr<JsStr> flags: 0; u32 c: 0;]
+		call JsStrs.Flat: flags;
+		while u32 i: 0; i < flags.bytes; i++;
+			if flags.data:i is c return true;
+		;;
+	[end: false]
+
+	[SymMatch: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (ThisObject: args);
+		ptr<JsStr> subject: (JsOps.ToStr: (Js.Arg: args argc 0));
+		ptr<JsStr> flags: (FlagsText: t);
+		if not (HasFlag: flags 'g')
+			return (ExecOf: t subject);
+		;;
+		bln full: (HasFlag: flags 'u') or (HasFlag: flags 'v');
+		call SetLastIndex: t 0.0;
+		ptr<JsObj> a: (JsObjs.NewArray: 0);
+		while true
+			call Js.Checkpoint;
+			u64 r: (ExecOf: t subject);
+			if r is JsV.NULL
+				if a.length is 0
+					return JsV.NULL;
+				;;
+				return (JsV.Obj: a);
+			;;
+			ptr<JsStr> m: (JsOps.ToStr: (JsObjs.GetIndex: (JsV.AsObj: r) 0 r));
+			call JsObjs.ArrayPush: a (JsV.Str: m);
+			if m.bytes is 0
+				call SetLastIndex: t (Advance: subject (GetLastIndex: t) full);
+			;;
+		;;
+	[end: JsV.NULL]
+
+	[SymSearch: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (ThisObject: args);
+		ptr<JsStr> subject: (JsOps.ToStr: (Js.Arg: args argc 0));
+		u64 key: (JsObjs.KeyOf: (LastIndexKey));
+		u64 before: (JsObjs.GetV: t key);
+		if not (JsOps.SameValue: before JsV.INT_BASE)
+			call SetLastIndex: t 0.0;
+		;;
+		u64 r: (ExecOf: t subject);
+		u64 after: (JsObjs.GetV: t key);
+		if not (JsOps.SameValue: after before)
+			if not (JsObjs.SetV: t key before)
+				call JsErr.Type: 'Cannot assign to read only property lastIndex';
+			;;
+		;;
+		if r is JsV.NULL
+			return (JsV.Int: -1);
+		;;
+	[end: (JsObjs.GetV: r (JsObjs.KeyZ: 'index'))]
+
+	[SymReplace: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (ThisObject: args);
+		ptr<JsStr> subject: (JsOps.ToStr: (Js.Arg: args argc 0));
+		u64 rep: (Js.Arg: args argc 1);
+		bln functional: (JsOps.IsCallable: rep);
+		ptr<JsStr> rep_s: JsRt.blank;
+		if not functional
+			rep_s is (JsOps.ToStr: rep);
+		;;
+		ptr<JsStr> flags: (FlagsText: t);
+		bln global: (HasFlag: flags 'g');
+		bln full: (HasFlag: flags 'u') or (HasFlag: flags 'v');
+		if global
+			call SetLastIndex: t 0.0;
+		;;
+		ptr<JsObj> results: (JsObjs.NewArray: 0);
+		while true
+			call Js.Checkpoint;
+			u64 r: (ExecOf: t subject);
+			if r is JsV.NULL break;
+			call JsObjs.ArrayPush: results r;
+			if not global break;
+			ptr<JsStr> m: (JsOps.ToStr: (JsObjs.GetIndex: (JsV.AsObj: r) 0 r));
+			if m.bytes is 0
+				call SetLastIndex: t (Advance: subject (GetLastIndex: t) full);
+			;;
+		;;
+		WlBuf output;
+		f64 next_pos: 0.0;
+		f64 total: subject.len as f64;
+		while u32 i: 0; i < results.length; i++;
+			u64 rv: results.elems:i;
+			ptr<JsObj> ro: (JsV.AsObj: rv);
+			f64 ncap: (JsArrayBuiltins.LengthOf: ro);
+			ptr<JsStr> matched: (JsOps.ToStr: (JsObjs.GetIndex: ro 0 rv));
+			f64 where: (JsOps.ToInteger: (JsObjs.GetV: rv (JsObjs.KeyZ: 'index')));
+			if where < 0.0
+				where is 0.0;
+			;;
+			if where > total
+				where is total;
+			;;
+			ptr<JsObj> caps: (JsObjs.NewArray: 0);
+			f64 c: 1.0;
+			while c < ncap
+				u64 cv: (JsObjs.Get: ro (JsArrayBuiltins.IndexKey: c) rv);
+				if cv is not JsV.UNDEF
+					cv is (JsV.Str: (JsOps.ToStr: cv));
+				;;
+				call JsObjs.ArrayPush: caps cv;
+				c is c + 1.0;
+			;;
+			u64 named: (JsObjs.GetV: rv (JsObjs.KeyZ: 'groups'));
+			WlBuf one;
+			if functional
+				ptr<u64> mark: JsVm.sp;
+				call Js.Push: (JsV.Str: matched);
+				while u32 k: 0; k < caps.length; k++;
+					call Js.Push: caps.elems:k;
+				;;
+				call Js.Push: (JsV.Num: where);
+				call Js.Push: (JsV.Str: subject);
+				int pushed: caps.length as int + 3;
+				if named is not JsV.UNDEF
+					call Js.Push: named;
+					pushed++;
+				;;
+				u64 made: (Js.CallThrowing: rep JsV.UNDEF pushed);
+				JsVm.sp is mark;
+				call Js.TextOf: made addr one;
+			;;
+			else
+				if named is not JsV.UNDEF
+					named is (JsV.Obj: (JsOps.ToObject: named));
+				;;
+				call JsStringMore.Substitute: addr one matched subject where as u32 caps named rep_s;
+			;;
+			if where >= next_pos
+				call JsStringMore.AddUnits: addr output subject next_pos as u32 where as u32;
+				call output.AddN: one.data one.len;
+				next_pos is where + (matched.len as f64);
+			;;
+			call one.Free;
+		;;
+		if next_pos < total
+			call JsStringMore.AddUnits: addr output subject next_pos as u32 subject.len;
+		;;
+		u64 result: (JsV.Str: (JsStrs.FromBuf: addr output));
+		call output.Free;
+	[end: result]
+
+	[SymSplit: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (ThisObject: args);
+		ptr<JsStr> subject: (JsOps.ToStr: (Js.Arg: args argc 0));
+		u64 limit_v: (Js.Arg: args argc 1);
+		ptr<JsObj> holder: (JsV.AsObj: t);
+		u64 fallback: (JsObjs.GetAtom: JsRt.P.regexp JsRt.A.constructor as ptr<u8> (JsV.Obj: JsRt.P.regexp));
+		u64 c: (JsOps.Species: holder fallback);
+		ptr<JsStr> flags: (FlagsText: t);
+		bln full: (HasFlag: flags 'u') or (HasFlag: flags 'v');
+		WlBuf with_y;
+		call JsStrs.Flat: flags;
+		call with_y.AddN: flags.data flags.bytes;
+		if not (HasFlag: flags 'y')
+			call with_y.Add: 'y';
+		;;
+		call Js.Push: t;
+		call Js.Push: (JsV.Str: (JsStrs.FromBuf: addr with_y));
+		call with_y.Free;
+		u64 splitter: (Js.Construct: c 2);
+		ptr<JsObj> a: (JsObjs.NewArray: 0);
+		u32 lim: 4294967295;
+		if limit_v is not JsV.UNDEF
+			lim is (JsOps.ToUint32: limit_v);
+		;;
+		if lim is 0
+			return (JsV.Obj: a);
+		;;
+		f64 size: subject.len as f64;
+		if size is 0.0
+			if (ExecOf: splitter subject) is not JsV.NULL
+				return (JsV.Obj: a);
+			;;
+			call JsObjs.ArrayPush: a (JsV.Str: subject);
+			return (JsV.Obj: a);
+		;;
+		f64 from: 0.0;
+		f64 q: 0.0;
+		while q < size
+			call Js.Checkpoint;
+			call SetLastIndex: splitter q;
+			u64 z: (ExecOf: splitter subject);
+			if z is JsV.NULL
+				q is (Advance: subject q full);
+			;;
+			else
+				f64 e: (GetLastIndex: splitter);
+				if e > size
+					e is size;
+				;;
+				if e is from
+					q is (Advance: subject q full);
+				;;
+				else
+					call JsObjs.ArrayPush: a (JsV.Str: (JsStrs.Slice: subject from as u32 q as u32));
+					if a.length is lim
+						return (JsV.Obj: a);
+					;;
+					from is e;
+					ptr<JsObj> zo: (JsV.AsObj: z);
+					f64 ncap: (JsArrayBuiltins.LengthOf: zo);
+					f64 i: 1.0;
+					while i < ncap
+						call JsObjs.ArrayPush: a (JsObjs.Get: zo (JsArrayBuiltins.IndexKey: i) z);
+						if a.length is lim
+							return (JsV.Obj: a);
+						;;
+						i is i + 1.0;
+					;;
+					q is from;
+				;;
+			;;
+		;;
+		call JsObjs.ArrayPush: a (JsV.Str: (JsStrs.Slice: subject from as u32 subject.len));
+	[end: (JsV.Obj: a)]
+
+	[SymMatchAll: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (ThisObject: args);
+		ptr<JsStr> subject: (JsOps.ToStr: (Js.Arg: args argc 0));
+		u64 fallback: (JsObjs.GetAtom: JsRt.P.regexp JsRt.A.constructor as ptr<u8> (JsV.Obj: JsRt.P.regexp));
+		u64 c: (JsOps.Species: (JsV.AsObj: t) fallback);
+		ptr<JsStr> flags: (FlagsText: t);
+		call Js.Push: t;
+		call Js.Push: (JsV.Str: flags);
+		u64 matcher: (Js.Construct: c 2);
+		call SetLastIndex: matcher (GetLastIndex: t);
+		ptr<JsReMatchIter> it: new JsReMatchIter;
+		if it is 0
+			throw 'out of memory';
+		;;
+		it.regexp is matcher;
+		it.text is (JsV.Str: subject);
+		it.global is (HasFlag: flags 'g');
+		it.unicode is (HasFlag: flags 'u') or (HasFlag: flags 'v');
+		ptr<JsObj> o: (JsObjs.NewHost: iter_class JsRt.P.regexp_string_iterator it as ptr<u8>);
+	[end: (JsV.Obj: o)]
+
+	[IterNext: ptr<u64> args: 0; int argc: 0;]
+		u64 self: args:(-1);
+		if not (JsV.IsObj: self)
+			call JsErr.Type: 'next method called on an incompatible receiver';
+		;;
+		ptr<JsObj> io: (JsV.AsObj: self);
+		if io.cls is not iter_class
+			call JsErr.Type: 'next method called on an incompatible receiver';
+		;;
+		ptr<JsReMatchIter> it: io.data as ptr<JsReMatchIter>;
+		if it.finished
+			return (JsBuiltins.IterResult: JsV.UNDEF true);
+		;;
+		ptr<JsStr> subject: (JsV.AsStr: it.text);
+		u64 r: (ExecOf: it.regexp subject);
+		if r is JsV.NULL
+			it.finished is true;
+			return (JsBuiltins.IterResult: JsV.UNDEF true);
+		;;
+		if not it.global
+			it.finished is true;
+			return (JsBuiltins.IterResult: r false);
+		;;
+		ptr<JsStr> m: (JsOps.ToStr: (JsObjs.GetIndex: (JsV.AsObj: r) 0 r));
+		if m.bytes is 0
+			call SetLastIndex: it.regexp (Advance: subject (GetLastIndex: it.regexp) it.unicode);
+		;;
+	[end: (JsBuiltins.IterResult: r false)]
+}

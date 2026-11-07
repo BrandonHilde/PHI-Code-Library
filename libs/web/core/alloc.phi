@@ -1,0 +1,232 @@
+# A quick allocator for many small blocks of mixed sizes, which is what a JS heap is.
+#
+# PHI's own heap keeps its free blocks on one list per power of two and searches a list for the
+# first that fits, so once it holds many freed blocks of nearly the same size (rope nodes and short
+# strings, say), each `new` walks thousands of them: appending to a string millions of times took a
+# minute and a half. Here each size has its own slabs, so taking and giving back are one step each,
+# and a block has no header. The caller says the size when it gives a block back.
+#
+#   ptr<u8> p: (WlAlloc.Alloc: 40);     # zeroed; 0 if the heap has no more
+#   call WlAlloc.Free: p 40;
+#
+# A slab is 64 KB, aligned to that, with blocks of one size, so a block finds its slab by masking its
+# address. An empty slab can go to any size, and a region of 16 slabs whose slabs are all empty goes
+# back to PHI's heap, so memory one kind of block has finished with is there for everything else.
+# A block bigger than SMALL_MAX is an ordinary `new` and `free`.
+
+use memory.mem;
+
+struct.WlFreeBlock
+{
+	ptr<WlFreeBlock> next;
+}
+
+struct.WlRegion
+{
+	ptr<u8> memory;         # what `new` gave
+	ptr<u8> slabs;          # the first slab: aligned
+	u32 carved;             # slabs handed out so far, in order
+	u32 in_use;             # slabs that hold blocks now
+}
+
+# at the start of each slab
+struct.WlSlab
+{
+	ptr<WlSlab> next;
+	ptr<WlSlab> prev;
+	ptr<WlFreeBlock> free_list;
+	ptr<u8> bump;           # the part never handed out since it became this size
+	ptr<WlRegion> region;
+	u32 room;               # bytes left at bump
+	u32 used;               # blocks handed out
+	u32 cls;
+	bln listed;             # on its size's list, so it has room
+}
+
+phi.WlAlloc:Library
+{
+	const u32 SMALL_MAX: 512;
+	const u32 CLASSES: 33;          # (SMALL_MAX / 16) + 1
+	const u32 SLAB_SIZE: 65536;
+	const u32 SLAB_HEADER: 64;
+	const u32 REGION_SLABS: 16;
+	const u32 KEEP_FREE_SLABS: 32;  # empty ones kept ready, before regions go back to the heap
+
+	ptr<ptr<WlSlab>> partial: 0;    # for each size: the slabs with room
+	ptr<WlSlab> free_slabs: 0;
+	u32 free_count: 0;
+	ptr<WlRegion> carving: 0;       # the region with slabs not yet handed out
+
+	[Alloc: u32 size: 0;]
+		ptr<u8> got: 0;
+		if size > SMALL_MAX
+			got is new u8[size];
+			return got;
+		;;
+		if partial is 0
+			partial is new ptr<WlSlab>[CLASSES];
+			if partial is 0 return got;
+		;;
+		u32 cls: (size + 15) >> 4;
+		if cls is 0
+			cls is 1;
+		;;
+		u32 rounded: cls << 4;
+		ptr<WlSlab> s: partial:cls;
+		if s is 0
+			s is (NewSlab: cls);
+			if s is 0 return got;
+			call Link: s;
+		;;
+		if s.free_list is not 0
+			ptr<WlFreeBlock> b: s.free_list;
+			s.free_list is b.next;
+			got is b as ptr<u8>;
+		;;
+		else
+			got is s.bump;
+			s.bump is s.bump + rounded;
+			s.room is s.room - rounded;
+		;;
+		s.used is s.used + 1;
+		if s.free_list is 0 and s.room < rounded
+			call Unlink: s;
+		;;
+		call Mem.Fill: got 0 rounded;
+	[end: got]
+
+	[Free: ptr<u8> p: 0; u32 size: 0;]
+		if p is 0 return;
+		if size > SMALL_MAX
+			free p;
+			return;
+		;;
+		ptr<WlSlab> s: (((p as u64) >> 16) << 16) as ptr<WlSlab>;
+		ptr<WlFreeBlock> b: p as ptr<WlFreeBlock>;
+		b.next is s.free_list;
+		s.free_list is b;
+		s.used is s.used - 1;
+		if s.used is 0
+			if s.listed
+				call Unlink: s;
+			;;
+			call Release: s;
+			return;
+		;;
+		if not s.listed
+			call Link: s;
+		;;
+	[end]
+
+	# ---- inside ----
+
+	[Link: ptr<WlSlab> s: 0;]
+		ptr<WlSlab> first: partial:(s.cls);
+		s.prev is 0;
+		s.next is first;
+		if first is not 0
+			first.prev is s;
+		;;
+		partial:(s.cls) is s;
+		s.listed is true;
+	[end]
+
+	[Unlink: ptr<WlSlab> s: 0;]
+		if s.prev is not 0
+			s.prev.next is s.next;
+		;;
+		else
+			partial:(s.cls) is s.next;
+		;;
+		if s.next is not 0
+			s.next.prev is s.prev;
+		;;
+		s.next is 0;
+		s.prev is 0;
+		s.listed is false;
+	[end]
+
+	# an empty slab for this size, or 0 if the heap has no more
+	[NewSlab: u32 cls: 0;]
+		ptr<WlSlab> s: free_slabs;
+		ptr<WlRegion> region: 0;
+		if s is not 0
+			free_slabs is s.next;
+			if s.next is not 0
+				s.next.prev is 0;
+			;;
+			free_count--;
+			region is s.region;
+		;;
+		else
+			if carving is 0
+				carving is (NewRegion);
+				if carving is 0 return 0 as ptr<WlSlab>;
+			;;
+			region is carving;
+			s is (region.slabs + region.carved * SLAB_SIZE) as ptr<WlSlab>;
+			region.carved is region.carved + 1;
+			if region.carved is REGION_SLABS
+				carving is 0;
+			;;
+		;;
+		region.in_use is region.in_use + 1;
+		s.next is 0;
+		s.prev is 0;
+		s.free_list is 0;
+		s.bump is (s as ptr<u8>) + SLAB_HEADER;
+		s.region is region;
+		s.room is SLAB_SIZE - SLAB_HEADER;
+		s.used is 0;
+		s.cls is cls;
+		s.listed is false;
+	[end: s]
+
+	[NewRegion]
+		ptr<WlRegion> region: new WlRegion;
+		if region is 0 return 0 as ptr<WlRegion>;
+		ptr<u8> memory: new u8[(REGION_SLABS + 1) * SLAB_SIZE];
+		if memory is 0
+			free region;
+			return 0 as ptr<WlRegion>;
+		;;
+		region.memory is memory;
+		u64 place: (memory as u64) + 65535;
+		region.slabs is ((place >> 16) << 16) as ptr<u8>;
+	[end: region]
+
+	# nothing's in it now: ready for any size, and its region goes back if it's all empty
+	[Release: ptr<WlSlab> s: 0;]
+		ptr<WlRegion> region: s.region;
+		s.prev is 0;
+		s.next is free_slabs;
+		if free_slabs is not 0
+			free_slabs.prev is s;
+		;;
+		free_slabs is s;
+		free_count++;
+		region.in_use is region.in_use - 1;
+		if region.in_use is 0 and region is not carving and free_count >= KEEP_FREE_SLABS
+			call GiveBack: region;
+		;;
+	[end]
+
+	# all its slabs were carved and all are on the free list
+	[GiveBack: ptr<WlRegion> region: 0;]
+		while u32 i: 0; i < REGION_SLABS; i++;
+			ptr<WlSlab> s: (region.slabs + i * SLAB_SIZE) as ptr<WlSlab>;
+			if s.prev is not 0
+				s.prev.next is s.next;
+			;;
+			else
+				free_slabs is s.next;
+			;;
+			if s.next is not 0
+				s.next.prev is s.prev;
+			;;
+			free_count--;
+		;;
+		free region.memory;
+		free region;
+	[end]
+}

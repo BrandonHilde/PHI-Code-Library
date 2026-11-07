@@ -1,0 +1,160 @@
+# Number and Boolean.
+
+phi.JsNumberBuiltins:Library
+{
+	[Init]
+		ptr<JsObj> np: (JsObjs.Alloc: sizeof JsObj JsGc.K_BOXED JsRt.P.object);
+		np.slot is JsV.INT_BASE;
+		JsRt.P.number is np;
+		ptr<JsNativeFn> nc: (Js.DefineClass: 'Number' addr NumberCtor 1 np);
+		ptr<JsObj> no: nc as ptr<JsObj>;
+		call Js.Define: no 'MAX_VALUE' (JsV.Double: 1.7976931348623157e308) 0;
+		call Js.Define: no 'MIN_VALUE' (JsV.Double: 5e-324) 0;
+		call Js.Define: no 'NaN' JsV.NAN 0;
+		call Js.Define: no 'POSITIVE_INFINITY' (JsV.Double: (WlNum.FromBits: 0x7FF0000000000000)) 0;
+		call Js.Define: no 'NEGATIVE_INFINITY' (JsV.Double: (WlNum.FromBits: 0xFFF0000000000000)) 0;
+		call Js.Define: no 'MAX_SAFE_INTEGER' (JsV.Double: 9007199254740991.0) 0;
+		call Js.Define: no 'MIN_SAFE_INTEGER' (JsV.Double: -9007199254740991.0) 0;
+		call Js.Define: no 'EPSILON' (JsV.Double: 2.220446049250313e-16) 0;
+		call Js.DefineNative: np 'toString' addr NumToString 1;
+		call Js.DefineNative: np 'toLocaleString' addr NumToString 0;
+		call Js.DefineNative: np 'valueOf' addr NumValueOf 0;
+		call Js.DefineNative: np 'toFixed' addr ToFixed 1;
+		call Js.DefineNative: np 'toExponential' addr ToExponential 1;
+		call Js.DefineNative: np 'toPrecision' addr ToPrecision 1;
+		ptr<JsObj> bp: (JsObjs.Alloc: sizeof JsObj JsGc.K_BOXED JsRt.P.object);
+		bp.slot is JsV.FALSE;
+		JsRt.P.boolean is bp;
+		call Js.DefineClass: 'Boolean' addr BooleanCtor 1 bp;
+		call Js.DefineNative: bp 'toString' addr BoolToString 0;
+		call Js.DefineNative: bp 'valueOf' addr BoolValueOf 0;
+	[end]
+
+	[NumberCtor: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		u64 v: JsV.INT_BASE;
+		if argc > 0
+			v is args:0;
+			if not (JsV.IsNum: v)
+				v is (JsV.Num: (JsOps.ToNumber: v));
+			;;
+		;;
+		if not (JsV.IsObj: nt) return v;
+		ptr<JsObj> box: (JsOps.ToObject: v);
+		box.proto is (JsOps.ProtoFromCtor: nt JsRt.P.number);
+	[end: (JsV.Obj: box)]
+
+	[ThisNum: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsNum: t)
+			return (JsV.AsNum: t);
+		;;
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.kind is JsGc.K_BOXED and (JsV.IsNum: o.slot)
+				return (JsV.AsNum: o.slot);
+			;;
+		;;
+		call JsErr.Type: 'Number.prototype method requires that this be a Number';
+	[end: 0.0]
+
+	[Done: ptr<WlBuf> b: 0;]
+		u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: r]
+
+	[NumToString: ptr<u64> args: 0; int argc: 0;]
+		f64 x: (ThisNum: args);
+		u64 rv: (Js.Arg: args argc 0);
+		int radix: 10;
+		if rv is not JsV.UNDEF
+			f64 r: (JsOps.ToInteger: rv);
+			if r < 2.0 or r > 36.0
+				call JsErr.Range: 'toString() radix must be between 2 and 36';
+			;;
+			radix is r as int;
+		;;
+		WlBuf b;
+		call WlNum.ToRadix: x radix addr b;
+	[end: (Done: addr b)]
+
+	[NumValueOf: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Num: (ThisNum: args))]
+
+	[ToFixed: ptr<u64> args: 0; int argc: 0;]
+		f64 x: (ThisNum: args);
+		f64 f: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		if f < 0.0 or f > 100.0
+			call JsErr.Range: 'toFixed() digits argument must be between 0 and 100';
+		;;
+		WlBuf b;
+		call WlNum.ToFixed: x f as int addr b;
+	[end: (Done: addr b)]
+
+	[ToExponential: ptr<u64> args: 0; int argc: 0;]
+		f64 x: (ThisNum: args);
+		u64 fv: (Js.Arg: args argc 0);
+		f64 f: (JsOps.ToInteger: fv);
+		WlBuf b;
+		if x is not x or not (WlNum.IsFinite: x)
+			call WlNum.ToText: x addr b;
+			return (Done: addr b);
+		;;
+		if f < 0.0 or f > 100.0
+			call JsErr.Range: 'toExponential() argument must be between 0 and 100';
+		;;
+		int digits: f as int;
+		if fv is JsV.UNDEF
+			digits is -1;
+		;;
+		call WlNum.ToExponential: x digits addr b;
+	[end: (Done: addr b)]
+
+	[ToPrecision: ptr<u64> args: 0; int argc: 0;]
+		f64 x: (ThisNum: args);
+		u64 pv: (Js.Arg: args argc 0);
+		WlBuf b;
+		if pv is JsV.UNDEF
+			call WlNum.ToText: x addr b;
+			return (Done: addr b);
+		;;
+		f64 p: (JsOps.ToInteger: pv);
+		if x is not x or not (WlNum.IsFinite: x)
+			call WlNum.ToText: x addr b;
+			return (Done: addr b);
+		;;
+		if p < 1.0 or p > 100.0
+			call JsErr.Range: 'toPrecision() argument must be between 1 and 100';
+		;;
+		call WlNum.ToPrecision: x p as int addr b;
+	[end: (Done: addr b)]
+
+	[BooleanCtor: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		u64 v: (JsV.Bool: (JsOps.ToBool: (Js.Arg: args argc 0)));
+		if not (JsV.IsObj: nt) return v;
+		ptr<JsObj> box: (JsOps.ToObject: v);
+		box.proto is (JsOps.ProtoFromCtor: nt JsRt.P.boolean);
+	[end: (JsV.Obj: box)]
+
+	[ThisBool: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsBool: t) return t;
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.kind is JsGc.K_BOXED and (JsV.IsBool: o.slot)
+				return o.slot;
+			;;
+		;;
+		call JsErr.Type: 'Boolean.prototype method requires that this be a Boolean';
+	[end: JsV.UNDEF]
+
+	[BoolToString: ptr<u64> args: 0; int argc: 0;]
+		if (ThisBool: args) is JsV.TRUE
+			return (JsV.Str: JsRt.A.true_);
+		;;
+	[end: (JsV.Str: JsRt.A.false_)]
+
+	[BoolValueOf: ptr<u64> args: 0; int argc: 0;]
+	[end: (ThisBool: args)]
+}

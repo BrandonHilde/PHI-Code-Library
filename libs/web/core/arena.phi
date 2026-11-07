@@ -1,0 +1,66 @@
+# Memory that goes all at once: a JS function's syntax tree, a stylesheet's parse. Alloc is
+# cheap, its memory is zeroed and aligned to 8 bytes, and Free gives back everything.
+#
+#   WlArena arena;
+#   ptr<Thing> t: (arena.Alloc: sizeof Thing);
+#   ptr<u8> name: (arena.Text: source 12);      # a zero-terminated copy
+#   call arena.Free;
+
+use memory.mem;
+
+struct.WlChunk
+{
+	ptr<WlChunk> next;
+}
+
+struct.WlArena
+{
+	ptr<WlChunk> chunks;
+	ptr<u8> place;
+	u32 left;
+	u32 total;
+
+	[Alloc: u32 size: 0;]
+		size is (size + 7) & 0xFFFFFFF8;
+		if size > left
+			# a chunk's first 16 bytes are its header
+			u32 chunk_size: 65536;
+			if size + 16 > chunk_size
+				chunk_size is size + 16;
+			;;
+			ptr<u8> memory: new u8[chunk_size];
+			if memory is 0
+				throw 'out of memory: arena of ' total ' bytes';
+			;;
+			ptr<WlChunk> chunk: memory as ptr<WlChunk>;
+			chunk.next is chunks;
+			chunks is chunk;
+			place is memory + 16;
+			left is chunk_size - 16;
+		;;
+		ptr<u8> got: place;
+		place is place + size;
+		left is left - size;
+		total is total + size;
+	[end: got]
+
+	[Text: ptr<u8> text: 0; u32 n: 0;]
+		ptr<u8> copy: (Alloc: n + 1);
+		if n > 0
+			call Mem.Copy: copy text n;
+		;;
+	[end: copy]
+
+	[Free]
+		ptr<WlChunk> c: chunks;
+		while c is not 0
+			ptr<WlChunk> next_one: c.next;
+			free c as ptr<u8>;
+			c is next_one;
+		;;
+		chunks is 0;
+		place is 0;
+		left is 0;
+		total is 0;
+	[end]
+}

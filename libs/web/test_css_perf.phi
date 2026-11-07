@@ -1,0 +1,187 @@
+# 2000 rules on a 5000-element document. It prints what's checkable; run with the word `time` after
+# -- to see how long each step took (`phi run test_css_perf.phi --target windows64 -- time`).
+use weblib;
+use css.css;
+
+phi.TestCssPerf:Program
+{
+	call Weblib.Start: 900000;
+	call Css.Start;
+	ptr<u8> args: (OS.Arguments);
+	bln show: args is not 0 and (WlText.LenZ: args) > 0;
+
+	# a stylesheet that looks like a real one: classes, tags, descendants, pseudo-classes
+	WlBuf css;
+	while int i: 0; i < 2000; i++;
+		int kind: i % 8;
+		when kind
+			is 0
+				call css.AddZ: '.c';
+				call css.AddInt: i % 200;
+			;;
+			is 1
+				call css.AddZ: 'div .c';
+				call css.AddInt: i % 200;
+				call css.AddZ: ' span';
+			;;
+			is 2
+				call css.AddZ: '#id';
+				call css.AddInt: i;
+			;;
+			is 3
+				call css.AddZ: 'ul > li.c';
+				call css.AddInt: i % 200;
+				call css.AddZ: ':nth-child(2n+1)';
+			;;
+			is 4
+				call css.AddZ: 'a.c';
+				call css.AddInt: i % 200;
+				call css.AddZ: ':hover, p.c';
+				call css.AddInt: i % 100;
+			;;
+			is 5
+				call css.AddZ: '[data-k="v';
+				call css.AddInt: i % 50;
+				call css.AddZ: '"]';
+			;;
+			is 6
+				call css.AddZ: 'section div.c';
+				call css.AddInt: i % 200;
+				call css.AddZ: ' > p + p';
+			;;
+			else
+				call css.AddZ: '.c';
+				call css.AddInt: i % 200;
+				call css.AddZ: ' .c';
+				call css.AddInt: (i + 1) % 200;
+			;;
+		;;
+		call css.AddZ: ' { color: rgb(';
+		call css.AddInt: i % 256;
+		call css.AddZ: ', 2, 3); margin: ';
+		call css.AddInt: i % 20;
+		call css.AddZ: 'px 2px; padding-left: calc(1em + ';
+		call css.AddInt: i % 9;
+		call css.AddZ: 'px); background: url(a.png) no-repeat; font: 12px/1.5 Arial, sans-serif; }\n';
+	;;
+	int t0: (OS.GetTicks);
+	ptr<CssSheet> sheet: (Css.ParseSheet: css.data css.len 'http://x.test/a.css');
+	int t1: (OS.GetTicks);
+	log 'rules ' sheet.rule_count ' from ' (css.len > 100000) '\n';
+
+	# 5000 elements, nested a few levels, with classes
+	ptr<DomDocument> doc: (Dom.NewDocument);
+	ptr<DomNode> html: (Dom.CreateElementZ: doc 'html');
+	call Dom.Append: doc.root html;
+	ptr<DomNode> body: (Dom.CreateElementZ: doc 'body');
+	call Dom.Append: html body;
+	ptr<DomNode> section: 0;
+	ptr<DomNode> parent: body;
+	u32 made: 2;
+	WlBuf cl;
+	while made < 5000
+		ptr<DomNode> e: 0;
+		int r: (made % 7) as int;
+		when r
+			is 0
+				e is (Dom.CreateElementZ: doc 'section');
+				call Dom.Append: body e;
+				section is e;
+				parent is e;
+			;;
+			is 1
+				e is (Dom.CreateElementZ: doc 'div');
+				call Dom.Append: parent e;
+				parent is e;
+			;;
+			is 2 3
+				e is (Dom.CreateElementZ: doc 'p');
+				call Dom.Append: parent e;
+			;;
+			is 4
+				e is (Dom.CreateElementZ: doc 'ul');
+				call Dom.Append: parent e;
+				parent is e;
+			;;
+			is 5
+				e is (Dom.CreateElementZ: doc 'li');
+				call Dom.Append: parent e;
+				parent is section;
+				if parent is 0
+					parent is body;
+				;;
+			;;
+			else
+				e is (Dom.CreateElementZ: doc 'span');
+				call Dom.Append: parent e;
+			;;
+		;;
+		call cl.Clear;
+		call cl.AddZ: 'c';
+		call cl.AddInt: (made % 200) as int;
+		call cl.AddZ: ' x c';
+		call cl.AddInt: (made % 37) as int;
+		call Dom.SetAttr: e Dom.A_CLASS cl.data cl.len;
+		if made % 50 is 0
+			call Dom.SetAttrZ: e 'data-k' 'v7';
+		;;
+		made++;
+	;;
+	call cl.Free;
+	int t2: (OS.GetTicks);
+
+	ptr<CssEngine> e2: (Css.NewEngine: doc);
+	call e2.AddSheet: sheet;
+	call e2.SetViewport: 1024.0 768.0;
+	if (e2.Update) is false
+		log 'FAIL ' Css.error '\n';
+	;;
+	int t3: (OS.GetTicks);
+
+	# how much sharing there was
+	u32 elements: 0;
+	u32 distinct: 0;
+	ptr<DomNode> n: doc.root;
+	ptr<u8> last: 0;
+	while n is not 0
+		if n.type is DomType.ELEMENT
+			elements++;
+			if n.style is not last
+				distinct++;
+			;;
+			last is n.style;
+		;;
+		n is (Dom.Next: n doc.root);
+	;;
+	log 'elements ' elements '\n';
+
+	# one change, and only that recomputed
+	ptr<DomNode> some: (Dom.FirstElementChild: body);
+	call Dom.SetAttrZ: some 'class' 'c3';
+	call e2.Update;
+	int t4: (OS.GetTicks);
+	call e2.Update;
+	int t5: (OS.GetTicks);
+
+	# querySelectorAll
+	CssNodeList found;
+	int count: (Css.QueryAll: doc.root 'section div > p.x + p' 21 addr found);
+	log 'query found some ' (count > 0) '\n';
+	call found.Free;
+	int t6: (OS.GetTicks);
+
+	if show
+		log 'parse sheet ' (t1 - t0) ' ms\n';
+		log 'build dom ' (t2 - t1) ' ms\n';
+		log 'first Update ' (t3 - t2) ' ms\n';
+		log 'one attribute change ' (t4 - t3) ' ms\n';
+		log 'Update with nothing to do ' (t5 - t4) ' ms\n';
+		log 'querySelectorAll ' (t6 - t5) ' ms\n';
+		log 'runs of a different style while walking ' distinct ' of ' elements '\n';
+	;;
+	call e2.Free;
+	call Css.FreeSheet: sheet;
+	call Dom.FreeDocument: doc;
+	log 'done\n';
+	exit 0;
+}

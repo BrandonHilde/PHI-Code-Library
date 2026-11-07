@@ -1,0 +1,597 @@
+# EventTarget and events. Any JS object can be a target: its listeners are in an array under a private key, so the
+# collector needs no telling about them. Dispatch keeps what it's working with on the value stack, so it can run
+# long handlers with collections going on, and an exception out of a listener is reported, not passed on, as the
+# DOM says.
+
+struct.PageEventData
+{
+	bln stop;
+	bln stop_now;
+	bln canceled;
+	bln cancelable;
+	bln bubbles;
+	bln dispatching;
+	bln passive;
+}
+
+phi.PageEvents:Library
+{
+	ptr<JsClass> event_class: 0;
+	ptr<JsSym> listeners_key: 0;
+
+	ptr<JsObj> event_proto: 0;
+	ptr<JsObj> ui_proto: 0;
+	ptr<JsObj> mouse_proto: 0;
+	ptr<JsObj> key_proto: 0;
+	ptr<JsObj> custom_proto: 0;
+	ptr<JsObj> focus_proto: 0;
+	ptr<JsObj> input_proto: 0;
+	ptr<JsObj> target_proto: 0;
+
+	const u32 PLAIN: 0;
+	const u32 UI: 1;
+	const u32 MOUSE: 2;
+	const u32 KEY: 3;
+	const u32 CUSTOM: 4;
+	const u32 FOCUS: 5;
+	const u32 INPUT: 6;
+
+	[Init: ptr<JsObj> keep: 0;]
+		if event_class is 0
+			event_class is (JsObjs.NewClass: 'Event');
+			event_class.finalize is addr FreeEvent;
+		;;
+		listeners_key is (JsObjs.NewSymbol: (JsV.AsStr: (Js.NewStringZ: 'listeners')));
+		listeners_key.flags is listeners_key.flags | JsStrs.SYM_PRIVATE as u16;
+		call JsObjs.ArrayPush: keep (JsV.Sym: listeners_key);
+
+		target_proto is (JsObjs.NewObject);
+		call JsObjs.ArrayPush: keep (JsV.Obj: target_proto);
+		call Js.DefineClass: 'EventTarget' addr TargetCtor 0 target_proto;
+		call Js.DefineNative: target_proto 'addEventListener' addr AddListener 2;
+		call Js.DefineNative: target_proto 'removeEventListener' addr RemoveListener 2;
+		call Js.DefineNativeSafe: target_proto 'dispatchEvent' addr DispatchFn 1;
+
+		event_proto is (JsObjs.NewObject);
+		call JsObjs.ArrayPush: keep (JsV.Obj: event_proto);
+		ptr<JsNativeFn> ec: (Js.DefineClass: 'Event' addr EventCtor 1 event_proto);
+		ec.magic is PLAIN;
+		ec.data is (JsV.Obj: event_proto);
+		call Js.Define: event_proto 'NONE' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: event_proto 'CAPTURING_PHASE' (JsV.Int: 1) JsObjs.E;
+		call Js.Define: event_proto 'AT_TARGET' (JsV.Int: 2) JsObjs.E;
+		call Js.Define: event_proto 'BUBBLING_PHASE' (JsV.Int: 3) JsObjs.E;
+		call Js.DefineNative: event_proto 'preventDefault' addr PreventDefault 0;
+		call Js.DefineNative: event_proto 'stopPropagation' addr StopPropagation 0;
+		call Js.DefineNative: event_proto 'stopImmediatePropagation' addr StopImmediate 0;
+		call Js.DefineNative: event_proto 'composedPath' addr ComposedPath 0;
+		call Js.DefineGetter: event_proto 'defaultPrevented' addr GetCanceled 0;
+		ui_proto is (Sub: 'UIEvent' UI event_proto keep);
+		mouse_proto is (Sub: 'MouseEvent' MOUSE ui_proto keep);
+		key_proto is (Sub: 'KeyboardEvent' KEY ui_proto keep);
+		focus_proto is (Sub: 'FocusEvent' FOCUS ui_proto keep);
+		input_proto is (Sub: 'InputEvent' INPUT ui_proto keep);
+		custom_proto is (Sub: 'CustomEvent' CUSTOM event_proto keep);
+	[end]
+
+	[Sub: ptr<u8> name: 0; u32 kind: 0; ptr<JsObj> parent: 0; ptr<JsObj> keep: 0;]
+		ptr<JsObj> proto: (JsObjs.NewWithProto: parent);
+		call JsObjs.ArrayPush: keep (JsV.Obj: proto);
+		ptr<JsNativeFn> c: (Js.DefineClass: name addr EventCtor 1 proto);
+		c.magic is kind;
+		c.data is (JsV.Obj: proto);
+	[end: proto]
+
+	[FreeEvent: ptr<JsObj> o: 0;]
+		free o.data;
+	[end]
+
+	[TargetCtor: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'Constructor EventTarget requires new';
+		;;
+		ptr<JsObj> o: (JsObjs.NewWithProto: (JsOps.ProtoFromCtor: nt target_proto));
+	[end: (JsV.Obj: o)]
+
+	# ---- listeners: [type, callback, capture, once, removed] ----
+
+	[ListOf: ptr<JsObj> o: 0; bln make: false;]
+		ptr<JsProp> found: (JsObjs.Find: o listeners_key as ptr<u8>);
+		if found is not 0
+			return (JsV.AsObj: found.value);
+		;;
+		if not make
+			return 0 as ptr<JsObj>;
+		;;
+		ptr<JsObj> list: (JsObjs.NewArray: 0);
+		call JsObjs.DefineValue: o listeners_key as ptr<u8> (JsV.Obj: list) JsObjs.W;
+	[end: list]
+
+	# capture, from true/false or { capture: true }
+	[CaptureOf: u64 options: 0;]
+		if (JsV.IsObj: options)
+			return (JsOps.ToBool: (JsObjs.GetV: options (JsObjs.KeyZ: 'capture')));
+		;;
+	[end: (JsOps.ToBool: options)]
+
+	[TargetObject: u64 v: 0;]
+		if v is JsV.UNDEF or v is JsV.NULL
+			return JsRt.r.global;
+		;;
+	[end: (JsOps.ToObject: v)]
+
+	[AddListener: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> t: (TargetObject: args:(-1));
+		ptr<JsStr> type: (JsStrs.InternStr: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		u64 cb: (Js.Arg: args argc 1);
+		if cb is JsV.NULL or cb is JsV.UNDEF
+			return JsV.UNDEF;
+		;;
+		u64 options: (Js.Arg: args argc 2);
+		bln capture: (CaptureOf: options);
+		bln once: false;
+		if (JsV.IsObj: options)
+			once is (JsOps.ToBool: (JsObjs.GetV: options (JsObjs.KeyZ: 'once')));
+		;;
+		ptr<JsObj> list: (ListOf: t true);
+		# the same one twice counts once
+		while u32 i: 0; i < list.length; i++;
+			ptr<JsObj> r: (JsV.AsObj: list.elems:i);
+			if (JsV.AsStr: r.elems:0) is type and r.elems:1 is cb and (r.elems:2 is JsV.TRUE) is capture
+				return JsV.UNDEF;
+			;;
+		;;
+		ptr<JsObj> rec: (JsObjs.NewArray: 5);
+		call JsObjs.ArrayPush: rec (JsV.Str: type);
+		call JsObjs.ArrayPush: rec cb;
+		call JsObjs.ArrayPush: rec (JsV.Bool: capture);
+		call JsObjs.ArrayPush: rec (JsV.Bool: once);
+		call JsObjs.ArrayPush: rec JsV.FALSE;
+		call JsObjs.ArrayPush: list (JsV.Obj: rec);
+	[end: JsV.UNDEF]
+
+	[RemoveListener: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> t: (TargetObject: args:(-1));
+		ptr<JsStr> type: (JsStrs.InternStr: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		u64 cb: (Js.Arg: args argc 1);
+		bln capture: (CaptureOf: (Js.Arg: args argc 2));
+		ptr<JsObj> list: (ListOf: t false);
+		if list is 0
+			return JsV.UNDEF;
+		;;
+		while u32 i: 0; i < list.length; i++;
+			ptr<JsObj> r: (JsV.AsObj: list.elems:i);
+			if (JsV.AsStr: r.elems:0) is type and r.elems:1 is cb and (r.elems:2 is JsV.TRUE) is capture
+				call Unlink: list i;
+				return JsV.UNDEF;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	# (a dispatch going on can't see a listener removed, as it looks at the removed mark)
+	[Unlink: ptr<JsObj> list: 0; u32 i: 0;]
+		ptr<JsObj> r: (JsV.AsObj: list.elems:i);
+		r.elems:4 is JsV.TRUE;
+		u32 last: list.length - 1;
+		while u32 j: i; j < last; j++;
+			list.elems:j is list.elems:(j + 1);
+		;;
+		list.elem_len is last;
+		list.length is last;
+	[end]
+
+	# ---- events ----
+
+	[NewEventObject: ptr<u8> type: 0; ptr<JsObj> proto: 0; bln bubbles: false; bln cancelable: false;]
+	[end: (MakeEvent: (JsV.AsStr: (Js.NewStringZ: type)) proto bubbles cancelable)]
+
+	[MakeEvent: ptr<JsStr> type: 0; ptr<JsObj> proto: 0; bln bubbles: false; bln cancelable: false;]
+		ptr<PageEventData> d: new PageEventData;
+		if d is 0
+			throw 'out of memory';
+		;;
+		d.bubbles is bubbles;
+		d.cancelable is cancelable;
+		ptr<JsObj> o: (JsObjs.NewHost: event_class proto d as ptr<u8>);
+		u64 ov: (JsV.Obj: o);
+		call Js.Define: o 'type' (JsV.Str: type) JsObjs.E;
+		call Js.Define: o 'bubbles' (JsV.Bool: bubbles) JsObjs.E;
+		call Js.Define: o 'cancelable' (JsV.Bool: cancelable) JsObjs.E;
+		call Js.Define: o 'composed' JsV.FALSE JsObjs.E;
+		call Js.Define: o 'target' JsV.NULL JsObjs.W | JsObjs.E;
+		call Js.Define: o 'srcElement' JsV.NULL JsObjs.W | JsObjs.E;
+		call Js.Define: o 'currentTarget' JsV.NULL JsObjs.W | JsObjs.E;
+		call Js.Define: o 'eventPhase' (JsV.Int: 0) JsObjs.W | JsObjs.E;
+		call Js.Define: o 'timeStamp' (JsV.Num: Page.current.now - Page.current.started_at) JsObjs.E;
+		call Js.Define: o 'isTrusted' JsV.FALSE JsObjs.W | JsObjs.E;
+	[end: ov]
+
+	[This: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.cls is event_class
+				return o.data as ptr<PageEventData>;
+			;;
+		;;
+		call JsErr.Type: 'this is not an Event';
+	[end: 0 as ptr<PageEventData>]
+
+	# new Event(type, init), and its subclasses, each taking the fields of its kind from init
+	[EventCtor: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u32 kind: self.magic;
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'Constructor of an Event requires new';
+		;;
+		if argc < 1
+			call JsErr.Type: 'An Event needs a type';
+		;;
+		ptr<JsStr> type: (JsOps.ToStr: args:0);
+		u64 init: (Js.Arg: args argc 1);
+		bln bubbles: (InitBool: init 'bubbles');
+		bln cancelable: (InitBool: init 'cancelable');
+		ptr<JsObj> proto: (JsOps.ProtoFromCtor: nt (JsV.AsObj: self.data));
+		u64 ev: (MakeEvent: type proto bubbles cancelable);
+		ptr<JsObj> o: (JsV.AsObj: ev);
+		call Js.Define: o 'composed' (JsV.Bool: (InitBool: init 'composed')) JsObjs.E;
+		when kind
+			is CUSTOM
+				call Copy: o init 'detail' JsV.NULL;
+			;;
+			is UI FOCUS
+				call Copy: o init 'detail' JsV.INT_BASE;
+				call Copy: o init 'view' JsV.NULL;
+				if kind is FOCUS
+					call Copy: o init 'relatedTarget' JsV.NULL;
+				;;
+			;;
+			is INPUT
+				call Copy: o init 'data' JsV.NULL;
+				call Copy: o init 'inputType' (JsV.Str: JsRt.blank);
+				call Copy: o init 'isComposing' JsV.FALSE;
+			;;
+			is MOUSE
+				call Copy: o init 'clientX' JsV.INT_BASE;
+				call Copy: o init 'clientY' JsV.INT_BASE;
+				call Copy: o init 'screenX' JsV.INT_BASE;
+				call Copy: o init 'screenY' JsV.INT_BASE;
+				call Copy: o init 'button' JsV.INT_BASE;
+				call Copy: o init 'buttons' JsV.INT_BASE;
+				call Copy: o init 'relatedTarget' JsV.NULL;
+				call CopyKeys: o init;
+				call Copy: o init 'detail' JsV.INT_BASE;
+			;;
+			is KEY
+				call Copy: o init 'key' (JsV.Str: JsRt.blank);
+				call Copy: o init 'code' (JsV.Str: JsRt.blank);
+				call Copy: o init 'location' JsV.INT_BASE;
+				call Copy: o init 'repeat' JsV.FALSE;
+				call CopyKeys: o init;
+			;;
+		;;
+	[end: ev]
+
+	[InitBool: u64 init: 0; ptr<u8> name: 0;]
+		if not (JsV.IsObj: init) return false;
+	[end: (JsOps.ToBool: (JsObjs.GetV: init (JsObjs.KeyZ: name)))]
+
+	[Copy: ptr<JsObj> o: 0; u64 init: 0; ptr<u8> name: 0; u64 otherwise: 0;]
+		u64 v: otherwise;
+		if (JsV.IsObj: init)
+			u64 given: (JsObjs.GetV: init (JsObjs.KeyZ: name));
+			if given is not JsV.UNDEF
+				v is given;
+			;;
+		;;
+		call Js.Define: o name v JsObjs.E;
+	[end]
+
+	[CopyKeys: ptr<JsObj> o: 0; u64 init: 0;]
+		call Copy: o init 'ctrlKey' JsV.FALSE;
+		call Copy: o init 'shiftKey' JsV.FALSE;
+		call Copy: o init 'altKey' JsV.FALSE;
+		call Copy: o init 'metaKey' JsV.FALSE;
+	[end]
+
+	[NewMouse: ptr<u8> type: 0; f64 x: 0.0; f64 y: 0.0; int button: 0; int detail: 0;]
+		u64 ev: (NewEventObject: type mouse_proto true true);
+		ptr<JsObj> o: (JsV.AsObj: ev);
+		call Js.Define: o 'clientX' (JsV.Num: x) JsObjs.E;
+		call Js.Define: o 'clientY' (JsV.Num: y) JsObjs.E;
+		call Js.Define: o 'pageX' (JsV.Num: x) JsObjs.E;
+		call Js.Define: o 'pageY' (JsV.Num: y) JsObjs.E;
+		call Js.Define: o 'screenX' (JsV.Num: x) JsObjs.E;
+		call Js.Define: o 'screenY' (JsV.Num: y) JsObjs.E;
+		call Js.Define: o 'button' (JsV.Int: button) JsObjs.E;
+		call Js.Define: o 'buttons' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: o 'detail' (JsV.Int: detail) JsObjs.E;
+		call Js.Define: o 'ctrlKey' JsV.FALSE JsObjs.E;
+		call Js.Define: o 'shiftKey' JsV.FALSE JsObjs.E;
+		call Js.Define: o 'altKey' JsV.FALSE JsObjs.E;
+		call Js.Define: o 'metaKey' JsV.FALSE JsObjs.E;
+		call Js.Define: o 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
+	[end: ev]
+
+	[NewKey: ptr<u8> type: 0; ptr<u8> key: 0; bln ctrl: false; bln shift: false; bln alt: false;]
+		u64 ev: (NewEventObject: type key_proto true true);
+		ptr<JsObj> o: (JsV.AsObj: ev);
+		call Js.Define: o 'key' (Js.NewStringZ: key) JsObjs.E;
+		call Js.Define: o 'code' (Js.NewStringZ: key) JsObjs.E;
+		call Js.Define: o 'ctrlKey' (JsV.Bool: ctrl) JsObjs.E;
+		call Js.Define: o 'shiftKey' (JsV.Bool: shift) JsObjs.E;
+		call Js.Define: o 'altKey' (JsV.Bool: alt) JsObjs.E;
+		call Js.Define: o 'metaKey' JsV.FALSE JsObjs.E;
+		call Js.Define: o 'repeat' JsV.FALSE JsObjs.E;
+		call Js.Define: o 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
+	[end: ev]
+
+	[PreventDefault: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageEventData> d: (This: args);
+		if d.cancelable and not d.passive
+			d.canceled is true;
+		;;
+	[end: JsV.UNDEF]
+
+	[GetCanceled: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageEventData> d: (This: args);
+	[end: (JsV.Bool: d.canceled)]
+
+	[StopPropagation: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageEventData> d: (This: args);
+		d.stop is true;
+	[end: JsV.UNDEF]
+
+	[StopImmediate: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageEventData> d: (This: args);
+		d.stop is true;
+		d.stop_now is true;
+	[end: JsV.UNDEF]
+
+	# the path, while it's being dispatched: kept under a private key on the event
+	[ComposedPath: ptr<u64> args: 0; int argc: 0;]
+		call This: args;
+		ptr<JsObj> o: (JsV.AsObj: args:(-1));
+		ptr<JsProp> found: (JsObjs.Find: o listeners_key as ptr<u8>);
+		if found is 0
+			return (JsV.Obj: (JsObjs.NewArray: 0));
+		;;
+	[end: found.value]
+
+	# ---- dispatch ----
+
+	[DispatchFn: ptr<u64> args: 0; int argc: 0;]
+		u64 ev: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: ev) or not (IsEvent: ev)
+			call JsErr.Type: 'dispatchEvent needs an Event';
+		;;
+		ptr<JsObj> eo: (JsV.AsObj: ev);
+		ptr<PageEventData> d: eo.data as ptr<PageEventData>;
+		if d.dispatching
+			call JsErr.Type: 'The event is already being dispatched';
+		;;
+		ptr<JsObj> t: (TargetObject: args:(-1));
+	[end: (JsV.Bool: (Dispatch: (JsV.Obj: t) ev))]
+
+	[IsEvent: u64 v: 0;]
+		ptr<JsObj> o: (JsV.AsObj: v);
+	[end: o.cls is event_class]
+
+	# Sends an event on its way: capture, target, bubble. True unless it was canceled. Everything it holds across
+	# a call to JS is on the value stack.
+	[Dispatch: u64 target: 0; u64 ev: 0;]
+		ptr<u64> base: JsVm.sp;
+		call Js.Push: target;
+		call Js.Push: ev;
+		ptr<JsObj> eo: (JsV.AsObj: ev);
+		ptr<PageEventData> d: eo.data as ptr<PageEventData>;
+		d.dispatching is true;
+		d.stop is false;
+		d.stop_now is false;
+		call JsObjs.DefineZ: eo 'target' target JsObjs.W | JsObjs.E;
+		call JsObjs.DefineZ: eo 'srcElement' target JsObjs.W | JsObjs.E;
+		# the path, target first
+		ptr<JsObj> path: (BuildPath: target (StrOf: eo 'type'));
+		call Js.Push: (JsV.Obj: path);
+		call JsObjs.DefineValue: eo listeners_key as ptr<u8> (JsV.Obj: path) JsObjs.W;
+		u32 count: path.length;
+		# capture: from the far end down to the target's parent
+		u32 i: count;
+		while i > 1 and not d.stop
+			i--;
+			call Phase: path.elems:i ev 1 true;
+		;;
+		if not d.stop and count > 0
+			call Phase: path.elems:0 ev 2 true;
+			if not d.stop
+				call Phase: path.elems:0 ev 2 false;
+			;;
+		;;
+		if d.bubbles
+			u32 j: 1;
+			while j < count and not d.stop
+				call Phase: path.elems:j ev 3 false;
+				j++;
+			;;
+		;;
+		d.dispatching is false;
+		call JsObjs.DefineZ: eo 'currentTarget' JsV.NULL JsObjs.W | JsObjs.E;
+		call JsObjs.DefineZ: eo 'eventPhase' (JsV.Int: 0) JsObjs.W | JsObjs.E;
+		JsVm.sp is base;
+	[end: not d.canceled]
+
+	[StrOf: ptr<JsObj> o: 0; ptr<u8> name: 0;]
+		ptr<JsProp> found: (JsObjs.Find: o (JsStrs.InternZ: name) as ptr<u8>);
+	[end: (JsV.AsStr: found.value)]
+
+	# the target, then its ancestors and, for most events, the window
+	[BuildPath: u64 target: 0; ptr<JsStr> type: 0;]
+		ptr<JsObj> path: (JsObjs.NewArray: 8);
+		call JsObjs.ArrayPush: path target;
+		ptr<JsObj> to: (JsV.AsObj: target);
+		if to.cls is PageBind.node_class
+			ptr<DomNode> n: to.data as ptr<DomNode>;
+			ptr<DomNode> up: n.parent;
+			while up is not 0
+				call JsObjs.ArrayPush: path (PageBind.Wrap: up);
+				up is up.parent;
+			;;
+			ptr<DomDocument> doc: n.doc;
+			# (a document's load doesn't reach the window: it's the window's own)
+			bln connected: (Dom.Contains: doc.root n);
+			if connected and not (JsStrs.EqZ: type 'load')
+				call JsObjs.ArrayPush: path (JsV.Obj: JsRt.r.global);
+			;;
+		;;
+	[end: path]
+
+	# the listeners of one target for one phase, each called inside its own catch
+	[Phase: u64 target: 0; u64 ev: 0; int phase: 0; bln capture: false;]
+		ptr<JsObj> to: (JsV.AsObj: target);
+		ptr<JsObj> eo: (JsV.AsObj: ev);
+		ptr<PageEventData> d: eo.data as ptr<PageEventData>;
+		call JsObjs.DefineZ: eo 'currentTarget' target JsObjs.W | JsObjs.E;
+		call JsObjs.DefineZ: eo 'eventPhase' (JsV.Int: phase) JsObjs.W | JsObjs.E;
+		ptr<JsStr> type: (JsStrs.InternStr: (StrOf: eo 'type'));
+		# the on... handler goes with the bubbling listeners, ahead of them here
+		if not capture
+			call OnHandler: target ev type;
+			if d.stop_now return;
+		;;
+		ptr<JsObj> list: (ListOf: to false);
+		if list is 0 return;
+		# a copy of what's there now: one added during this doesn't run, as the DOM says
+		ptr<JsObj> copy: (JsObjs.NewArray: list.length);
+		while u32 c: 0; c < list.length; c++;
+			call JsObjs.ArrayPush: copy list.elems:c;
+		;;
+		ptr<u64> mark: JsVm.sp;
+		call Js.Push: (JsV.Obj: copy);
+		while u32 i: 0; i < copy.length and not d.stop_now; i++;
+			ptr<JsObj> r: (JsV.AsObj: copy.elems:i);
+			if (JsV.AsStr: r.elems:0) is type and (r.elems:2 is JsV.TRUE) is capture and r.elems:4 is JsV.FALSE
+				if r.elems:3 is JsV.TRUE
+					call RemoveRecord: list r;
+				;;
+				call Invoke: r.elems:1 target ev;
+			;;
+		;;
+		JsVm.sp is mark;
+	[end]
+
+	[RemoveRecord: ptr<JsObj> list: 0; ptr<JsObj> r: 0;]
+		while u32 i: 0; i < list.length; i++;
+			if (JsV.AsObj: list.elems:i) is r
+				call Unlink: list i;
+				return;
+			;;
+		;;
+	[end]
+
+	# a function, or an object with handleEvent
+	[Invoke: u64 cb: 0; u64 target: 0; u64 ev: 0;]
+		ptr<u64> mark: JsVm.sp;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		u64 ignored: 0;
+		if call ignored is InvokeBody: cb target ev throws err
+			u64 thrown: (Js.TryCatch: addr t err);
+			call ReportThrown: thrown;
+		;;
+		JsVm.sp is mark;
+	[end]
+
+	[InvokeBody: u64 cb: 0; u64 target: 0; u64 ev: 0;]
+		if (JsOps.IsCallable: cb)
+			return (JsVm.Call1: cb target ev);
+		;;
+		if (JsV.IsObj: cb)
+			u64 he: (JsObjs.GetV: cb (JsObjs.KeyZ: 'handleEvent'));
+			if (JsOps.IsCallable: he)
+				return (JsVm.Call1: he cb ev);
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	[ReportThrown: u64 v: 0;]
+		Js.exception is v;
+		call Page.ReportException: Page.current;
+	[end]
+
+	# el.onclick, set from script or from the attribute: returning false cancels
+	[OnHandler: u64 target: 0; u64 ev: 0; ptr<JsStr> type: 0;]
+		call JsStrs.Flat: type;
+		ptr<JsObj> to: (JsV.AsObj: target);
+		# 'on' and the type, interned, as a key
+		WlBuf name;
+		call name.AddZ: 'on';
+		call name.AddN: type.data type.bytes;
+		ptr<JsStr> key: (JsStrs.Intern: name.data name.len);
+		ptr<JsProp> found: (JsObjs.Find: to key as ptr<u8>);
+		u64 fn: JsV.UNDEF;
+		if found is not 0
+			fn is found.value;
+		;;
+		elif to.cls is PageBind.node_class
+			fn is (AttrHandler: to.data as ptr<DomNode> name.data to key);
+		;;
+		call name.Free;
+		if not (JsOps.IsCallable: fn) return;
+		ptr<u64> mark: JsVm.sp;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		u64 r: 0;
+		if call r is JsVm.Call1: fn target ev throws err
+			u64 thrown: (Js.TryCatch: addr t err);
+			call ReportThrown: thrown;
+			r is JsV.UNDEF;
+		;;
+		JsVm.sp is mark;
+		if r is JsV.FALSE
+			ptr<JsObj> eo: (JsV.AsObj: ev);
+			ptr<PageEventData> d: eo.data as ptr<PageEventData>;
+			if d.cancelable
+				d.canceled is true;
+			;;
+		;;
+	[end]
+
+	# an onclick="..." attribute, compiled the first time it's needed and kept on the wrapper
+	[AttrHandler: ptr<DomNode> n: 0; ptr<u8> attr_name: 0; ptr<JsObj> wrapper: 0; ptr<JsStr> key: 0;]
+		if n.type is not DomType.ELEMENT return JsV.UNDEF;
+		ptr<u8> code: (Dom.AttrValue: n attr_name);
+		if code is 0 return JsV.UNDEF;
+		ptr<JsProp> fp: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: 'Function') as ptr<u8>);
+		if fp is 0 return JsV.UNDEF;
+		ptr<u64> mark: JsVm.sp;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		u64 fn: JsV.UNDEF;
+		if call fn is Compile: fp.value code throws err
+			u64 thrown: (Js.TryCatch: addr t err);
+			call ReportThrown: thrown;
+			fn is JsV.NULL;
+		;;
+		JsVm.sp is mark;
+		call JsObjs.DefineValue: wrapper key as ptr<u8> fn JsObjs.WEC;
+	[end: fn]
+
+	[Compile: u64 fn_ctor: 0; ptr<u8> code: 0;]
+		call Js.Push: (Js.NewStringZ: 'event');
+		call Js.Push: (Js.NewStringZ: code);
+	[end: (Js.Construct: fn_ctor 2)]
+
+	# ---- from the library's own code ----
+
+	[FireOn: u64 target: 0; ptr<u8> type: 0; bln bubbles: false;]
+		u64 ev: (NewEventObject: type event_proto bubbles false);
+		call Dispatch: target ev;
+	[end]
+
+	[FireSimple: ptr<DomNode> n: 0; ptr<u8> type: 0;]
+		if n is 0 return;
+		call FireOn: (PageBind.Wrap: n) type false;
+	[end]
+}

@@ -1,0 +1,26 @@
+nested div: 100004 nodes
+nested span: 100004 nodes
+nested unknown: 100004 nodes
+nested table: 100004 nodes
+nested svg: 100004 nodes
+paragraphs: 200004 nodes
+unclosed b, unique: 100004 nodes
+unclosed a: 100004 nodes
+text and refs: 5 nodes
+end tags nothing matches: 4 nodes
+deep, then end tags: 150005 nodes
+p in button, then divs: 100006 nodes
+deep, then list items: 150006 nodes
+deep svg, then end tags: 50005 nodes
+deep, then tables: 150004 nodes
+misnested formatting: 320004 nodes
+many cells: 200007 nodes
+reopened formatting: 200164 nodes
+attributes on one tag: 4 nodes
+attributes on two html tags: 4 nodes
+many options: 200008 nodes
+long comment: 5 nodes
+foster parented text: 200005 nodes
+templates: 200004 nodes
+three hundred thousand deep: 300004 nodes
+done

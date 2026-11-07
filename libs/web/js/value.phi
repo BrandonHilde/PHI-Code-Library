@@ -1,0 +1,150 @@
+# JavaScript values: 64 bits each, NaN-boxed, the same on 32 and 64-bit systems. A value whose top
+# 16 bits are below 0xFFF9 is an f64 as it stands; otherwise they're a tag:
+#
+#   0xFFF9  undefined, null, false, true, the hole      (the low bits say which)
+#   0xFFFA  an int32, in the low 32 bits
+#   0xFFFB  an object (a pointer in the low 48 bits); also the GC's other cells, on the stack
+#   0xFFFC  a string
+#   0xFFFD  a symbol
+#
+# These are all small calls; the VM's hot paths read a stack slot's high word directly instead,
+# through a ptr<u32>.
+
+phi.JsV:Library
+{
+	const u32 TAG_SPECIAL: 0xFFF9;
+	const u32 TAG_INT: 0xFFFA;
+	const u32 TAG_OBJ: 0xFFFB;
+	const u32 TAG_STR: 0xFFFC;
+	const u32 TAG_SYM: 0xFFFD;
+	# the high 32 bits of an int32 value, and of the special values
+	const u32 HI_INT: 0xFFFA0000;
+	const u32 HI_SPECIAL: 0xFFF90000;
+	# the low 32 bits of the special values
+	const u32 LO_UNDEF: 0;
+	const u32 LO_NULL: 1;
+	const u32 LO_FALSE: 2;
+	const u32 LO_TRUE: 3;
+	const u32 LO_HOLE: 4;
+
+	u64 UNDEF: 0xFFF9000000000000;
+	u64 NULL: 0xFFF9000000000001;
+	u64 FALSE: 0xFFF9000000000002;
+	u64 TRUE: 0xFFF9000000000003;
+	u64 HOLE: 0xFFF9000000000004;
+	u64 NAN: 0x7FF8000000000000;
+	u64 INT_BASE: 0xFFFA000000000000;
+	u64 OBJ_BASE: 0xFFFB000000000000;
+	u64 STR_BASE: 0xFFFC000000000000;
+	u64 SYM_BASE: 0xFFFD000000000000;
+	u64 PTR_MASK: 0x0000FFFFFFFFFFFF;
+
+	[Tag: u64 v: 0;]
+	[end: (v >> 48) as u32]
+
+	[IsNum: u64 v: 0;]
+		u32 t: (v >> 48) as u32;
+	[end: t < TAG_SPECIAL or t is TAG_INT]
+
+	[IsInt: u64 v: 0;]
+	[end: (v >> 48) as u32 is TAG_INT]
+
+	[IsDouble: u64 v: 0;]
+	[end: (v >> 48) as u32 < TAG_SPECIAL]
+
+	[IsObj: u64 v: 0;]
+	[end: (v >> 48) as u32 is TAG_OBJ]
+
+	[IsStr: u64 v: 0;]
+	[end: (v >> 48) as u32 is TAG_STR]
+
+	[IsSym: u64 v: 0;]
+	[end: (v >> 48) as u32 is TAG_SYM]
+
+	[IsUndef: u64 v: 0;]
+	[end: v is UNDEF]
+
+	[IsNull: u64 v: 0;]
+	[end: v is NULL]
+
+	# undefined or null
+	[IsNil: u64 v: 0;]
+	[end: v is UNDEF or v is NULL]
+
+	[IsBool: u64 v: 0;]
+	[end: v is TRUE or v is FALSE]
+
+	[Bool: bln b: false;]
+		if b return TRUE;
+	[end: FALSE]
+
+	[Int: int i: 0;]
+	[end: INT_BASE | (i as u32)]
+
+	[Obj: ptr<JsObj> p: 0;]
+	[end: OBJ_BASE | ((p as u64) & PTR_MASK)]
+
+	[Str: ptr<JsStr> p: 0;]
+	[end: STR_BASE | ((p as u64) & PTR_MASK)]
+
+	[Sym: ptr<JsSym> p: 0;]
+	[end: SYM_BASE | ((p as u64) & PTR_MASK)]
+
+	[Cell: ptr<u8> p: 0;]
+	[end: OBJ_BASE | ((p as u64) & PTR_MASK)]
+
+	[AsObj: u64 v: 0;]
+	[end: (v & PTR_MASK) as ptr<JsObj>]
+
+	[AsStr: u64 v: 0;]
+	[end: (v & PTR_MASK) as ptr<JsStr>]
+
+	[AsSym: u64 v: 0;]
+	[end: (v & PTR_MASK) as ptr<JsSym>]
+
+	[AsPtr: u64 v: 0;]
+	[end: (v & PTR_MASK) as ptr<u8>]
+
+	[AsInt: u64 v: 0;]
+	[end: v as int]
+
+	# the number a number value holds, as an f64
+	[AsNum: u64 v: 0;]
+		if (v >> 48) as u32 is TAG_INT
+			return (v as int) as f64;
+		;;
+		ptr<f64> p: (addr v) as ptr<f64>;
+	[end: p:0]
+
+	# an f64 as a value as it stands (a NaN from outside comes out canonical)
+	[Double: f64 x: 0.0;]
+		ptr<u64> p: (addr x) as ptr<u64>;
+		u64 b: p:0;
+		if (b >> 48) as u32 >= TAG_SPECIAL
+			return NAN;
+		;;
+	[end: b]
+
+	# an f64 as a value, as an int32 if it is one (and isn't -0)
+	[Num: f64 x: 0.0;]
+		if x >= -2147483648.0 and x <= 2147483647.0
+			int i: x as int;
+			if (i as f64) is x
+				if i is not 0
+					return INT_BASE | (i as u32);
+				;;
+				ptr<u64> z: (addr x) as ptr<u64>;
+				if z:0 is 0
+					return INT_BASE;
+				;;
+			;;
+		;;
+	[end: (Double: x)]
+
+	# a u32 as a value
+	[Uint: u32 u: 0;]
+		if u <= 0x7FFFFFFF
+			return INT_BASE | u;
+		;;
+	[end: (Double: u as f64)]
+}

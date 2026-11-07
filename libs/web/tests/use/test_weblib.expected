@@ -1,0 +1,5 @@
+version: 1
+parsed: 1
+body: <p class="x">a &amp; b<br>c</p><p>d</p>
+text: a & bcd
+script: 1 2-4-6 function

@@ -1,0 +1,2406 @@
+# The cascade: which rules apply to an element, which declaration wins for each property, and what
+# that comes to. A CssEngine belongs to a document.
+#
+# Rules are bucketed by the id, class or tag at the right of their selector, so an element only
+# tries the rules that could match it. The walk over the tree is a loop. Elements that matched the
+# very same declarations under the very same parent share one style.
+
+use memory.mem;
+use core.text;
+use core.buf;
+use core.atoms;
+use core.arena;
+use core.stack;
+use dom.dom;
+use css.tables;
+use css.lexer;
+use css.values;
+use css.calc;
+use css.vp;
+use css.decls;
+use css.selector;
+use css.sheet;
+use css.style;
+use css.ua;
+
+struct.CssIdx
+{
+	ptr<CssComplex> sel;
+	ptr<CssDecls> decls;
+	ptr<CssIdx> next;
+	u32 order;
+	u32 rank;
+}
+
+struct.CssBucket
+{
+	ptr<WlAtom> key;
+	ptr<CssBucket> chain;
+	ptr<CssIdx> head;
+	ptr<CssIdx> tail;
+	u32 kind;
+}
+
+# a rule that matched, or a block that applies
+struct.CssHit
+{
+	ptr<CssDecls> decls;
+	u32 spec;
+	u32 order;
+	u32 rank;
+	u32 pseudo;
+}
+
+struct.CssCacheEntry
+{
+	ptr<CssComputed> parent;
+	ptr<CssComputed> style;
+	ptr<ptr<CssDecls>> list;
+	u32 count;
+	u32 hash;
+}
+
+struct.CssLayerEntry
+{
+	ptr<WlAtom> name;
+	int parent;
+	u32 rank;
+}
+
+# what a custom property comes to, on one element
+struct.CssCustomSlot
+{
+	ptr<WlAtom> name;
+	ptr<CssVal> val;
+	u32 result;         # a CssCx
+	u32 seq;
+	u8 state;           # 0 not looked at, 1 being worked out, 2 done
+}
+
+struct.CssEngine
+{
+	ptr<DomDocument> doc;
+	CssMediaEnv env;
+
+	ptr<ptr<CssSheet>> sheets;
+	u32 sheet_count;
+	u32 sheet_cap;
+
+	# the index of rules, rebuilt when the set of sheets or what @media says changes
+	WlArena index;
+	ptr<ptr<CssBucket>> buckets;
+	u32 bucket_mask;
+	ptr<CssIdx> universal_head;
+	ptr<CssIdx> universal_tail;
+	u32 rule_order;
+	bln needs_index;
+	bln has_pseudo;
+	bln has_sibling;    # a sibling combinator, or :nth-child(of S): later siblings depend on earlier
+	bln has_structural; # :first-child and its kin, :empty: what's in a parent matters
+	bln has_has;
+	bln has_layers;
+	ptr<CssLayerEntry> layers;
+	u32 layer_count;
+	u32 layer_cap;
+
+	# what's active, for a browser to read
+	ptr<ptr<CssFontFace>> faces;
+	u32 face_count;
+	u32 face_cap;
+	ptr<ptr<CssKeyframes>> frames;
+	u32 frame_count;
+	u32 frame_cap;
+
+	# asked once for each @import that applies: answer now or later, with Css.ImportDone
+	method<ptr<CssEngine> ptr<CssImport>> on_import;
+	u32 import_count;
+
+	bln all_dirty;
+	u32 media_hash;
+	u32 seen_version;
+	bln ran;
+	f64 root_px;
+	bln uses_viewport;
+
+	# Add or take away a sheet: it's noticed at the next Update. The engine doesn't own sheets.
+	[AddSheet: ptr<CssSheet> sheet: 0;]
+		if sheet is 0 return;
+		if sheet_count >= sheet_cap
+			u32 room: sheet_cap * 2;
+			if room is 0
+				room is 8;
+			;;
+			ptr<ptr<CssSheet>> grown: new ptr<CssSheet>[room];
+			if grown is 0
+				throw 'out of memory for the list of sheets';
+			;;
+			if sheets is not 0
+				call Mem.Copy: grown sheets sheet_count * sizeof ptr<CssSheet>;
+				free sheets;
+			;;
+			sheets is grown;
+			sheet_cap is room;
+		;;
+		sheets:sheet_count is sheet;
+		sheet_count++;
+		needs_index is true;
+		all_dirty is true;
+	[end]
+
+	[RemoveSheet: ptr<CssSheet> sheet: 0;]
+		u32 i: 0;
+		while i < sheet_count
+			if sheets:i is sheet
+				if i + 1 < sheet_count
+					call Mem.Move: addr sheets:i addr sheets:(i + 1) (sheet_count - i - 1) * sizeof ptr<CssSheet>;
+				;;
+				sheet_count--;
+				needs_index is true;
+				all_dirty is true;
+				return;
+			;;
+			i++;
+		;;
+	[end]
+
+	# the viewport, in CSS pixels: for @media and for vw and vh
+	[SetViewport: f64 width: 0.0; f64 height: 0.0;]
+		if env.width is width and env.height is height return;
+		env.width is width;
+		env.height is height;
+		if env.device_width is 0.0 or env.device_width < width
+			env.device_width is width;
+		;;
+		if env.device_height is 0.0 or env.device_height < height
+			env.device_height is height;
+		;;
+		needs_index is true;
+		if uses_viewport
+			all_dirty is true;
+		;;
+	[end]
+
+	# After changing env's other fields (dark, print...), so that @media is asked again.
+	[MediaChanged]
+		needs_index is true;
+	[end]
+
+	# Recompute what's dirty; afterwards node.style is right for every element in the tree. It
+	# doesn't throw: on an error it says false, and Css.error says why.
+	[Update]
+		bln ok: false;
+		if call CssCascade.Update: self throws err
+			call CssError.Set: err.text;
+			call CssCascade.AfterError;
+			return false;
+		;;
+	[end: true]
+
+	# Tell it something the DOM can't see changed for this element (hover, say).
+	[MarkDirty: ptr<DomNode> node: 0;]
+		if node is 0 return;
+		node.flags is node.flags | Dom.DIRTY_STYLE;
+		doc.version++;
+	[end]
+
+	[Free]
+		call CssCascade.FreeEngine: self;
+	[end]
+}
+
+phi.CssError:Library
+{
+	ptr<u8> text: 0;
+	u8 room[256];
+
+	[Set: ptr<u8> message: 0;]
+		u32 n: (WlText.LenZ: message);
+		if n > 255
+			n is 255;
+		;;
+		if n > 0
+			call Mem.Copy: addr room message n;
+		;;
+		room:n is 0;
+		text is addr room;
+	[end]
+}
+
+phi.CssCascade:Library
+{
+	const u32 K_ID: 1;
+	const u32 K_CLASS: 2;
+	const u32 K_TAG: 3;
+
+	const u32 RANK_UA: 0;
+	const u32 RANK_UNLAYERED: 0x7FFFFFF0;
+	const u32 RANK_INLINE: 0x7FFFFFF8;
+	const u32 RANK_HINTS: 1;
+	const u32 RANK_FIRST_LAYER: 2;
+	const u32 MAX_IMPORT_DEPTH: 8;
+	const u32 MAX_IMPORTS: 256;
+	const u32 CACHE_SIZE: 4096;
+
+	ptr<CssSheet> ua_sheet: 0;
+
+	[New: ptr<DomDocument> doc: 0;]
+		call Dom.Start;
+		call CssProps.Start;
+		call MakeInitial;
+		if ua_sheet is 0
+			ptr<u8> text: (CssUa.Text);
+			ua_sheet is (CssSheetP.Parse: text (WlText.LenZ: text) 0);
+		;;
+		ptr<CssEngine> e: new CssEngine;
+		if e is 0
+			throw 'out of memory for a style engine';
+		;;
+		e.doc is doc;
+		e.env.width is 800.0;
+		e.env.height is 600.0;
+		e.env.device_width is 800.0;
+		e.env.device_height is 600.0;
+		e.env.dppx is 1.0;
+		e.root_px is 16.0;
+		e.needs_index is true;
+		e.all_dirty is true;
+	[end: e]
+
+	[FreeEngine: ptr<CssEngine> e: 0;]
+		# every node's style, whether it's in the tree now or not
+		ptr<DomNode> n: e.doc.all;
+		while n is not 0
+			if n.style is not 0
+				call CssStyles.Release: n.style as ptr<CssComputed>;
+				n.style is 0;
+			;;
+			if n.inline_style is not 0
+				ptr<CssDecls> d: n.inline_style as ptr<CssDecls>;
+				call d.FreeItems;
+				free d;
+				n.inline_style is 0;
+			;;
+			n is n.all_next;
+		;;
+		call e.index.Free;
+		if e.buckets is not 0
+			free e.buckets;
+		;;
+		if e.sheets is not 0
+			free e.sheets;
+		;;
+		if e.layers is not 0
+			free e.layers;
+		;;
+		if e.faces is not 0
+			free e.faces;
+		;;
+		if e.frames is not 0
+			free e.frames;
+		;;
+		free e;
+	[end]
+
+	# ---- the initial style
+
+	[MakeInitial]
+		if CssStyles.initial is not 0 return;
+		ptr<u8> inherits: new u8[CssP.GROUPS + 1];
+		if inherits is 0
+			throw 'out of memory for the initial style';
+		;;
+		CssStyles.group_inherits is inherits;
+		ptr<CssComputed> s: new CssComputed;
+		if s is 0
+			throw 'out of memory for the initial style';
+		;;
+		s.refs is 1;
+		s.font_px is 16.0;
+		s.current_color is 0x000000FF;
+		while u32 g: 0; g < CssP.GROUPS; g++;
+			s.g:g is (CssStyles.NewGroup: g);
+		;;
+		cur is s;
+		parent_style is s;
+		owned is 0xFFFFFFFF;
+		CssCalc.cur_em is 16.0;
+		CssCalc.cur_rem is 16.0;
+		CssCalc.cur_vw is 8.0;
+		CssCalc.cur_vh is 6.0;
+		CssCalc.cur_lh is 19.2;
+		while u32 p: 0; p < CssP.LONGHANDS; p++;
+			ptr<CssPropInfo> info: addr CssProps.info:p;
+			if (info.flags & CssProps.F_INHERITED) is not 0
+				inherits:(info.group) is 1;
+			;;
+			call ComputeInto: p (CssSh.Initial: p);
+		;;
+		call Fixups: false;
+		CssStyles.initial is s;
+		cur is 0;
+	[end]
+
+	# ---- the index
+
+	[BuildIndex: ptr<CssEngine> e: 0;]
+		call e.index.Free;
+		if e.buckets is not 0
+			free e.buckets;
+		;;
+		e.universal_head is 0;
+		e.universal_tail is 0;
+		e.rule_order is 0;
+		e.has_pseudo is false;
+		e.has_sibling is false;
+		e.has_structural is false;
+		e.has_has is false;
+		e.has_layers is false;
+		e.layer_count is 0;
+		e.media_hash is 1;
+		e.face_count is 0;
+		e.frame_count is 0;
+		e.import_count is 0;
+		u32 total: ua_sheet.rule_count;
+		while u32 i: 0; i < e.sheet_count; i++;
+			total++ e.sheets:i.rule_count;
+		;;
+		u32 room: 256;
+		while room < total * 2 and room < 0x100000
+			room is room * 2;
+		;;
+		e.buckets is new ptr<CssBucket>[room];
+		if e.buckets is 0
+			throw 'out of memory for the index of rules';
+		;;
+		e.bucket_mask is room - 1;
+		# first the layers, whose order is by when they're first named
+		call WalkLayers: e ua_sheet.first 0 0;
+		while u32 i: 0; i < e.sheet_count; i++;
+			call WalkLayers: e e.sheets:i.first 0 0;
+		;;
+		call RankLayers: e;
+		call Walk: e ua_sheet.first RANK_UA 0 0;
+		while u32 i: 0; i < e.sheet_count; i++;
+			call Walk: e e.sheets:i.first RANK_UNLAYERED 0 0;
+		;;
+		# (an @import answered during that was seen by it)
+		e.needs_index is false;
+	[end]
+
+	[RuleApplies: ptr<CssEngine> e: 0; ptr<CssRule> r: 0;]
+		if r.kind is CssSheetP.R_MEDIA as u8
+			bln says: (CssMq.Matches: r.media addr e.env);
+			e.media_hash is e.media_hash * 31 + says as u32 + 7;
+			return says;
+		;;
+		if r.kind is CssSheetP.R_SUPPORTS as u8
+			return r.supported is not 0;
+		;;
+	[end: true]
+
+	[WalkLayers: ptr<CssEngine> e: 0; ptr<CssRule> r: 0; ptr<WlAtom> prefix: 0; u32 depth: 0;]
+		call WlStack.Check;
+		while r is not 0
+			u32 kind: r.kind;
+			if kind is CssSheetP.R_LAYER or kind is CssSheetP.R_LAYER_NAME
+				call AddLayer: e (CssSheetP.LayerJoin: prefix r.layer);
+			;;
+			if kind is CssSheetP.R_MEDIA or kind is CssSheetP.R_SUPPORTS or kind is CssSheetP.R_LAYER
+				if (RuleApplies: e r)
+					call WalkLayers: e r.first_child prefix depth;
+				;;
+			;;
+			elif kind is CssSheetP.R_IMPORT and depth < MAX_IMPORT_DEPTH
+				ptr<CssImport> im: r.import;
+				if im.supported is not 0 and (CssMq.Matches: im.media addr e.env)
+					if im.asked is 0 and e.on_import is not 0 and e.import_count < MAX_IMPORTS
+						im.asked is 1;
+						e.import_count++;
+						call e.on_import: e im;
+					;;
+				;;
+				if im.sheet is not 0 and im.supported is not 0 and (CssMq.Matches: im.media addr e.env)
+					ptr<WlAtom> inner: (CssSheetP.LayerJoin: prefix im.layer);
+					if inner is not 0
+						call AddLayer: e inner;
+					;;
+					ptr<CssSheet> child: im.sheet;
+					call WalkLayers: e child.first inner depth + 1;
+				;;
+			;;
+			r is r.next;
+		;;
+	[end]
+
+	[FindLayer: ptr<CssEngine> e: 0; ptr<WlAtom> name: 0;]
+		while u32 i: 0; i < e.layer_count; i++;
+			if e.layers:i.name is name return i as int;
+		;;
+	[end: -1]
+
+	# a.b.c, and a and a.b before it, each once
+	[AddLayer: ptr<CssEngine> e: 0; ptr<WlAtom> name: 0;]
+		if name is 0 return -1;
+		int have: (FindLayer: e name);
+		if have >= 0 return have;
+		if e.layer_count >= 1024 return -1;
+		int parent: -1;
+		u32 cut: name.len;
+		while cut > 0
+			cut--;
+			if name.text:cut is 46
+				parent is (AddLayer: e (WlAtoms.Get: name.text cut));
+				break;
+			;;
+		;;
+		if e.layer_count >= e.layer_cap
+			u32 room: e.layer_cap * 2;
+			if room is 0
+				room is 16;
+			;;
+			ptr<CssLayerEntry> grown: new CssLayerEntry[room];
+			if grown is 0
+				throw 'out of memory for the list of layers';
+			;;
+			if e.layers is not 0
+				call Mem.Copy: grown e.layers e.layer_count * sizeof CssLayerEntry;
+				free e.layers;
+			;;
+			e.layers is grown;
+			e.layer_cap is room;
+		;;
+		ptr<CssLayerEntry> l: addr e.layers:(e.layer_count);
+		l.name is name;
+		l.parent is parent;
+		e.has_layers is true;
+		e.layer_count++;
+	[end: (e.layer_count - 1) as int]
+
+	u32 next_rank: 0;
+
+	# a layer's own rules beat those of the layers inside it
+	[RankLayers: ptr<CssEngine> e: 0;]
+		next_rank is RANK_FIRST_LAYER;
+		call RankUnder: e (-1);
+	[end]
+
+	[RankUnder: ptr<CssEngine> e: 0; int parent: -1;]
+		call WlStack.Check;
+		while u32 i: 0; i < e.layer_count; i++;
+			if e.layers:i.parent is parent
+				call RankUnder: e i as int;
+				e.layers:i.rank is next_rank;
+				next_rank++;
+			;;
+		;;
+	[end]
+
+	[RankOf: ptr<CssEngine> e: 0; ptr<WlAtom> name: 0; u32 otherwise: 0;]
+		if name is 0 return otherwise;
+		int i: (FindLayer: e name);
+		if i < 0 return otherwise;
+		return e.layers:i.rank;
+	[end: otherwise]
+
+	[Walk: ptr<CssEngine> e: 0; ptr<CssRule> r: 0; u32 rank: 0; ptr<WlAtom> prefix: 0; u32 depth: 0;]
+		call WlStack.Check;
+		while r is not 0
+			u32 kind: r.kind;
+			if kind is CssSheetP.R_STYLE
+				if r.decls.count > 0
+					u32 rule_rank: rank;
+					if rank is not RANK_UA
+						rule_rank is (RankOf: e (CssSheetP.LayerJoin: prefix r.layer) RANK_UNLAYERED);
+					;;
+					call AddRule: e r rule_rank;
+				;;
+			;;
+			elif kind is CssSheetP.R_MEDIA or kind is CssSheetP.R_SUPPORTS or kind is CssSheetP.R_LAYER
+				if (RuleApplies: e r)
+					call Walk: e r.first_child rank prefix depth;
+				;;
+			;;
+			elif kind is CssSheetP.R_IMPORT
+				call WalkImport: e r rank prefix depth;
+			;;
+			elif kind is CssSheetP.R_FONT_FACE
+				call AddFace: e r.face;
+			;;
+			elif kind is CssSheetP.R_KEYFRAMES
+				call AddFrames: e r.frames;
+			;;
+			r is r.next;
+		;;
+	[end]
+
+	[WalkImport: ptr<CssEngine> e: 0; ptr<CssRule> r: 0; u32 rank: 0; ptr<WlAtom> prefix: 0; u32 depth: 0;]
+		ptr<CssImport> im: r.import;
+		if im.supported is 0 or (CssMq.Matches: im.media addr e.env) is false return;
+		if im.sheet is 0 or depth >= MAX_IMPORT_DEPTH return;
+		ptr<CssSheet> child: im.sheet;
+		call Walk: e child.first rank (CssSheetP.LayerJoin: prefix im.layer) depth + 1;
+	[end]
+
+	[AddFace: ptr<CssEngine> e: 0; ptr<CssFontFace> face: 0;]
+		if e.face_count >= e.face_cap
+			u32 room: e.face_cap * 2;
+			if room is 0
+				room is 16;
+			;;
+			ptr<ptr<CssFontFace>> grown: new ptr<CssFontFace>[room];
+			if grown is 0
+				throw 'out of memory for the list of fonts';
+			;;
+			if e.faces is not 0
+				call Mem.Copy: grown e.faces e.face_count * sizeof ptr<CssFontFace>;
+				free e.faces;
+			;;
+			e.faces is grown;
+			e.face_cap is room;
+		;;
+		e.faces:(e.face_count) is face;
+		e.face_count++;
+	[end]
+
+	[AddFrames: ptr<CssEngine> e: 0; ptr<CssKeyframes> set: 0;]
+		if e.frame_count >= e.frame_cap
+			u32 room: e.frame_cap * 2;
+			if room is 0
+				room is 16;
+			;;
+			ptr<ptr<CssKeyframes>> grown: new ptr<CssKeyframes>[room];
+			if grown is 0
+				throw 'out of memory for the list of keyframes';
+			;;
+			if e.frames is not 0
+				call Mem.Copy: grown e.frames e.frame_count * sizeof ptr<CssKeyframes>;
+				free e.frames;
+			;;
+			e.frames is grown;
+			e.frame_cap is room;
+		;;
+		e.frames:(e.frame_count) is set;
+		e.frame_count++;
+	[end]
+
+	[AddRule: ptr<CssEngine> e: 0; ptr<CssRule> r: 0; u32 rank: 0;]
+		ptr<CssComplex> c: r.sel.first;
+		while c is not 0
+			if c.pseudo is not CssSel.PE_UNKNOWN as u8
+				ptr<CssIdx> x: (e.index.Alloc: sizeof CssIdx) as ptr<CssIdx>;
+				x.sel is c;
+				x.decls is r.decls;
+				x.order is e.rule_order;
+				x.rank is rank;
+				e.rule_order++;
+				if c.pseudo is not 0
+					e.has_pseudo is true;
+				;;
+				# the UA sheet's few structural rules aren't worth making every change dearer
+				if rank is not RANK_UA
+					call NoteFeatures: e c;
+				;;
+				call Place: e x c;
+			;;
+			c is c.next;
+		;;
+	[end]
+
+	# whether invalidation has to look at siblings, or at everything
+	[NoteFeatures: ptr<CssEngine> e: 0; ptr<CssComplex> c: 0;]
+		call WlStack.Check;
+		ptr<CssCompound> one: c.right;
+		while one is not 0
+			if one.left is not 0 and (one.comb is CssSel.C_NEXT as u8 or one.comb is CssSel.C_SIBLING as u8)
+				e.has_sibling is true;
+			;;
+			ptr<CssSimple> s: one.first;
+			while s is not 0
+				if s.kind is CssSel.S_PSEUDO as u8
+					u32 kw: s.pseudo;
+					if kw is CssK.HAS
+						e.has_has is true;
+					;;
+					if kw is CssK.NTH_CHILD or kw is CssK.NTH_LAST_CHILD or kw is CssK.NTH_OF_TYPE or kw is CssK.NTH_LAST_OF_TYPE or kw is CssK.LAST_CHILD or kw is CssK.FIRST_CHILD or kw is CssK.ONLY_CHILD or kw is CssK.FIRST_OF_TYPE or kw is CssK.LAST_OF_TYPE or kw is CssK.ONLY_OF_TYPE or kw is CssK.EMPTY
+						e.has_structural is true;
+						if s.sub is not 0
+							e.has_sibling is true;
+						;;
+					;;
+					if s.sub is not 0
+						ptr<CssComplex> inner: s.sub.first;
+						while inner is not 0
+							call NoteFeatures: e inner;
+							inner is inner.next;
+						;;
+					;;
+				;;
+				s is s.next;
+			;;
+			one is one.left;
+		;;
+	[end]
+
+	# in the bucket of the rightmost compound's id, else a class, else its tag, else with the rest
+	[Place: ptr<CssEngine> e: 0; ptr<CssIdx> x: 0; ptr<CssComplex> c: 0;]
+		ptr<CssSimple> s: c.right.first;
+		ptr<WlAtom> key: 0;
+		u32 kind: 0;
+		while s is not 0
+			u32 sk: s.kind;
+			if sk is CssSel.S_ID
+				key is s.a;
+				kind is K_ID;
+				break;
+			;;
+			if sk is CssSel.S_CLASS and kind is not K_CLASS
+				key is s.a;
+				kind is K_CLASS;
+			;;
+			if sk is CssSel.S_TAG and kind is 0
+				key is s.a;
+				kind is K_TAG;
+			;;
+			s is s.next;
+		;;
+		if kind is 0
+			if e.universal_tail is 0
+				e.universal_head is x;
+			;;
+			else
+				e.universal_tail.next is x;
+			;;
+			e.universal_tail is x;
+			return;
+		;;
+		if e.doc.quirks and kind is not K_TAG
+			key is (WlAtoms.GetLower: key.text key.len);
+		;;
+		ptr<CssBucket> b: (BucketFor: e key kind true);
+		if b.tail is 0
+			b.head is x;
+		;;
+		else
+			b.tail.next is x;
+		;;
+		b.tail is x;
+	[end]
+
+	[BucketFor: ptr<CssEngine> e: 0; ptr<WlAtom> key: 0; u32 kind: 0; bln make: false;]
+		u32 h: (key.hash ^ (kind * 0x9E3779B1)) & e.bucket_mask;
+		ptr<CssBucket> b: e.buckets:h;
+		while b is not 0
+			if b.key is key and b.kind is kind return b;
+			b is b.chain;
+		;;
+		if make is false return 0;
+		b is (e.index.Alloc: sizeof CssBucket) as ptr<CssBucket>;
+		b.key is key;
+		b.kind is kind;
+		b.chain is e.buckets:h;
+		e.buckets:h is b;
+	[end: b]
+
+	# ---- what matched
+
+	ptr<CssHit> hits: 0;
+	u32 hit_n: 0;
+	u32 hit_cap: 0;
+
+	[AddHit: ptr<CssDecls> d: 0; u32 spec: 0; u32 order: 0; u32 rank: 0; u32 pseudo: 0;]
+		if hit_n >= hit_cap
+			u32 room: hit_cap * 2;
+			if room is 0
+				room is 256;
+			;;
+			ptr<CssHit> grown: new CssHit[room];
+			if grown is 0
+				throw 'out of memory matching rules';
+			;;
+			if hits is not 0
+				call Mem.Copy: grown hits hit_n * sizeof CssHit;
+				free hits;
+			;;
+			hits is grown;
+			hit_cap is room;
+		;;
+		ptr<CssHit> h: addr hits:hit_n;
+		h.decls is d;
+		h.spec is spec;
+		h.order is order;
+		h.rank is rank;
+		h.pseudo is pseudo;
+		hit_n++;
+	[end]
+
+	[TryList: ptr<CssIdx> x: 0; ptr<DomNode> node: 0;]
+		while x is not 0
+			ptr<CssComplex> c: x.sel;
+			if (CssSel.MatchFrom: c.right node)
+				call AddHit: x.decls c.spec x.order x.rank c.pseudo;
+			;;
+			x is x.next;
+		;;
+	[end]
+
+	[TryKey: ptr<CssEngine> e: 0; ptr<WlAtom> key: 0; u32 kind: 0; ptr<DomNode> node: 0;]
+		if e.doc.quirks and kind is not K_TAG
+			key is (WlAtoms.GetLower: key.text key.len);
+		;;
+		ptr<CssBucket> b: (BucketFor: e key kind false);
+		if b is not 0
+			call TryList: b.head node;
+		;;
+	[end]
+
+	[Collect: ptr<CssEngine> e: 0; ptr<DomNode> node: 0;]
+		hit_n is 0;
+		if node.id_atom is not 0
+			call TryKey: e node.id_atom K_ID node;
+		;;
+		ptr<ptr<WlAtom>> classes: node.classes;
+		while u32 i: 0; i < node.class_count; i++;
+			call TryKey: e classes:i K_CLASS node;
+		;;
+		ptr<WlAtom> tag: node.tag;
+		if node.ns is not DomNs.HTML
+			tag is (WlAtoms.GetLower: tag.text tag.len);
+		;;
+		call TryKey: e tag K_TAG node;
+		call TryList: e.universal_head node;
+
+		# what the element's attributes say without being rules
+		ptr<CssDecls> hints: (CssHints.Of: node);
+		if hints is not 0
+			call AddHit: hints 0 0 RANK_HINTS 0;
+		;;
+		ptr<CssDecls> inline_decls: (InlineOf: e node);
+		if inline_decls is not 0 and inline_decls.count > 0
+			call AddHit: inline_decls 0 0 RANK_INLINE 0;
+		;;
+		call SortHits;
+	[end]
+
+	# the parsed style attribute, parsed again if the attribute has changed
+	[InlineOf: ptr<CssEngine> e: 0; ptr<DomNode> node: 0;]
+		ptr<DomAttr> a: 0;
+		if node.attrs is not 0
+			a is (Dom.Attr: node a_style);
+		;;
+		ptr<CssDecls> d: node.inline_style as ptr<CssDecls>;
+		if a is 0
+			if d is not 0
+				if d.src is not 0
+					# the attribute it came from has gone
+					call d.Clear;
+					free d.src;
+					d.src is 0;
+					d.src_len is 0;
+				;;
+			;;
+			return d;
+		;;
+		if d is 0
+			d is new CssDecls;
+			if d is 0
+				throw 'out of memory for a style attribute';
+			;;
+			node.inline_style is d as ptr<u8>;
+		;;
+		elif d.src is not 0 and (WlText.Eq: d.src d.src_len a.value a.value_len)
+			return d;
+		;;
+		call d.Clear;
+		if d.src is not 0
+			free d.src;
+		;;
+		d.src is (WlText.Dup: a.value a.value_len);
+		d.src_len is a.value_len;
+		call CssInline.Parse: d a.value a.value_len e.doc.url;
+	[end: d]
+
+	ptr<WlAtom> a_style: 0;
+
+	# by rank, then specificity, then order. A sort with no recursion, and which does the right
+	# thing for the rare element that matches thousands of rules.
+	[SortHits]
+		u32 gap: hit_n;
+		while gap > 1
+			gap is gap * 5 / 11;
+			if gap is 0 or gap is 2
+				gap is 1;
+			;;
+			u32 i: gap;
+			while i < hit_n
+				CssHit held;
+				call Mem.Copy: addr held addr hits:i sizeof CssHit;
+				u32 j: i;
+				while j >= gap and (HitBefore: addr held addr hits:(j - gap))
+					call Mem.Copy: addr hits:j addr hits:(j - gap) sizeof CssHit;
+					j-- gap;
+				;;
+				call Mem.Copy: addr hits:j addr held sizeof CssHit;
+				i++;
+			;;
+		;;
+	[end]
+
+	[HitBefore: ptr<CssHit> a: 0; ptr<CssHit> b: 0;]
+		if a.rank is not b.rank return a.rank < b.rank;
+		if a.spec is not b.spec return a.spec < b.spec;
+	[end: a.order < b.order]
+
+	# ---- sharing
+
+	ptr<CssCacheEntry> cache: 0;
+	ptr<ptr<CssDecls>> key_list: 0;
+	u32 key_cap: 0;
+
+	[CacheClear]
+		if cache is 0 return;
+		while u32 i: 0; i < CACHE_SIZE; i++;
+			ptr<CssCacheEntry> c: addr cache:i;
+			if c.style is not 0
+				call CssStyles.Release: c.style;
+				call CssStyles.Release: c.parent;
+				c.style is 0;
+				c.parent is 0;
+			;;
+			if c.list is not 0
+				free c.list;
+				c.list is 0;
+			;;
+			c.count is 0;
+		;;
+	[end]
+
+	# the entry this parent and these hits would be in; found_style is its style if it's them
+	[CacheLook: ptr<CssComputed> parent: 0; ptr<u32> hash_out: 0;]
+		u32 h: 2166136261;
+		u32 pv: (parent as u64) as u32;
+		h is (h ^ pv) * 16777619;
+		while u32 i: 0; i < hit_n; i++;
+			u32 dv: ((hits:i.decls as u64) as u32) + hits:i.pseudo * 31;
+			h is (h ^ dv) * 16777619;
+			h is h ^ (h >> 13);
+		;;
+		hash_out:0 is h;
+		ptr<CssCacheEntry> c: addr cache:(h & (CACHE_SIZE - 1));
+		if c.style is 0 or c.hash is not h or c.parent is not parent or c.count is not hit_n return 0;
+		while u32 k: 0; k < hit_n; k++;
+			# (pseudo-element rules are told from others by being in the hash; the list decides)
+			if c.list:k is not hits:k.decls return 0;
+		;;
+	[end: c.style]
+
+	[CacheStore: ptr<CssComputed> parent: 0; u32 h: 0; ptr<CssComputed> style: 0;]
+		if hit_n > 256 return;
+		ptr<CssCacheEntry> c: addr cache:(h & (CACHE_SIZE - 1));
+		if c.style is not 0
+			call CssStyles.Release: c.style;
+			call CssStyles.Release: c.parent;
+		;;
+		if c.list is not 0 and c.count < hit_n
+			free c.list;
+			c.list is 0;
+		;;
+		if c.list is 0 and hit_n > 0
+			c.list is new ptr<CssDecls>[hit_n];
+			if c.list is 0
+				c.style is 0;
+				c.parent is 0;
+				c.count is 0;
+				return;
+			;;
+		;;
+		while u32 k: 0; k < hit_n; k++;
+			c.list:k is hits:k.decls;
+		;;
+		c.count is hit_n;
+		c.hash is h;
+		c.style is style;
+		c.parent is parent;
+		call CssStyles.Retain: style;
+		call CssStyles.Retain: parent;
+	[end]
+
+	# ---- the walk
+
+	# what a walk that stopped half way may have left behind
+	[AfterError]
+		if winner is not 0
+			call Mem.Fill: winner 0 CssP.LONGHANDS * sizeof ptr<CssDecl>;
+			call Mem.Fill: prev_winner 0 CssP.LONGHANDS * sizeof ptr<CssDecl>;
+		;;
+		touched_n is 0;
+		custom_n is 0;
+		hit_n is 0;
+		cur is 0;
+		call CacheClear;
+	[end]
+
+	[Update: ptr<CssEngine> e: 0;]
+		ptr<DomDocument> doc: e.doc;
+		if a_style is 0
+			a_style is (WlAtoms.GetZ: 'style');
+		;;
+		call CssHints.Start;
+		if e.needs_index
+			# what @media says may not have changed: then nothing has
+			u32 was_media: e.media_hash;
+			call BuildIndex: e;
+			if e.media_hash is not was_media
+				e.all_dirty is true;
+			;;
+		;;
+		if e.ran and e.all_dirty is false and doc.version is e.seen_version return;
+		if cache is 0
+			cache is new CssCacheEntry[CACHE_SIZE];
+			if cache is 0
+				throw 'out of memory for the style cache';
+			;;
+		;;
+		CssCalc.cur_vw is e.env.width / 100.0;
+		CssCalc.cur_vh is e.env.height / 100.0;
+		CssCalc.viewport_used is false;
+		e.root_px is 16.0;
+		ptr<DomNode> root_element: (Dom.DocumentElement: doc);
+		if root_element is not 0 and root_element.style is not 0
+			ptr<CssComputed> was: root_element.style as ptr<CssComputed>;
+			e.root_px is was.font_px;
+		;;
+		CssCalc.cur_rem is e.root_px;
+
+		bln everything: e.all_dirty;
+		if everything
+			e.uses_viewport is false;
+		;;
+		ptr<DomNode> n: doc.root.first_child;
+		ptr<DomNode> force: 0;      # the top of a subtree being done whatever its flags say
+		if everything
+			force is doc.root;
+		;;
+		while n is not 0
+			u32 flags: n.flags;
+			if n.type is DomType.ELEMENT
+				# (children coming and going can change :empty on the parent itself)
+				bln tree_changed: (flags & Dom.DIRTY_TREE) is not 0;
+				bln need: force is not 0 or (flags & Dom.DIRTY_STYLE) is not 0 or n.style is 0 or (tree_changed and e.has_structural);
+				if need
+					if force is 0
+						force is n;
+						# one dirty thing, when selectors can look anywhere: all of it
+						if e.has_has
+							force is doc.root;
+						;;
+					;;
+					if e.has_sibling
+						# what comes after it may match differently now
+						ptr<DomNode> after: (Dom.NextElement: n);
+						if after is not 0
+							after.flags is after.flags | Dom.DIRTY_STYLE;
+						;;
+					;;
+					call Restyle: e n;
+					n.flags is n.flags & (0xFFFFFFFF ^ Dom.DIRTY_STYLE);
+				;;
+				# children added or taken out: their positions in it have changed
+				if tree_changed
+					n.flags is n.flags & (0xFFFFFFFF ^ Dom.DIRTY_TREE);
+					if force is 0 and (e.has_structural or e.has_sibling)
+						ptr<DomNode> c: (Dom.FirstElementChild: n);
+						while c is not 0
+							c.flags is c.flags | Dom.DIRTY_STYLE;
+							c is (Dom.NextElement: c);
+						;;
+					;;
+				;;
+				if n.first_child is not 0
+					n is n.first_child;
+					continue;
+				;;
+			;;
+			elif n.type is DomType.DOCUMENT or n.type is DomType.FRAGMENT
+				if n.first_child is not 0
+					n is n.first_child;
+					continue;
+				;;
+			;;
+			# up and along
+			while n is not 0
+				if n is force
+					force is 0;
+				;;
+				if n.next is not 0
+					n is n.next;
+					break;
+				;;
+				n is n.parent;
+				if n is doc.root
+					n is 0;
+				;;
+			;;
+		;;
+		doc.root.flags is doc.root.flags & (0xFFFFFFFF ^ Dom.DIRTY_TREE);
+		call CacheClear;
+		if CssCalc.viewport_used
+			e.uses_viewport is true;
+		;;
+		e.all_dirty is false;
+		e.ran is true;
+		e.seen_version is doc.version;
+	[end]
+
+
+	[ParentStyle: ptr<DomNode> n: 0;]
+		ptr<DomNode> up: n.parent;
+		if up is 0 or up.type is not DomType.ELEMENT return 0;
+	[end: up.style as ptr<CssComputed>]
+
+	[Restyle: ptr<CssEngine> e: 0; ptr<DomNode> n: 0;]
+		call WlStack.Check;
+		ptr<CssComputed> parent: (ParentStyle: n);
+		call Collect: e n;
+		bln is_root: n.parent is not 0 and n.parent.type is DomType.DOCUMENT;
+		ptr<CssComputed> made: 0;
+		u32 h: 0;
+		if is_root is false
+			made is (CacheLook: parent addr h);
+		;;
+		if made is not 0
+			call CssStyles.Retain: made;
+		;;
+		else
+			made is (Build: e parent is_root 0);
+			if e.has_pseudo
+				call BuildPseudos: e made;
+			;;
+			if is_root is false
+				call CacheStore: parent h made;
+			;;
+		;;
+		if is_root
+			e.root_px is made.font_px;
+			CssCalc.cur_rem is e.root_px;
+		;;
+		ptr<CssComputed> old: n.style as ptr<CssComputed>;
+		if old is not made
+			n.flags is n.flags | Dom.DIRTY_LAYOUT;
+		;;
+		n.style is made as ptr<u8>;
+		call CssStyles.Release: old;
+	[end]
+
+	[BuildPseudos: ptr<CssEngine> e: 0; ptr<CssComputed> style: 0;]
+		u32 seen: 0;
+		while u32 i: 0; i < hit_n; i++;
+			u32 p: hits:i.pseudo;
+			if p is not 0 and p <= CssSel.PE_COUNT and (seen & (1 << p)) is 0
+				seen is seen | (1 << p);
+				if style.pseudo is 0
+					style.pseudo is new CssPseudoSet;
+					if style.pseudo is 0
+						throw 'out of memory for a pseudo-element style';
+					;;
+				;;
+				ptr<CssPseudoSet> set: style.pseudo;
+				set.styles:p is (Build: e style false p);
+			;;
+		;;
+	[end]
+
+	# ---- applying the winners
+
+	ptr<ptr<CssDecl>> winner: 0;
+	ptr<ptr<CssDecl>> prev_winner: 0;
+	ptr<u8> winner_origin: 0;
+	ptr<u16> touched: 0;
+	u32 touched_n: 0;
+	ptr<u32> order_scratch: 0;
+	u32 order_cap: 0;
+	ptr<CssCustomSlot> customs: 0;
+	u32 custom_n: 0;
+	u32 custom_cap: 0;
+
+	[Win: ptr<CssDecl> d: 0; u32 origin: 0;]
+		u32 prop: d.prop;
+		if prop is CssP.CUSTOM
+			call AddCustom: d;
+			return;
+		;;
+		if winner:prop is 0
+			touched:touched_n is prop as u16;
+			touched_n++;
+			winner_origin:prop is origin as u8;
+		;;
+		elif winner_origin:prop is not origin as u8
+			prev_winner:prop is winner:prop;
+			winner_origin:prop is origin as u8;
+		;;
+		winner:prop is d;
+	[end]
+
+	[AddCustom: ptr<CssDecl> d: 0;]
+		if custom_n >= custom_cap
+			u32 room: custom_cap * 2;
+			if room is 0
+				room is 64;
+			;;
+			ptr<CssCustomSlot> grown: new CssCustomSlot[room];
+			if grown is 0
+				throw 'out of memory for custom properties';
+			;;
+			if customs is not 0
+				call Mem.Copy: grown customs custom_n * sizeof CssCustomSlot;
+				free customs;
+			;;
+			customs is grown;
+			custom_cap is room;
+		;;
+		ptr<CssCustomSlot> c: addr customs:custom_n;
+		c.name is d.name;
+		c.val is addr d.val;
+		c.result is 0;
+		c.seq is custom_n;
+		c.state is 0;
+		custom_n++;
+	[end]
+
+	ptr<CssComputed> cur: 0;
+	ptr<CssComputed> parent_style: 0;
+	u32 owned: 0;       # which of cur's groups are its own to write to
+
+	[Build: ptr<CssEngine> e: 0; ptr<CssComputed> parent: 0; bln is_root: false; u32 pseudo: 0;]
+		if winner is 0
+			winner is new ptr<CssDecl>[CssP.LONGHANDS];
+			prev_winner is new ptr<CssDecl>[CssP.LONGHANDS];
+			winner_origin is new u8[CssP.LONGHANDS];
+			touched is new u16[CssP.LONGHANDS];
+			if winner is 0 or prev_winner is 0 or winner_origin is 0 or touched is 0
+				throw 'out of memory for the cascade';
+			;;
+		;;
+		ptr<CssComputed> init: CssStyles.initial;
+		ptr<CssComputed> base: parent;
+		if base is 0
+			base is init;
+		;;
+		ptr<CssComputed> s: new CssComputed;
+		if s is 0
+			throw 'out of memory for a style';
+		;;
+		s.refs is 1;
+		s.font_px is base.font_px;
+		s.current_color is base.current_color;
+		s.vars is base.vars;
+		call CssStyles.RetainVars: s.vars;
+		while u32 g: 0; g < CssP.GROUPS; g++;
+			if CssStyles.group_inherits:g is not 0
+				s.g:g is base.g:g;
+			;;
+			else
+				s.g:g is init.g:g;
+			;;
+			call CssStyles.RetainGroup: s.g:g;
+		;;
+		cur is s;
+		parent_style is base;
+		owned is 0;
+		touched_n is 0;
+		custom_n is 0;
+
+		# normal declarations, least to most important
+		while u32 i: 0; i < hit_n; i++;
+			if hits:i.pseudo is pseudo
+				ptr<CssDecls> d: hits:i.decls;
+				u32 origin: 1;
+				if hits:i.rank is RANK_UA
+					origin is 0;
+				;;
+				while u32 k: 0; k < d.count; k++;
+					ptr<CssDecl> one: addr d.items:k;
+					if one.important is 0
+						call Win: one origin;
+					;;
+				;;
+			;;
+		;;
+		# then !important: authors' first, earlier layers beating later ones; then the UA's
+		if e.has_layers
+			call ImportantLayered: pseudo;
+		;;
+		else
+			while u32 i: 0; i < hit_n; i++;
+				if hits:i.pseudo is pseudo and hits:i.rank is not RANK_UA
+					call WinImportant: hits:i.decls 1;
+				;;
+			;;
+		;;
+		while u32 i: 0; i < hit_n; i++;
+			if hits:i.pseudo is pseudo and hits:i.rank is RANK_UA
+				call WinImportant: hits:i.decls 2;
+			;;
+		;;
+
+		CssCalc.cur_em is s.font_px;
+		f64 lh: s.font_px;
+		CssCalc.cur_lh is lh * 1.2;
+		if custom_n > 0
+			call CssVars.Apply: s;
+		;;
+
+		# what other values depend on goes first: font-size, then the rest of what's marked
+		CssCalc.cur_em is base.font_px;
+		if winner:(CssP.FONT_SIZE) is not 0
+			call ApplyWinner: CssP.FONT_SIZE;
+		;;
+		CssCalc.cur_em is s.font_px;
+		if is_root
+			CssCalc.cur_rem is s.font_px;
+		;;
+		while u32 t: 0; t < touched_n; t++;
+			u32 prop: touched:t;
+			if prop is not CssP.FONT_SIZE and (CssProps.info:prop.flags & CssProps.F_EARLY) is not 0
+				call ApplyWinner: prop;
+			;;
+		;;
+		CssCalc.cur_lh is (s.LineHeightPx);
+		while u32 t: 0; t < touched_n; t++;
+			u32 prop: touched:t;
+			if (CssProps.info:prop.flags & CssProps.F_EARLY) is 0
+				call ApplyWinner: prop;
+			;;
+		;;
+		call Fixups: is_root;
+		# clean up for the next one
+		while u32 t: 0; t < touched_n; t++;
+			u32 prop: touched:t;
+			winner:prop is 0;
+			prev_winner:prop is 0;
+		;;
+		cur is 0;
+	[end: s]
+
+	[WinImportant: ptr<CssDecls> d: 0; u32 origin: 0;]
+		while u32 k: 0; k < d.count; k++;
+			ptr<CssDecl> one: addr d.items:k;
+			if one.important is not 0
+				call Win: one origin;
+			;;
+		;;
+	[end]
+
+	# !important with layers: earlier layers win, unlayered lose to all layers, inline beats all
+	[ImportantLayered: u32 pseudo: 0;]
+		if hit_n > order_cap
+			if order_scratch is not 0
+				free order_scratch;
+			;;
+			order_scratch is new u32[hit_n * 2];
+			if order_scratch is 0
+				order_cap is 0;
+				throw 'out of memory for the cascade';
+			;;
+			order_cap is hit_n * 2;
+		;;
+		u32 n: 0;
+		while u32 i: 0; i < hit_n; i++;
+			if hits:i.pseudo is pseudo and hits:i.rank is not RANK_UA
+				order_scratch:n is i;
+				n++;
+			;;
+		;;
+		u32 gap: n;
+		while gap > 1
+			gap is gap * 5 / 11;
+			if gap is 0 or gap is 2
+				gap is 1;
+			;;
+			u32 i: gap;
+			while i < n
+				u32 held: order_scratch:i;
+				u32 j: i;
+				while j >= gap and (ImportantBefore: held order_scratch:(j - gap))
+					order_scratch:j is order_scratch:(j - gap);
+					j-- gap;
+				;;
+				order_scratch:j is held;
+				i++;
+			;;
+		;;
+		while u32 i: 0; i < n; i++;
+			call WinImportant: hits:(order_scratch:i).decls 1;
+		;;
+	[end]
+
+	[ImportantRank: u32 rank: 0;]
+		if rank is RANK_INLINE return 0xFFFFFFFF;
+		if rank is RANK_UNLAYERED return 0;
+	[end: 0x7FFFFFF0 - rank]
+
+	[ImportantBefore: u32 a: 0; u32 b: 0;]
+		u32 ra: (ImportantRank: hits:a.rank);
+		u32 rb: (ImportantRank: hits:b.rank);
+		if ra is not rb return ra < rb;
+		if hits:a.spec is not hits:b.spec return hits:a.spec < hits:b.spec;
+	[end: hits:a.order < hits:b.order]
+
+	CssVal cv;      # what ComputeOne made, with a reference that's going to the style
+
+	[ApplyWinner: u32 prop: 0;]
+		ptr<CssDecl> d: winner:prop;
+		ptr<CssVal> v: addr d.val;
+		u32 wide: 0;
+		if v.kind is CssV.WIDE as u8
+			wide is v.code;
+			if wide is CssK.REVERT or wide is CssK.REVERT_LAYER
+				ptr<CssDecl> earlier: prev_winner:prop;
+				if earlier is 0 or winner_origin:prop is 0
+					wide is CssK.UNSET;
+				;;
+				else
+					d is earlier;
+					v is addr d.val;
+					wide is 0;
+					if v.kind is CssV.WIDE as u8
+						wide is v.code;
+					;;
+				;;
+			;;
+		;;
+		if v.kind is CssV.RAW as u8 and wide is 0
+			# var(): worked out now, and if it can't be, it behaves as unset
+			if call ApplyRaw: prop d throws err
+				wide is CssK.UNSET;
+			;;
+			elif raw_failed
+				wide is CssK.UNSET;
+			;;
+			else
+				return;
+			;;
+		;;
+		if wide is not 0
+			call ApplyWide: prop wide;
+			return;
+		;;
+		call ComputeInto: prop v;
+	[end]
+
+	bln raw_failed: false;
+
+	[ApplyRaw: u32 prop: 0; ptr<CssDecl> d: 0;]
+		raw_failed is true;
+		WlBuf text;
+		ptr<CssVal> v: addr d.val;
+		bln ok: (CssVars.Substitute: (CssV.Text: v) (CssV.TextLen: v) cur.vars addr text);
+		if ok is false
+			call text.Free;
+			return;
+		;;
+		ptr<CssToks> toks: (CssLex.Run: text.data text.len);
+		CssDecls temp;
+		u32 from: 0;
+		u32 to: toks.n;
+		u32 target: prop;
+		if d.shorthand is not 0
+			target is d.shorthand - 1;
+		;;
+		u32 wide: (CssVp.WideKeyword: toks.t from to);
+		if wide is not 0 and d.shorthand is 0
+			call ApplyWide: prop wide;
+			raw_failed is false;
+		;;
+		else
+			WlBuf name;
+			call name.AddZ: (CssProps.Name: target);
+			ptr<u8> saved_base: CssVp.base_url;
+			CssVp.base_url is cur_base;
+			bln good: (CssDeclP.One: addr temp toks name.data name.len from to false false);
+			CssVp.base_url is saved_base;
+			call name.Free;
+			if good
+				ptr<CssDecl> got: (temp.Find: prop);
+				if got is not 0 and got.val.kind is not CssV.RAW as u8
+					if got.val.kind is CssV.WIDE as u8
+						call ApplyWide: prop got.val.code;
+					;;
+					else
+						call ComputeInto: prop addr got.val;
+					;;
+					raw_failed is false;
+				;;
+			;;
+		;;
+		call temp.FreeItems;
+		call CssLex.Free: toks;
+		call text.Free;
+	[end]
+
+	ptr<u8> cur_base: 0;
+
+	[ApplyWide: u32 prop: 0; u32 wide: 0;]
+		ptr<CssPropInfo> info: addr CssProps.info:prop;
+		bln inherit: wide is CssK.INHERIT;
+		if wide is CssK.UNSET or wide is CssK.REVERT or wide is CssK.REVERT_LAYER
+			inherit is (info.flags & CssProps.F_INHERITED) is not 0;
+		;;
+		ptr<CssVal> from: 0;
+		if inherit
+			from is (parent_style.Val: prop);
+		;;
+		else
+			from is (CssStyles.initial.Val: prop);
+		;;
+		call CssV.Retain: from;
+		call SetSlot: prop from;
+		if prop is CssP.FONT_SIZE
+			if inherit
+				cur.font_px is parent_style.font_px;
+			;;
+			else
+				cur.font_px is 16.0;
+			;;
+		;;
+		elif prop is CssP.COLOR
+			if inherit
+				cur.current_color is parent_style.current_color;
+			;;
+			else
+				cur.current_color is 0x000000FF;
+			;;
+		;;
+	[end]
+
+	# puts the value in the current style's slot: its reference goes with it
+	[SetSlot: u32 prop: 0; ptr<CssVal> v: 0;]
+		ptr<CssPropInfo> info: addr CssProps.info:prop;
+		u32 gi: info.group;
+		ptr<u8> group: cur.g:gi;
+		ptr<CssVal> slot: (group + 8 + info.slot * 8) as ptr<CssVal>;
+		if (CssV.Same: slot v)
+			call CssV.Release: v;
+			return;
+		;;
+		if (owned & (1 << gi)) is 0
+			ptr<u8> mine: (CssStyles.CloneGroup: group);
+			call CssStyles.ReleaseGroup: group;
+			cur.g:gi is mine;
+			owned is owned | (1 << gi);
+			slot is (mine + 8 + info.slot * 8) as ptr<CssVal>;
+		;;
+		call CssV.Release: slot;
+		slot.bits is v.bits;
+		slot.code is v.code;
+		slot.kind is v.kind;
+		slot.unit is v.unit;
+	[end]
+
+	# ---- computing a value
+
+	[ComputeInto: u32 prop: 0; ptr<CssVal> v: 0;]
+		if prop is CssP.FONT_SIZE
+			call FontSize: v;
+			return;
+		;;
+		if prop is CssP.COLOR
+			if v.kind is CssV.COLOR as u8
+				cur.current_color is v.bits;
+				call SetSlot: prop v;
+			;;
+			else
+				# currentcolor on color means inherit
+				call ApplyWide: prop CssK.INHERIT;
+			;;
+			return;
+		;;
+		if (IsSpecial: prop)
+			if (Special: prop v) return;
+		;;
+		call ComputeGeneric: v;
+		call Clamped: v;
+		call SetSlot: prop addr cv;
+	[end]
+
+	[IsSpecial: u32 prop: 0;]
+		when prop
+			is CssP.FONT_WEIGHT CssP.LINE_HEIGHT CssP.TEXT_ALIGN
+				return true;
+			;;
+			is CssP.OPACITY CssP.FILL_OPACITY CssP.STROKE_OPACITY CssP.STOP_OPACITY CssP.FLOOD_OPACITY
+				return true;
+			;;
+			is CssP.BORDER_TOP_WIDTH CssP.BORDER_RIGHT_WIDTH CssP.BORDER_BOTTOM_WIDTH CssP.BORDER_LEFT_WIDTH CssP.OUTLINE_WIDTH CssP.COLUMN_RULE_WIDTH CssP._WEBKIT_TEXT_STROKE_WIDTH
+				return true;
+			;;
+		;;
+	[end: false]
+
+	# a calc() that mustn't come out negative
+	[Clamped: ptr<CssVal> declared: 0;]
+		if declared.kind is CssV.CALC as u8 and declared.unit is 1 and cv.kind is not CssV.CALC as u8
+			if cv.kind is CssV.LEN as u8 or cv.kind is CssV.PCT as u8 or cv.kind is CssV.NUM as u8
+				if (cv.Num) < 0.0
+					call cv.SetNum: 0.0;
+				;;
+			;;
+		;;
+		elif declared.kind is CssV.CALC as u8 and declared.unit is 1
+			cv.unit is 1;
+		;;
+	[end]
+
+	[Special: u32 prop: 0; ptr<CssVal> v: 0;]
+		when prop
+			is CssP.FONT_WEIGHT
+				if v.kind is CssV.KW as u8
+					f64 w: 400.0;
+					f64 inherited: (parent_style.FontWeight);
+					when v.code as u32
+						is CssK.BOLD
+							w is 700.0;
+						;;
+						is CssK.BOLDER
+							w is 900.0;
+							if inherited < 350.0
+								w is 400.0;
+							;;
+							elif inherited < 550.0
+								w is 700.0;
+							;;
+						;;
+						is CssK.LIGHTER
+							w is 700.0;
+							if inherited < 550.0
+								w is 100.0;
+							;;
+							elif inherited < 750.0
+								w is 400.0;
+							;;
+						;;
+					;;
+					call CssV.SetNumber: addr cv CssV.NUM w;
+					call SetSlot: prop addr cv;
+					return true;
+				;;
+			;;
+			is CssP.LINE_HEIGHT
+				if v.kind is CssV.PCT as u8
+					call CssV.SetLen: addr cv (v.Num) * cur.font_px / 100.0 CssU.PX;
+					call SetSlot: prop addr cv;
+					return true;
+				;;
+			;;
+			is CssP.OPACITY CssP.FILL_OPACITY CssP.STROKE_OPACITY CssP.STOP_OPACITY CssP.FLOOD_OPACITY
+				# a number from 0 to 1, however it was written
+				if v.kind is CssV.PCT as u8 or v.kind is CssV.NUM as u8
+					f64 alpha: (v.Num);
+					if v.kind is CssV.PCT as u8
+						alpha is alpha / 100.0;
+					;;
+					if alpha < 0.0
+						alpha is 0.0;
+					;;
+					if alpha > 1.0
+						alpha is 1.0;
+					;;
+					call CssV.SetNumber: addr cv CssV.NUM alpha;
+					call SetSlot: prop addr cv;
+					return true;
+				;;
+			;;
+			is CssP.TEXT_ALIGN
+				if v.kind is CssV.KW as u8
+					u32 word: 0;
+					when v.code as u32
+						is CssK._WEBKIT_CENTER CssK._MOZ_CENTER
+							word is CssK.CENTER;
+						;;
+						is CssK._WEBKIT_LEFT
+							word is CssK.LEFT;
+						;;
+						is CssK._WEBKIT_RIGHT
+							word is CssK.RIGHT;
+						;;
+					;;
+					if word is not 0
+						call CssV.SetKw: addr cv word;
+						call SetSlot: prop addr cv;
+						return true;
+					;;
+				;;
+			;;
+			else
+				# the widths of borders and their kin
+				if v.kind is CssV.KW as u8
+					f64 px: 3.0;
+					if v.code is CssK.THIN as u16
+						px is 1.0;
+					;;
+					elif v.code is CssK.THICK as u16
+						px is 5.0;
+					;;
+					call CssV.SetLen: addr cv px CssU.PX;
+					call SetSlot: prop addr cv;
+					return true;
+				;;
+			;;
+		;;
+	[end: false]
+
+	[FontSize: ptr<CssVal> v: 0;]
+		f64 parent_px: parent_style.font_px;
+		f64 px: parent_px;
+		u32 kind: v.kind;
+		if kind is CssV.KW
+			when v.code as u32
+				is CssK.XX_SMALL
+					px is 9.0;
+				;;
+				is CssK.X_SMALL
+					px is 10.0;
+				;;
+				is CssK.SMALL
+					px is 13.0;
+				;;
+				is CssK.MEDIUM
+					px is 16.0;
+				;;
+				is CssK.LARGE
+					px is 18.0;
+				;;
+				is CssK.X_LARGE
+					px is 24.0;
+				;;
+				is CssK.XX_LARGE
+					px is 32.0;
+				;;
+				is CssK.XXX_LARGE
+					px is 48.0;
+				;;
+				is CssK.LARGER
+					px is parent_px * 1.2;
+				;;
+				is CssK.SMALLER
+					px is parent_px / 1.2;
+				;;
+			;;
+		;;
+		elif kind is CssV.PCT
+			px is parent_px * (v.Num) / 100.0;
+		;;
+		elif kind is CssV.LEN
+			px is (v.Num) * (CssCalc.PxOf: v.unit);
+		;;
+		elif kind is CssV.CALC
+			px is (CssCalc.Resolve: v parent_px);
+		;;
+		if px < 0.0
+			px is 0.0;
+		;;
+		cur.font_px is px;
+		call CssV.SetLen: addr cv px CssU.PX;
+		call SetSlot: CssP.FONT_SIZE addr cv;
+	[end]
+
+	# into cv, with a reference: lengths in px, angles in deg, times in s
+	[ComputeGeneric: ptr<CssVal> v: 0;]
+		u32 kind: v.kind;
+		if kind is CssV.LIST
+			call ComputeList: v;
+			return;
+		;;
+		if kind is CssV.CALC
+			call CssCalc.Compute: v;
+			call SimpleCopy: addr cv addr CssCalc.result;
+			return;
+		;;
+		call SimpleCopy: addr cv v;
+		if kind is CssV.LEN
+			if v.unit is not CssU.PX as u8
+				call CssV.SetLen: addr cv (v.Num) * (CssCalc.PxOf: v.unit) CssU.PX;
+			;;
+			return;
+		;;
+		if kind is CssV.ANGLE or kind is CssV.TIME or kind is CssV.RES
+			f64 canon: (CssCalc.ToCanon: v.unit);
+			if canon is not 1.0
+				call cv.SetNum: (v.Num) * canon;
+				cv.unit is (CssCalc.CanonUnit: v.unit) as u8;
+			;;
+			return;
+		;;
+		call CssV.Retain: addr cv;
+	[end]
+
+	[SimpleCopy: ptr<CssVal> to: 0; ptr<CssVal> from: 0;]
+		to.bits is from.bits;
+		to.code is from.code;
+		to.kind is from.kind;
+		to.unit is from.unit;
+	[end]
+
+	[NeedsComputing: ptr<CssVal> v: 0;]
+		u32 kind: v.kind;
+		if kind is CssV.CALC return true;
+		if kind is CssV.LEN return v.unit is not CssU.PX as u8;
+		if kind is CssV.ANGLE or kind is CssV.TIME or kind is CssV.RES
+			return (CssCalc.ToCanon: v.unit) is not 1.0;
+		;;
+	[end: false]
+
+	[ComputeList: ptr<CssVal> v: 0;]
+		ptr<CssVal> items: (CssV.Items: v);
+		u32 n: CssV.item_count;
+		bln changes: false;
+		while u32 i: 0; i < n and changes is false; i++;
+			changes is (NeedsComputing: addr items:i);
+		;;
+		if changes is false
+			call SimpleCopy: addr cv v;
+			call CssV.Retain: addr cv;
+			return;
+		;;
+		ptr<CssVal> copy: new CssVal[n + 1];
+		if copy is 0
+			throw 'out of memory for a CSS list';
+		;;
+		while u32 i: 0; i < n; i++;
+			ptr<CssVal> one: addr items:i;
+			if (NeedsComputing: one)
+				call ComputeGeneric: one;
+				call SimpleCopy: addr copy:i addr cv;
+			;;
+			else
+				call SimpleCopy: addr copy:i one;
+				call CssV.Retain: addr copy:i;
+			;;
+		;;
+		u32 index: (CssCxs.NewList: copy n);
+		free copy;
+		cv.kind is CssV.LIST as u8;
+		cv.code is 0;
+		cv.unit is 0;
+		cv.bits is index;
+	[end]
+
+	# ---- what computed values are by definition
+
+	[Fixups: bln is_root: false;]
+		ptr<CssComputed> s: cur;
+		ptr<CssVal> display: (s.Val: CssP.DISPLAY);
+		u32 dw: display.code;
+		u32 pos: (s.Kw: CssP.POSITION);
+		u32 fl: (s.Kw: CssP.FLOAT);
+		bln out_of_flow: pos is CssK.ABSOLUTE or pos is CssK.FIXED;
+		bln blockify: is_root or out_of_flow or fl is not CssK.NONE;
+		if blockify is false and parent_style is not 0 and parent_style is not s
+			u32 pd: (parent_style.Kw: CssP.DISPLAY);
+			if pd is CssK.FLEX or pd is CssK.INLINE_FLEX or pd is CssK.GRID or pd is CssK.INLINE_GRID
+				blockify is true;
+			;;
+		;;
+		if blockify and dw is not CssK.NONE
+			u32 to: 0;
+			when dw
+				is CssK.INLINE CssK.INLINE_BLOCK CssK.RUBY CssK.TABLE_ROW_GROUP CssK.TABLE_HEADER_GROUP CssK.TABLE_FOOTER_GROUP CssK.TABLE_ROW CssK.TABLE_CELL CssK.TABLE_COLUMN_GROUP CssK.TABLE_COLUMN CssK.TABLE_CAPTION CssK.RUBY_BASE CssK.RUBY_TEXT
+					to is CssK.BLOCK;
+				;;
+				is CssK.CONTENTS
+					if is_root
+						to is CssK.BLOCK;
+					;;
+				;;
+				is CssK.INLINE_TABLE
+					to is CssK.TABLE;
+				;;
+				is CssK.INLINE_FLEX
+					to is CssK.FLEX;
+				;;
+				is CssK.INLINE_GRID
+					to is CssK.GRID;
+				;;
+			;;
+			if to is not 0
+				call SetKwSlot: CssP.DISPLAY to;
+			;;
+		;;
+		if out_of_flow and fl is not CssK.NONE
+			call SetKwSlot: CssP.FLOAT CssK.NONE;
+		;;
+		# a border with no style has no width
+		if s.g:(CssP.G_BORDER) is not (InitialGroup: CssP.G_BORDER)
+			while u32 i: 0; i < 4; i++;
+				u32 st: (s.Kw: CssP.BORDER_TOP_STYLE + i);
+				if st is CssK.NONE or st is CssK.HIDDEN
+					call SetZero: CssP.BORDER_TOP_WIDTH + i;
+				;;
+			;;
+		;;
+		if s.g:(CssP.G_OUTLINE) is not (InitialGroup: CssP.G_OUTLINE)
+			if (s.Is: CssP.OUTLINE_STYLE CssK.NONE)
+				call SetZero: CssP.OUTLINE_WIDTH;
+			;;
+		;;
+		if (s.Is: CssP.COLUMN_RULE_STYLE CssK.NONE) or (s.Is: CssP.COLUMN_RULE_STYLE CssK.HIDDEN)
+			call SetZero: CssP.COLUMN_RULE_WIDTH;
+		;;
+		# overflow: visible becomes auto beside anything that isn't visible or clip
+		u32 ox: (s.Kw: CssP.OVERFLOW_X);
+		u32 oy: (s.Kw: CssP.OVERFLOW_Y);
+		if ox is not oy
+			bln x_box: ox is not CssK.VISIBLE and ox is not CssK.CLIP;
+			bln y_box: oy is not CssK.VISIBLE and oy is not CssK.CLIP;
+			if ox is CssK.VISIBLE and y_box
+				call SetKwSlot: CssP.OVERFLOW_X CssK.AUTO;
+			;;
+			if oy is CssK.VISIBLE and x_box
+				call SetKwSlot: CssP.OVERFLOW_Y CssK.AUTO;
+			;;
+		;;
+	[end]
+
+	[InitialGroup: u32 g: 0;]
+		ptr<CssComputed> init: CssStyles.initial;
+		if init is 0 return 0;
+	[end: init.g:g]
+
+	[SetKwSlot: u32 prop: 0; u32 kw: 0;]
+		CssVal v;
+		call CssV.SetKw: addr v kw;
+		call SetSlot: prop addr v;
+	[end]
+
+	[SetZero: u32 prop: 0;]
+		CssVal v;
+		call CssV.SetLen: addr v 0.0 CssU.PX;
+		call SetSlot: prop addr v;
+	[end]
+}
+
+# custom properties and var()
+phi.CssVars:Library
+{
+	const u32 MAX_TEXT: 1048576;
+	ptr<CssVarMap> working: 0;
+	ptr<WlAtom> cycle_top: 0;
+
+	# works out the element's custom properties (CssCascade.customs), into a new map on the style
+	[Apply: ptr<CssComputed> s: 0;]
+		# one for each name, the last one written
+		u32 n: CssCascade.custom_n;
+		ptr<CssCustomSlot> list: CssCascade.customs;
+		call SortByName: list n;
+		u32 kept: 0;
+		u32 i: 0;
+		while i < n
+			u32 j: i;
+			while j + 1 < n and list:(j + 1).name is list:i.name
+				j++;
+			;;
+			if kept is not j
+				call Mem.Copy: addr list:kept addr list:j sizeof CssCustomSlot;
+			;;
+			kept++;
+			i is j + 1;
+		;;
+		slots is list;
+		slot_n is kept;
+		working is s.vars;
+		while u32 k: 0; k < kept; k++;
+			cycle_top is 0;
+			call Resolve: addr list:k;
+		;;
+		ptr<CssVarMap> m: new CssVarMap;
+		if m is 0
+			throw 'out of memory for custom properties';
+		;;
+		m.refs is 1;
+		m.count is kept;
+		m.parent is s.vars;
+		if s.vars is not 0
+			m.depth is s.vars.depth + 1;
+		;;
+		m.names is new ptr<WlAtom>[kept + 1];
+		m.values is new u32[kept + 1];
+		if m.names is 0 or m.values is 0
+			throw 'out of memory for custom properties';
+		;;
+		while u32 k: 0; k < kept; k++;
+			m.names:k is list:k.name;
+			m.values:k is list:k.result;
+		;;
+		# (parent's reference moves to the new map)
+		s.vars is m;
+		if m.depth > 32
+			s.vars is (Flatten: m);
+		;;
+	[end]
+
+	# a map with everything in it, for when the chain has grown long
+	[Flatten: ptr<CssVarMap> m: 0;]
+		u32 total: 0;
+		ptr<CssVarMap> w: m;
+		while w is not 0
+			total++ w.count;
+			w is w.parent;
+		;;
+		ptr<CssCustomSlot> all: new CssCustomSlot[total + 1];
+		if all is 0
+			throw 'out of memory for custom properties';
+		;;
+		u32 n: 0;
+		w is m;
+		u32 level: 0;
+		while w is not 0
+			while u32 i: 0; i < w.count; i++;
+				all:n.name is w.names:i;
+				all:n.result is w.values:i;
+				# nearest first, so the kept one is the highest number
+				all:n.seq is total - n;
+				n++;
+			;;
+			level++;
+			w is w.parent;
+		;;
+		call SortBySeq: all n;
+		ptr<CssVarMap> flat: new CssVarMap;
+		if flat is 0
+			free all;
+			throw 'out of memory for custom properties';
+		;;
+		flat.refs is 1;
+		flat.names is new ptr<WlAtom>[n + 1];
+		flat.values is new u32[n + 1];
+		if flat.names is 0 or flat.values is 0
+			free all;
+			throw 'out of memory for custom properties';
+		;;
+		u32 i: 0;
+		while i < n
+			u32 j: i;
+			while j + 1 < n and all:(j + 1).name is all:i.name
+				j++;
+			;;
+			flat.names:(flat.count) is all:j.name;
+			flat.values:(flat.count) is all:j.result;
+			call CssCxs.Retain: all:j.result;
+			flat.count++;
+			i is j + 1;
+		;;
+		free all;
+		call CssStyles.ReleaseVars: m;
+	[end: flat]
+
+	# by name and then by when it was written
+	[SortByName: ptr<CssCustomSlot> list: 0; u32 n: 0;]
+		call SortBySeq: list n;
+	[end]
+
+	[SortBySeq: ptr<CssCustomSlot> list: 0; u32 n: 0;]
+		u32 gap: n;
+		while gap > 1
+			gap is gap * 5 / 11;
+			if gap is 0 or gap is 2
+				gap is 1;
+			;;
+			u32 i: gap;
+			while i < n
+				CssCustomSlot held;
+				call Mem.Copy: addr held addr list:i sizeof CssCustomSlot;
+				u32 j: i;
+				while j >= gap and (SlotBefore: addr held addr list:(j - gap))
+					call Mem.Copy: addr list:j addr list:(j - gap) sizeof CssCustomSlot;
+					j-- gap;
+				;;
+				call Mem.Copy: addr list:j addr held sizeof CssCustomSlot;
+				i++;
+			;;
+		;;
+	[end]
+
+	[SlotBefore: ptr<CssCustomSlot> a: 0; ptr<CssCustomSlot> b: 0;]
+		if a.name is not b.name return (a.name as u64) < (b.name as u64);
+	[end: a.seq < b.seq]
+
+	ptr<CssCustomSlot> slots: 0;
+	u32 slot_n: 0;
+
+	[FindSlot: ptr<WlAtom> name: 0;]
+		u32 low: 0;
+		u32 high: slot_n;
+		while low < high
+			u32 mid: (low + high) / 2;
+			ptr<WlAtom> have: slots:mid.name;
+			if have is name return addr slots:mid;
+			if (have as u64) < (name as u64)
+				low is mid + 1;
+			;;
+			else
+				high is mid;
+			;;
+		;;
+	[end: 0 as ptr<CssCustomSlot>]
+
+	# what this element's own value of a custom property comes to
+	[Resolve: ptr<CssCustomSlot> slot: 0;]
+		if slot.state is 2 return;
+		call WlStack.Check;
+		slot.state is 1;
+		ptr<CssVal> v: slot.val;
+		if v.kind is CssV.WIDE as u8
+			u32 wide: v.code;
+			if wide is CssK.INITIAL
+				slot.result is 0;
+			;;
+			else
+				slot.result is (CssStyles.FindVar: working slot.name);
+				call CssCxs.Retain: slot.result;
+			;;
+			slot.state is 2;
+			return;
+		;;
+		WlBuf text;
+		ptr<u8> raw: (CssV.Text: v);
+		u32 raw_len: (CssV.TextLen: v);
+		bln ok: (Substitute: raw raw_len working addr text);
+		if ok
+			slot.result is (CssCxs.NewText: text.data text.len);
+		;;
+		else
+			slot.result is 0;
+		;;
+		call text.Free;
+		slot.state is 2;
+		if cycle_top is slot.name
+			cycle_top is 0;
+		;;
+	[end]
+
+	# Writes text to out with its var()s replaced. False if one can't be, which makes the whole
+	# value invalid at computed-value time.
+	[Substitute: ptr<u8> text: 0; u32 n: 0; ptr<CssVarMap> map: 0; ptr<WlBuf> out_text: 0;]
+		if n is 0 return true;
+		if (HasVarWord: text n) is false
+			call out_text.AddN: text n;
+			return true;
+		;;
+		ptr<CssToks> toks: (CssLex.Run: text n);
+		bln ok: false;
+		if call ok is Emit: toks 0 toks.n map out_text throws err
+			ok is false;
+		;;
+		call CssLex.Free: toks;
+	[end: ok]
+
+	# a quick look, so most values needn't be tokenized twice
+	[HasVarWord: ptr<u8> text: 0; u32 n: 0;]
+		u32 i: 0;
+		while i + 3 < n
+			if text:(i + 3) is 40 and (text:i | 32) is 118 and (text:(i + 1) | 32) is 97 and (text:(i + 2) | 32) is 114 return true;
+			if text:i is 92 return true;
+			i++;
+		;;
+	[end: false]
+
+	[Emit: ptr<CssToks> toks: 0; u32 from: 0; u32 to: 0; ptr<CssVarMap> map: 0; ptr<WlBuf> out_text: 0;]
+		call WlStack.Check;
+		ptr<CssTok> t: toks.t;
+		ptr<u8> src: toks.src;
+		u32 i: from;
+		while i < to
+			if out_text.len > MAX_TEXT return false;
+			ptr<CssTok> tk: addr t:i;
+			if tk.type is CssLex.FUNCTION and tk.len is 3 and (WlText.EqNoCaseZ: tk.text 3 'var')
+				u32 close: tk.match;
+				if close > to
+					close is to;
+				;;
+				u32 p: i + 1;
+				while p < close and t:p.type is CssLex.WS
+					p++;
+				;;
+				if p >= close or t:p.type is not CssLex.IDENT or t:p.len < 3 or t:p.text:0 is not 45 or t:p.text:1 is not 45 return false;
+				ptr<WlAtom> name: (WlAtoms.Get: t:p.text t:p.len);
+				p++;
+				while p < close and t:p.type is CssLex.WS
+					p++;
+				;;
+				bln has_fallback: false;
+				if p < close
+					if t:p.type is not CssLex.COMMA return false;
+					has_fallback is true;
+					p++;
+				;;
+				# so what's put in can't run together with what's beside it
+				call out_text.AddZ: '/**/';
+				u32 cx: 0;
+				bln known: false;
+				ptr<CssCustomSlot> slot: 0;
+				if slots is not 0 and slot_n > 0
+					slot is (FindSlot: name);
+				;;
+				if slot is not 0
+					if slot.state is 1
+						# going round in a circle: everything on it is invalid
+						cycle_top is name;
+						return false;
+					;;
+					call Resolve: slot;
+					if cycle_top is not 0 return false;
+					cx is slot.result;
+					known is true;
+				;;
+				else
+					cx is (CssStyles.FindVar: map name);
+				;;
+				if cx is not 0
+					ptr<CssCx> value: (CssCxs.At: cx);
+					call out_text.AddN: value.text value.len;
+				;;
+				elif has_fallback
+					if (Emit: toks p close map out_text) is false return false;
+				;;
+				else
+					return false;
+				;;
+				call out_text.AddZ: '/**/';
+				i is close + 1;
+				continue;
+			;;
+			# as it was written, with a comment where one kept tokens apart
+			call out_text.AddN: src + tk.start tk.stop - tk.start;
+			if i + 1 < to and t:(i + 1).start is not tk.stop
+				call out_text.AddZ: '/**/';
+			;;
+			i++;
+		;;
+	[end: true]
+}
+
+# the style attribute
+phi.CssInline:Library
+{
+	[Parse: ptr<CssDecls> d: 0; ptr<u8> bytes: 0; u32 len: 0; ptr<u8> base_url: 0;]
+		call CssProps.Start;
+		ptr<CssToks> toks: (CssLex.Run: bytes len);
+		ptr<u8> saved: CssVp.base_url;
+		CssVp.base_url is base_url;
+		if call CssDeclP.List: d toks 0 toks.n false throws err
+			# what was read before it went wrong stands
+		;;
+		CssVp.base_url is saved;
+		call CssLex.Free: toks;
+	[end]
+}
+
+# What HTML's old presentational attributes mean, as the Rendering section says: <img width>,
+# <td bgcolor>, <font color>. They count as author rules of no specificity, before all the others.
+phi.CssHints:Library
+{
+	WlBuf text;
+
+	# the block for this element's attributes: 0 if they say nothing
+	[Of: ptr<DomNode> node: 0;]
+		if node.attrs is 0 or node.ns is not DomNs.HTML return 0;
+		call text.Clear;
+		ptr<DomAttr> a: node.attrs;
+		ptr<WlAtom> tag: node.tag;
+		while a is not 0
+			ptr<WlAtom> name: a.name;
+			when name.len
+				is 5
+					if (WlText.EqZ: name.text 5 'width')
+						call Dimension: 'width' a tag;
+					;;
+					elif (WlText.EqZ: name.text 5 'color') and (WlText.EqZ: tag.text tag.len 'font')
+						call Add: 'color' a.value a.value_len;
+					;;
+					elif (WlText.EqZ: name.text 5 'align')
+						call Align: a tag;
+					;;
+				;;
+				is 6
+					if (WlText.EqZ: name.text 6 'height')
+						call Dimension: 'height' a tag;
+					;;
+					elif (WlText.EqZ: name.text 6 'border')
+						call Border: a tag;
+					;;
+					elif (WlText.EqZ: name.text 6 'hspace') and (WlText.EqZ: tag.text tag.len 'img')
+						call Px: 'margin-left' a;
+						call Px: 'margin-right' a;
+					;;
+					elif (WlText.EqZ: name.text 6 'vspace') and (WlText.EqZ: tag.text tag.len 'img')
+						call Px: 'margin-top' a;
+						call Px: 'margin-bottom' a;
+					;;
+					elif (WlText.EqZ: name.text 6 'valign')
+						call Add: 'vertical-align' a.value a.value_len;
+					;;
+				;;
+				is 7
+					if (WlText.EqZ: name.text 7 'bgcolor')
+						call Add: 'background-color' a.value a.value_len;
+					;;
+				;;
+				is 4
+					if (WlText.EqZ: name.text 4 'face') and (WlText.EqZ: tag.text tag.len 'font')
+						call Add: 'font-family' a.value a.value_len;
+					;;
+					elif (WlText.EqZ: name.text 4 'text') and (WlText.EqZ: tag.text tag.len 'body')
+						call Add: 'color' a.value a.value_len;
+					;;
+				;;
+				is 11
+					if (WlText.EqZ: name.text 11 'cellspacing') and (WlText.EqZ: tag.text tag.len 'table')
+						call Px: 'border-spacing' a;
+					;;
+				;;
+			;;
+			a is a.next;
+		;;
+		if text.len is 0 return 0;
+		ptr<CssDecls> found: (Cached);
+	[end: found]
+
+	# A block for each different text, found by its hash. Normally a page has few; if one has very
+	# many, they're let go between walks, when nothing refers to them.
+	const u32 BUCKETS: 1024;
+	const u32 MOST: 8192;
+	ptr<ptr<CssDecls>> table: 0;
+	u32 count: 0;
+
+	[Start]
+		if count < MOST return;
+		while u32 b: 0; b < BUCKETS; b++;
+			ptr<CssDecls> d: table:b;
+			while d is not 0
+				ptr<CssDecls> next_one: d.next_in_sheet;
+				call d.FreeItems;
+				free d;
+				d is next_one;
+			;;
+			table:b is 0;
+		;;
+		count is 0;
+	[end]
+
+	[Cached]
+		if table is 0
+			table is new ptr<CssDecls>[BUCKETS];
+			if table is 0
+				throw 'out of memory for a style';
+			;;
+		;;
+		u32 place: (WlText.Hash: text.data text.len) & (BUCKETS - 1);
+		ptr<CssDecls> d: table:place;
+		while d is not 0
+			if (WlText.Eq: d.src d.src_len text.data text.len) return d;
+			d is d.next_in_sheet;
+		;;
+		d is new CssDecls;
+		if d is 0
+			throw 'out of memory for a style';
+		;;
+		d.src is (WlText.Dup: text.data text.len);
+		d.src_len is text.len;
+		call CssInline.Parse: d text.data text.len 0;
+		d.next_in_sheet is table:place;
+		table:place is d;
+		count++;
+	[end: d]
+
+	[Add: ptr<u8> prop: 0; ptr<u8> value: 0; u32 n: 0;]
+		call text.AddZ: prop;
+		call text.Add: 58;
+		# a value that could end the declaration isn't one
+		while u32 i: 0; i < n; i++;
+			u32 c: value:i;
+			if c is 59 or c is 123 or c is 125
+				call text.Add: 32;
+			;;
+			else
+				call text.Add: c as u8;
+			;;
+		;;
+		call text.Add: 59;
+	[end]
+
+	# HTML's rules for a number: digits, and % if it's a percentage
+	[Dimension: ptr<u8> prop: 0; ptr<DomAttr> a: 0; ptr<WlAtom> tag: 0;]
+		if (AppliesToSize: tag) is false return;
+		call Px: prop a;
+	[end]
+
+	[AppliesToSize: ptr<WlAtom> tag: 0;]
+		ptr<u8> t: tag.text;
+		u32 n: tag.len;
+	[end: (WlText.EqZ: t n 'img') or (WlText.EqZ: t n 'table') or (WlText.EqZ: t n 'td') or (WlText.EqZ: t n 'th') or (WlText.EqZ: t n 'col') or (WlText.EqZ: t n 'hr') or (WlText.EqZ: t n 'iframe') or (WlText.EqZ: t n 'video') or (WlText.EqZ: t n 'canvas') or (WlText.EqZ: t n 'object') or (WlText.EqZ: t n 'embed') or (WlText.EqZ: t n 'tr')]
+
+	[Px: ptr<u8> prop: 0; ptr<DomAttr> a: 0;]
+		u32 i: 0;
+		ptr<u8> v: a.value;
+		u32 n: a.value_len;
+		while i < n and (WlText.IsSpace: v:i)
+			i++;
+		;;
+		u32 from: i;
+		while i < n and ((WlText.IsDigit: v:i) or v:i is 46)
+			i++;
+		;;
+		if i is from return;
+		call text.AddZ: prop;
+		call text.Add: 58;
+		call text.AddN: v + from i - from;
+		if i < n and v:i is 37
+			call text.Add: 37;
+		;;
+		else
+			call text.AddZ: 'px';
+		;;
+		call text.Add: 59;
+	[end]
+
+	[Border: ptr<DomAttr> a: 0; ptr<WlAtom> tag: 0;]
+		if (WlText.EqZ: tag.text tag.len 'table') is false and (WlText.EqZ: tag.text tag.len 'img') is false return;
+		u32 i: 0;
+		ptr<u8> v: a.value;
+		u32 n: a.value_len;
+		while i < n and (WlText.IsDigit: v:i)
+			i++;
+		;;
+		call text.AddZ: 'border:';
+		if i is 0
+			call text.Add: 49;
+		;;
+		else
+			call text.AddN: v i;
+		;;
+		call text.AddZ: 'px solid;';
+	[end]
+
+	[Align: ptr<DomAttr> a: 0; ptr<WlAtom> tag: 0;]
+		ptr<u8> v: a.value;
+		u32 n: a.value_len;
+		ptr<u8> t: tag.text;
+		u32 m: tag.len;
+		if (WlText.EqZ: t m 'img') or (WlText.EqZ: t m 'table')
+			if (WlText.EqNoCaseZ: v n 'left')
+				call text.AddZ: 'float:left;';
+			;;
+			elif (WlText.EqNoCaseZ: v n 'right')
+				call text.AddZ: 'float:right;';
+			;;
+			elif (WlText.EqZ: t m 'table') and (WlText.EqNoCaseZ: v n 'center')
+				call text.AddZ: 'margin-left:auto;margin-right:auto;';
+			;;
+			return;
+		;;
+		if (WlText.EqZ: t m 'div') or (WlText.EqZ: t m 'p') or (WlText.EqZ: t m 'td') or (WlText.EqZ: t m 'th') or (WlText.EqZ: t m 'tr') or (WlText.EqZ: t m 'h1') or (WlText.EqZ: t m 'h2') or (WlText.EqZ: t m 'h3') or (WlText.EqZ: t m 'h4') or (WlText.EqZ: t m 'h5') or (WlText.EqZ: t m 'h6')
+			if (WlText.EqNoCaseZ: v n 'center') or (WlText.EqNoCaseZ: v n 'left') or (WlText.EqNoCaseZ: v n 'right') or (WlText.EqNoCaseZ: v n 'justify')
+				call Add: 'text-align' v n;
+			;;
+		;;
+	[end]
+}

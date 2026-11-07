@@ -1,0 +1,186 @@
+# core and dom: buffers, atoms, UTF-8, the arena, the stack budget, the tree.
+use weblib;
+
+struct.WlTestThing
+{
+	u32 a;
+	u64 b;
+}
+
+phi.TestCore:Program
+{
+	call Weblib.Start;
+
+	# floating point rounds once, as JS needs
+	f64 tenth: 0.1;
+	f64 fifth: 0.2;
+	f64 sum: tenth + fifth;
+	log 'float ' (sum is 0.30000000000000004) ' ' (sum is 0.3) '\n';
+
+	# buffers
+	WlBuf b;
+	call b.AddZ: 'count: ';
+	call b.AddInt: -42;
+	call b.Add: ' ';
+	call b.AddCode: 0xE9;
+	call b.AddCode: 0x20AC;
+	call b.AddCode: 0x1F600;
+	# as byte values: a test's output stays ASCII (see Testing in DESIGN.md)
+	while u32 j: 0; j < b.len; j++;
+		log b.data:j ' ';
+	;;
+	log 'len ' b.len '\n';
+	while int i: 0; i < 10000; i++;
+		call b.Add: 'x';
+	;;
+	log 'grown ' b.len ' ' (b.cap >= b.len) ' ' b.data:(b.len) '\n';
+	call b.Clear;
+	log 'cleared ' b.len '\n';
+	call b.Free;
+
+	# UTF-8, good and bad
+	ptr<u8> mixed: 'a\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80\xFF\xC0\x80\xED\xA0\x80';
+	u32 total: (WlText.LenZ: mixed);
+	u32 pos: 0;
+	while pos < total
+		u32 cp: (WlText.Decode: mixed + pos total - pos);
+		log cp '/' WlText.width ' ';
+		pos++ WlText.width;
+	;;
+	log '\n';
+
+	# atoms
+	ptr<WlAtom> div: (WlAtoms.GetZ: 'div');
+	ptr<WlAtom> div2: (WlAtoms.Get: 'divider' 3);
+	ptr<WlAtom> div3: (WlAtoms.GetLower: 'DIV' 3);
+	log 'atoms ' (div is div2) ' ' (div is div3) ' ' div.text ' ' div.len '\n';
+	# enough to make the table grow
+	WlBuf name;
+	ptr<WlAtom> first: 0;
+	while int i: 0; i < 5000; i++;
+		call name.Clear;
+		call name.AddZ: 'name';
+		call name.AddInt: i;
+		ptr<WlAtom> made: (WlAtoms.Get: name.data name.len);
+		if i is 7
+			first is made;
+		;;
+	;;
+	log 'after growth ' ((WlAtoms.GetZ: 'name7') is first) ' ' ((WlAtoms.GetZ: 'div') is div) '\n';
+	call name.Free;
+
+	# the arena
+	WlArena arena;
+	ptr<WlTestThing> t: (arena.Alloc: sizeof WlTestThing) as ptr<WlTestThing>;
+	t.b is 7;
+	while int i: 0; i < 3000; i++;
+		ptr<u8> kept: (arena.Text: 'hello world' 5);
+		if kept:5 is not 0
+			log 'not zero-terminated\n';
+		;;
+	;;
+	ptr<u8> big: (arena.Alloc: 200000);
+	big:199999 is 1;
+	log 'arena ' t.b ' ' (arena.total > 200000) '\n';
+	call arena.Free;
+
+	# the stack budget stops recursion before the stack runs out
+	WlStack.budget is 8000;
+	int reached: 0;
+	if call reached is Deep: 0 throws err
+		log 'stack: ' err.text ' deep ' (deepest > 10) '\n';
+	;;
+	WlStack.budget is 48000;
+
+	# the tree
+	ptr<DomDocument> doc: (Dom.NewDocument);
+	doc.on_change is addr Changed;
+	ptr<DomNode> html: (Dom.CreateElementZ: doc 'html');
+	ptr<DomNode> body: (Dom.CreateElementZ: doc 'body');
+	ptr<DomNode> p1: (Dom.CreateElementZ: doc 'p');
+	ptr<DomNode> p2: (Dom.CreateElementZ: doc 'p');
+	ptr<DomNode> p3: (Dom.CreateElementZ: doc 'p');
+	call Dom.Append: doc.root html;
+	call Dom.Append: html body;
+	call Dom.Append: body p1;
+	call Dom.Append: body p3;
+	call Dom.InsertBefore: body p2 p3;
+	call Dom.Append: p1 (Dom.CreateTextZ: doc 'one ');
+	call Dom.Append: p2 (Dom.CreateTextZ: doc 'two ');
+	ptr<DomNode> three: (Dom.CreateTextZ: doc 'thr');
+	call Dom.Append: p3 three;
+	call Dom.AddText: three 'ee' 2;
+	call Dom.SetAttrZ: p2 'id' 'second';
+	call Dom.SetAttrZ: p2 'class' '  a  bb\tccc ';
+	log 'classes ' p2.class_count ' ' p2.classes:1.text ' ' (Dom.HasClass: p2 (WlAtoms.GetZ: 'ccc')) ' ' (Dom.HasClass: p2 (WlAtoms.GetZ: 'c')) '\n';
+	log 'byid ' ((Dom.FindById: doc.root (WlAtoms.GetZ: 'second')) is p2) '\n';
+	WlBuf text;
+	call Dom.TextContent: body text;
+	log 'text [' text.data ']\n';
+
+	# moving a node, and order after it
+	call Dom.Append: body p1;
+	call text.Clear;
+	call Dom.TextContent: body text;
+	log 'moved [' text.data ']\n';
+	call Dom.Remove: p2;
+	call text.Clear;
+	call Dom.TextContent: body text;
+	log 'removed [' text.data '] ' (p2.parent is 0) '\n';
+	call text.Free;
+
+	# walk
+	int nodes: 0;
+	ptr<DomNode> n: doc.root;
+	while n is not 0
+		nodes++;
+		n is (Dom.Next: n doc.root);
+	;;
+	log 'walked ' nodes ' of ' doc.node_count ' changes ' changes '\n';
+
+	# a node can't go inside itself
+	if call Dom.Append: p1 body throws cycle
+		log 'cycle: ' cycle.text '\n';
+	;;
+
+	# ...not even a node with no children
+	ptr<DomNode> lone: (Dom.CreateElementZ: doc 'p');
+	if call Dom.Append: lone lone throws self_cycle
+		log 'self: ' self_cycle.text '\n';
+	;;
+
+	# a very deep tree, built from the top down, doesn't take time for every ancestor
+	ptr<DomDocument> deep_doc: (Dom.NewDocument);
+	ptr<DomNode> tip: deep_doc.root;
+	while int i: 0; i < 200000; i++;
+		ptr<DomNode> child: (Dom.CreateElementZ: deep_doc 'div');
+		call Dom.Append: tip child;
+		tip is child;
+	;;
+	log 'deep ' deep_doc.node_count '\n';
+	call Dom.FreeDocument: deep_doc;
+
+	# attributes removed, and classes with them
+	call Dom.RemoveAttr: p2 Dom.A_CLASS;
+	log 'gone ' p2.class_count ' ' ((Dom.AttrValue: p2 'class') is 0) ' ' (Dom.AttrValue: p2 'id') '\n';
+
+	# something a host keeps on a node, on every system
+	p1.js_wrapper is (0xFFFB as u64) << 48;
+	log 'wrapper ' ((p1.js_wrapper >> 48) as u32) '\n';
+
+	call Dom.FreeDocument: doc;
+	log 'done\n';
+	exit 0;
+
+	int deepest: 0;
+	int changes: 0;
+
+	[Deep: int n: 0;]
+		deepest is n;
+		call WlStack.Check;
+	[end: (Deep: n + 1) + 1]
+
+	[Changed: ptr<DomNode> node: 0; int what: 0;]
+		changes++;
+	[end]
+}

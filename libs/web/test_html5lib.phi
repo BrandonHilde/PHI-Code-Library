@@ -1,0 +1,881 @@
+# The real test of the HTML layer: the tree construction tests that came from html5lib and are now
+# kept by web-platform-tests, and html5lib's tokenizer tests (see tests/html5lib/SOURCE.txt).
+#
+# Each tree construction case runs four ways: the whole input in one Feed, one byte at a time, the
+# whole input through Write, and through Write in pieces; a fragment case runs the first two. A case
+# with neither #script-on nor #script-off runs with scripting off and on, as the format asks. The
+# output is passes out of runs for each file.
+#
+#   phi test . -f test_html5lib --target windows64
+#   phi run test_html5lib.phi --target windows64 -- -v         # with each failure spelled out
+#   phi run test_html5lib.phi --target windows64 -- -v tests1  # only files whose names have this
+#
+# There's no JS here, so the four scripted_ files run with on_script doing natively what each of
+# their few scripts says (StandIn, below).
+use weblib;
+use html.parser;
+
+struct.H5Attrs
+{
+	ptr<DomAttr> attr;
+}
+
+phi.TestHtml5lib:Program
+{
+	const u32 MAX_DOC: 2000000;
+
+	# what the script stand-ins need
+	bln script_case: false;
+
+	bln verbose: false;
+	str only: [64];
+	u32 total_runs: 0;
+	u32 rt_runs: 0;
+	u32 rt_same: 0;
+	WlBuf rt_text;
+	WlBuf rt_a;
+	WlBuf rt_b;
+	u32 total_pass: 0;
+	u32 mode_pass[4];
+	u32 mode_runs[4];
+	WlBuf got;
+	ptr<u8> dat_files: 'adoption01 adoption02 blocks comments01 doctype01 domjs-unsafe entities01 entities02 foreign-fragment html5test-com inbody01 isindex main-element math menuitem-element namespace-sensitivity noscript01 pending-spec-changes-plain-text-unsafe pending-spec-changes plain-text-unsafe processing-instructions quirks01 ruby scriptdata01 scripted_adoption01 scripted_ark scripted_foster01 scripted_webkit01 search-element svg tables01 template tests1 tests10 tests11 tests12 tests14 tests15 tests16 tests17 tests18 tests19 tests2 tests20 tests21 tests22 tests23 tests24 tests25 tests26 tests3 tests4 tests5 tests6 tests7 tests8 tests9 tests_innerHTML_1 tricky01 void-in-phrasing webkit01 webkit02';
+	ptr<u8> token_files: 'contentModelFlags domjs entities escapeFlag namedEntities numericEntities pendingSpecChanges test1 test2 test3 test4 unicodeChars unicodeCharsProblematic';
+
+	call Weblib.Start: 900000;
+	call ReadArguments;
+
+	log 'tree construction: passes/runs (whole, bytes, write, write-pieces)\n';
+	call EachWord: dat_files addr RunDatFile;
+	log 'tree construction total ' total_pass '/' total_runs '\n';
+	log 'by input mode: whole ' mode_pass:0 '/' mode_runs:0 ' bytes ' mode_pass:1 '/' mode_runs:1 ' write ' mode_pass:2 '/' mode_runs:2 ' write-pieces ' mode_pass:3 '/' mode_runs:3 '\n';
+
+	log 'serialize then parse again gives the same tree: ' rt_same '/' rt_runs '\n';
+
+	total_pass is 0;
+	total_runs is 0;
+	log 'tokenizer: passes/runs (whole and byte at a time)\n';
+	call EachWord: token_files addr RunTokenFile;
+	log 'tokenizer total ' total_pass '/' total_runs '\n';
+	log 'done\n';
+	exit 0;
+
+	# ---- small things
+
+	[ReadArguments]
+		ptr<u8> args: (OS.Arguments);
+		if args is 0 return;
+		ptr<u8> a: args;
+		if a:0 is '-' and a:1 is 'v'
+			verbose is true;
+			a is a + 2;
+			while a:0 is ' '
+				a is a + 1;
+			;;
+			only is a;
+		;;
+	[end]
+
+	[EachWord: ptr<u8> list: 0; method<ptr<u8>> run: 0;]
+		ptr<u8> p: list;
+		u8 word[64];
+		while p:0 is not 0
+			u32 n: 0;
+			while p:n is not 0 and p:n is not ' '
+				word:n is p:n;
+				n++;
+			;;
+			word:n is 0;
+			bln wanted: true;
+			if only.len > 0
+				wanted is (Contains: addr word:0 only);
+			;;
+			if wanted
+				call run: addr word:0;
+			;;
+			p is p + n;
+			if p:0 is ' '
+				p is p + 1;
+			;;
+		;;
+	[end]
+
+	[Contains: ptr<u8> text: 0; ptr<u8> part: 0;]
+		u32 i: 0;
+		while text:i is not 0
+			u32 k: 0;
+			while part:k is not 0 and text:(i + k) is part:k
+				k++;
+			;;
+			if part:k is 0 return true;
+			i++;
+		;;
+	[end: false]
+
+	[Load: str path; ptr<u32> size_out: 0;]
+		int size: (OS.FileSize: path);
+		if size < 0
+			log 'cannot read ' path '\n';
+			exit 1;
+		;;
+		ptr<u8> buffer: new u8[size as u32 + 2];
+		if buffer is 0
+			throw 'out of memory reading a file';
+		;;
+		int read_count: (OS.ReadFile: path buffer size);
+		if read_count is not size
+			log 'short read of ' path '\n';
+			exit 1;
+		;;
+		size_out:0 is size as u32;
+	[end: buffer]
+
+	# anything that isn't plain ASCII, as \xNN: what a test prints must be ASCII
+	[Show: ptr<u8> text: 0; u32 count: 0;]
+		WlBuf b;
+		while u32 i: 0; i < count; i++;
+			u32 c: text:i;
+			if (c >= 32 and c < 127) or c is 10
+				call b.Add: c as u8;
+			;;
+			else
+				call b.AddN: '\\x' 2;
+				call b.Add: (HexDigit: c >> 4);
+				call b.Add: (HexDigit: c & 15);
+			;;
+		;;
+		if b.data is not 0
+			log b.data;
+		;;
+		call b.Free;
+	[end]
+
+	[HexDigit: u32 v: 0;]
+		if v < 10 return (48 + v) as u8;
+	[end: (87 + v) as u8]
+
+	# ---- the tree dump
+
+	[Indent: WlBuf o; u32 depth: 0;]
+		call o.AddN: '| ' 2;
+		while u32 i: 0; i < depth; i++;
+			call o.AddN: '  ' 2;
+		;;
+	[end]
+
+	# compares as "prefix name" does
+	[AttrBefore: ptr<DomAttr> a: 0; ptr<DomAttr> b: 0;]
+		WlBuf x;
+		WlBuf y;
+		call AttrKey: a x;
+		call AttrKey: b y;
+		u32 i: 0;
+		bln result: false;
+		while true
+			if i >= y.len
+				result is false;
+				break;
+			;;
+			if i >= x.len
+				result is true;
+				break;
+			;;
+			if x.data:i is not y.data:i
+				result is (x.data:i < y.data:i);
+				break;
+			;;
+			i++;
+		;;
+		call x.Free;
+		call y.Free;
+	[end: result]
+
+	[AttrKey: ptr<DomAttr> a: 0; WlBuf o;]
+		if a.prefix is not 0
+			call o.AddN: a.prefix.text a.prefix.len;
+			call o.Add: ' ';
+		;;
+		call o.AddN: a.name.text a.name.len;
+	[end]
+
+	[DumpAttrs: ptr<DomNode> n: 0; WlBuf o; u32 depth: 0;]
+		u32 count: 0;
+		ptr<DomAttr> a: n.attrs;
+		while a is not 0
+			count++;
+			a is a.next;
+		;;
+		if count is 0 return;
+		ptr<H5Attrs> list: new H5Attrs[count];
+		a is n.attrs;
+		u32 k: 0;
+		while a is not 0
+			list:k.attr is a;
+			k++;
+			a is a.next;
+		;;
+		# sorted by insertion: there are never many in these tests
+		u32 i: 1;
+		while i < count
+			ptr<DomAttr> hold: list:i.attr;
+			u32 j: i;
+			while j > 0 and (AttrBefore: hold list:(j - 1).attr)
+				list:j.attr is list:(j - 1).attr;
+				j--;
+			;;
+			list:j.attr is hold;
+			i++;
+		;;
+		while u32 m: 0; m < count; m++;
+			ptr<DomAttr> s: list:m.attr;
+			call Indent: o depth;
+			call AttrKey: s o;
+			call o.AddN: '="' 2;
+			call o.AddN: s.value s.value_len;
+			call o.AddN: '"' 1;
+			call o.Add: 10;
+		;;
+		free list;
+	[end]
+
+	[DumpLine: ptr<DomNode> n: 0; WlBuf o; u32 depth: 0;]
+		DomType kind: n.type;
+		call Indent: o depth;
+		if kind is DomType.ELEMENT
+			call o.Add: '<';
+			if n.ns is DomNs.SVG
+				call o.AddN: 'svg ' 4;
+			;;
+			elif n.ns is DomNs.MATHML
+				call o.AddN: 'math ' 5;
+			;;
+			call o.AddN: n.tag.text n.tag.len;
+			call o.Add: '>';
+			call o.Add: 10;
+			call DumpAttrs: n o depth + 1;
+			return;
+		;;
+		if kind is DomType.TEXT
+			call o.Add: 34;
+			call o.AddN: n.text n.text_len;
+			call o.Add: 34;
+		;;
+		elif kind is DomType.COMMENT
+			call o.AddN: '<!-- ' 5;
+			call o.AddN: n.text n.text_len;
+			call o.AddN: ' -->' 4;
+		;;
+		elif kind is DomType.PI
+			call o.AddN: '<?' 2;
+			call o.AddN: n.tag.text n.tag.len;
+			call o.Add: ' ';
+			call o.AddN: n.text n.text_len;
+			call o.AddN: '?>' 2;
+		;;
+		elif kind is DomType.DOCTYPE
+			call o.AddN: '<!DOCTYPE ' 10;
+			call o.AddN: n.tag.text n.tag.len;
+			if n.text_len > 0 or n.text2_len > 0
+				call o.AddN: ' "' 2;
+				call o.AddN: n.text n.text_len;
+				call o.AddN: '" "' 3;
+				call o.AddN: n.text2 n.text2_len;
+				call o.Add: 34;
+			;;
+			call o.Add: '>';
+		;;
+		call o.Add: 10;
+	[end]
+
+	[DumpTree: ptr<DomNode> root: 0; WlBuf o;]
+		ptr<DomNode> n: root.first_child;
+		u32 depth: 0;
+		while n is not 0
+			call DumpLine: n o depth;
+			ptr<DomNode> down: n.first_child;
+			u32 step: 1;
+			if n.type is DomType.ELEMENT and n.content is not 0
+				call Indent: o depth + 1;
+				call o.AddN: 'content' 7;
+				call o.Add: 10;
+				down is n.content.first_child;
+				step is 2;
+			;;
+			if down is not 0
+				n is down;
+				depth is depth + step;
+				continue;
+			;;
+			while true
+				if n.next is not 0
+					n is n.next;
+					break;
+				;;
+				ptr<DomNode> up: n.parent;
+				if up is root or up is 0 return;
+				depth--;
+				if up.type is DomType.FRAGMENT
+					up is up.content;
+					depth--;
+				;;
+				n is up;
+			;;
+		;;
+	[end]
+
+	# ---- scripts, by what each one says
+
+	[ScriptIs: WlBuf text; ptr<u8> says: 0;]
+	[end: (WlText.EqZ: text.data text.len says)]
+
+	[StandIn: ptr<HtmlParser> p: 0; ptr<DomNode> script: 0;]
+		if script_case is false return;
+		WlBuf text;
+		call Dom.TextContent: script text;
+		ptr<DomDocument> d: p.doc;
+		if (ScriptIs: text 'document.write("2")') or (ScriptIs: text 'document.write(\'2\')')
+			call p.Write: '2' 1;
+		;;
+		elif (ScriptIs: text 'document.write(\'3\')')
+			call p.Write: '3' 1;
+		;;
+		elif (ScriptIs: text 'document.write("<script>document.write(\'2\')</scr"+ "ipt><script>document.write(\'3\')</scr" + "ipt>")')
+			ptr<u8> w: '<script>document.write(\'2\')</script><script>document.write(\'3\')</script>';
+			call p.Write: w (WlText.LenZ: w);
+		;;
+		elif (ScriptIs: text 'document.getElementById("A").id = "B"')
+			ptr<DomNode> a: (Dom.FindById: d.root (WlAtoms.GetZ: 'A'));
+			call Dom.SetAttrZ: a 'id' 'B';
+		;;
+		elif (ScriptIs: text 'document.getElementsByTagName("font")[2].setAttribute("size", "5");')
+			ptr<WlAtom> font: (WlAtoms.GetZ: 'font');
+			ptr<DomNode> n: d.root;
+			int seen_fonts: 0;
+			while n is not 0
+				if n.type is DomType.ELEMENT and n.tag is font
+					if seen_fonts is 2
+						call Dom.SetAttrZ: n 'size' '5';
+						break;
+					;;
+					seen_fonts++;
+				;;
+				n is (Dom.Next: n d.root);
+			;;
+		;;
+		elif (ScriptIs: text 'var t=document.querySelector(\'table\');document.documentElement.remove();document.appendChild(t)')
+			ptr<DomNode> t: (FindTable: d.root);
+			ptr<DomNode> root_el: (Dom.DocumentElement: d);
+			call Dom.Remove: root_el;
+			call Dom.Remove: t;
+			call Dom.Append: d.root t;
+		;;
+		else
+			log 'a script with no stand-in\n';
+		;;
+		call text.Free;
+	[end]
+
+	[FindTable: ptr<DomNode> root: 0;]
+		ptr<WlAtom> table: (WlAtoms.GetZ: 'table');
+		ptr<DomNode> n: root;
+		while n is not 0
+			if n.type is DomType.ELEMENT and n.tag is table return n;
+			n is (Dom.Next: n root);
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	# ---- one case, one way
+
+	# mode: 0 whole, 1 a byte at a time, 2 through Write, 3 through Write in pieces of whole characters
+	[RunCase: ptr<u8> data: 0; u32 size: 0; ptr<u8> ctx: 0; u32 ctx_len: 0; bln scripting: false; u32 mode_kind: 0; WlBuf o;]
+		call o.Clear;
+		ptr<DomDocument> d: (Dom.NewDocument);
+		ptr<HtmlParser> p: (HtmlParser.New: d);
+		p.scripting is scripting;
+		p.on_script is addr StandIn;
+		ptr<DomNode> root: d.root;
+		if ctx_len > 0
+			DomNs ns: DomNs.HTML;
+			u32 skip: 0;
+			if ctx_len > 4 and (WlText.Eq: ctx 4 'svg ' 4)
+				ns is DomNs.SVG;
+				skip is 4;
+			;;
+			elif ctx_len > 5 and (WlText.Eq: ctx 5 'math ' 5)
+				ns is DomNs.MATHML;
+				skip is 5;
+			;;
+			ptr<DomNode> context: (Dom.CreateElement: d (WlAtoms.Get: ctx + skip ctx_len - skip) ns);
+			call p.SetupFragment: context;
+			root is p.fragment;
+		;;
+		when mode_kind
+			is 0
+				call p.Feed: data size;
+			;;
+			is 1
+				while u32 i: 0; i < size; i++;
+					call p.Feed: data + i 1;
+				;;
+			;;
+			is 2
+				call p.Write: data size;
+			;;
+			else
+				call WritePieces: p data size;
+			;;
+		;;
+		call p.Finish;
+		if p.failed
+			call o.AddZ: 'PARSER FAILED: ';
+			call o.AddZ: p.error;
+			call o.Add: 10;
+		;;
+		call p.Free;
+		if o.len is 0
+			call DumpTree: root o;
+		;;
+		call Dom.FreeDocument: d;
+	[end]
+
+	# three bytes at a time, keeping characters whole: what document.write gets is whole characters
+	# Parse, serialize, parse that: the same tree? Not always, and the spec says so (a <p> that a
+	# table was foster parented out of, say), so this is only counted. It's the outside check on the
+	# serializer that the suite offers.
+	[RoundTrip: ptr<u8> data: 0; u32 size: 0; bln scripting: false;]
+		ptr<DomDocument> first: (Html.Parse: data size scripting);
+		call rt_text.Clear;
+		call Html.Serialize: first.root rt_text scripting;
+		call rt_a.Clear;
+		call DumpTree: first.root rt_a;
+		call Dom.FreeDocument: first;
+		ptr<DomDocument> second: (Html.Parse: rt_text.data rt_text.len scripting);
+		call rt_b.Clear;
+		call DumpTree: second.root rt_b;
+		call Dom.FreeDocument: second;
+		rt_runs++;
+		if (WlText.Eq: rt_a.data rt_a.len rt_b.data rt_b.len)
+			rt_same++;
+		;;
+		elif verbose
+			log 'NOT THE SAME AGAIN\n--- input\n';
+			call Show: data size;
+			log '\n--- first\n';
+			call Show: rt_a.data rt_a.len;
+			log '--- second\n';
+			call Show: rt_b.data rt_b.len;
+		;;
+	[end]
+
+	[WritePieces: ptr<HtmlParser> p: 0; ptr<u8> data: 0; u32 size: 0;]
+		u32 i: 0;
+		while i < size
+			u32 e: i + 3;
+			if e > size
+				e is size;
+			;;
+			while e < size and (data:e & 0xC0) is 0x80
+				e++;
+			;;
+			call p.Write: data + i e - i;
+			i is e;
+		;;
+	[end]
+
+	# ---- a .dat file
+
+	# the offset of text in the buffer at or after from, at the start of a line; size if none
+	[FindLine: ptr<u8> b: 0; u32 size: 0; u32 from: 0; ptr<u8> text: 0;]
+		u32 n: (WlText.LenZ: text);
+		u32 i: from;
+		while i + n <= size
+			if i is 0 or b:(i - 1) is 10
+				bln same: true;
+				while u32 k: 0; k < n; k++;
+					if b:(i + k) is not text:k
+						same is false;
+						break;
+					;;
+				;;
+				if same return i;
+			;;
+			i++;
+		;;
+	[end: size]
+
+	[LineEnd: ptr<u8> b: 0; u32 size: 0; u32 from: 0;]
+		u32 i: from;
+		while i < size and b:i is not 10
+			i++;
+		;;
+	[end: i]
+
+	[RunDatFile: ptr<u8> name: 0;]
+		str path: [128];
+		path is 'tests/html5lib/tree-construction/' name '.dat';
+		u32 size: 0;
+		ptr<u8> b: (Load: path addr size);
+		script_case is (Contains: name 'scripted_');
+		u32 pos: 0;
+		u32 file_pass: 0;
+		u32 file_runs: 0;
+		u32 case_number: 0;
+		WlBuf want;
+		while true
+			u32 start: (FindLine: b size pos '#data\n');
+			if start >= size break;
+			u32 data_start: start + 6;
+			u32 errors_at: (FindLine: b size data_start '#errors');
+			u32 data_end: data_start;
+			if errors_at > data_start
+				data_end is errors_at - 1;
+			;;
+			# the lines after #errors, until #document
+			u32 line: (LineEnd: b size errors_at) + 1;
+			ptr<u8> ctx: 0;
+			u32 ctx_len: 0;
+			bln say_on: false;
+			bln say_off: false;
+			bln in_fragment_line: false;
+			while line < size
+				u32 e: (LineEnd: b size line);
+				u32 n: e - line;
+				if (WlText.EqZ: b + line n '#document') break;
+				if in_fragment_line
+					ctx is b + line;
+					ctx_len is n;
+					in_fragment_line is false;
+				;;
+				elif (WlText.EqZ: b + line n '#document-fragment')
+					in_fragment_line is true;
+				;;
+				elif (WlText.EqZ: b + line n '#script-on')
+					say_on is true;
+				;;
+				elif (WlText.EqZ: b + line n '#script-off')
+					say_off is true;
+				;;
+				line is e + 1;
+			;;
+			u32 expected_start: (LineEnd: b size line) + 1;
+			u32 next_data: (FindLine: b size expected_start '#data\n');
+			u32 next_desc: (FindLine: b size expected_start '#description\n');
+			if next_desc < next_data
+				next_data is next_desc;
+			;;
+			u32 expected_end: next_data;
+			while expected_end > expected_start and b:(expected_end - 1) is 10
+				expected_end--;
+			;;
+			call want.Clear;
+			call want.AddN: b + expected_start expected_end - expected_start;
+			call want.Add: 10;
+
+			u32 modes: 4;
+			if ctx_len > 0
+				modes is 2;
+			;;
+			# no directive: both ways, as the format says
+			bln run_off: say_on is false;
+			bln run_on: say_off is false;
+			while u32 s: 0; s < 2; s++;
+				bln scripting: s is 1;
+				if (scripting and run_on is false) or (scripting is false and run_off is false)
+					continue;
+				;;
+				while u32 m: 0; m < modes; m++;
+					call RunCase: b + data_start data_end - data_start ctx ctx_len scripting m got;
+					file_runs++;
+					mode_runs:m++;
+					if (WlText.Eq: got.data got.len want.data want.len)
+						file_pass++;
+						mode_pass:m++;
+					;;
+					elif verbose
+						log 'FAIL ' name ' case ' case_number ' mode ' m ' scripting ' scripting '\n--- input\n';
+						call Show: b + data_start data_end - data_start;
+						if ctx_len > 0
+							log '\n--- context\n';
+							call Show: ctx ctx_len;
+						;;
+						log '\n--- expected\n';
+						call Show: want.data want.len;
+						log '--- got\n';
+						call Show: got.data got.len;
+						log '\n';
+					;;
+					else
+						log 'FAIL ' name ' case ' case_number ' mode ' m ' scripting ' scripting '\n';
+					;;
+				;;
+				if ctx_len is 0
+					call RoundTrip: b + data_start data_end - data_start scripting;
+				;;
+			;;
+			case_number++;
+			pos is next_data;
+		;;
+		call want.Free;
+		free b;
+		log name ' ' file_pass '/' file_runs '\n';
+		total_pass++ file_pass;
+		total_runs++ file_runs;
+	[end]
+
+	# ---- the tokenizer files
+
+	[FromHex: ptr<u8> text: 0; u32 count: 0; WlBuf o;]
+		call o.Clear;
+		if count is 1 and text:0 is '='
+			call o.Reserve: 0;
+			return;
+		;;
+		u32 i: 0;
+		while i + 1 < count
+			u32 hi: (WlText.HexValue: text:i) as u32;
+			u32 lo: (WlText.HexValue: text:(i + 1)) as u32;
+			call o.Add: ((hi << 4) | lo) as u8;
+			i is i + 2;
+		;;
+		if o.data is 0
+			call o.Reserve: 0;
+		;;
+	[end]
+
+	WlBuf token_out;
+	WlBuf pending_chars;
+
+	[AddHex: WlBuf o; ptr<u8> text: 0; u32 count: 0;]
+		if count is 0
+			call o.Add: '=';
+			return;
+		;;
+		while u32 i: 0; i < count; i++;
+			u32 c: text:i;
+			call o.Add: (HexDigit: c >> 4);
+			call o.Add: (HexDigit: c & 15);
+		;;
+	[end]
+
+	[FlushChars]
+		if pending_chars.len > 0
+			call token_out.AddN: 'C ' 2;
+			call AddHex: token_out pending_chars.data pending_chars.len;
+			call token_out.Add: 10;
+			call pending_chars.Clear;
+		;;
+	[end]
+
+	# a token as a line of the flat form, attributes sorted as the converter sorted them
+	[TokenSink: ptr<HtmlTokenizer> t: 0;]
+		u32 k: t.kind;
+		if k is HtmlT.CHARS
+			call pending_chars.AddN: t.chars t.chars_len;
+			return;
+		;;
+		if k is HtmlT.NUL
+			call pending_chars.Add: 0;
+			return;
+		;;
+		call FlushChars;
+		if k is HtmlT.COMMENT
+			call token_out.AddN: 'M ' 2;
+			call AddHex: token_out t.chars t.chars_len;
+		;;
+		elif k is HtmlT.END_TAG
+			call token_out.AddN: 'E ' 2;
+			call AddHex: token_out t.name.text t.name.len;
+		;;
+		elif k is HtmlT.PI
+			call token_out.AddN: 'P ' 2;
+			call AddHex: token_out t.pi_target.text t.pi_target.len;
+			call token_out.Add: ' ';
+			call AddHex: token_out t.chars t.chars_len;
+		;;
+		elif k is HtmlT.DOCTYPE
+			call token_out.AddN: 'D ' 2;
+			call AddIdHex: t.dt_has_name t.dt_name;
+			call token_out.Add: ' ';
+			call AddIdHex: t.dt_has_public t.dt_public;
+			call token_out.Add: ' ';
+			call AddIdHex: t.dt_has_system t.dt_system;
+			call token_out.Add: ' ';
+			if t.dt_quirks
+				call token_out.Add: '0';
+			;;
+			else
+				call token_out.Add: '1';
+			;;
+		;;
+		elif k is HtmlT.START
+			call token_out.AddN: 'S ' 2;
+			call AddHex: token_out t.name.text t.name.len;
+			call token_out.Add: ' ';
+			if t.self_closing
+				call token_out.Add: '1';
+			;;
+			else
+				call token_out.Add: '0';
+			;;
+			# sort them where they are: the token is only used here
+			u32 i: 1;
+			while i < t.attr_count
+				HtmlTokAttr hold;
+				call Mem.Copy: addr hold (t.attrs + i * sizeof HtmlTokAttr) as ptr<u8> sizeof HtmlTokAttr;
+				u32 j: i;
+				while j > 0 and (NameBefore: hold.name t.attrs:(j - 1).name)
+					call Mem.Copy: (t.attrs + j * sizeof HtmlTokAttr) as ptr<u8> (t.attrs + (j - 1) * sizeof HtmlTokAttr) as ptr<u8> sizeof HtmlTokAttr;
+					j--;
+				;;
+				call Mem.Copy: (t.attrs + j * sizeof HtmlTokAttr) as ptr<u8> addr hold sizeof HtmlTokAttr;
+				i++;
+			;;
+			while u32 m: 0; m < t.attr_count; m++;
+				call token_out.Add: ' ';
+				call AddHex: token_out t.attrs:m.name.text t.attrs:m.name.len;
+				call token_out.Add: ' ';
+				call AddHex: token_out t.vals.data + t.attrs:m.off t.attrs:m.len;
+			;;
+		;;
+		else
+			return;
+		;;
+		call token_out.Add: 10;
+	[end]
+
+	[AddIdHex: bln there: false; WlBuf text;]
+		if there
+			call AddHex: token_out text.data text.len;
+		;;
+		else
+			call token_out.Add: '-';
+		;;
+	[end]
+
+	[NameBefore: ptr<WlAtom> a: 0; ptr<WlAtom> b: 0;]
+		u32 i: 0;
+		while i < a.len and i < b.len
+			if a.text:i is not b.text:i return a.text:i < b.text:i;
+			i++;
+		;;
+	[end: a.len < b.len]
+
+	# one test, one way: the tokens' lines are left in token_out
+	[RunTokens: ptr<u8> state_name: 0; u32 state_len: 0; WlBuf last_tag; bln has_last: false; WlBuf input; bln by_bytes: false;]
+		call token_out.Clear;
+		call pending_chars.Clear;
+		ptr<HtmlTokenizer> t: new HtmlTokenizer;
+		HtmlDecoder bytes_in;
+		bytes_in.bom_done is true;
+		t.sink is addr TokenSink;
+		if (WlText.EqZ: state_name state_len 'PLAINTEXT')
+			call t.SetTextState: HtmlS.PLAINTEXT;
+		;;
+		elif (WlText.EqZ: state_name state_len 'RCDATA')
+			call t.SetTextState: HtmlS.RCDATA;
+		;;
+		elif (WlText.EqZ: state_name state_len 'RAWTEXT')
+			call t.SetTextState: HtmlS.RAWTEXT;
+		;;
+		elif (WlText.EqZ: state_name state_len 'SCRIPT')
+			call t.SetTextState: HtmlS.SCRIPT_DATA;
+		;;
+		elif (WlText.EqZ: state_name state_len 'CDATA')
+			t.state is HtmlS.CDATA;
+		;;
+		if has_last
+			t.last_start is (WlAtoms.Get: last_tag.data last_tag.len);
+		;;
+		if by_bytes
+			while u32 i: 0; i < input.len; i++;
+				call bytes_in.Run: input.data + i 1 t.ib;
+				t.lim is t.ib.len;
+				call t.Run;
+			;;
+		;;
+		else
+			call bytes_in.Run: input.data input.len t.ib;
+		;;
+		call bytes_in.Finish: t.ib;
+		t.lim is t.ib.len;
+		t.at_eof is true;
+		call t.Run;
+		call FlushChars;
+		call t.Free;
+	[end]
+
+	[RunTokenFile: ptr<u8> name: 0;]
+		str path: [128];
+		path is 'tests/html5lib/tokenizer-flat/' name '.txt';
+		u32 size: 0;
+		ptr<u8> b: (Load: path addr size);
+		u32 pos: 0;
+		u32 file_pass: 0;
+		u32 file_runs: 0;
+		u32 case_number: 0;
+		WlBuf input;
+		WlBuf last_tag;
+		WlBuf want;
+		while pos < size
+			# T state last input
+			u32 e: (LineEnd: b size pos);
+			u32 a: pos + 2;
+			u32 a_end: a;
+			while b:a_end is not ' '
+				a_end++;
+			;;
+			u32 c: a_end + 1;
+			u32 c_end: c;
+			while b:c_end is not ' '
+				c_end++;
+			;;
+			u32 d: c_end + 1;
+			bln has_last: b:c is not '-';
+			if has_last
+				call FromHex: b + c c_end - c last_tag;
+			;;
+			call FromHex: b + d e - d input;
+			# the expected lines, up to the line that's a dot
+			u32 want_start: e + 1;
+			u32 line: want_start;
+			while b:line is not '.'
+				line is (LineEnd: b size line) + 1;
+			;;
+			call want.Clear;
+			call want.AddN: b + want_start line - want_start;
+			while u32 mode_kind: 0; mode_kind < 2; mode_kind++;
+				call RunTokens: b + a a_end - a last_tag has_last input mode_kind is 1;
+				file_runs++;
+				if token_out.data is not 0 and (WlText.Eq: token_out.data token_out.len want.data want.len)
+					file_pass++;
+				;;
+				elif token_out.len is 0 and want.len is 0
+					file_pass++;
+				;;
+				else
+					log 'FAIL ' name ' test ' case_number ' mode ' mode_kind '\n';
+					if verbose
+						log '--- input\n';
+						call Show: input.data input.len;
+						log '\n--- state\n';
+						call Show: b + a a_end - a;
+						log '\n--- expected\n';
+						call Show: want.data want.len;
+						log '--- got\n';
+						call Show: token_out.data token_out.len;
+						log '\n';
+					;;
+				;;
+			;;
+			case_number++;
+			pos is line + 2;
+		;;
+		call input.Free;
+		call last_tag.Free;
+		call want.Free;
+		free b;
+		log name ' ' file_pass '/' file_runs '\n';
+		total_pass++ file_pass;
+		total_runs++ file_runs;
+	[end]
+}

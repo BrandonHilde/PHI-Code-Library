@@ -1,0 +1,1339 @@
+# The lexer: source text to tokens, one at a time, as the parser asks. A `/` is division until the
+# parser, which knows it's expecting an expression, says otherwise with RescanRegex; a `}` is the
+# end of a template's substitution when it says so with RescanTemplate.
+
+struct.JsTok
+{
+	u32 kind;              # JsT.*
+	u32 start;
+	u32 stop;
+	u32 line;
+	bln nl_before;         # a line ended between the last token and this one
+	bln escaped;           # an identifier with \u in it
+	bln tail;              # a template's last piece
+	bln bad_cooked;        # a template piece with an escape that's only allowed when tagged
+	ptr<JsStr> text;       # identifier, string, template piece (cooked), regex body
+	ptr<JsStr> raw;        # template piece as written, regex flags
+	f64 num;
+}
+
+# token kinds
+phi.JsT:Library
+{
+	const u32 EOF: 0;
+	const u32 IDENT: 1;
+	const u32 PRIVATE: 2;
+	const u32 NUM: 3;
+	const u32 STR: 4;
+	const u32 TEMPLATE: 5;
+	const u32 REGEX: 6;
+	const u32 LBRACE: 10;
+	const u32 RBRACE: 11;
+	const u32 LPAREN: 12;
+	const u32 RPAREN: 13;
+	const u32 LBRACK: 14;
+	const u32 RBRACK: 15;
+	const u32 DOT: 16;
+	const u32 ELLIPSIS: 17;
+	const u32 SEMI: 18;
+	const u32 COMMA: 19;
+	const u32 QUESTION: 20;
+	const u32 QDOT: 21;
+	const u32 COLON: 22;
+	const u32 ARROW: 23;
+	const u32 ASSIGN: 24;
+	# compound assignments, each BIN_BASE less than its operator's kind plus ASSIGN_GAP
+	const u32 ADD_A: 25;
+	const u32 SUB_A: 26;
+	const u32 MUL_A: 27;
+	const u32 DIV_A: 28;
+	const u32 MOD_A: 29;
+	const u32 EXP_A: 30;
+	const u32 SHL_A: 31;
+	const u32 SAR_A: 32;
+	const u32 SHR_A: 33;
+	const u32 AND_A: 34;
+	const u32 OR_A: 35;
+	const u32 XOR_A: 36;
+	const u32 LAND_A: 37;
+	const u32 LOR_A: 38;
+	const u32 NULLISH_A: 39;
+	const u32 NOT: 40;
+	const u32 TILDE: 41;
+	const u32 INC: 42;
+	const u32 DEC: 43;
+	# binary operators, in the order of the table in JsLex.Start
+	const u32 ADD: 44;
+	const u32 SUB: 45;
+	const u32 MUL: 46;
+	const u32 DIV: 47;
+	const u32 MOD: 48;
+	const u32 EXP: 49;
+	const u32 SHL: 50;
+	const u32 SAR: 51;
+	const u32 SHR: 52;
+	const u32 BAND: 53;
+	const u32 BOR: 54;
+	const u32 BXOR: 55;
+	const u32 LAND: 56;
+	const u32 LOR: 57;
+	const u32 NULLISH: 58;
+	const u32 EQ: 59;
+	const u32 NE: 60;
+	const u32 SEQ: 61;
+	const u32 SNE: 62;
+	const u32 LT: 63;
+	const u32 GT: 64;
+	const u32 LE: 65;
+	const u32 GE: 66;
+	# keywords: KW + a keyword's number
+	const u32 KW: 70;
+	const u32 K_BREAK: 71;
+	const u32 K_CASE: 72;
+	const u32 K_CATCH: 73;
+	const u32 K_CLASS: 74;
+	const u32 K_CONST: 75;
+	const u32 K_CONTINUE: 76;
+	const u32 K_DEBUGGER: 77;
+	const u32 K_DEFAULT: 78;
+	const u32 K_DELETE: 79;
+	const u32 K_DO: 80;
+	const u32 K_ELSE: 81;
+	const u32 K_EXPORT: 82;
+	const u32 K_EXTENDS: 83;
+	const u32 K_FINALLY: 84;
+	const u32 K_FOR: 85;
+	const u32 K_FUNCTION: 86;
+	const u32 K_IF: 87;
+	const u32 K_IMPORT: 88;
+	const u32 K_IN: 89;
+	const u32 K_INSTANCEOF: 90;
+	const u32 K_NEW: 91;
+	const u32 K_RETURN: 92;
+	const u32 K_SUPER: 93;
+	const u32 K_SWITCH: 94;
+	const u32 K_THIS: 95;
+	const u32 K_THROW: 96;
+	const u32 K_TRY: 97;
+	const u32 K_TYPEOF: 98;
+	const u32 K_VAR: 99;
+	const u32 K_VOID: 100;
+	const u32 K_WHILE: 101;
+	const u32 K_WITH: 102;
+	const u32 K_NULL: 103;
+	const u32 K_TRUE: 104;
+	const u32 K_FALSE: 105;
+	const u32 K_ENUM: 106;
+	# words that are only reserved in strict code: their number is STRICT_WORD or more; they stay IDENT
+	const u32 STRICT_WORD: 64;
+}
+
+phi.JsLex:Library
+{
+	ptr<u8> src: 0;
+	u32 pos: 0;
+	u32 size: 0;
+	u32 line: 1;
+	bln strict: false;
+	JsTok tok;
+	u32 last_stop: 0;      # where the token before this one stopped
+	u32 last_start: 0;
+	u32 last_line: 1;
+
+	ptr<u8> cc: 0;         # for each ASCII character: 1 starts an identifier, 2 carries one on, 4 digit
+	bln started: false;
+	WlBuf sb;
+	WlBuf sb2;
+
+	[Start]
+		if started return;
+		started is true;
+		cc is new u8[128];
+		if cc is 0
+			throw 'out of memory';
+		;;
+		while u32 c: 0; c < 128; c++;
+			u8 v: 0;
+			if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c is '$' or c is '_'
+				v is 3;
+			;;
+			elif c >= '0' and c <= '9'
+				v is 6;
+			;;
+			cc:c is v;
+		;;
+	[end]
+
+	[InternKeywords]
+		call Start;
+		call Kw: 'break' JsT.K_BREAK - JsT.KW;
+		call Kw: 'case' JsT.K_CASE - JsT.KW;
+		call Kw: 'catch' JsT.K_CATCH - JsT.KW;
+		call Kw: 'class' JsT.K_CLASS - JsT.KW;
+		call Kw: 'const' JsT.K_CONST - JsT.KW;
+		call Kw: 'continue' JsT.K_CONTINUE - JsT.KW;
+		call Kw: 'debugger' JsT.K_DEBUGGER - JsT.KW;
+		call Kw: 'default' JsT.K_DEFAULT - JsT.KW;
+		call Kw: 'delete' JsT.K_DELETE - JsT.KW;
+		call Kw: 'do' JsT.K_DO - JsT.KW;
+		call Kw: 'else' JsT.K_ELSE - JsT.KW;
+		call Kw: 'export' JsT.K_EXPORT - JsT.KW;
+		call Kw: 'extends' JsT.K_EXTENDS - JsT.KW;
+		call Kw: 'finally' JsT.K_FINALLY - JsT.KW;
+		call Kw: 'for' JsT.K_FOR - JsT.KW;
+		call Kw: 'function' JsT.K_FUNCTION - JsT.KW;
+		call Kw: 'if' JsT.K_IF - JsT.KW;
+		call Kw: 'import' JsT.K_IMPORT - JsT.KW;
+		call Kw: 'in' JsT.K_IN - JsT.KW;
+		call Kw: 'instanceof' JsT.K_INSTANCEOF - JsT.KW;
+		call Kw: 'new' JsT.K_NEW - JsT.KW;
+		call Kw: 'return' JsT.K_RETURN - JsT.KW;
+		call Kw: 'super' JsT.K_SUPER - JsT.KW;
+		call Kw: 'switch' JsT.K_SWITCH - JsT.KW;
+		call Kw: 'this' JsT.K_THIS - JsT.KW;
+		call Kw: 'throw' JsT.K_THROW - JsT.KW;
+		call Kw: 'try' JsT.K_TRY - JsT.KW;
+		call Kw: 'typeof' JsT.K_TYPEOF - JsT.KW;
+		call Kw: 'var' JsT.K_VAR - JsT.KW;
+		call Kw: 'void' JsT.K_VOID - JsT.KW;
+		call Kw: 'while' JsT.K_WHILE - JsT.KW;
+		call Kw: 'with' JsT.K_WITH - JsT.KW;
+		call Kw: 'null' JsT.K_NULL - JsT.KW;
+		call Kw: 'true' JsT.K_TRUE - JsT.KW;
+		call Kw: 'false' JsT.K_FALSE - JsT.KW;
+		call Kw: 'enum' JsT.K_ENUM - JsT.KW;
+		call Kw: 'implements' JsT.STRICT_WORD;
+		call Kw: 'interface' JsT.STRICT_WORD + 1;
+		call Kw: 'let' JsT.STRICT_WORD + 2;
+		call Kw: 'package' JsT.STRICT_WORD + 3;
+		call Kw: 'private' JsT.STRICT_WORD + 4;
+		call Kw: 'protected' JsT.STRICT_WORD + 5;
+		call Kw: 'public' JsT.STRICT_WORD + 6;
+		call Kw: 'static' JsT.STRICT_WORD + 7;
+		call Kw: 'yield' JsT.STRICT_WORD + 8;
+	[end]
+
+	[Kw: ptr<u8> text: 0; u32 id: 0;]
+		ptr<JsStr> s: (JsStrs.InternZ: text);
+		s.flags is s.flags | ((id << 8) as u16);
+	[end]
+
+	# keywords stay alive for the life of the runtime
+	[MarkKeywords]
+		ptr<JsRuntime> r: JsRt.r;
+		ptr<ptr<JsStr>> tab: r.intern;
+		u32 n: r.intern_cap;
+		while u32 i: 0; i < n; i++;
+			ptr<JsStr> e: tab:i;
+			if e is not 0 and (e as u32) is not 1
+				if (e.flags >> 8) is not 0
+					call JsGc.MarkCell: e as ptr<JsCell>;
+				;;
+			;;
+		;;
+	[end]
+
+	# the number of an interned string's keyword, or 0
+	[KeywordOf: ptr<JsStr> s: 0;]
+	[end: (s.flags >> 8) as u32]
+
+	[Begin: ptr<u8> text: 0; u32 n: 0;]
+		call Start;
+		src is text;
+		size is n;
+		pos is 0;
+		line is 1;
+		strict is false;
+		last_stop is 0;
+		last_line is 1;
+		# a line starting with #! at the very start is a comment
+		if n >= 2 and text:0 is '#' and text:1 is '!'
+			call SkipLineComment;
+		;;
+	[end]
+
+	[Fail: ptr<u8> msg: 0;]
+		call JsParse.FailAt: msg line;
+	[end]
+
+	# ---- whitespace and comments ----
+
+	[SkipLineComment]
+		while pos < size
+			u32 c: src:pos;
+			if c is 10 or c is 13 return;
+			if c >= 0xE2 and pos + 2 < size and c is 0xE2 and src:(pos + 1) is 0x80 and (src:(pos + 2) is 0xA8 or src:(pos + 2) is 0xA9)
+				return;
+			;;
+			pos++;
+		;;
+	[end]
+
+	[SkipSpace]
+		bool_nl is false;
+		while pos < size
+			u32 c: src:pos;
+			if c is 32 or c is 9 or c is 11 or c is 12
+				pos++;
+			;;
+			elif c is 10
+				pos++;
+				line++;
+				bool_nl is true;
+			;;
+			elif c is 13
+				pos++;
+				if pos < size and src:pos is 10
+					pos++;
+				;;
+				line++;
+				bool_nl is true;
+			;;
+			elif c is '/'
+				if pos + 1 >= size return;
+				u32 d: src:(pos + 1);
+				if d is '/'
+					call SkipLineComment;
+				;;
+				elif d is '*'
+					call SkipBlockComment;
+				;;
+				else
+					return;
+				;;
+			;;
+			elif c is '<'
+				# <!-- is a line comment, in scripts
+				if pos + 3 < size and src:(pos + 1) is '!' and src:(pos + 2) is '-' and src:(pos + 3) is '-'
+					call SkipLineComment;
+				;;
+				else
+					return;
+				;;
+			;;
+			elif c is '-'
+				# --> at the start of a line too
+				if (bool_nl or last_stop is 0) and pos + 2 < size and src:(pos + 1) is '-' and src:(pos + 2) is '>'
+					call SkipLineComment;
+				;;
+				else
+					return;
+				;;
+			;;
+			elif c >= 0x80
+				u32 cp: (WlText.Decode: src + pos size - pos);
+				if cp is 0x2028 or cp is 0x2029
+					pos++ WlText.width;
+					line++;
+					bool_nl is true;
+				;;
+				elif (JsOps.IsSpace: cp)
+					pos++ WlText.width;
+				;;
+				else
+					return;
+				;;
+			;;
+			else
+				return;
+			;;
+		;;
+	[end]
+
+	bln bool_nl: false;
+
+	[SkipBlockComment]
+		u32 from_line: line;
+		pos++ 2;
+		while true
+			if pos + 1 >= size
+				line is from_line;
+				call Fail: 'Unterminated comment';
+			;;
+			u32 c: src:pos;
+			if c is '*' and src:(pos + 1) is '/'
+				pos++ 2;
+				return;
+			;;
+			if c is 10
+				line++;
+				bool_nl is true;
+			;;
+			elif c is 13
+				if src:(pos + 1) is not 10
+					line++;
+				;;
+				bool_nl is true;
+			;;
+			elif c is 0xE2 and pos + 2 < size and src:(pos + 1) is 0x80 and (src:(pos + 2) is 0xA8 or src:(pos + 2) is 0xA9)
+				line++;
+				bool_nl is true;
+			;;
+			pos++;
+		;;
+	[end]
+
+	# ---- the next token ----
+
+	[Next]
+		last_stop is tok.stop;
+		last_start is tok.start;
+		last_line is tok.line;
+		call SkipSpace;
+		tok.nl_before is bool_nl;
+		tok.escaped is false;
+		tok.line is line;
+		tok.start is pos;
+		if pos >= size
+			tok.kind is JsT.EOF;
+			tok.stop is pos;
+			return;
+		;;
+		u32 c: src:pos;
+		if c < 128
+			if (cc:c & 1) is not 0
+				call ScanIdent;
+			;;
+			elif (cc:c & 4) is not 0
+				call ScanNumber;
+			;;
+			elif c is 34 or c is 39
+				call ScanString: c;
+			;;
+			elif c is 96
+				pos++;
+				call ScanTemplate;
+			;;
+			elif c is '\\'
+				call ScanIdentSlow: false;
+			;;
+			elif c is '#'
+				pos++;
+				if pos < size and ((src:pos < 128 and (cc:(src:pos) & 1) is not 0) or src:pos >= 128 or src:pos is '\\')
+					call ScanIdentSlow: true;
+				;;
+				else
+					call Fail: 'Invalid or unexpected token';
+				;;
+			;;
+			else
+				call ScanPunct: c;
+			;;
+		;;
+		else
+			call ScanIdentSlow: false;
+		;;
+		tok.stop is pos;
+	[end]
+
+	[ScanIdent]
+		ptr<u8> s: src;
+		u32 p: pos;
+		u32 n: size;
+		ptr<u8> table: cc;
+		while p < n
+			u32 c: s:p;
+			if c >= 128 or c is '\\'
+				call ScanIdentSlow: false;
+				return;
+			;;
+			if (table:c & 2) is 0 break;
+			p++;
+		;;
+		ptr<JsStr> a: (JsStrs.Intern: s + pos p - pos);
+		pos is p;
+		tok.text is a;
+		u32 kw: (a.flags >> 8) as u32;
+		if kw is not 0 and kw < JsT.STRICT_WORD
+			tok.kind is JsT.KW + kw;
+			return;
+		;;
+		tok.kind is JsT.IDENT;
+	[end]
+
+	# an identifier with an escape or something past ASCII in it (pos at its start)
+	[ScanIdentSlow: bln is_private: false;]
+		call sb.Clear;
+		bool_escaped is false;
+		bln first: true;
+		while pos < size
+			u32 c: src:pos;
+			u32 cp: c;
+			if c is '\\'
+				pos++;
+				bool_escaped is true;
+				if pos >= size or src:pos is not 'u'
+					call Fail: 'Invalid Unicode escape sequence';
+				;;
+				pos++;
+				int esc: (ScanUnicodeEscape);
+				if esc < 0
+					call Fail: 'Invalid Unicode escape sequence';
+				;;
+				cp is esc as u32;
+				if first and not (IsIdStart: cp)
+					call Fail: 'Invalid Unicode escape sequence';
+				;;
+				if not first and not (IsIdPart: cp)
+					call Fail: 'Invalid Unicode escape sequence';
+				;;
+				call sb.AddCode: cp;
+				first is false;
+				continue;
+			;;
+			if c < 128
+				if first and (cc:c & 1) is 0
+					call Fail: 'Invalid or unexpected token';
+				;;
+				if (cc:c & 2) is 0 break;
+				call sb.Add: c as u8;
+				pos++;
+				first is false;
+				continue;
+			;;
+			cp is (WlText.Decode: src + pos size - pos);
+			if first
+				if not (IsIdStart: cp)
+					call Fail: 'Invalid or unexpected token';
+				;;
+			;;
+			elif not (IsIdPart: cp)
+				break;
+			;;
+			u32 w: WlText.width;
+			call sb.AddN: src + pos w;
+			pos++ w;
+			first is false;
+		;;
+		if sb.len is 0
+			call Fail: 'Invalid or unexpected token';
+		;;
+		ptr<JsStr> a: (JsStrs.Intern: sb.data sb.len);
+		tok.text is a;
+		tok.escaped is bool_escaped;
+		tok.stop is pos;
+		if is_private
+			tok.kind is JsT.PRIVATE;
+			return;
+		;;
+		u32 kw: (a.flags >> 8) as u32;
+		if kw is not 0 and kw < JsT.STRICT_WORD and not bool_escaped
+			tok.kind is JsT.KW + kw;
+			return;
+		;;
+		tok.kind is JsT.IDENT;
+	[end]
+
+	bln bool_escaped: false;
+
+	[IsIdStart: u32 c: 0;]
+		if c < 128 return (cc:c & 1) is not 0;
+	[end: (JsUnicode.IsIdStart: c)]
+
+	[IsIdPart: u32 c: 0;]
+		if c < 128 return (cc:c & 2) is not 0;
+		if c is 0x200C or c is 0x200D return true;
+	[end: (JsUnicode.IsIdContinue: c)]
+
+	# after \u: XXXX or {X...}; the code, or -1
+	[ScanUnicodeEscape]
+		if pos < size and src:pos is '{'
+			pos++;
+			u32 v: 0;
+			u32 n: 0;
+			while pos < size and src:pos is not '}'
+				int h: (WlText.HexValue: src:pos);
+				if h < 0 return -1;
+				v is v * 16 + (h as u32);
+				if v > 0x10FFFF return -1;
+				n++;
+				pos++;
+			;;
+			if n is 0 or pos >= size return -1;
+			pos++;
+			return v as int;
+		;;
+		if pos + 4 > size return -1;
+		u32 u: 0;
+		while int i: 0; i < 4; i++;
+			int g: (WlText.HexValue: src:pos);
+			if g < 0 return -1;
+			u is u * 16 + (g as u32);
+			pos++;
+		;;
+	[end: u as int]
+
+	[ScanPunct: u32 c: 0;]
+		u32 d: 0;
+		u32 e: 0;
+		u32 f: 0;
+		if pos + 1 < size
+			d is src:(pos + 1);
+		;;
+		if pos + 2 < size
+			e is src:(pos + 2);
+		;;
+		if pos + 3 < size
+			f is src:(pos + 3);
+		;;
+		u32 kind: 0;
+		u32 n: 1;
+		when c
+			is '('
+				kind is JsT.LPAREN;
+			;;
+			is ')'
+				kind is JsT.RPAREN;
+			;;
+			is ';'
+				kind is JsT.SEMI;
+			;;
+			is ','
+				kind is JsT.COMMA;
+			;;
+			is '{'
+				kind is JsT.LBRACE;
+			;;
+			is '}'
+				kind is JsT.RBRACE;
+			;;
+			is '['
+				kind is JsT.LBRACK;
+			;;
+			is ']'
+				kind is JsT.RBRACK;
+			;;
+			is ':'
+				kind is JsT.COLON;
+			;;
+			is '~'
+				kind is JsT.TILDE;
+			;;
+			is '.'
+				if d >= '0' and d <= '9'
+					call ScanNumber;
+					return;
+				;;
+				kind is JsT.DOT;
+				if d is '.' and e is '.'
+					kind is JsT.ELLIPSIS;
+					n is 3;
+				;;
+			;;
+			is '?'
+				kind is JsT.QUESTION;
+				if d is '?'
+					kind is JsT.NULLISH;
+					n is 2;
+					if e is '='
+						kind is JsT.NULLISH_A;
+						n is 3;
+					;;
+				;;
+				elif d is '.' and not (e >= '0' and e <= '9')
+					kind is JsT.QDOT;
+					n is 2;
+				;;
+			;;
+			is '='
+				kind is JsT.ASSIGN;
+				if d is '='
+					kind is JsT.EQ;
+					n is 2;
+					if e is '='
+						kind is JsT.SEQ;
+						n is 3;
+					;;
+				;;
+				elif d is '>'
+					kind is JsT.ARROW;
+					n is 2;
+				;;
+			;;
+			is '!'
+				kind is JsT.NOT;
+				if d is '='
+					kind is JsT.NE;
+					n is 2;
+					if e is '='
+						kind is JsT.SNE;
+						n is 3;
+					;;
+				;;
+			;;
+			is '+'
+				kind is JsT.ADD;
+				if d is '+'
+					kind is JsT.INC;
+					n is 2;
+				;;
+				elif d is '='
+					kind is JsT.ADD_A;
+					n is 2;
+				;;
+			;;
+			is '-'
+				kind is JsT.SUB;
+				if d is '-'
+					kind is JsT.DEC;
+					n is 2;
+				;;
+				elif d is '='
+					kind is JsT.SUB_A;
+					n is 2;
+				;;
+			;;
+			is '*'
+				kind is JsT.MUL;
+				if d is '*'
+					kind is JsT.EXP;
+					n is 2;
+					if e is '='
+						kind is JsT.EXP_A;
+						n is 3;
+					;;
+				;;
+				elif d is '='
+					kind is JsT.MUL_A;
+					n is 2;
+				;;
+			;;
+			is '/'
+				kind is JsT.DIV;
+				if d is '='
+					kind is JsT.DIV_A;
+					n is 2;
+				;;
+			;;
+			is '%'
+				kind is JsT.MOD;
+				if d is '='
+					kind is JsT.MOD_A;
+					n is 2;
+				;;
+			;;
+			is '<'
+				kind is JsT.LT;
+				if d is '<'
+					kind is JsT.SHL;
+					n is 2;
+					if e is '='
+						kind is JsT.SHL_A;
+						n is 3;
+					;;
+				;;
+				elif d is '='
+					kind is JsT.LE;
+					n is 2;
+				;;
+			;;
+			is '>'
+				kind is JsT.GT;
+				if d is '>'
+					kind is JsT.SAR;
+					n is 2;
+					if e is '>'
+						kind is JsT.SHR;
+						n is 3;
+						if f is '='
+							kind is JsT.SHR_A;
+							n is 4;
+						;;
+					;;
+					elif e is '='
+						kind is JsT.SAR_A;
+						n is 3;
+					;;
+				;;
+				elif d is '='
+					kind is JsT.GE;
+					n is 2;
+				;;
+			;;
+			is '&'
+				kind is JsT.BAND;
+				if d is '&'
+					kind is JsT.LAND;
+					n is 2;
+					if e is '='
+						kind is JsT.LAND_A;
+						n is 3;
+					;;
+				;;
+				elif d is '='
+					kind is JsT.AND_A;
+					n is 2;
+				;;
+			;;
+			is '|'
+				kind is JsT.BOR;
+				if d is '|'
+					kind is JsT.LOR;
+					n is 2;
+					if e is '='
+						kind is JsT.LOR_A;
+						n is 3;
+					;;
+				;;
+				elif d is '='
+					kind is JsT.OR_A;
+					n is 2;
+				;;
+			;;
+			is '^'
+				kind is JsT.BXOR;
+				if d is '='
+					kind is JsT.XOR_A;
+					n is 2;
+				;;
+			;;
+			else
+				call Fail: 'Invalid or unexpected token';
+			;;
+		;;
+		tok.kind is kind;
+		pos++ n;
+	[end]
+
+	# ---- numbers ----
+
+	[ScanNumber]
+		u32 start: pos;
+		u32 c: src:pos;
+		tok.kind is JsT.NUM;
+		if c is '0' and pos + 1 < size
+			u32 x: src:(pos + 1) | 32;
+			int radix: 0;
+			if x is 'x'
+				radix is 16;
+			;;
+			elif x is 'o'
+				radix is 8;
+			;;
+			elif x is 'b'
+				radix is 2;
+			;;
+			if radix is not 0
+				pos++ 2;
+				call ScanRadix: radix;
+				call AfterNumber;
+				return;
+			;;
+			u32 y: src:(pos + 1);
+			if y >= '0' and y <= '9'
+				# 017 is octal, 019 is decimal: both only in sloppy code
+				if strict
+					call Fail: 'Octal literals are not allowed in strict mode';
+				;;
+				u32 p: pos + 1;
+				bln octal: true;
+				while p < size and src:p >= '0' and src:p <= '9'
+					if src:p >= '8'
+						octal is false;
+					;;
+					p++;
+				;;
+				if octal
+					tok.num is (WlNum.ParseRadix: src + pos + 1 p - pos - 1 8);
+					pos is p;
+					call AfterNumber;
+					return;
+				;;
+				pos is p;
+				call ScanFractionAndExponent: false;
+				tok.num is (ParseDecimal: start pos);
+				call AfterNumber;
+				return;
+			;;
+			if y is '_'
+				call Fail: 'Numeric separator can not be used after leading 0';
+			;;
+		;;
+		call ScanDigits;
+		call ScanFractionAndExponent: true;
+		tok.num is (ParseDecimal: start pos);
+		call AfterNumber;
+	[end]
+
+	[ScanDigits]
+		bln last_sep: true;     # (at the start, a separator isn't allowed either)
+		bln any: false;
+		while pos < size
+			u32 c: src:pos;
+			if c >= '0' and c <= '9'
+				last_sep is false;
+				any is true;
+			;;
+			elif c is '_'
+				if last_sep
+					call Fail: 'Only one underscore is allowed as numeric separator';
+				;;
+				last_sep is true;
+			;;
+			else
+				break;
+			;;
+			pos++;
+		;;
+		if any and last_sep
+			call Fail: 'Numeric separators are not allowed at the end of numeric literals';
+		;;
+	[end]
+
+	[ScanFractionAndExponent: bln separators: true;]
+		if pos < size and src:pos is '.'
+			pos++;
+			if pos < size and src:pos is '_'
+				call Fail: 'Numeric separators are not allowed here';
+			;;
+			call ScanDigits;
+		;;
+		if pos < size and (src:pos | 32) is 'e'
+			pos++;
+			if pos < size and (src:pos is '+' or src:pos is '-')
+				pos++;
+			;;
+			if pos >= size or src:pos < '0' or src:pos > '9'
+				call Fail: 'Invalid or unexpected token';
+			;;
+			call ScanDigits;
+		;;
+	[end]
+
+	# digits with separators out, as a number
+	[ParseDecimal: u32 from: 0; u32 upto: 0;]
+		ptr<u8> p: src + from;
+		u32 n: upto - from;
+		bln simple: n <= 15;
+		u64 v: 0;
+		if simple
+			while u32 i: 0; i < n; i++;
+				u32 c: p:i;
+				if c < '0' or c > '9'
+					simple is false;
+					break;
+				;;
+				v is v * 10 + (c - '0');
+			;;
+			if simple
+				return v as f64;
+			;;
+		;;
+		call sb.Clear;
+		while u32 j: 0; j < n; j++;
+			if p:j is not '_'
+				call sb.Add: p:j;
+			;;
+		;;
+	[end: (WlNum.Parse: sb.data sb.len)]
+
+	[ScanRadix: int radix: 0;]
+		u32 from: pos;
+		bln last_sep: true;
+		call sb.Clear;
+		while pos < size
+			u32 c: src:pos;
+			if c is '_'
+				if last_sep
+					call Fail: 'Numeric separators are not allowed here';
+				;;
+				last_sep is true;
+				pos++;
+				continue;
+			;;
+			int v: (WlNum.DigitValue: c);
+			if v >= radix break;
+			call sb.Add: c as u8;
+			last_sep is false;
+			pos++;
+		;;
+		if pos is from or last_sep
+			call Fail: 'Invalid or unexpected token';
+		;;
+		tok.num is (WlNum.ParseRadix: sb.data sb.len radix);
+	[end]
+
+	[AfterNumber]
+		if pos < size
+			u32 c: src:pos;
+			if c < 128
+				if (cc:c & 3) is not 0 or c is '\\'
+					# (1n is a BigInt, which isn't here yet)
+					call Fail: 'Invalid or unexpected token';
+				;;
+			;;
+			elif (IsIdStart: (WlText.Decode: src + pos size - pos))
+				call Fail: 'Invalid or unexpected token';
+			;;
+		;;
+	[end]
+
+	# ---- strings ----
+
+	[ScanString: u32 quote: 0;]
+		ptr<u8> s: src;
+		u32 n: size;
+		u32 p: pos + 1;
+		tok_octal is false;
+		# the plain case: no escape, nothing past ASCII
+		while p < n
+			u32 c: s:p;
+			if c is quote
+				tok.text is (JsStrs.Intern: s + pos + 1 p - pos - 1);
+				tok.kind is JsT.STR;
+				tok.escaped is false;
+				pos is p + 1;
+				return;
+			;;
+			if c is '\\' or c >= 128 break;
+			if c is 10 or c is 13
+				call Fail: 'Invalid or unexpected token';
+			;;
+			p++;
+		;;
+		call sb.Clear;
+		call sb.AddN: s + pos + 1 p - pos - 1;
+		pos is p;
+		while true
+			if pos >= n
+				call Fail: 'Invalid or unexpected token';
+			;;
+			u32 d: s:pos;
+			if d is quote break;
+			if d is '\\'
+				pos++;
+				tok.escaped is true;
+				int r: (ScanEscape: addr sb);
+				if r < 0
+					call Fail: 'Invalid escape sequence';
+				;;
+				continue;
+			;;
+			if d is 10 or d is 13
+				call Fail: 'Invalid or unexpected token';
+			;;
+			if d < 128
+				call sb.Add: d as u8;
+				pos++;
+				continue;
+			;;
+			u32 cp: (WlText.Decode: s + pos n - pos);
+			call JsStrs.BufAddCode: addr sb cp;
+			pos++ WlText.width;
+		;;
+		pos++;
+		tok.text is (JsStrs.Intern: sb.data sb.len);
+		tok.kind is JsT.STR;
+	[end]
+
+	# after a backslash: the escape's characters go in b. 0 fine; -1 not a valid escape; -2 an octal
+	# or \8 \9, which only sloppy strings have (and templates never)
+	[ScanEscape: ptr<WlBuf> b: 0;]
+		if pos >= size return -1;
+		u32 c: src:pos;
+		pos++;
+		when c
+			is 'n'
+				call b.Add: 10;
+			;;
+			is 't'
+				call b.Add: 9;
+			;;
+			is 'r'
+				call b.Add: 13;
+			;;
+			is 'b'
+				call b.Add: 8;
+			;;
+			is 'v'
+				call b.Add: 11;
+			;;
+			is 'f'
+				call b.Add: 12;
+			;;
+			is 10
+				line++;
+			;;
+			is 13
+				if pos < size and src:pos is 10
+					pos++;
+				;;
+				line++;
+			;;
+			is 'x'
+				if pos + 2 > size return -1;
+				int h1: (WlText.HexValue: src:pos);
+				int h2: (WlText.HexValue: src:(pos + 1));
+				if h1 < 0 or h2 < 0 return -1;
+				pos++ 2;
+				call JsStrs.BufAddUnit: b (h1 * 16 + h2) as u32;
+			;;
+			is 'u'
+				int u: (ScanUnicodeEscape);
+				if u < 0 return -1;
+				call JsStrs.BufAddCode: b u as u32;
+			;;
+			else
+				if c >= '0' and c <= '9'
+					u32 next_c: 0;
+					if pos < size
+						next_c is src:pos;
+					;;
+					if c is '0' and not (next_c >= '0' and next_c <= '9')
+						call b.Add: 0;
+						return 0;
+					;;
+					if in_template return -2;
+					if strict
+						call Fail: 'Octal escape sequences are not allowed in strict mode';
+					;;
+					tok_octal is true;
+					if c >= '8'
+						call b.Add: c as u8;
+						return 0;
+					;;
+					u32 v: c - '0';
+					if next_c >= '0' and next_c <= '7'
+						v is v * 8 + next_c - '0';
+						pos++;
+						if c <= '3' and pos < size and src:pos >= '0' and src:pos <= '7'
+							v is v * 8 + src:pos - '0';
+							pos++;
+						;;
+					;;
+					call JsStrs.BufAddUnit: b v;
+					return 0;
+				;;
+				if c < 128
+					call b.Add: c as u8;
+					return 0;
+				;;
+				pos--;
+				u32 cp: (WlText.Decode: src + pos size - pos);
+				pos++ WlText.width;
+				if cp is 0x2028 or cp is 0x2029
+					line++;
+					return 0;
+				;;
+				call JsStrs.BufAddCode: b cp;
+			;;
+		;;
+	[end: 0]
+
+	bln in_template: false;
+	bln tok_octal: false;     # this string token has a legacy escape
+
+	# ---- templates ----
+
+	# pos just after ` or } : reads up to the next ${ or `
+	[ScanTemplate]
+		call sb.Clear;
+		call sb2.Clear;
+		tok.bad_cooked is false;
+		in_template is true;
+		while true
+			if pos >= size
+				in_template is false;
+				call Fail: 'Unterminated template literal';
+			;;
+			u32 c: src:pos;
+			if c is 96
+				pos++;
+				tok.tail is true;
+				break;
+			;;
+			if c is '$' and pos + 1 < size and src:(pos + 1) is '{'
+				pos++ 2;
+				tok.tail is false;
+				break;
+			;;
+			if c is '\\'
+				u32 from: pos;
+				pos++;
+				int r: (ScanEscape: addr sb);
+				if r < 0
+					tok.bad_cooked is true;
+				;;
+				# as written, with its line ends made plain
+				call AddRaw: from pos;
+				continue;
+			;;
+			if c is 13
+				pos++;
+				if pos < size and src:pos is 10
+					pos++;
+				;;
+				line++;
+				call sb.Add: 10;
+				call sb2.Add: 10;
+				continue;
+			;;
+			if c is 10
+				line++;
+			;;
+			if c < 128
+				call sb.Add: c as u8;
+				call sb2.Add: c as u8;
+				pos++;
+				continue;
+			;;
+			u32 cp: (WlText.Decode: src + pos size - pos);
+			if cp is 0x2028 or cp is 0x2029
+				line++;
+			;;
+			call JsStrs.BufAddCode: addr sb cp;
+			call JsStrs.BufAddCode: addr sb2 cp;
+			pos++ WlText.width;
+		;;
+		in_template is false;
+		tok.text is (JsStrs.Intern: sb.data sb.len);
+		tok.raw is (JsStrs.Intern: sb2.data sb2.len);
+		tok.kind is JsT.TEMPLATE;
+	[end]
+
+	[AddRaw: u32 from: 0; u32 upto: 0;]
+		u32 i: from;
+		while i < upto
+			u32 c: src:i;
+			if c is 13
+				call sb2.Add: 10;
+				i++;
+				if i < upto and src:i is 10
+					i++;
+				;;
+				continue;
+			;;
+			call sb2.Add: c as u8;
+			i++;
+		;;
+	[end]
+
+	# the parser met a } that ends a substitution: the template carries on after it
+	[RescanTemplate]
+		pos is tok.start + 1;
+		line is tok.line;
+		call ScanTemplate;
+		tok.stop is pos;
+	[end]
+
+	# ---- regular expressions ----
+
+	# the parser met / or /= where an expression must start
+	[RescanRegex]
+		pos is tok.start + 1;
+		line is tok.line;
+		bln in_class: false;
+		u32 from: pos;
+		while true
+			if pos >= size
+				call Fail: 'Invalid regular expression: missing /';
+			;;
+			u32 c: src:pos;
+			if c is 10 or c is 13
+				call Fail: 'Invalid regular expression: missing /';
+			;;
+			if c is 0xE2 and pos + 2 < size and src:(pos + 1) is 0x80 and (src:(pos + 2) is 0xA8 or src:(pos + 2) is 0xA9)
+				call Fail: 'Invalid regular expression: missing /';
+			;;
+			if c is '\\'
+				pos++;
+				if pos >= size or src:pos is 10 or src:pos is 13
+					call Fail: 'Invalid regular expression: missing /';
+				;;
+			;;
+			elif c is '['
+				in_class is true;
+			;;
+			elif c is ']'
+				in_class is false;
+			;;
+			elif c is '/' and not in_class
+				break;
+			;;
+			pos++;
+		;;
+		tok.text is (JsStrs.FromUtf8: src + from pos - from);
+		pos++;
+		u32 fstart: pos;
+		u32 seen: 0;
+		while pos < size
+			u32 f: src:pos;
+			if f is '\\'
+				call Fail: 'Invalid regular expression flags';
+			;;
+			if f >= 128
+				if (IsIdPart: (WlText.Decode: src + pos size - pos))
+					call Fail: 'Invalid regular expression flags';
+				;;
+				break;
+			;;
+			if (cc:f & 2) is 0 break;
+			u32 bit: 0;
+			when f
+				is 'g'
+					bit is 1;
+				;;
+				is 'i'
+					bit is 2;
+				;;
+				is 'm'
+					bit is 4;
+				;;
+				is 's'
+					bit is 8;
+				;;
+				is 'u'
+					bit is 16;
+				;;
+				is 'y'
+					bit is 32;
+				;;
+				is 'd'
+					bit is 64;
+				;;
+				is 'v'
+					bit is 128;
+				;;
+				else
+					call Fail: 'Invalid regular expression flags';
+				;;
+			;;
+			if (seen & bit) is not 0 or (bit is 128 and (seen & 16) is not 0) or (bit is 16 and (seen & 128) is not 0)
+				call Fail: 'Invalid regular expression flags';
+			;;
+			seen is seen | bit;
+			pos++;
+		;;
+		tok.raw is (JsStrs.New: src + fstart pos - fstart);
+		tok.kind is JsT.REGEX;
+		tok.stop is pos;
+	[end]
+
+	# ---- looking ahead ----
+
+	# the kind of the token after this one, without moving; the rest of it stays in JsLex.peeked
+	JsTok saved;
+	JsTok peeked;
+	u32 saved_pos: 0;
+	u32 saved_line: 0;
+	u32 saved_last_stop: 0;
+	u32 saved_last_start: 0;
+	u32 saved_last_line: 0;
+
+	[Peek]
+		saved is tok;
+		saved_pos is pos;
+		saved_line is line;
+		saved_last_stop is last_stop;
+		saved_last_start is last_start;
+		saved_last_line is last_line;
+		call Next;
+		peeked is tok;
+		tok is saved;
+		pos is saved_pos;
+		line is saved_line;
+		last_stop is saved_last_stop;
+		last_start is saved_last_start;
+		last_line is saved_last_line;
+	[end: peeked.kind]
+}

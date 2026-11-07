@@ -1,0 +1,533 @@
+# A test262 runner, as a program. With a file holding a list of test paths on its command line it
+# runs each and prints one line for it (tools/js_test262.py drives it, in batches, and adds up the
+# results). With nothing on its command line, as `phi test` runs it, it checks itself on a few small
+# tests in tests/js/test262self/, including ones that must fail.
+#
+#   test_js262.exe LISTFILE [HARNESS_DIR]       default harness: tests/test262/harness
+#
+# It runs each test as the test262 docs say: harness/assert.js and sta.js, then what `includes` says,
+# then the test, strict and sloppy unless `flags` says otherwise; `negative` means it must fail in that
+# phase with that error; `async` means it must print Test262:AsyncTestComplete.
+#
+# takes up to 120 seconds
+
+use js.js;
+use core.num;
+
+struct.JsT262Meta
+{
+	bln no_strict;
+	bln only_strict;
+	bln raw;
+	bln is_async;
+	bln is_module;
+	bln is_negative;
+	bln neg_parse;
+	bln has_includes;
+	u8 neg_type[64];
+	u8 includes[1024];     # names, each ending with a zero, and a zero after the last
+	u8 features[1024];
+}
+
+phi.TestJs262:Program
+{
+	call Js.Start: 900000;
+	call Init;
+	ptr<u8> args: (OS.Arguments);
+	if args is 0 or args:0 is 0
+		harness_dir is 'tests/js/test262self/harness';   # (its own copy: test262 needn't be here)
+		call SelfTest;
+		exit 0;
+	;;
+	# the list's path, then perhaps the harness's
+	u32 at_space: 0;
+	while args:at_space is not 0 and args:at_space is not 32
+		at_space++;
+	;;
+	if args:at_space is 32
+		args:at_space is 0;
+		harness_dir is args + at_space + 1;
+	;;
+	int n: (OS.ReadFile: args list_buf LIST_ROOM - 1);
+	if n < 0
+		log 'no such list: ' args '\n';
+		exit 2;
+	;;
+	list_buf:n is 0;
+	u32 pos: 0;
+	while pos < n as u32
+		u32 start: pos;
+		while pos < n as u32 and list_buf:pos is not 10 and list_buf:pos is not 13
+			pos++;
+		;;
+		u32 stop_at: pos;
+		while pos < n as u32 and (list_buf:pos is 10 or list_buf:pos is 13)
+			pos++;
+		;;
+		if stop_at > start
+			list_buf:stop_at is 0;
+			call RunOne: list_buf + start;
+		;;
+	;;
+	exit 0;
+
+	const u32 LIST_ROOM: 4000000;
+	const u32 FILE_ROOM: 4000000;
+
+	ptr<u8> list_buf: 0;
+	ptr<u8> file_buf: 0;
+	ptr<u8> harness_buf: 0;
+	ptr<u8> harness_dir: 0;
+	WlBuf captured;
+	WlBuf cause;
+	int deadline: 0;
+	u64 done_hook: 0;
+
+	[Init]
+		harness_dir is 'tests/test262/harness';
+		list_buf is new u8[LIST_ROOM];
+		file_buf is new u8[FILE_ROOM];
+		harness_buf is new u8[FILE_ROOM];
+	[end]
+
+	# ---- reading the frontmatter ----
+
+	# the frontmatter between /*--- and ---*/, or 0
+	[Find: ptr<u8> text: 0; u32 n: 0; ptr<u8> what: 0; u32 from: 0;]
+		u32 w: (WlText.LenZ: what);
+		u32 i: from;
+		while i + w <= n
+			if text:i is what:0 and (Mem.Equal: text + i what w)
+				return i as int;
+			;;
+			i++;
+		;;
+	[end: -1]
+
+	[IsNameChar: u32 c: 0;]
+	[end: (WlText.IsAlnum: c) or c is '.' or c is '_' or c is '-' or c is '/']
+
+	# reads a list after `key:`, either [a, b] or lines of `  - a`, into names ending in zeros
+	[ReadList: ptr<u8> text: 0; u32 n: 0; ptr<u8> key: 0; ptr<u8> into_buf: 0; u32 room: 0;]
+		into_buf:0 is 0;
+		int at_key: -1;
+		u32 from: 0;
+		u32 klen: (WlText.LenZ: key);
+		while true
+			at_key is (Find: text n key from);
+			if at_key < 0 return;
+			# at the start of a line
+			if at_key is 0 or text:((at_key as u32) - 1) is 10 break;
+			from is (at_key as u32) + 1;
+		;;
+		u32 i: (at_key as u32) + klen;
+		u32 w: 0;
+		while i < n and text:i is 32
+			i++;
+		;;
+		if i < n and text:i is '['
+			i++;
+			while i < n and text:i is not ']'
+				if (IsNameChar: text:i)
+					while i < n and (IsNameChar: text:i) and w + 2 < room
+						into_buf:w is text:i;
+						w++;
+						i++;
+					;;
+					into_buf:w is 0;
+					w++;
+				;;
+				else
+					i++;
+				;;
+			;;
+			into_buf:w is 0;
+			return;
+		;;
+		# lines of - name
+		while i < n
+			while i < n and text:i is not 10
+				i++;
+			;;
+			i++;
+			u32 j: i;
+			while j < n and text:j is 32
+				j++;
+			;;
+			if j >= n or text:j is not '-' break;
+			j++;
+			while j < n and text:j is 32
+				j++;
+			;;
+			while j < n and (IsNameChar: text:j) and w + 2 < room
+				into_buf:w is text:j;
+				w++;
+				j++;
+			;;
+			into_buf:w is 0;
+			w++;
+			i is j;
+		;;
+		into_buf:w is 0;
+	[end]
+
+	[ListHas: ptr<u8> list: 0; ptr<u8> name: 0;]
+		ptr<u8> p: list;
+		while p:0 is not 0
+			u32 l: (WlText.LenZ: p);
+			if (WlText.EqZ: p l name) return true;
+			p is p + l + 1;
+		;;
+	[end: false]
+
+	[ReadMeta: ptr<u8> text: 0; u32 n: 0; ptr<JsT262Meta> m: 0;]
+		int a: (Find: text n '/*---' 0);
+		if a < 0 return;
+		int b: (Find: text n '---*/' a as u32);
+		if b < 0 return;
+		ptr<u8> fm: text + (a as u32) + 5;
+		u32 fn: (b - a - 5) as u32;
+		u8 flags[512];
+		call ReadList: fm fn 'flags:' addr flags 512;
+		m.no_strict is (ListHas: addr flags 'noStrict');
+		m.only_strict is (ListHas: addr flags 'onlyStrict');
+		m.raw is (ListHas: addr flags 'raw');
+		m.is_async is (ListHas: addr flags 'async');
+		m.is_module is (ListHas: addr flags 'module');
+		call ReadList: fm fn 'includes:' addr m.includes 1024;
+		call ReadList: fm fn 'features:' addr m.features 1024;
+		int neg: (Find: fm fn 'negative:' 0);
+		if neg >= 0
+			m.is_negative is true;
+			int ph: (Find: fm fn 'phase:' neg as u32);
+			if ph >= 0
+				u32 i: (ph as u32) + 6;
+				while i < fn and fm:i is 32
+					i++;
+				;;
+				m.neg_parse is fm:i is 'p' and fm:(i + 1) is 'a';
+			;;
+			int ty: (Find: fm fn 'type:' neg as u32);
+			if ty >= 0
+				u32 j: (ty as u32) + 5;
+				while j < fn and fm:j is 32
+					j++;
+				;;
+				u32 w: 0;
+				while j < fn and (WlText.IsAlnum: fm:j) and w < 63
+					m.neg_type:w is fm:j;
+					w++;
+					j++;
+				;;
+				m.neg_type:w is 0;
+			;;
+		;;
+	[end]
+
+	# ---- the host side of a test ----
+
+	[Capture: ptr<u8> t: 0; u32 n: 0;]
+		call captured.AddN: t n;
+		call captured.Add: 10;
+	[end]
+
+	[Print: ptr<u64> args: 0; int argc: 0;]
+		if argc > 0
+			call Js.TextOf: args:0 addr captured;
+			call captured.Add: 10;
+		;;
+	[end: JsV.UNDEF]
+
+	[EvalScript: ptr<u64> args: 0; int argc: 0;]
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		ptr<JsCode> c: (Js.Compile: b.data b.len 'evalScript' false);
+		call b.Free;
+	[end: (Js.RunCode: c)]
+
+	[Gc: ptr<u64> args: 0; int argc: 0;]
+	[end: JsV.UNDEF]
+
+	[CreateRealm: ptr<u64> args: 0; int argc: 0;]
+		call JsErr.Type: '$262.createRealm is not supported';
+	[end: JsV.UNDEF]
+
+	[DetachArrayBuffer: ptr<u64> args: 0; int argc: 0;]
+		call JsErr.Type: '$262.detachArrayBuffer is not supported';
+	[end: JsV.UNDEF]
+
+	[TimeUp]
+	[end: (OS.GetTicks) > deadline]
+
+	[SetUpGlobals]
+		ptr<JsObj> g: JsRt.r.global;
+		call Js.DefineNative: g 'print' addr Print 1;
+		ptr<JsObj> h: (Js.NewObject);
+		call Js.Define: g '$262' (JsV.Obj: h) JsObjs.WC;
+		call Js.Define: h 'global' (JsV.Obj: g) JsObjs.WC;
+		call Js.DefineNative: h 'evalScript' addr EvalScript 1;
+		call Js.DefineNative: h 'gc' addr Gc 0;
+		call Js.DefineNative: h 'createRealm' addr CreateRealm 0;
+		call Js.DefineNative: h 'detachArrayBuffer' addr DetachArrayBuffer 1;
+		ptr<JsObj> agent: (Js.NewObject);
+		call Js.Define: h 'agent' (JsV.Obj: agent) JsObjs.WC;
+	[end]
+
+	# a harness file; false if it failed, with why in cause
+	[LoadHarness: ptr<u8> name: 0;]
+		WlBuf path;
+		call path.AddZ: harness_dir;
+		call path.Add: '/';
+		call path.AddZ: name;
+		int n: (OS.ReadFile: path.data harness_buf FILE_ROOM - 1);
+		call path.Free;
+		if n < 0
+			call cause.Clear;
+			call cause.AddZ: 'harness file missing: ';
+			call cause.AddZ: name;
+			return false;
+		;;
+		call Js.Eval: harness_buf n as u32 name;
+		if Js.failed
+			call cause.Clear;
+			call cause.AddZ: 'harness ';
+			call cause.AddZ: name;
+			call cause.AddZ: ': ';
+			call Describe: Js.exception;
+			return false;
+		;;
+	[end: true]
+
+	# what was thrown, in cause, as a line of ASCII
+	[Describe: u64 ex: 0;]
+		WlBuf t;
+		JsTryState st;
+		call Js.TryBegin: addr st;
+		if call Text: ex addr t throws err
+			call Js.TryCatch: addr st err;
+			call t.Clear;
+			call t.AddZ: 'unprintable exception';
+		;;
+		while u32 i: 0; i < t.len and cause.len < 300; i++;
+			u32 c: t.data:i;
+			if c is 10 or c is 13
+				call cause.Add: 32;
+			;;
+			elif c >= 32 and c < 127
+				call cause.Add: c as u8;
+			;;
+			else
+				call cause.Add: '?';
+			;;
+		;;
+		call t.Free;
+	[end]
+
+	[Text: u64 v: 0; ptr<WlBuf> b: 0;]
+		if (JsV.IsSym: v)
+			call b.AddZ: 'a symbol';
+			return;
+		;;
+		if (JsV.IsObj: v)
+			u64 nm: (Js.GetProp: v 'name');
+			u64 ms: (Js.GetProp: v 'message');
+			if (JsV.IsStr: nm)
+				call Js.TextOf: nm b;
+				call b.AddZ: ': ';
+			;;
+			if (JsV.IsStr: ms)
+				call Js.TextOf: ms b;
+				return;
+			;;
+		;;
+		call Js.TextOf: v b;
+	[end]
+
+	# the name of what was thrown, if it's an error
+	[ThrownName: u64 ex: 0; ptr<WlBuf> b: 0;]
+		if not (JsV.IsObj: ex) return;
+		JsTryState st;
+		call Js.TryBegin: addr st;
+		u64 ctor: JsV.UNDEF;
+		if call ctor is NameOf: ex throws err
+			call Js.TryCatch: addr st err;
+			return;
+		;;
+		if (JsV.IsStr: ctor)
+			call Js.TextOf: ctor b;
+		;;
+	[end]
+
+	[NameOf: u64 ex: 0;]
+		u64 c: (Js.GetProp: ex 'constructor');
+		if (JsV.IsObj: c)
+			return (Js.GetProp: c 'name');
+		;;
+	[end: (Js.GetProp: ex 'name')]
+
+	# ---- running ----
+
+	# one way of running a test: true if it passed; cause says why not
+	[RunMode: ptr<u8> text: 0; u32 n: 0; ptr<JsT262Meta> m: 0; bln strict: false;]
+		ptr<JsRuntime> rt: (Js.New);
+		rt.console_hook is addr Capture;
+		call captured.Clear;
+		call cause.Clear;
+		deadline is (OS.GetTicks) + 8000;
+		call Js.SetPollHook: addr TimeUp 20000;
+		call SetUpGlobals;
+		bln ok: (RunInRuntime: text n m strict);
+		call Js.Free: rt;
+	[end: ok]
+
+	[RunInRuntime: ptr<u8> text: 0; u32 n: 0; ptr<JsT262Meta> m: 0; bln strict: false;]
+		if not m.raw
+			# stand-ins for builtins not written yet: see the file
+			int shim_n: (OS.ReadFile: 'tests/js/shim262.js' harness_buf FILE_ROOM - 1);
+			if shim_n > 0
+				call Js.Eval: harness_buf shim_n as u32 'shim262.js';
+				if Js.failed
+					call cause.AddZ: 'shim: ';
+					call Describe: Js.exception;
+					return false;
+				;;
+			;;
+			if not (LoadHarness: 'assert.js') return false;
+			if not (LoadHarness: 'sta.js') return false;
+			if m.is_async
+				if not (LoadHarness: 'doneprintHandle.js') return false;
+			;;
+			ptr<u8> inc: addr m.includes;
+			while inc:0 is not 0
+				if not (LoadHarness: inc) return false;
+				inc is inc + (WlText.LenZ: inc) + 1;
+			;;
+		;;
+		WlBuf src;
+		if strict
+			call src.AddZ: '"use strict";\n';
+		;;
+		call src.AddN: text n;
+		# parsing, then running
+		JsTryState st;
+		call Js.TryBegin: addr st;
+		ptr<JsCode> code: 0;
+		if call code is Js.Compile: src.data src.len 'test' false throws err
+			u64 ex: (Js.TryCatchAll: addr st err);
+			call src.Free;
+			if m.is_negative and m.neg_parse
+				return (MatchType: ex m);
+			;;
+			if m.is_negative
+				call cause.AddZ: 'expected a runtime error, got at parse: ';
+			;;
+			else
+				call cause.AddZ: 'parse: ';
+			;;
+			call Describe: ex;
+			return false;
+		;;
+		call src.Free;
+		if m.is_negative and m.neg_parse
+			call cause.AddZ: 'expected a SyntaxError at parse, and it parsed';
+			return false;
+		;;
+		u64 result: 0;
+		call Js.TryBegin: addr st;
+		if call result is Js.RunCode: code throws err2
+			u64 ex2: (Js.TryCatchAll: addr st err2);
+			if m.is_negative
+				return (MatchType: ex2 m);
+			;;
+			call cause.AddZ: 'threw: ';
+			call Describe: ex2;
+			return false;
+		;;
+		if m.is_negative
+			call cause.AddZ: 'expected an error, and it ran';
+			return false;
+		;;
+		call Js.RunJobs;
+		if m.is_async
+			if Js.failed
+				call cause.AddZ: 'job threw: ';
+				call Describe: Js.exception;
+				return false;
+			;;
+			captured.data:(captured.len) is 0;
+			if (Find: captured.data captured.len 'Test262:AsyncTestComplete' 0) >= 0
+				return true;
+			;;
+			int f: (Find: captured.data captured.len 'Test262:AsyncTestFailure:' 0);
+			if f >= 0
+				call cause.AddZ: 'async: ';
+				u32 i: f as u32 + 25;
+				while i < captured.len and captured.data:i is not 10 and cause.len < 200
+					u32 c: captured.data:i;
+					if c >= 32 and c < 127
+						call cause.Add: c as u8;
+					;;
+					i++;
+				;;
+				return false;
+			;;
+			call cause.AddZ: 'async: never finished';
+			return false;
+		;;
+	[end: true]
+
+	[MatchType: u64 ex: 0; ptr<JsT262Meta> m: 0;]
+		WlBuf nm;
+		call ThrownName: ex addr nm;
+		call nm.Reserve: 0;
+		bln same: (WlText.EqZ: nm.data nm.len addr m.neg_type);
+		if not same
+			call cause.AddZ: 'wrong error type: ';
+			call Describe: ex;
+		;;
+		call nm.Free;
+	[end: same]
+
+	[RunOne: ptr<u8> path: 0;]
+		int n: (OS.ReadFile: path file_buf FILE_ROOM - 1);
+		if n < 0
+			log 'R MISSING ' path '\n';
+			return;
+		;;
+		JsT262Meta m;
+		call ReadMeta: file_buf n as u32 addr m;
+		if m.is_module
+			log 'R SKIP ' path ' module\n';
+			return;
+		;;
+		bln pass: true;
+		if not m.only_strict
+			pass is (RunMode: file_buf n as u32 addr m false);
+		;;
+		if pass and not m.no_strict and not m.raw
+			pass is (RunMode: file_buf n as u32 addr m true);
+		;;
+		if pass
+			log 'R PASS ' path '\n';
+			return;
+		;;
+		call cause.Reserve: 0;
+		log 'R FAIL ' path ' ' cause.data '\n';
+	[end]
+
+	# ---- checking itself, for phi test ----
+
+	[SelfTest]
+		log 'runner checks itself\n';
+		call RunOne: 'tests/js/test262self/pass.js';
+		call RunOne: 'tests/js/test262self/fail.js';
+		call RunOne: 'tests/js/test262self/negative_parse.js';
+		call RunOne: 'tests/js/test262self/negative_wrong.js';
+		call RunOne: 'tests/js/test262self/negative_runtime.js';
+		call RunOne: 'tests/js/test262self/async_ok.js';
+		call RunOne: 'tests/js/test262self/async_bad.js';
+		call RunOne: 'tests/js/test262self/strict_only.js';
+		call RunOne: 'tests/js/test262self/loop_forever.js';
+		log 'done\n';
+	[end]
+}

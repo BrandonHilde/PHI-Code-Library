@@ -1,0 +1,2600 @@
+# The DOM as JS sees it. A node's JS object is a host object whose payload is the node, made the first time JS asks
+# and kept on node.js_wrapper for as long as the document lasts (Page.MarkAll keeps them alive). A page can call
+# any method on anything, so each native checks what `this` is before trusting it.
+#
+# Natives come in families, one PHI method and a `magic` number per name, which keeps this a table of names rather
+# than thousands of lines of nearly the same thing.
+
+
+struct.PageCollection
+{
+	ptr<DomNode> root;
+	u32 kind;              # PageBind.C_...
+	ptr<WlAtom> atom;      # the tag or class looked for; 0 for '*'
+	u32 version;           # the document's version the cache is good for
+	u32 cached_len;        # how many, or NONE
+	u32 cached_index;      # where cached_node is
+	ptr<DomNode> cached_node;
+}
+
+phi.PageBind:Library
+{
+	ptr<JsClass> node_class: 0;
+	ptr<JsClass> collection_class: 0;
+	ptr<JsClass> static_list_class: 0;
+	ptr<JsClass> token_class: 0;
+	ptr<JsClass> style_class: 0;
+	ptr<JsClass> computed_class: 0;
+	ptr<JsClass> dataset_class: 0;
+
+	ptr<JsObj> node_proto: 0;
+	ptr<JsObj> element_proto: 0;
+	ptr<JsObj> html_proto: 0;
+	ptr<JsObj> svg_proto: 0;
+	ptr<JsObj> character_proto: 0;
+	ptr<JsObj> text_proto: 0;
+	ptr<JsObj> comment_proto: 0;
+	ptr<JsObj> document_proto: 0;
+	ptr<JsObj> fragment_proto: 0;
+	ptr<JsObj> doctype_proto: 0;
+	ptr<JsObj> collection_proto: 0;
+	ptr<JsObj> nodelist_proto: 0;
+	ptr<JsObj> token_proto: 0;
+	ptr<JsObj> style_proto: 0;
+	ptr<JsObj> dataset_proto: 0;
+
+	ptr<WlAtom> keep_style_key: 0;
+
+	const u32 C_CHILD_NODES: 0;
+	const u32 C_CHILDREN: 1;
+	const u32 C_BY_TAG: 2;
+	const u32 C_BY_CLASS: 3;
+	const u32 NONE: 0xFFFFFFFF;
+
+	# ---- setting it all up ----
+
+	[Install: ptr<Page> p: 0;]
+		if node_class is 0
+			node_class is (JsObjs.NewClass: 'Node');
+			collection_class is (JsObjs.NewClass: 'HTMLCollection');
+			collection_class.get is addr CollGet;
+			collection_class.get_own is addr CollGetOwn;
+			collection_class.has_key is addr CollHas;
+			collection_class.keys is addr CollKeys;
+			collection_class.finalize is addr FreeData;
+			token_class is (JsObjs.NewClass: 'DOMTokenList');
+			token_class.get is addr TokenIndexGet;
+			style_class is (JsObjs.NewClass: 'CSSStyleDeclaration');
+			style_class.get is addr StyleHookGet;
+			style_class.set is addr StyleHookSet;
+			computed_class is (JsObjs.NewClass: 'CSSStyleDeclaration');
+			computed_class.get is addr ComputedHookGet;
+			dataset_class is (JsObjs.NewClass: 'DOMStringMap');
+			dataset_class.get is addr DataGet;
+			dataset_class.set is addr DataSet;
+			dataset_class.del is addr DataDelete;
+			dataset_class.has_key is addr DataHas;
+			dataset_class.keys is addr DataKeys;
+			dataset_class.get_own is addr DataGetOwn;
+		;;
+		ptr<JsObj> keep: (JsObjs.NewArray: 32);
+		p.keep is (JsV.Obj: keep);
+		call PageEvents.Init: keep;
+		node_proto is (Class: 'Node' PageEvents.target_proto keep);
+		character_proto is (Class: 'CharacterData' node_proto keep);
+		text_proto is (Class: 'Text' character_proto keep);
+		comment_proto is (Class: 'Comment' character_proto keep);
+		document_proto is (Class: 'Document' node_proto keep);
+		fragment_proto is (Class: 'DocumentFragment' node_proto keep);
+		doctype_proto is (Class: 'DocumentType' node_proto keep);
+		element_proto is (Class: 'Element' node_proto keep);
+		html_proto is (Class: 'HTMLElement' element_proto keep);
+		svg_proto is (Class: 'SVGElement' element_proto keep);
+		# names a page may test with instanceof; all behave as HTMLElement
+		ptr<u8> kinds: 'HTMLDivElement HTMLSpanElement HTMLAnchorElement HTMLImageElement HTMLInputElement HTMLButtonElement HTMLFormElement HTMLScriptElement HTMLStyleElement HTMLLinkElement HTMLBodyElement HTMLHeadElement HTMLHtmlElement HTMLParagraphElement HTMLSelectElement HTMLOptionElement HTMLTextAreaElement HTMLTableElement HTMLCanvasElement HTMLIFrameElement HTMLVideoElement HTMLAudioElement HTMLUListElement HTMLOListElement HTMLLIElement HTMLLabelElement HTMLMetaElement HTMLTitleElement ';
+		u32 i: 0;
+		while kinds:i is not 0
+			u32 start: i;
+			while kinds:i is not 32
+				i++;
+			;;
+			ptr<JsStr> kind_str: (JsStrs.Intern: kinds + start i - start);
+			call Class: kind_str.data html_proto keep;
+			i++;
+		;;
+		collection_proto is (ListClass: 'HTMLCollection' keep);
+		call Js.DefineNative: collection_proto 'namedItem' addr NamedItem 1;
+		nodelist_proto is (ListClass: 'NodeList' keep);
+		call InstallNode;
+		call InstallElement;
+		call InstallDocument;
+		call InstallTokens: keep;
+		call InstallStyle: keep;
+		call PageWindow.Install: p keep;
+	[end]
+
+	# a constructor that can't be called, as the DOM's are, with a prototype under `parent`
+	[Class: ptr<u8> name: 0; ptr<JsObj> parent: 0; ptr<JsObj> keep: 0;]
+		ptr<JsObj> proto: (JsObjs.NewWithProto: parent);
+		call JsObjs.ArrayPush: keep (JsV.Obj: proto);
+		call Js.DefineClass: name addr IllegalCtor 0 proto;
+	[end: proto]
+
+	[IllegalCtor: ptr<u64> args: 0; int argc: 0;]
+		call JsErr.Type: 'Illegal constructor';
+	[end: JsV.UNDEF]
+
+	[ListClass: ptr<u8> name: 0; ptr<JsObj> keep: 0;]
+		ptr<JsObj> proto: (Class: name JsRt.P.object keep);
+		call Js.DefineGetter: proto 'length' addr ListLength 0;
+		call Js.DefineNative: proto 'item' addr ListItem 1;
+		# an array's own forEach, keys, values and entries do the right thing with length and indexes
+		ptr<u8> shared: 'forEach keys values entries ';
+		u32 i: 0;
+		while shared:i is not 0
+			u32 start: i;
+			while shared:i is not 32
+				i++;
+			;;
+			ptr<JsStr> m: (JsStrs.Intern: shared + start i - start);
+			ptr<JsProp> found: (JsObjs.Find: JsRt.P.array m as ptr<u8>);
+			call JsObjs.DefineValue: proto m as ptr<u8> found.value JsObjs.WC;
+			i++;
+		;;
+		ptr<JsProp> vals: (JsObjs.Find: JsRt.P.array JsRt.S.iterator as ptr<u8>);
+		call JsObjs.DefineValue: proto JsRt.S.iterator as ptr<u8> vals.value JsObjs.WC;
+	[end: proto]
+
+	[Getter: ptr<JsObj> proto: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> getter: 0; method<ptr<u64> int: u64> setter: 0; u32 magic: 0;]
+		call Js.DefineGetter: proto name getter setter;
+		JsDesc d;
+		if (JsObjs.GetOwn: proto (JsObjs.KeyZ: name) addr d)
+			ptr<JsNativeFn> g: (JsV.AsObj: d.getter) as ptr<JsNativeFn>;
+			g.magic is magic;
+			if setter is not 0
+				ptr<JsNativeFn> s: (JsV.AsObj: d.setter) as ptr<JsNativeFn>;
+				s.magic is magic;
+			;;
+		;;
+	[end]
+
+	[Method: ptr<JsObj> proto: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> fn: 0; int nargs: 0; u32 magic: 0;]
+		ptr<JsNativeFn> f: (Js.DefineNative: proto name fn nargs);
+		f.magic is magic;
+	[end]
+
+	# ---- wrappers ----
+
+	[Wrap: ptr<DomNode> n: 0;]
+		if n is 0 return JsV.NULL;
+		if n.js_wrapper is not 0 return n.js_wrapper;
+		ptr<JsObj> proto: element_proto;
+		when n.type
+			is DomType.ELEMENT
+				proto is html_proto;
+				if n.ns is DomNs.SVG
+					proto is svg_proto;
+				;;
+				elif n.ns is DomNs.MATHML
+					proto is element_proto;
+				;;
+			;;
+			is DomType.TEXT DomType.CDATA
+				proto is text_proto;
+			;;
+			is DomType.COMMENT DomType.PI
+				proto is comment_proto;
+			;;
+			is DomType.DOCUMENT
+				proto is document_proto;
+			;;
+			is DomType.FRAGMENT
+				proto is fragment_proto;
+			;;
+			is DomType.DOCTYPE
+				proto is doctype_proto;
+			;;
+		;;
+		ptr<JsObj> o: (JsObjs.NewHost: node_class proto n as ptr<u8>);
+		n.js_wrapper is (JsV.Obj: o);
+	[end: n.js_wrapper]
+
+	[NodeOf: u64 v: 0;]
+		if (JsV.IsObj: v)
+			ptr<JsObj> o: (JsV.AsObj: v);
+			if o.cls is node_class
+				return o.data as ptr<DomNode>;
+			;;
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	[ThisNode: ptr<u64> args: 0;]
+		ptr<DomNode> n: (NodeOf: args:(-1));
+		if n is 0
+			call JsErr.Type: 'Illegal invocation: this is not a Node';
+		;;
+	[end: n]
+
+	[ThisElement: ptr<u64> args: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		if n.type is not DomType.ELEMENT
+			call JsErr.Type: 'Illegal invocation: this is not an Element';
+		;;
+	[end: n]
+
+	[ArgNode: u64 v: 0;]
+		ptr<DomNode> n: (NodeOf: v);
+		if n is 0
+			call JsErr.Type: 'The argument is not a Node';
+		;;
+	[end: n]
+
+	# a DOM exception: an Error with a name
+	[DomError: ptr<u8> name: 0; ptr<u8> message: 0;]
+		ptr<JsObj> e: (JsErr.Make: JsRt.P.error message);
+		call Js.Define: e 'name' (Js.NewStringZ: name) JsObjs.WC;
+		call JsErr.Throw: (JsV.Obj: e);
+	[end]
+
+	[TextValue: ptr<WlBuf> b: 0;]
+	[end: (Js.NewString: b.data b.len)]
+
+	# text of any value, as a buffer; null as nothing (a lot of the DOM's setters want that)
+	[StringArg: u64 v: 0; ptr<WlBuf> b: 0;]
+		if v is JsV.NULL return;
+		call Js.TextOf: v b;
+	[end]
+
+	[AtomOf: u64 v: 0;]
+		WlBuf b;
+		call Js.TextOf: v addr b;
+		ptr<WlAtom> a: (WlAtoms.Get: b.data b.len);
+		call b.Free;
+	[end: a]
+
+	# ---- Node ----
+
+	const u32 N_TYPE: 0;
+	const u32 N_NAME: 1;
+	const u32 N_PARENT: 2;
+	const u32 N_PARENT_EL: 3;
+	const u32 N_CHILD_NODES: 4;
+	const u32 N_FIRST: 5;
+	const u32 N_LAST: 6;
+	const u32 N_PREV: 7;
+	const u32 N_NEXT: 8;
+	const u32 N_DOC: 9;
+	const u32 N_CONNECTED: 10;
+	const u32 N_BASE_URI: 11;
+
+	[InstallNode]
+		ptr<JsObj> p: node_proto;
+		call Getter: p 'nodeType' addr NodeProp 0 N_TYPE;
+		call Getter: p 'nodeName' addr NodeProp 0 N_NAME;
+		call Getter: p 'parentNode' addr NodeProp 0 N_PARENT;
+		call Getter: p 'parentElement' addr NodeProp 0 N_PARENT_EL;
+		call Getter: p 'childNodes' addr NodeProp 0 N_CHILD_NODES;
+		call Getter: p 'firstChild' addr NodeProp 0 N_FIRST;
+		call Getter: p 'lastChild' addr NodeProp 0 N_LAST;
+		call Getter: p 'previousSibling' addr NodeProp 0 N_PREV;
+		call Getter: p 'nextSibling' addr NodeProp 0 N_NEXT;
+		call Getter: p 'ownerDocument' addr NodeProp 0 N_DOC;
+		call Getter: p 'isConnected' addr NodeProp 0 N_CONNECTED;
+		call Getter: p 'baseURI' addr NodeProp 0 N_BASE_URI;
+		call Getter: p 'nodeValue' addr ValueGet addr ValueSet 0;
+		call Getter: p 'textContent' addr TextContentGet addr TextContentSet 0;
+		call Method: p 'appendChild' addr AppendChild 1 0;
+		call Method: p 'insertBefore' addr InsertBefore 2 0;
+		call Method: p 'removeChild' addr RemoveChild 1 0;
+		call Method: p 'replaceChild' addr ReplaceChild 2 0;
+		call Method: p 'cloneNode' addr CloneNode 0 0;
+		call Method: p 'hasChildNodes' addr HasChildNodes 0 0;
+		call Method: p 'contains' addr ContainsFn 1 0;
+		call Method: p 'normalize' addr Normalize 0 0;
+		call Method: p 'getRootNode' addr GetRootNode 0 0;
+		call Method: p 'compareDocumentPosition' addr ComparePosition 1 0;
+		call Method: p 'isSameNode' addr IsSameNode 1 0;
+		call Js.Define: p 'ELEMENT_NODE' (JsV.Int: 1) JsObjs.E;
+		call Js.Define: p 'ATTRIBUTE_NODE' (JsV.Int: 2) JsObjs.E;
+		call Js.Define: p 'TEXT_NODE' (JsV.Int: 3) JsObjs.E;
+		call Js.Define: p 'CDATA_SECTION_NODE' (JsV.Int: 4) JsObjs.E;
+		call Js.Define: p 'COMMENT_NODE' (JsV.Int: 8) JsObjs.E;
+		call Js.Define: p 'DOCUMENT_NODE' (JsV.Int: 9) JsObjs.E;
+		call Js.Define: p 'DOCUMENT_TYPE_NODE' (JsV.Int: 10) JsObjs.E;
+		call Js.Define: p 'DOCUMENT_FRAGMENT_NODE' (JsV.Int: 11) JsObjs.E;
+		call Js.Define: p 'DOCUMENT_POSITION_DISCONNECTED' (JsV.Int: 1) JsObjs.E;
+		call Js.Define: p 'DOCUMENT_POSITION_PRECEDING' (JsV.Int: 2) JsObjs.E;
+		call Js.Define: p 'DOCUMENT_POSITION_FOLLOWING' (JsV.Int: 4) JsObjs.E;
+		call Js.Define: p 'DOCUMENT_POSITION_CONTAINS' (JsV.Int: 8) JsObjs.E;
+		call Js.Define: p 'DOCUMENT_POSITION_CONTAINED_BY' (JsV.Int: 16) JsObjs.E;
+		ptr<JsObj> c: character_proto;
+		call Getter: c 'data' addr ValueGet addr ValueSet 0;
+		call Getter: c 'length' addr CharLength 0 0;
+		call Method: c 'appendData' addr AppendData 1 0;
+		call Method: c 'remove' addr RemoveSelf 0 0;
+		call Getter: doctype_proto 'name' addr DoctypeProp 0 0;
+		call Getter: doctype_proto 'publicId' addr DoctypeProp 0 1;
+		call Getter: doctype_proto 'systemId' addr DoctypeProp 0 2;
+		ptr<JsObj> f: fragment_proto;
+		call ParentNodeMethods: f;
+	[end]
+
+	[NodeProp: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (ThisNode: args);
+		when self.magic
+			is N_TYPE
+				return (JsV.Int: n.type as int);
+			;;
+			is N_NAME
+				return (NodeName: n);
+			;;
+			is N_PARENT
+				return (Wrap: n.parent);
+			;;
+			is N_PARENT_EL
+				if n.parent is not 0 and n.parent.type is DomType.ELEMENT
+					return (Wrap: n.parent);
+				;;
+				return JsV.NULL;
+			;;
+			is N_CHILD_NODES
+				return (NewCollection: n C_CHILD_NODES 0 nodelist_proto);
+			;;
+			is N_FIRST
+				return (Wrap: n.first_child);
+			;;
+			is N_LAST
+				return (Wrap: n.last_child);
+			;;
+			is N_PREV
+				return (Wrap: n.prev);
+			;;
+			is N_NEXT
+				return (Wrap: n.next);
+			;;
+			is N_DOC
+				if n.type is DomType.DOCUMENT
+					return JsV.NULL;
+				;;
+				return (Wrap: n.doc.root);
+			;;
+			is N_CONNECTED
+				return (JsV.Bool: (Dom.Contains: n.doc.root n));
+			;;
+			is N_BASE_URI
+				return (Js.NewStringZ: Page.current.url);
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	[NodeName: ptr<DomNode> n: 0;]
+		when n.type
+			is DomType.ELEMENT
+				if n.ns is DomNs.HTML
+					return (Upper: n.tag.text n.tag.len);
+				;;
+				return (Js.NewString: n.tag.text n.tag.len);
+			;;
+			is DomType.TEXT
+				return (Js.NewStringZ: '#text');
+			;;
+			is DomType.CDATA
+				return (Js.NewStringZ: '#cdata-section');
+			;;
+			is DomType.COMMENT
+				return (Js.NewStringZ: '#comment');
+			;;
+			is DomType.DOCUMENT
+				return (Js.NewStringZ: '#document');
+			;;
+			is DomType.FRAGMENT
+				return (Js.NewStringZ: '#document-fragment');
+			;;
+			else
+				return (Js.NewString: n.tag.text n.tag.len);
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	[Upper: ptr<u8> text: 0; u32 n: 0;]
+		WlBuf b;
+		while u32 i: 0; i < n; i++;
+			call b.Add: (WlText.Upper: text:i) as u8;
+		;;
+		u64 r: (Js.NewString: b.data b.len);
+		call b.Free;
+	[end: r]
+
+	[HasText: ptr<DomNode> n: 0;]
+	[end: n.type is DomType.TEXT or n.type is DomType.COMMENT or n.type is DomType.CDATA or n.type is DomType.PI]
+
+	[ValueGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		if not (HasText: n)
+			return JsV.NULL;
+		;;
+	[end: (Js.NewString: n.text n.text_len)]
+
+	[ValueSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		if (HasText: n)
+			WlBuf b;
+			call StringArg: (Js.Arg: args argc 0) addr b;
+			call Dom.SetText: n b.data b.len;
+			call b.Free;
+		;;
+	[end: JsV.UNDEF]
+
+	[CharLength: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		ptr<JsStr> s: (JsV.AsStr: (Js.NewString: n.text n.text_len));
+	[end: (JsV.Uint: s.len)]
+
+	[AppendData: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		call Dom.AddText: n b.data b.len;
+		call b.Free;
+	[end: JsV.UNDEF]
+
+	[DoctypeProp: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (ThisNode: args);
+		when self.magic
+			is 0
+				return (Js.NewString: n.tag.text n.tag.len);
+			;;
+			is 1
+				return (Js.NewString: n.text n.text_len);
+			;;
+		;;
+	[end: (Js.NewString: n.text2 n.text2_len)]
+
+	[TextContentGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		if n.type is DomType.DOCUMENT or n.type is DomType.DOCTYPE
+			return JsV.NULL;
+		;;
+		WlBuf b;
+		call Dom.TextContent: n b;
+		u64 r: (Js.NewString: b.data b.len);
+		call b.Free;
+	[end: r]
+
+	[TextContentSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		WlBuf b;
+		call StringArg: (Js.Arg: args argc 0) addr b;
+		if (HasText: n)
+			call Dom.SetText: n b.data b.len;
+		;;
+		elif n.type is DomType.ELEMENT or n.type is DomType.FRAGMENT
+			call RemoveAllChildren: n;
+			if b.len > 0
+				call Dom.Append: n (Dom.CreateText: n.doc b.data b.len);
+			;;
+		;;
+		call b.Free;
+	[end: JsV.UNDEF]
+
+	[RemoveAllChildren: ptr<DomNode> n: 0;]
+		while n.first_child is not 0
+			call Dom.Remove: n.first_child;
+		;;
+	[end]
+
+	# may this child go under this parent? Throws HierarchyRequestError if not, as the DOM says.
+	[CheckInsert: ptr<DomNode> parent: 0; ptr<DomNode> child: 0;]
+		if not (parent.type is DomType.ELEMENT or parent.type is DomType.FRAGMENT or parent.type is DomType.DOCUMENT)
+			call DomError: 'HierarchyRequestError' 'This node type cannot have children';
+		;;
+		if child.type is DomType.DOCUMENT or (Dom.Contains: child parent)
+			call DomError: 'HierarchyRequestError' 'The new child contains the parent';
+		;;
+		if child.type is DomType.DOCTYPE and parent.type is not DomType.DOCUMENT
+			call DomError: 'HierarchyRequestError' 'A doctype can only go in a document';
+		;;
+		if (child.type is DomType.TEXT or child.type is DomType.CDATA) and parent.type is DomType.DOCUMENT
+			call DomError: 'HierarchyRequestError' 'Text cannot go directly in a document';
+		;;
+	[end]
+
+	# a fragment's children go in, in order, and it's left empty; anything else goes in itself
+	[InsertNode: ptr<DomNode> parent: 0; ptr<DomNode> child: 0; ptr<DomNode> ref: 0;]
+		call CheckInsert: parent child;
+		if child.type is DomType.FRAGMENT
+			while child.first_child is not 0
+				call Dom.InsertBefore: parent child.first_child ref;
+			;;
+			call RunAdded: parent;
+			return;
+		;;
+		call Dom.InsertBefore: parent child ref;
+		call RunAdded: child;
+	[end]
+
+	# a <script> put in the document by a script runs now, once (and anything like it inside what was added)
+	[RunAdded: ptr<DomNode> n: 0;]
+		ptr<Page> p: Page.current;
+		if not (Dom.Contains: p.doc.root n) return;
+		ptr<WlAtom> script_tag: (WlAtoms.GetZ: 'script');
+		ptr<DomNode> w: n;
+		while w is not 0
+			if w.type is DomType.ELEMENT and w.tag is script_tag and w.ns is DomNs.HTML
+				if (w.flags & RAN_FLAG) is 0
+					w.flags is w.flags | RAN_FLAG;
+					call Page.Run: p w false;
+				;;
+			;;
+			w is (Dom.Next: w n);
+		;;
+	[end]
+
+	const u32 RAN_FLAG: 0x40;
+
+	[AppendChild: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		ptr<DomNode> c: (ArgNode: (Js.Arg: args argc 0));
+		call InsertNode: n c 0;
+	[end: args:0]
+
+	[InsertBefore: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		ptr<DomNode> c: (ArgNode: (Js.Arg: args argc 0));
+		ptr<DomNode> ref: (NodeOf: (Js.Arg: args argc 1));
+		if ref is not 0 and ref.parent is not n
+			call DomError: 'NotFoundError' 'The node before which to insert is not a child of this node';
+		;;
+		call InsertNode: n c ref;
+	[end: args:0]
+
+	[RemoveChild: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		ptr<DomNode> c: (ArgNode: (Js.Arg: args argc 0));
+		if c.parent is not n
+			call DomError: 'NotFoundError' 'The node to remove is not a child of this node';
+		;;
+		call Dom.Remove: c;
+	[end: args:0]
+
+	[ReplaceChild: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		ptr<DomNode> fresh: (ArgNode: (Js.Arg: args argc 0));
+		ptr<DomNode> old: (ArgNode: (Js.Arg: args argc 1));
+		if old.parent is not n
+			call DomError: 'NotFoundError' 'The node to replace is not a child of this node';
+		;;
+		ptr<DomNode> ref: old.next;
+		if ref is fresh
+			ref is fresh.next;
+		;;
+		call CheckInsert: n fresh;
+		call Dom.Remove: old;
+		call InsertNode: n fresh ref;
+	[end: args:1]
+
+	[CloneNode: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+	[end: (Wrap: (Clone: n (JsOps.ToBool: (Js.Arg: args argc 0))))]
+
+	# a copy; with deep, of everything under it, by a walk and no recursion
+	[Clone: ptr<DomNode> n: 0; bln deep: false;]
+		ptr<DomNode> top: (CloneOne: n);
+		if not deep or n.first_child is 0 return top;
+		ptr<DomNode> from: n.first_child;
+		ptr<DomNode> dest: top;
+		while from is not 0
+			ptr<DomNode> made: (CloneOne: from);
+			call Dom.Append: dest made;
+			if from.first_child is not 0
+				dest is made;
+				from is from.first_child;
+			;;
+			else
+				while from is not n and from.next is 0
+					from is from.parent;
+					dest is dest.parent;
+				;;
+				if from is n
+					from is 0;
+				;;
+				else
+					from is from.next;
+				;;
+			;;
+		;;
+	[end: top]
+
+	[CloneOne: ptr<DomNode> n: 0;]
+		ptr<DomNode> c: 0;
+		ptr<DomDocument> doc: n.doc;
+		when n.type
+			is DomType.ELEMENT
+				c is (Dom.CreateElement: doc n.tag n.ns);
+				ptr<DomAttr> a: n.attrs;
+				while a is not 0
+					ptr<DomAttr> na: (Dom.SetAttr: c a.name a.value a.value_len);
+					na.prefix is a.prefix;
+					a is a.next;
+				;;
+			;;
+			is DomType.TEXT DomType.CDATA
+				c is (Dom.CreateText: doc n.text n.text_len);
+				c.type is n.type;
+			;;
+			is DomType.COMMENT DomType.PI
+				c is (Dom.CreateComment: doc n.text n.text_len);
+				c.type is n.type;
+				c.tag is n.tag;
+			;;
+			is DomType.FRAGMENT
+				c is (Dom.CreateFragment: doc);
+			;;
+			is DomType.DOCTYPE
+				c is (Dom.CreateDoctype: doc n.tag n.text n.text_len n.text2 n.text2_len);
+			;;
+			else
+				call DomError: 'NotSupportedError' 'A document cannot be cloned here';
+			;;
+		;;
+	[end: c]
+
+	[HasChildNodes: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+	[end: (JsV.Bool: n.first_child is not 0)]
+
+	[ContainsFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		ptr<DomNode> o: (NodeOf: (Js.Arg: args argc 0));
+		if o is 0
+			return JsV.FALSE;
+		;;
+	[end: (JsV.Bool: (Dom.Contains: n o))]
+
+	[Normalize: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> root: (ThisNode: args);
+		ptr<DomNode> n: root;
+		while n is not 0
+			if n.type is DomType.TEXT
+				while n.next is not 0 and n.next.type is DomType.TEXT
+					ptr<DomNode> following: n.next;
+					call Dom.AddText: n following.text following.text_len;
+					call Dom.Remove: following;
+				;;
+				if n.text_len is 0 and n is not root
+					ptr<DomNode> gone: n;
+					n is (Dom.NextSkipping: n root);
+					call Dom.Remove: gone;
+					continue;
+				;;
+			;;
+			n is (Dom.Next: n root);
+		;;
+	[end: JsV.UNDEF]
+
+	[GetRootNode: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		while n.parent is not 0
+			n is n.parent;
+		;;
+	[end: (Wrap: n)]
+
+	[ComparePosition: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> a: (ThisNode: args);
+		ptr<DomNode> b: (ArgNode: (Js.Arg: args argc 0));
+		if a is b
+			return (JsV.Int: 0);
+		;;
+		if (Dom.Contains: a b)
+			return (JsV.Int: 20);
+		;;
+		if (Dom.Contains: b a)
+			return (JsV.Int: 10);
+		;;
+		ptr<DomNode> top_a: a;
+		while top_a.parent is not 0
+			top_a is top_a.parent;
+		;;
+		ptr<DomNode> top_b: b;
+		while top_b.parent is not 0
+			top_b is top_b.parent;
+		;;
+		if top_a is not top_b
+			return (JsV.Int: 33);
+		;;
+		ptr<DomNode> w: a;
+		while w is not 0
+			if w is b
+				return (JsV.Int: 4);
+			;;
+			w is (Dom.Next: w top_a);
+		;;
+	[end: (JsV.Int: 2)]
+
+	[IsSameNode: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> a: (ThisNode: args);
+	[end: (JsV.Bool: a is (NodeOf: (Js.Arg: args argc 0)))]
+
+	[RemoveSelf: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		call Dom.Remove: n;
+	[end: JsV.UNDEF]
+
+	# ---- Element ----
+
+	const u32 E_TAG: 0;
+	const u32 E_LOCAL: 1;
+	const u32 E_NS: 2;
+	const u32 E_CHILDREN: 3;
+	const u32 E_FIRST_EL: 4;
+	const u32 E_LAST_EL: 5;
+	const u32 E_NEXT_EL: 6;
+	const u32 E_PREV_EL: 7;
+	const u32 E_COUNT: 8;
+	const u32 E_CLASSLIST: 9;
+	const u32 E_STYLE: 10;
+	const u32 E_DATASET: 11;
+	const u32 E_ATTRS: 12;
+
+	const u32 B_LEFT: 0;
+	const u32 B_TOP: 1;
+	const u32 B_WIDTH: 2;
+	const u32 B_HEIGHT: 3;
+
+	[InstallElement]
+		ptr<JsObj> p: element_proto;
+		call Getter: p 'tagName' addr ElementProp 0 E_TAG;
+		call Getter: p 'localName' addr ElementProp 0 E_LOCAL;
+		call Getter: p 'namespaceURI' addr ElementProp 0 E_NS;
+		call Getter: p 'attributes' addr ElementProp 0 E_ATTRS;
+		call Getter: p 'classList' addr ElementProp 0 E_CLASSLIST;
+		call Getter: p 'id' addr ReflectGet addr ReflectSet (AtomMagic: 'id');
+		call Getter: p 'className' addr ReflectGet addr ReflectSet (AtomMagic: 'class');
+		call Getter: p 'slot' addr ReflectGet addr ReflectSet (AtomMagic: 'slot');
+		call Getter: p 'innerHTML' addr InnerHtmlGet addr InnerHtmlSet 0;
+		call Getter: p 'outerHTML' addr OuterHtmlGet addr OuterHtmlSet 0;
+		call Method: p 'getAttribute' addr GetAttribute 1 0;
+		call Method: p 'setAttribute' addr SetAttribute 2 0;
+		call Method: p 'removeAttribute' addr RemoveAttribute 1 0;
+		call Method: p 'hasAttribute' addr HasAttribute 1 0;
+		call Method: p 'toggleAttribute' addr ToggleAttribute 1 0;
+		call Method: p 'getAttributeNames' addr GetAttributeNames 0 0;
+		call Method: p 'hasAttributes' addr HasAttributes 0 0;
+		call Method: p 'getAttributeNS' addr NsGetAttribute 2 0;
+		call Method: p 'setAttributeNS' addr NsSetAttribute 3 0;
+		call Method: p 'removeAttributeNS' addr NsRemoveAttribute 2 0;
+		call Method: p 'matches' addr MatchesFn 1 0;
+		call Method: p 'webkitMatchesSelector' addr MatchesFn 1 0;
+		call Method: p 'closest' addr ClosestFn 1 0;
+		call Method: p 'insertAdjacentHTML' addr InsertAdjacentHtml 2 0;
+		call Method: p 'insertAdjacentElement' addr InsertAdjacentNode 2 0;
+		call Method: p 'insertAdjacentText' addr InsertAdjacentText 2 0;
+		call Method: p 'getBoundingClientRect' addr BoundingRect 0 0;
+		call Method: p 'getClientRects' addr ClientRects 0 0;
+		call Method: p 'remove' addr RemoveSelf 0 0;
+		call Method: p 'focus' addr Focus 0 1;
+		call Method: p 'blur' addr Focus 0 0;
+		call Method: p 'click' addr ClickFn 0 0;
+		call Method: p 'scrollIntoView' addr Nothing 0 0;
+		call Method: p 'scrollTo' addr Nothing 0 0;
+		call Method: p 'scrollBy' addr Nothing 0 0;
+		call Getter: p 'clientWidth' addr BoxGet 0 B_WIDTH;
+		call Getter: p 'clientHeight' addr BoxGet 0 B_HEIGHT;
+		call Getter: p 'clientLeft' addr Zero 0 0;
+		call Getter: p 'clientTop' addr Zero 0 0;
+		call Getter: p 'scrollWidth' addr BoxGet 0 B_WIDTH;
+		call Getter: p 'scrollHeight' addr BoxGet 0 B_HEIGHT;
+		call Getter: p 'scrollLeft' addr Zero addr Nothing 0;
+		call Getter: p 'scrollTop' addr Zero addr Nothing 0;
+		call ParentNodeMethods: p;
+		call ChildNodeMethods: p;
+		call ChildNodeMethods: character_proto;
+		call Method: p 'getElementsByTagName' addr ByTag 1 0;
+		call Method: p 'getElementsByClassName' addr ByClass 1 0;
+		ptr<JsObj> h: html_proto;
+		call Getter: h 'style' addr ElementProp 0 E_STYLE;
+		call Getter: h 'dataset' addr ElementProp 0 E_DATASET;
+		call Getter: svg_proto 'style' addr ElementProp 0 E_STYLE;
+		call Getter: h 'offsetWidth' addr BoxGet 0 B_WIDTH;
+		call Getter: h 'offsetHeight' addr BoxGet 0 B_HEIGHT;
+		call Getter: h 'offsetLeft' addr BoxGet 0 B_LEFT;
+		call Getter: h 'offsetTop' addr BoxGet 0 B_TOP;
+		call Getter: h 'offsetParent' addr OffsetParent 0 0;
+		call Getter: h 'innerText' addr TextContentGet addr TextContentSet 0;
+		ptr<u8> names: 'title lang dir href src alt rel target type name placeholder action method enctype accept htmlFor=for media content charset download hreflang srcset sizes poster role tabIndex=tabindex cols rows maxLength=maxlength minLength=minlength min max step pattern list form autocomplete ';
+		u32 i: 0;
+		while names:i is not 0
+			u32 start: i;
+			u32 eq: 0;
+			while names:i is not 32
+				if names:i is '='
+					eq is i;
+				;;
+				i++;
+			;;
+			if eq is 0
+				ptr<JsStr> prop: (JsStrs.Intern: names + start i - start);
+				call Getter: h prop.data addr ReflectGet addr ReflectSet (AtomMagicN: names + start i - start);
+			;;
+			else
+				ptr<JsStr> prop2: (JsStrs.Intern: names + start eq - start);
+				call Getter: h prop2.data addr ReflectGet addr ReflectSet (AtomMagicN: names + eq + 1 i - eq - 1);
+			;;
+			i++;
+		;;
+		ptr<u8> bools: 'hidden checked disabled readOnly=readonly required selected multiple autofocus defer async open controls loop muted noValidate=novalidate draggable ';
+		i is 0;
+		while bools:i is not 0
+			u32 start2: i;
+			u32 eq2: 0;
+			while bools:i is not 32
+				if bools:i is '='
+					eq2 is i;
+				;;
+				i++;
+			;;
+			if eq2 is 0
+				ptr<JsStr> bprop: (JsStrs.Intern: bools + start2 i - start2);
+				call Getter: h bprop.data addr BoolGet addr BoolSet (AtomMagicN: bools + start2 i - start2);
+			;;
+			else
+				ptr<JsStr> bprop2: (JsStrs.Intern: bools + start2 eq2 - start2);
+				call Getter: h bprop2.data addr BoolGet addr BoolSet (AtomMagicN: bools + eq2 + 1 i - eq2 - 1);
+			;;
+			i++;
+		;;
+		# a form control's value is state of its own, kept under a key, that starts from the attribute
+		call Getter: h 'value' addr ValueProp addr ValuePropSet 0;
+		call Getter: h 'width' addr NumberAttr addr ReflectSet (AtomMagic: 'width');
+		call Getter: h 'height' addr NumberAttr addr ReflectSet (AtomMagic: 'height');
+		ptr<u8> events: 'onclick ondblclick onmousedown onmouseup onmouseover onmouseout onmousemove onkeydown onkeyup onkeypress onfocus onblur onchange oninput onsubmit onload onerror onresize onscroll ';
+		call EventProps: h events;
+		call EventProps: document_proto events;
+		call EventProps: JsRt.r.global events;
+	[end]
+
+	# el.onclick and the like start as plain properties: Event dispatch looks them up by name, and they read as
+	# null until they're given something. Null here, on the prototype, is what that takes.
+	[EventProps: ptr<JsObj> proto: 0; ptr<u8> names: 0;]
+		u32 i: 0;
+		while names:i is not 0
+			u32 start: i;
+			while names:i is not 32
+				i++;
+			;;
+			ptr<JsStr> key: (JsStrs.Intern: names + start i - start);
+			if (JsObjs.Find: proto key as ptr<u8>) is 0
+				call JsObjs.DefineValue: proto key as ptr<u8> JsV.NULL JsObjs.WEC;
+			;;
+			i++;
+		;;
+	[end]
+
+	[Nothing: ptr<u64> args: 0; int argc: 0;]
+	[end: JsV.UNDEF]
+
+	[Zero: ptr<u64> args: 0; int argc: 0;]
+	[end: JsV.INT_BASE]
+
+	# A WlAtom in a native's u32 magic won't fit on 64-bit, so a small table holds them, and magic is its index.
+	ptr<ptr<WlAtom>> atom_table: 0;
+	u32 atom_count: 0;
+
+	[AtomMagicN: ptr<u8> text: 0; u32 n: 0;]
+		ptr<WlAtom> a: (WlAtoms.Get: text n);
+		if atom_table is 0
+			atom_table is new ptr<WlAtom>[256];
+			if atom_table is 0
+				throw 'out of memory';
+			;;
+		;;
+		while u32 i: 0; i < atom_count; i++;
+			if atom_table:i is a return i;
+		;;
+		if atom_count >= 256
+			throw 'too many reflected attributes';
+		;;
+		atom_table:atom_count is a;
+		atom_count++;
+	[end: atom_count - 1]
+
+	[AtomMagic: ptr<u8> text: 0;]
+	[end: (AtomMagicN: text (WlText.LenZ: text))]
+
+	[CalleeAtom: ptr<u64> args: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+	[end: atom_table:(self.magic)]
+
+	[ElementProp: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (ThisElement: args);
+		when self.magic
+			is E_TAG
+				return (NodeName: n);
+			;;
+			is E_LOCAL
+				return (Js.NewString: n.tag.text n.tag.len);
+			;;
+			is E_NS
+				when n.ns
+					is DomNs.SVG
+						return (Js.NewStringZ: 'http://www.w3.org/2000/svg');
+					;;
+					is DomNs.MATHML
+						return (Js.NewStringZ: 'http://www.w3.org/1998/Math/MathML');
+					;;
+					else
+					;;
+				;;
+				return (Js.NewStringZ: 'http://www.w3.org/1999/xhtml');
+			;;
+			is E_ATTRS
+				return (AttrList: n);
+			;;
+			is E_CLASSLIST
+				return (Cached: n 'classList' token_class token_proto);
+			;;
+			is E_STYLE
+				return (Cached: n 'style' style_class style_proto);
+			;;
+			is E_DATASET
+				return (Cached: n 'dataset' dataset_class dataset_proto);
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	# el.style and the like are the same object each time, kept under a private key on the wrapper
+	[Cached: ptr<DomNode> n: 0; ptr<u8> name: 0; ptr<JsClass> cl: 0; ptr<JsObj> proto: 0;]
+		ptr<JsObj> w: (JsV.AsObj: (Wrap: n));
+		ptr<JsStr> key: (JsStrs.InternZ: name);
+		ptr<JsProp> found: (JsObjs.Find: w key as ptr<u8>);
+		if found is not 0
+			return found.value;
+		;;
+		ptr<JsObj> o: (JsObjs.NewHost: cl proto n as ptr<u8>);
+		call JsObjs.DefineValue: w key as ptr<u8> (JsV.Obj: o) 0;
+	[end: (JsV.Obj: o)]
+
+	# a plain array of {name, value}: it isn't live, but it reads right
+	[AttrList: ptr<DomNode> n: 0;]
+		ptr<JsObj> list: (JsObjs.NewArray: 4);
+		ptr<DomAttr> a: n.attrs;
+		while a is not 0
+			ptr<JsObj> one: (JsObjs.NewObject);
+			u64 nm: (Js.NewString: a.name.text a.name.len);
+			call Js.Define: one 'name' nm JsObjs.E;
+			call Js.Define: one 'localName' nm JsObjs.E;
+			call Js.Define: one 'value' (Js.NewString: a.value a.value_len) JsObjs.E | JsObjs.W;
+			call JsObjs.ArrayPush: list (JsV.Obj: one);
+			a is a.next;
+		;;
+	[end: (JsV.Obj: list)]
+
+	# attribute names on HTML elements are lowercase, whatever a script writes
+	[AttrAtom: ptr<DomNode> n: 0; u64 v: 0;]
+		WlBuf b;
+		call Js.TextOf: v addr b;
+		ptr<WlAtom> a: 0;
+		if n.ns is DomNs.HTML
+			a is (WlAtoms.GetLower: b.data b.len);
+		;;
+		else
+			a is (WlAtoms.Get: b.data b.len);
+		;;
+		call b.Free;
+	[end: a]
+
+	[GetAttribute: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<DomAttr> a: (Dom.Attr: n (AttrAtom: n (Js.Arg: args argc 0)));
+		if a is 0
+			return JsV.NULL;
+		;;
+	[end: (Js.NewString: a.value a.value_len)]
+
+	[SetAttrFrom: ptr<DomNode> n: 0; ptr<WlAtom> name: 0; u64 value: 0;]
+		WlBuf b;
+		call Js.TextOf: value addr b;
+		call Dom.SetAttr: n name b.data b.len;
+		call b.Free;
+	[end]
+
+	[SetAttribute: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<WlAtom> name: (AttrAtom: n (Js.Arg: args argc 0));
+		call SetAttrFrom: n name (Js.Arg: args argc 1);
+	[end: JsV.UNDEF]
+
+	[RemoveAttribute: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		call Dom.RemoveAttr: n (AttrAtom: n (Js.Arg: args argc 0));
+	[end: JsV.UNDEF]
+
+	[HasAttribute: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+	[end: (JsV.Bool: (Dom.Attr: n (AttrAtom: n (Js.Arg: args argc 0))) is not 0)]
+
+	[HasAttributes: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+	[end: (JsV.Bool: n.attrs is not 0)]
+
+	[ToggleAttribute: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<WlAtom> name: (AttrAtom: n (Js.Arg: args argc 0));
+		bln present: (Dom.Attr: n name) is not 0;
+		bln want: not present;
+		if argc > 1
+			want is (JsOps.ToBool: args:1);
+		;;
+		if want and not present
+			call Dom.SetAttr: n name 0 0;
+		;;
+		elif not want and present
+			call Dom.RemoveAttr: n name;
+		;;
+	[end: (JsV.Bool: want)]
+
+	[GetAttributeNames: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<JsObj> list: (JsObjs.NewArray: 4);
+		ptr<DomAttr> a: n.attrs;
+		while a is not 0
+			call JsObjs.ArrayPush: list (Js.NewString: a.name.text a.name.len);
+			a is a.next;
+		;;
+	[end: (JsV.Obj: list)]
+
+	[NsGetAttribute: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<DomAttr> a: (Dom.Attr: n (AtomOf: (Js.Arg: args argc 1)));
+		if a is 0
+			return JsV.NULL;
+		;;
+	[end: (Js.NewString: a.value a.value_len)]
+
+	[NsSetAttribute: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		call SetAttrFrom: n (AtomOf: (Js.Arg: args argc 1)) (Js.Arg: args argc 2);
+	[end: JsV.UNDEF]
+
+	[NsRemoveAttribute: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		call Dom.RemoveAttr: n (AtomOf: (Js.Arg: args argc 1));
+	[end: JsV.UNDEF]
+
+	# el.id, el.href and all such: the attribute named by the getter's magic
+	[ReflectGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<DomAttr> a: (Dom.Attr: n (CalleeAtom: args));
+		if a is 0
+			return (JsV.Str: JsRt.blank);
+		;;
+	[end: (Js.NewString: a.value a.value_len)]
+
+	[ReflectSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		call SetAttrFrom: n (CalleeAtom: args) (Js.Arg: args argc 0);
+	[end: JsV.UNDEF]
+
+	[BoolGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+	[end: (JsV.Bool: (Dom.Attr: n (CalleeAtom: args)) is not 0)]
+
+	[BoolSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<WlAtom> name: (CalleeAtom: args);
+		if (JsOps.ToBool: (Js.Arg: args argc 0))
+			if (Dom.Attr: n name) is 0
+				call Dom.SetAttr: n name 0 0;
+			;;
+		;;
+		else
+			call Dom.RemoveAttr: n name;
+		;;
+	[end: JsV.UNDEF]
+
+	[NumberAttr: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<DomAttr> a: (Dom.Attr: n (CalleeAtom: args));
+		if a is 0
+			return JsV.INT_BASE;
+		;;
+		f64 x: (JsOps.ToNumber: (Js.NewString: a.value a.value_len));
+		if x is not x
+			return JsV.INT_BASE;
+		;;
+	[end: (JsV.Num: x)]
+
+	[ValueProp: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<JsObj> w: (JsV.AsObj: (Wrap: n));
+		ptr<JsProp> found: (JsObjs.Find: w (JsStrs.InternZ: '%value') as ptr<u8>);
+		if found is not 0
+			return found.value;
+		;;
+		# a textarea's value is its text
+		if n.tag is (WlAtoms.GetZ: 'textarea')
+			WlBuf b;
+			call Dom.TextContent: n b;
+			u64 r: (Js.NewString: b.data b.len);
+			call b.Free;
+			return r;
+		;;
+		ptr<DomAttr> a: (Dom.AttrZ: n 'value');
+		if a is 0
+			return (JsV.Str: JsRt.blank);
+		;;
+	[end: (Js.NewString: a.value a.value_len)]
+
+	[ValuePropSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<JsObj> w: (JsV.AsObj: (Wrap: n));
+		WlBuf b;
+		call StringArg: (Js.Arg: args argc 0) addr b;
+		u64 v: (Js.NewString: b.data b.len);
+		call b.Free;
+		call JsObjs.DefineValue: w (JsStrs.InternZ: '%value') as ptr<u8> v JsObjs.W;
+		n.flags is n.flags | Dom.DIRTY_LAYOUT;
+	[end: JsV.UNDEF]
+
+	# ---- ParentNode and ChildNode ----
+
+	[ParentNodeMethods: ptr<JsObj> p: 0;]
+		call Getter: p 'children' addr ChildrenProp 0 E_CHILDREN;
+		call Getter: p 'firstElementChild' addr ChildrenProp 0 E_FIRST_EL;
+		call Getter: p 'lastElementChild' addr ChildrenProp 0 E_LAST_EL;
+		call Getter: p 'childElementCount' addr ChildrenProp 0 E_COUNT;
+		call Method: p 'querySelector' addr QueryFn 1 0;
+		call Method: p 'querySelectorAll' addr QueryAllFn 1 0;
+		call Method: p 'append' addr AppendMany 0 0;
+		call Method: p 'prepend' addr AppendMany 0 1;
+		call Method: p 'replaceChildren' addr AppendMany 0 2;
+	[end]
+
+	[ChildNodeMethods: ptr<JsObj> p: 0;]
+		call Getter: p 'nextElementSibling' addr ChildrenProp 0 E_NEXT_EL;
+		call Getter: p 'previousElementSibling' addr ChildrenProp 0 E_PREV_EL;
+		call Method: p 'before' addr InsertBeside 0 0;
+		call Method: p 'after' addr InsertBeside 0 1;
+		call Method: p 'replaceWith' addr InsertBeside 0 2;
+	[end]
+
+	[ChildrenProp: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (ThisNode: args);
+		when self.magic
+			is E_CHILDREN
+				return (NewCollection: n C_CHILDREN 0 collection_proto);
+			;;
+			is E_FIRST_EL
+				return (Wrap: (Dom.FirstElementChild: n));
+			;;
+			is E_LAST_EL
+				ptr<DomNode> c: n.last_child;
+				while c is not 0 and c.type is not DomType.ELEMENT
+					c is c.prev;
+				;;
+				return (Wrap: c);
+			;;
+			is E_NEXT_EL
+				return (Wrap: (Dom.NextElement: n));
+			;;
+			is E_PREV_EL
+				return (Wrap: (Dom.PrevElement: n));
+			;;
+			is E_COUNT
+				int count: 0;
+				ptr<DomNode> k: n.first_child;
+				while k is not 0
+					if k.type is DomType.ELEMENT
+						count++;
+					;;
+					k is k.next;
+				;;
+				return (JsV.Int: count);
+			;;
+		;;
+	[end: JsV.NULL]
+
+	# nodes and strings, as append() and the like take them, gathered in a new fragment
+	[Gather: ptr<DomDocument> doc: 0; ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> f: (Dom.CreateFragment: doc);
+		while int i: 0; i < argc; i++;
+			ptr<DomNode> n: (NodeOf: args:i);
+			if n is not 0
+				call CheckInsert: f n;
+				if n.type is DomType.FRAGMENT
+					while n.first_child is not 0
+						call Dom.Append: f n.first_child;
+					;;
+				;;
+				else
+					call Dom.Append: f n;
+				;;
+			;;
+			else
+				WlBuf b;
+				call Js.TextOf: args:i addr b;
+				call Dom.Append: f (Dom.CreateText: doc b.data b.len);
+				call b.Free;
+			;;
+		;;
+	[end: f]
+
+	[AppendMany: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (ThisNode: args);
+		ptr<DomNode> f: (Gather: n.doc args argc);
+		when self.magic
+			is 0
+				call InsertNode: n f 0;
+			;;
+			is 1
+				call InsertNode: n f n.first_child;
+			;;
+			is 2
+				call RemoveAllChildren: n;
+				call InsertNode: n f 0;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	[InsertBeside: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (ThisNode: args);
+		ptr<DomNode> parent: n.parent;
+		if parent is 0
+			return JsV.UNDEF;
+		;;
+		ptr<DomNode> f: (Gather: n.doc args argc);
+		when self.magic
+			is 0
+				call InsertNode: parent f n;
+			;;
+			is 1
+				call InsertNode: parent f n.next;
+			;;
+			is 2
+				ptr<DomNode> following: n.next;
+				call Dom.Remove: n;
+				call InsertNode: parent f following;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	# ---- selectors ----
+
+	[QueryFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		ptr<DomNode> found: (Css.Query: n b.data b.len);
+		bln invalid: Css.invalid;
+		call b.Free;
+		if invalid
+			call DomError: 'SyntaxError' 'The selector is not valid';
+		;;
+	[end: (Wrap: found)]
+
+	[QueryAllFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		CssNodeList list;
+		int count: (Css.QueryAll: n b.data b.len addr list);
+		call b.Free;
+		if count < 0
+			call list.Free;
+			call DomError: 'SyntaxError' 'The selector is not valid';
+		;;
+		u64 r: (StaticList: addr list);
+		call list.Free;
+	[end: r]
+
+	# what querySelectorAll gives: its nodes in a list that doesn't change
+	[StaticList: ptr<CssNodeList> list: 0;]
+		ptr<JsObj> a: (JsObjs.NewArray: list.count);
+		a.proto is nodelist_proto;
+		while u32 i: 0; i < list.count; i++;
+			call JsObjs.ArrayPush: a (Wrap: list.items:i);
+		;;
+	[end: (JsV.Obj: a)]
+
+	[MatchesFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		bln yes: (Css.Matches: n b.data b.len);
+		bln invalid: Css.invalid;
+		call b.Free;
+		if invalid
+			call DomError: 'SyntaxError' 'The selector is not valid';
+		;;
+	[end: (JsV.Bool: yes)]
+
+	[ClosestFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		ptr<DomNode> found: (Css.Closest: n b.data b.len);
+		bln invalid: Css.invalid;
+		call b.Free;
+		if invalid
+			call DomError: 'SyntaxError' 'The selector is not valid';
+		;;
+	[end: (Wrap: found)]
+
+	# ---- collections that stay up to date ----
+
+	[FreeData: ptr<JsObj> o: 0;]
+		free o.data;
+	[end]
+
+	[NewCollection: ptr<DomNode> root: 0; u32 kind: 0; ptr<WlAtom> atom: 0; ptr<JsObj> proto: 0;]
+		ptr<PageCollection> c: new PageCollection;
+		if c is 0
+			throw 'out of memory';
+		;;
+		c.root is root;
+		c.kind is kind;
+		c.atom is atom;
+		c.cached_len is NONE;
+		c.version is root.doc.version;
+		ptr<JsObj> o: (JsObjs.NewHost: collection_class proto c as ptr<u8>);
+	[end: (JsV.Obj: o)]
+
+	[Stale: ptr<PageCollection> c: 0;]
+		if c.version is not c.root.doc.version
+			c.version is c.root.doc.version;
+			c.cached_len is NONE;
+			c.cached_node is 0;
+		;;
+	[end]
+
+	# the first node this collection holds at or after n, walking in document order
+	[Accepts: ptr<PageCollection> c: 0; ptr<DomNode> n: 0;]
+		when c.kind
+			is C_CHILD_NODES
+				return true;
+			;;
+			is C_CHILDREN
+				return n.type is DomType.ELEMENT;
+			;;
+			is C_BY_TAG
+				return n.type is DomType.ELEMENT and (c.atom is 0 or n.tag is c.atom);
+			;;
+		;;
+	[end: n.type is DomType.ELEMENT and (Dom.HasClass: n c.atom)]
+
+	[Following: ptr<PageCollection> c: 0; ptr<DomNode> n: 0;]
+		if c.kind is C_CHILD_NODES or c.kind is C_CHILDREN
+			return n.next;
+		;;
+	[end: (Dom.Next: n c.root)]
+
+	[First: ptr<PageCollection> c: 0;]
+		if c.kind is C_CHILD_NODES or c.kind is C_CHILDREN
+			return c.root.first_child;
+		;;
+	[end: (Dom.Next: c.root c.root)]
+
+	[CollLen: ptr<PageCollection> c: 0;]
+		call Stale: c;
+		if c.cached_len is not NONE return c.cached_len;
+		u32 count: 0;
+		ptr<DomNode> n: (First: c);
+		while n is not 0
+			if (Accepts: c n)
+				count++;
+			;;
+			n is (Following: c n);
+		;;
+		c.cached_len is count;
+	[end: count]
+
+	# item i, remembering the last place, so walking a collection by index isn't quadratic
+	[CollAt: ptr<PageCollection> c: 0; u32 i: 0;]
+		call Stale: c;
+		ptr<DomNode> n: 0;
+		u32 at_: 0;
+		if c.cached_node is not 0 and c.cached_index <= i
+			n is c.cached_node;
+			at_ is c.cached_index;
+		;;
+		else
+			n is (First: c);
+			while n is not 0 and not (Accepts: c n)
+				n is (Following: c n);
+			;;
+		;;
+		while n is not 0 and at_ < i
+			n is (Following: c n);
+			if n is not 0 and (Accepts: c n)
+				at_++;
+			;;
+		;;
+		if n is not 0
+			c.cached_node is n;
+			c.cached_index is at_;
+		;;
+	[end: n]
+
+	[ListLength: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.cls is collection_class
+				return (JsV.Uint: (CollLen: o.data as ptr<PageCollection>));
+			;;
+			if o.kind is JsGc.K_ARRAY
+				return (JsV.Uint: o.length);
+			;;
+		;;
+	[end: JsV.INT_BASE]
+
+	[ListItem: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		f64 i: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		if not (JsV.IsObj: t) or i < 0.0 or i > 4000000000.0
+			return JsV.NULL;
+		;;
+		ptr<JsObj> o: (JsV.AsObj: t);
+		if o.cls is collection_class
+			return (Wrap: (CollAt: o.data as ptr<PageCollection> i as u32));
+		;;
+		if o.kind is JsGc.K_ARRAY and (i as u32) < o.length
+			return o.elems:(i as u32);
+		;;
+	[end: JsV.NULL]
+
+	[NamedItem: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if not (JsV.IsObj: t)
+			return JsV.NULL;
+		;;
+		ptr<JsObj> o: (JsV.AsObj: t);
+		if o.cls is not collection_class
+			return JsV.NULL;
+		;;
+		ptr<PageCollection> c: o.data as ptr<PageCollection>;
+		ptr<WlAtom> want: (AtomOf: (Js.Arg: args argc 0));
+		ptr<DomNode> n: (First: c);
+		while n is not 0
+			if n.type is DomType.ELEMENT and (Accepts: c n)
+				if n.id_atom is want
+					return (Wrap: n);
+				;;
+				ptr<DomAttr> a: (Dom.AttrZ: n 'name');
+				if a is not 0 and (WlAtoms.Get: a.value a.value_len) is want
+					return (Wrap: n);
+				;;
+			;;
+			n is (Following: c n);
+		;;
+	[end: JsV.NULL]
+
+	[CollGet: ptr<JsObj> o: 0; u64 key: 0; u64 recv: 0; ptr<u64> output: 0;]
+		if not (JsObjs.IsIndexKey: key) return 0;
+		ptr<DomNode> n: (CollAt: o.data as ptr<PageCollection> key as u32);
+		if n is 0
+			output:0 is JsV.UNDEF;
+		;;
+		else
+			output:0 is (Wrap: n);
+		;;
+	[end: 1]
+
+	[CollGetOwn: ptr<JsObj> o: 0; u64 key: 0; ptr<JsDesc> d: 0;]
+		if not (JsObjs.IsIndexKey: key) return 0;
+		ptr<DomNode> n: (CollAt: o.data as ptr<PageCollection> key as u32);
+		if n is 0 return -1;
+		d.value is (Wrap: n);
+		d.getter is JsV.UNDEF;
+		d.setter is JsV.UNDEF;
+		d.flags is JsObjs.E | JsObjs.C;
+	[end: 1]
+
+	[CollHas: ptr<JsObj> o: 0; u64 key: 0;]
+		if not (JsObjs.IsIndexKey: key) return 0;
+		if (CollAt: o.data as ptr<PageCollection> key as u32) is not 0 return 1;
+	[end: -1]
+
+	[CollKeys: ptr<JsObj> o: 0; ptr<JsObj> list: 0;]
+		u32 n: (CollLen: o.data as ptr<PageCollection>);
+		while u32 i: 0; i < n; i++;
+			call JsObjs.ArrayPush: list (JsV.Str: (JsStrs.InternIndex: i));
+		;;
+		ptr<JsObj> rest: (JsObjs.OrdinaryKeys: o);
+		while u32 j: 0; j < rest.length; j++;
+			call JsObjs.ArrayPush: list rest.elems:j;
+		;;
+	[end]
+
+	[ByTag: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		ptr<WlAtom> atom: 0;
+		if not (b.len is 1 and b.data:0 is '*')
+			atom is (WlAtoms.GetLower: b.data b.len);
+		;;
+		call b.Free;
+	[end: (NewCollection: n C_BY_TAG atom collection_proto)]
+
+	[ByClass: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		# one class name; two or more with a space between read as the first, here
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		u32 end_at: 0;
+		while end_at < b.len and not (WlText.IsSpace: b.data:end_at)
+			end_at++;
+		;;
+		ptr<WlAtom> atom: (WlAtoms.Get: b.data end_at);
+		call b.Free;
+	[end: (NewCollection: n C_BY_CLASS atom collection_proto)]
+
+	# ---- HTML as text ----
+
+	[InnerHtmlGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		WlBuf b;
+		call Html.Serialize: n b true;
+		u64 r: (Js.NewString: b.data b.len);
+		call b.Free;
+	[end: r]
+
+	[InnerHtmlSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		WlBuf b;
+		call StringArg: (Js.Arg: args argc 0) addr b;
+		ptr<DomNode> f: (Html.ParseFragment: n b.data b.len true);
+		call b.Free;
+		ptr<DomNode> dest: n;
+		if n.content is not 0
+			dest is n.content;
+		;;
+		call RemoveAllChildren: dest;
+		if f is not 0
+			while f.first_child is not 0
+				call Dom.Append: dest f.first_child;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	[OuterHtmlGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		WlBuf b;
+		call Html.SerializeOuter: n b true;
+		u64 r: (Js.NewString: b.data b.len);
+		call b.Free;
+	[end: r]
+
+	[OuterHtmlSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<DomNode> parent: n.parent;
+		if parent is 0
+			return JsV.UNDEF;
+		;;
+		WlBuf b;
+		call StringArg: (Js.Arg: args argc 0) addr b;
+		ptr<DomNode> context: parent;
+		if parent.type is not DomType.ELEMENT
+			context is (Dom.CreateElementZ: n.doc 'body');
+		;;
+		ptr<DomNode> f: (Html.ParseFragment: context b.data b.len true);
+		call b.Free;
+		ptr<DomNode> following: n.next;
+		call Dom.Remove: n;
+		if f is not 0
+			call InsertNode: parent f following;
+		;;
+	[end: JsV.UNDEF]
+
+	# beforebegin, afterbegin, beforeend, afterend: where to put something, as a parent and what it goes before
+	[Adjacent: ptr<DomNode> n: 0; u64 where_v: 0; ptr<ptr<DomNode>> parent_out: 0; ptr<ptr<DomNode>> ref_out: 0;]
+		WlBuf b;
+		call Js.TextOf: where_v addr b;
+		bln bad: false;
+		if (WlText.EqNoCaseZ: b.data b.len 'beforebegin')
+			parent_out:0 is n.parent;
+			ref_out:0 is n;
+		;;
+		elif (WlText.EqNoCaseZ: b.data b.len 'afterbegin')
+			parent_out:0 is n;
+			ref_out:0 is n.first_child;
+		;;
+		elif (WlText.EqNoCaseZ: b.data b.len 'beforeend')
+			parent_out:0 is n;
+			ref_out:0 is 0;
+		;;
+		elif (WlText.EqNoCaseZ: b.data b.len 'afterend')
+			parent_out:0 is n.parent;
+			ref_out:0 is n.next;
+		;;
+		else
+			bad is true;
+		;;
+		call b.Free;
+		if bad
+			call DomError: 'SyntaxError' 'The position must be beforebegin, afterbegin, beforeend or afterend';
+		;;
+	[end]
+
+	[InsertAdjacentHtml: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<DomNode> parent: 0;
+		ptr<DomNode> ref: 0;
+		call Adjacent: n (Js.Arg: args argc 0) addr parent addr ref;
+		if parent is 0
+			call DomError: 'NoModificationAllowedError' 'The element has no parent';
+		;;
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 1) addr b;
+		ptr<DomNode> context: parent;
+		if parent.type is not DomType.ELEMENT
+			context is (Dom.CreateElementZ: n.doc 'body');
+		;;
+		ptr<DomNode> f: (Html.ParseFragment: context b.data b.len true);
+		call b.Free;
+		if f is not 0
+			call InsertNode: parent f ref;
+		;;
+	[end: JsV.UNDEF]
+
+	[InsertAdjacentNode: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<DomNode> parent: 0;
+		ptr<DomNode> ref: 0;
+		call Adjacent: n (Js.Arg: args argc 0) addr parent addr ref;
+		if parent is 0
+			return JsV.NULL;
+		;;
+		call InsertNode: parent (ArgNode: (Js.Arg: args argc 1)) ref;
+	[end: args:1]
+
+	[InsertAdjacentText: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<DomNode> parent: 0;
+		ptr<DomNode> ref: 0;
+		call Adjacent: n (Js.Arg: args argc 0) addr parent addr ref;
+		if parent is 0
+			return JsV.UNDEF;
+		;;
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 1) addr b;
+		call InsertNode: parent (Dom.CreateText: n.doc b.data b.len) ref;
+		call b.Free;
+	[end: JsV.UNDEF]
+
+	# ---- where layout put it ----
+
+	[BoxOf: ptr<DomNode> n: 0; ptr<f64> box: 0;]
+		box:0 is 0.0;
+		box:1 is 0.0;
+		box:2 is 0.0;
+		box:3 is 0.0;
+		ptr<Page> p: Page.current;
+		if p.host.box is not 0
+			call p.host.box: p n box;
+		;;
+	[end]
+
+	[BoxGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (ThisElement: args);
+		f64 box[4];
+		call BoxOf: n addr box:0;
+	[end: (JsV.Num: box:(self.magic))]
+
+	[RectObject: ptr<f64> box: 0;]
+		ptr<JsObj> r: (JsObjs.NewObject);
+		call Js.Define: r 'x' (JsV.Num: box:0) JsObjs.WEC;
+		call Js.Define: r 'y' (JsV.Num: box:1) JsObjs.WEC;
+		call Js.Define: r 'width' (JsV.Num: box:2) JsObjs.WEC;
+		call Js.Define: r 'height' (JsV.Num: box:3) JsObjs.WEC;
+		call Js.Define: r 'left' (JsV.Num: box:0) JsObjs.WEC;
+		call Js.Define: r 'top' (JsV.Num: box:1) JsObjs.WEC;
+		call Js.Define: r 'right' (JsV.Num: box:0 + box:2) JsObjs.WEC;
+		call Js.Define: r 'bottom' (JsV.Num: box:1 + box:3) JsObjs.WEC;
+	[end: (JsV.Obj: r)]
+
+	[BoundingRect: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		f64 box[4];
+		call BoxOf: n addr box:0;
+	[end: (RectObject: addr box:0)]
+
+	[ClientRects: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		f64 box[4];
+		call BoxOf: n addr box:0;
+		ptr<JsObj> list: (JsObjs.NewArray: 1);
+		call JsObjs.ArrayPush: list (RectObject: addr box:0);
+	[end: (JsV.Obj: list)]
+
+	[OffsetParent: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+	[end: (Wrap: n.parent)]
+
+	[Focus: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<Page> p: Page.current;
+		ptr<DomNode> old: p.focused;
+		if self.magic is 1
+			if old is n
+				return JsV.UNDEF;
+			;;
+			p.focused is n;
+			if old is not 0
+				call PageEvents.FireSimple: old 'blur';
+			;;
+			call PageEvents.FireSimple: n 'focus';
+		;;
+		elif old is n
+			p.focused is 0;
+			call PageEvents.FireSimple: n 'blur';
+		;;
+	[end: JsV.UNDEF]
+
+	[ClickFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		u64 ev: (PageEvents.NewMouse: 'click' 0.0 0.0 0 1);
+		call Js.Define: (JsV.AsObj: ev) 'isTrusted' JsV.FALSE JsObjs.W | JsObjs.E;
+		bln allowed: (PageEvents.Dispatch: args:(-1) ev);
+		if allowed
+			call Page.DefaultClick: Page.current n;
+		;;
+	[end: JsV.UNDEF]
+
+	# ---- Document ----
+
+	const u32 D_ELEMENT: 0;
+	const u32 D_HEAD: 1;
+	const u32 D_BODY: 2;
+	const u32 D_URL: 3;
+	const u32 D_READY: 4;
+	const u32 D_ACTIVE: 5;
+	const u32 D_CURRENT_SCRIPT: 6;
+	const u32 D_DOCTYPE: 7;
+	const u32 D_VIEW: 8;
+	const u32 D_COMPAT: 9;
+	const u32 D_CHARSET: 10;
+	const u32 D_HIDDEN: 11;
+	const u32 D_VISIBILITY: 12;
+	const u32 D_FORMS: 13;
+	const u32 D_IMAGES: 14;
+	const u32 D_LINKS: 15;
+	const u32 D_SCRIPTS: 16;
+
+	[InstallDocument]
+		ptr<JsObj> p: document_proto;
+		call Getter: p 'documentElement' addr DocProp 0 D_ELEMENT;
+		call Getter: p 'head' addr DocProp 0 D_HEAD;
+		call Getter: p 'body' addr DocProp 0 D_BODY;
+		call Getter: p 'URL' addr DocProp 0 D_URL;
+		call Getter: p 'documentURI' addr DocProp 0 D_URL;
+		call Getter: p 'readyState' addr DocProp 0 D_READY;
+		call Getter: p 'activeElement' addr DocProp 0 D_ACTIVE;
+		call Getter: p 'currentScript' addr DocProp 0 D_CURRENT_SCRIPT;
+		call Getter: p 'doctype' addr DocProp 0 D_DOCTYPE;
+		call Getter: p 'defaultView' addr DocProp 0 D_VIEW;
+		call Getter: p 'compatMode' addr DocProp 0 D_COMPAT;
+		call Getter: p 'characterSet' addr DocProp 0 D_CHARSET;
+		call Getter: p 'charset' addr DocProp 0 D_CHARSET;
+		call Getter: p 'hidden' addr DocProp 0 D_HIDDEN;
+		call Getter: p 'visibilityState' addr DocProp 0 D_VISIBILITY;
+		call Getter: p 'forms' addr DocProp 0 D_FORMS;
+		call Getter: p 'images' addr DocProp 0 D_IMAGES;
+		call Getter: p 'links' addr DocProp 0 D_LINKS;
+		call Getter: p 'scripts' addr DocProp 0 D_SCRIPTS;
+		call Getter: p 'title' addr TitleGet addr TitleSet 0;
+		call Getter: p 'cookie' addr CookieGet addr CookieSet 0;
+		call Method: p 'createElement' addr CreateElement 1 0;
+		call Method: p 'createElementNS' addr CreateElementNs 2 0;
+		call Method: p 'createTextNode' addr CreateTextFn 1 0;
+		call Method: p 'createComment' addr CreateCommentFn 1 0;
+		call Method: p 'createDocumentFragment' addr CreateFragmentFn 0 0;
+		call Method: p 'getElementById' addr GetElementById 1 0;
+		call Method: p 'getElementsByTagName' addr ByTag 1 0;
+		call Method: p 'getElementsByClassName' addr ByClass 1 0;
+		call Method: p 'getElementsByName' addr ByName 1 0;
+		call Method: p 'write' addr WriteFn 0 0;
+		call Method: p 'writeln' addr WriteFn 0 1;
+		call Method: p 'open' addr Nothing 0 0;
+		call Method: p 'close' addr Nothing 0 0;
+		call Method: p 'hasFocus' addr HasFocus 0 0;
+		call Method: p 'createEvent' addr CreateEventFn 1 0;
+		call Method: p 'importNode' addr ImportNode 1 0;
+		call Method: p 'adoptNode' addr AdoptNode 1 0;
+		ptr<JsNativeFn> image_ctor: (Js.DefineNative: JsRt.r.global 'Image' addr ImageCtor 0);
+		image_ctor.o.flags is image_ctor.o.flags | JsObjs.F_CTOR as u16;
+		call ParentNodeMethods: p;
+		ptr<JsObj> doc_wrapper: (JsV.AsObj: (Wrap: Page.current.doc.root));
+		call JsObjs.DefineZ: JsRt.r.global 'document' (JsV.Obj: doc_wrapper) JsObjs.E | JsObjs.C;
+	[end]
+
+	[DocOf: ptr<u64> args: 0;]
+		ptr<DomNode> n: (ThisNode: args);
+		if n.type is not DomType.DOCUMENT
+			call JsErr.Type: 'Illegal invocation: this is not a Document';
+		;;
+	[end: n.doc]
+
+	[DocProp: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomDocument> doc: (DocOf: args);
+		ptr<Page> p: Page.current;
+		when self.magic
+			is D_ELEMENT
+				return (Wrap: (Dom.DocumentElement: doc));
+			;;
+			is D_HEAD
+				return (Wrap: (Dom.Head: doc));
+			;;
+			is D_BODY
+				return (Wrap: (Dom.Body: doc));
+			;;
+			is D_URL
+				return (Js.NewStringZ: doc.url);
+			;;
+			is D_READY
+				if p.load_fired
+					return (Js.NewStringZ: 'complete');
+				;;
+				if p.parse_done
+					return (Js.NewStringZ: 'interactive');
+				;;
+				return (Js.NewStringZ: 'loading');
+			;;
+			is D_ACTIVE
+				if p.focused is not 0
+					return (Wrap: p.focused);
+				;;
+				return (Wrap: (Dom.Body: doc));
+			;;
+			is D_CURRENT_SCRIPT
+				return (Wrap: p.current_script);
+			;;
+			is D_DOCTYPE
+				ptr<DomNode> c: doc.root.first_child;
+				while c is not 0
+					if c.type is DomType.DOCTYPE
+						return (Wrap: c);
+					;;
+					c is c.next;
+				;;
+				return JsV.NULL;
+			;;
+			is D_VIEW
+				return (JsV.Obj: JsRt.r.global);
+			;;
+			is D_COMPAT
+				if doc.quirks
+					return (Js.NewStringZ: 'BackCompat');
+				;;
+				return (Js.NewStringZ: 'CSS1Compat');
+			;;
+			is D_CHARSET
+				return (Js.NewStringZ: 'UTF-8');
+			;;
+			is D_HIDDEN
+				return JsV.FALSE;
+			;;
+			is D_VISIBILITY
+				return (Js.NewStringZ: 'visible');
+			;;
+			is D_FORMS
+				return (NewCollection: doc.root C_BY_TAG (WlAtoms.GetZ: 'form') collection_proto);
+			;;
+			is D_IMAGES
+				return (NewCollection: doc.root C_BY_TAG (WlAtoms.GetZ: 'img') collection_proto);
+			;;
+			is D_LINKS
+				return (NewCollection: doc.root C_BY_TAG (WlAtoms.GetZ: 'a') collection_proto);
+			;;
+			is D_SCRIPTS
+				return (NewCollection: doc.root C_BY_TAG (WlAtoms.GetZ: 'script') collection_proto);
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	[TitleElement: ptr<DomDocument> doc: 0;]
+		ptr<WlAtom> tag: (WlAtoms.GetZ: 'title');
+		ptr<DomNode> n: doc.root;
+		while n is not 0
+			if n.type is DomType.ELEMENT and n.tag is tag
+				return n;
+			;;
+			n is (Dom.Next: n doc.root);
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	[TitleGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomDocument> doc: (DocOf: args);
+		ptr<DomNode> t: (TitleElement: doc);
+		if t is 0
+			return (JsV.Str: JsRt.blank);
+		;;
+		WlBuf b;
+		call Dom.TextContent: t b;
+		u64 r: (Js.NewString: b.data b.len);
+		call b.Free;
+	[end: r]
+
+	[TitleSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomDocument> doc: (DocOf: args);
+		ptr<DomNode> t: (TitleElement: doc);
+		if t is 0
+			ptr<DomNode> head: (Dom.Head: doc);
+			if head is 0
+				return JsV.UNDEF;
+			;;
+			t is (Dom.CreateElementZ: doc 'title');
+			call Dom.Append: head t;
+		;;
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		call RemoveAllChildren: t;
+		call Dom.Append: t (Dom.CreateText: doc b.data b.len);
+		call b.Free;
+	[end: JsV.UNDEF]
+
+	# cookies are the browser's to keep; a page sees what it set in this session
+	[CookieGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsProp> found: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: '%cookie') as ptr<u8>);
+		if found is 0
+			return (JsV.Str: JsRt.blank);
+		;;
+	[end: found.value]
+
+	[CookieSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> given: (JsStrs.Flat: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		# only the name=value part, added to what's there
+		u32 end_at: 0;
+		while end_at < given.bytes and given.data:end_at is not ';'
+			end_at++;
+		;;
+		WlBuf b;
+		ptr<JsStr> key: (JsStrs.InternZ: '%cookie');
+		ptr<JsProp> found: (JsObjs.Find: JsRt.r.global key as ptr<u8>);
+		if found is not 0
+			call Js.TextOf: found.value addr b;
+			if b.len > 0
+				call b.AddZ: '; ';
+			;;
+		;;
+		call b.AddN: given.data end_at;
+		call JsObjs.DefineValue: JsRt.r.global key as ptr<u8> (Js.NewString: b.data b.len) JsObjs.W;
+		call b.Free;
+	[end: JsV.UNDEF]
+
+	[CreateElement: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomDocument> doc: (DocOf: args);
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		if b.len is 0
+			call b.Free;
+			call DomError: 'InvalidCharacterError' 'The tag name is empty';
+		;;
+		ptr<DomNode> n: (Dom.CreateElement: doc (WlAtoms.GetLower: b.data b.len));
+		call b.Free;
+	[end: (Wrap: n)]
+
+	[CreateElementNs: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomDocument> doc: (DocOf: args);
+		WlBuf nsb;
+		call StringArg: (Js.Arg: args argc 0) addr nsb;
+		DomNs ns: DomNs.HTML;
+		if nsb.data is not 0 and (WlText.EqZ: nsb.data nsb.len 'http://www.w3.org/2000/svg')
+			ns is DomNs.SVG;
+		;;
+		elif nsb.data is not 0 and (WlText.EqZ: nsb.data nsb.len 'http://www.w3.org/1998/Math/MathML')
+			ns is DomNs.MATHML;
+		;;
+		call nsb.Free;
+		ptr<WlAtom> tag: (AtomOf: (Js.Arg: args argc 1));
+	[end: (Wrap: (Dom.CreateElement: doc tag ns))]
+
+	[CreateTextFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomDocument> doc: (DocOf: args);
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		ptr<DomNode> n: (Dom.CreateText: doc b.data b.len);
+		call b.Free;
+	[end: (Wrap: n)]
+
+	[CreateCommentFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomDocument> doc: (DocOf: args);
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		ptr<DomNode> n: (Dom.CreateComment: doc b.data b.len);
+		call b.Free;
+	[end: (Wrap: n)]
+
+	[CreateFragmentFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomDocument> doc: (DocOf: args);
+	[end: (Wrap: (Dom.CreateFragment: doc))]
+
+	[GetElementById: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomDocument> doc: (DocOf: args);
+		ptr<WlAtom> id: (AtomOf: (Js.Arg: args argc 0));
+	[end: (Wrap: (Dom.FindById: doc.root id))]
+
+	[ByName: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomDocument> doc: (DocOf: args);
+		ptr<WlAtom> want: (AtomOf: (Js.Arg: args argc 0));
+		ptr<JsObj> a: (JsObjs.NewArray: 4);
+		a.proto is nodelist_proto;
+		ptr<DomNode> n: doc.root;
+		while n is not 0
+			if n.type is DomType.ELEMENT
+				ptr<DomAttr> attr: (Dom.AttrZ: n 'name');
+				if attr is not 0 and (WlAtoms.Get: attr.value attr.value_len) is want
+					call JsObjs.ArrayPush: a (Wrap: n);
+				;;
+			;;
+			n is (Dom.Next: n doc.root);
+		;;
+	[end: (JsV.Obj: a)]
+
+	# document.write: dest the parser while it's running; after that, it's lost, as a page reload isn't on offer
+	[WriteFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		call DocOf: args;
+		ptr<Page> p: Page.current;
+		WlBuf b;
+		while int i: 0; i < argc; i++;
+			call Js.TextOf: args:i addr b;
+		;;
+		if self.magic is 1
+			call b.Add: 10;
+		;;
+		if not p.parser.finished
+			call p.parser.Write: b.data b.len;
+		;;
+		call b.Free;
+	[end: JsV.UNDEF]
+
+	# new Image(width, height)
+	[ImageCtor: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (Dom.CreateElementZ: Page.current.doc 'img');
+		if argc > 0
+			call SetAttrFrom: n (WlAtoms.GetZ: 'width') args:0;
+		;;
+		if argc > 1
+			call SetAttrFrom: n (WlAtoms.GetZ: 'height') args:1;
+		;;
+	[end: (Wrap: n)]
+
+	[HasFocus: ptr<u64> args: 0; int argc: 0;]
+	[end: JsV.TRUE]
+
+	[CreateEventFn: ptr<u64> args: 0; int argc: 0;]
+	[end: (PageEvents.NewEventObject: '' PageEvents.event_proto false true)]
+
+	[ImportNode: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ArgNode: (Js.Arg: args argc 0));
+	[end: (Wrap: (Clone: n (JsOps.ToBool: (Js.Arg: args argc 1))))]
+
+	[AdoptNode: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ArgNode: (Js.Arg: args argc 0));
+		call Dom.Remove: n;
+	[end: args:0]
+
+	# ---- classList ----
+
+	[InstallTokens: ptr<JsObj> keep: 0;]
+		token_proto is (Class: 'DOMTokenList' JsRt.P.object keep);
+		ptr<JsObj> p: token_proto;
+		call Getter: p 'length' addr TokenLength 0 0;
+		call Getter: p 'value' addr TokenValue addr TokenSetValue 0;
+		call Method: p 'item' addr TokenItem 1 0;
+		call Method: p 'contains' addr TokenContains 1 0;
+		call Method: p 'add' addr TokenAdd 1 0;
+		call Method: p 'remove' addr TokenRemove 1 0;
+		call Method: p 'toggle' addr TokenToggle 1 0;
+		call Method: p 'replace' addr TokenReplace 2 0;
+		call Method: p 'toString' addr TokenValue 0 0;
+		ptr<JsProp> vals: (JsObjs.Find: JsRt.P.array JsRt.S.iterator as ptr<u8>);
+		call JsObjs.DefineValue: p JsRt.S.iterator as ptr<u8> vals.value JsObjs.WC;
+		ptr<JsProp> fe: (JsObjs.Find: JsRt.P.array (JsStrs.InternZ: 'forEach') as ptr<u8>);
+		call JsObjs.DefineValue: p (JsStrs.InternZ: 'forEach') as ptr<u8> fe.value JsObjs.WC;
+	[end]
+
+	[ThisTokens: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.cls is token_class
+				return o.data as ptr<DomNode>;
+			;;
+		;;
+		call JsErr.Type: 'Illegal invocation: this is not a DOMTokenList';
+	[end: 0 as ptr<DomNode>]
+
+	[TokenLength: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisTokens: args);
+	[end: (JsV.Uint: n.class_count)]
+
+	[TokenValue: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisTokens: args);
+		ptr<DomAttr> a: (Dom.Attr: n Dom.A_CLASS);
+		if a is 0
+			return (JsV.Str: JsRt.blank);
+		;;
+	[end: (Js.NewString: a.value a.value_len)]
+
+	[TokenSetValue: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisTokens: args);
+		call SetAttrFrom: n Dom.A_CLASS (Js.Arg: args argc 0);
+	[end: JsV.UNDEF]
+
+	[TokenItem: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisTokens: args);
+		f64 i: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		if i < 0.0 or i >= (n.class_count as f64)
+			return JsV.NULL;
+		;;
+		ptr<WlAtom> c: n.classes:(i as u32);
+	[end: (Js.NewString: c.text c.len)]
+
+	[TokenIndexGet: ptr<JsObj> o: 0; u64 key: 0; u64 recv: 0; ptr<u64> output: 0;]
+		if not (JsObjs.IsIndexKey: key) return 0;
+		ptr<DomNode> n: o.data as ptr<DomNode>;
+		if (key as u32) >= n.class_count
+			output:0 is JsV.UNDEF;
+			return 1;
+		;;
+		ptr<WlAtom> c: n.classes:(key as u32);
+		output:0 is (Js.NewString: c.text c.len);
+	[end: 1]
+
+	# an argument that must be a class name: not empty, with no spaces
+	[TokenArg: u64 v: 0;]
+		WlBuf b;
+		call Js.TextOf: v addr b;
+		bln empty_one: b.len is 0;
+		bln spaced: false;
+		while u32 i: 0; i < b.len; i++;
+			if (WlText.IsSpace: b.data:i)
+				spaced is true;
+			;;
+		;;
+		ptr<WlAtom> a: 0;
+		if not empty_one and not spaced
+			a is (WlAtoms.Get: b.data b.len);
+		;;
+		call b.Free;
+		if empty_one
+			call DomError: 'SyntaxError' 'The token must not be empty';
+		;;
+		if spaced
+			call DomError: 'InvalidCharacterError' 'The token must not contain spaces';
+		;;
+	[end: a]
+
+	# the attribute, rewritten from a list of classes
+	[WriteClasses: ptr<DomNode> n: 0; ptr<ptr<WlAtom>> list: 0; u32 count: 0;]
+		WlBuf b;
+		while u32 i: 0; i < count; i++;
+			if i > 0
+				call b.Add: 32;
+			;;
+			ptr<WlAtom> c: list:i;
+			call b.AddN: c.text c.len;
+		;;
+		call Dom.SetAttr: n Dom.A_CLASS b.data b.len;
+		call b.Free;
+	[end]
+
+	[TokenContains: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisTokens: args);
+		ptr<WlAtom> c: (AtomOf: (Js.Arg: args argc 0));
+	[end: (JsV.Bool: (Dom.HasClass: n c))]
+
+	[AddClass: ptr<DomNode> n: 0; ptr<WlAtom> c: 0;]
+		if (Dom.HasClass: n c) return;
+		ptr<ptr<WlAtom>> list: new ptr<WlAtom>[n.class_count + 1];
+		if list is 0
+			throw 'out of memory';
+		;;
+		u32 count: n.class_count;
+		while u32 i: 0; i < count; i++;
+			list:i is n.classes:i;
+		;;
+		list:count is c;
+		call WriteClasses: n list count + 1;
+		free list;
+	[end]
+
+	[RemoveClass: ptr<DomNode> n: 0; ptr<WlAtom> c: 0;]
+		if not (Dom.HasClass: n c) return;
+		ptr<ptr<WlAtom>> list: new ptr<WlAtom>[n.class_count + 1];
+		if list is 0
+			throw 'out of memory';
+		;;
+		u32 kept: 0;
+		while u32 i: 0; i < n.class_count; i++;
+			if n.classes:i is not c
+				list:kept is n.classes:i;
+				kept++;
+			;;
+		;;
+		call WriteClasses: n list kept;
+		free list;
+	[end]
+
+	[TokenAdd: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisTokens: args);
+		while int i: 0; i < argc; i++;
+			call AddClass: n (TokenArg: args:i);
+		;;
+	[end: JsV.UNDEF]
+
+	[TokenRemove: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisTokens: args);
+		while int i: 0; i < argc; i++;
+			call RemoveClass: n (TokenArg: args:i);
+		;;
+	[end: JsV.UNDEF]
+
+	[TokenToggle: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisTokens: args);
+		ptr<WlAtom> c: (TokenArg: (Js.Arg: args argc 0));
+		bln present: (Dom.HasClass: n c);
+		bln want: not present;
+		if argc > 1 and args:1 is not JsV.UNDEF
+			want is (JsOps.ToBool: args:1);
+		;;
+		if want
+			call AddClass: n c;
+		;;
+		else
+			call RemoveClass: n c;
+		;;
+	[end: (JsV.Bool: want)]
+
+	[TokenReplace: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisTokens: args);
+		ptr<WlAtom> old: (TokenArg: (Js.Arg: args argc 0));
+		ptr<WlAtom> fresh: (TokenArg: (Js.Arg: args argc 1));
+		if not (Dom.HasClass: n old)
+			return JsV.FALSE;
+		;;
+		call RemoveClass: n old;
+		call AddClass: n fresh;
+	[end: JsV.TRUE]
+
+	# ---- el.style and getComputedStyle ----
+
+	[InstallStyle: ptr<JsObj> keep: 0;]
+		style_proto is (Class: 'CSSStyleDeclaration' JsRt.P.object keep);
+		ptr<JsObj> p: style_proto;
+		call Getter: p 'cssText' addr StyleTextGet addr StyleTextSet 0;
+		call Getter: p 'length' addr StyleLength 0 0;
+		call Method: p 'getPropertyValue' addr StyleGetFn 1 0;
+		call Method: p 'setProperty' addr StyleSetFn 2 0;
+		call Method: p 'removeProperty' addr StyleRemoveFn 1 0;
+		call Method: p 'getPropertyPriority' addr StylePriorityFn 1 0;
+		call Method: p 'item' addr StyleItem 1 0;
+		dataset_proto is (Class: 'DOMStringMap' JsRt.P.object keep);
+	[end]
+
+	# a name as JS writes it, dest what CSS calls it: backgroundColor is background-color
+	[CssName: ptr<u8> text: 0; u32 n: 0; ptr<WlBuf> b: 0;]
+		# cssFloat is the odd one
+		if (WlText.EqZ: text n 'cssFloat')
+			call b.AddZ: 'float';
+			return;
+		;;
+		while u32 i: 0; i < n; i++;
+			u32 c: text:i;
+			if c >= 'A' and c <= 'Z'
+				call b.Add: '-';
+				call b.Add: (c + 32) as u8;
+			;;
+			else
+				call b.Add: c as u8;
+			;;
+		;;
+	[end]
+
+	# whether a string key is a CSS property name rather than one of the object's own
+	[IsPropertyKey: u64 key: 0; ptr<WlBuf> name: 0;]
+		if not (JsV.IsStr: key) return false;
+		ptr<JsStr> s: (JsStrs.Flat: (JsV.AsStr: key));
+		if s.bytes is 0 return false;
+		call CssName: s.data s.bytes name;
+		if name.len > 1 and name.data:0 is '-' and name.data:1 is '-'
+			return true;
+		;;
+	[end: (Css.PropertyId: name.data name.len) is not 0]
+
+	[StyleHookGet: ptr<JsObj> o: 0; u64 key: 0; u64 recv: 0; ptr<u64> output: 0;]
+		WlBuf name;
+		if not (IsPropertyKey: key addr name)
+			call name.Free;
+			return 0;
+		;;
+		WlBuf text;
+		call Css.StyleGet: o.data as ptr<DomNode> name.data name.len addr text;
+		output:0 is (Js.NewString: text.data text.len);
+		call name.Free;
+		call text.Free;
+	[end: 1]
+
+	[StyleHookSet: ptr<JsObj> o: 0; u64 key: 0; u64 v: 0; u64 recv: 0;]
+		WlBuf name;
+		if not (IsPropertyKey: key addr name)
+			call name.Free;
+			return 0;
+		;;
+		call SetStyleValue: o.data as ptr<DomNode> addr name v false;
+		call name.Free;
+	[end: 1]
+
+	# setting nothing removes it; a value CSS doesn't accept leaves things as they are, silently, as browsers do
+	[SetStyleValue: ptr<DomNode> n: 0; ptr<WlBuf> name: 0; u64 v: 0; bln important: false;]
+		WlBuf text;
+		call StringArg: v addr text;
+		if text.len is 0
+			call Css.StyleRemove: n name.data name.len;
+		;;
+		else
+			call Css.StyleSet: n name.data name.len text.data text.len important;
+		;;
+		call text.Free;
+	[end]
+
+	[ThisStyle: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.cls is style_class or o.cls is computed_class
+				return o;
+			;;
+		;;
+		call JsErr.Type: 'Illegal invocation: this is not a CSSStyleDeclaration';
+	[end: 0 as ptr<JsObj>]
+
+	[StyleTextGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStyle: args);
+		WlBuf b;
+		if o.cls is style_class
+			call Css.StyleText: o.data as ptr<DomNode> addr b;
+		;;
+		u64 r: (Js.NewString: b.data b.len);
+		call b.Free;
+	[end: r]
+
+	[StyleTextSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStyle: args);
+		WlBuf b;
+		call StringArg: (Js.Arg: args argc 0) addr b;
+		if o.cls is style_class
+			call Css.StyleSetText: o.data as ptr<DomNode> b.data b.len;
+		;;
+		call b.Free;
+	[end: JsV.UNDEF]
+
+	[StyleLength: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStyle: args);
+		if o.cls is computed_class
+			return (JsV.Uint: (Css.LonghandCount));
+		;;
+		ptr<CssDecls> d: (Css.StyleDecls: o.data as ptr<DomNode>);
+		if d is 0
+			return JsV.INT_BASE;
+		;;
+	[end: (JsV.Uint: (Css.DeclCount: d))]
+
+	[StyleItem: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStyle: args);
+		f64 i: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		if i < 0.0
+			return (JsV.Str: JsRt.blank);
+		;;
+		if o.cls is computed_class
+			if i >= ((Css.LonghandCount) as f64)
+				return (JsV.Str: JsRt.blank);
+			;;
+			return (Js.NewStringZ: (Css.PropertyName: i as u32));
+		;;
+		ptr<CssDecls> d: (Css.StyleDecls: o.data as ptr<DomNode>);
+		if d is 0 or i >= ((Css.DeclCount: d) as f64)
+			return (JsV.Str: JsRt.blank);
+		;;
+	[end: (Js.NewStringZ: (Css.DeclName: d i as u32))]
+
+	[StyleGetFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStyle: args);
+		WlBuf name;
+		call Js.TextOf: (Js.Arg: args argc 0) addr name;
+		WlBuf text;
+		if o.cls is style_class
+			call Css.StyleGet: o.data as ptr<DomNode> name.data name.len addr text;
+		;;
+		else
+			call Css.ComputedText: o.data as ptr<DomNode> name.data name.len addr text;
+		;;
+		u64 r: (Js.NewString: text.data text.len);
+		call name.Free;
+		call text.Free;
+	[end: r]
+
+	[StyleSetFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStyle: args);
+		if o.cls is computed_class
+			call DomError: 'NoModificationAllowedError' 'A computed style cannot be changed';
+		;;
+		WlBuf name;
+		call Js.TextOf: (Js.Arg: args argc 0) addr name;
+		bln important: false;
+		if argc > 2
+			ptr<JsStr> pr: (JsOps.ToStr: args:2);
+			important is (JsStrs.EqZ: pr 'important');
+		;;
+		call SetStyleValue: o.data as ptr<DomNode> addr name (Js.Arg: args argc 1) important;
+		call name.Free;
+	[end: JsV.UNDEF]
+
+	[StyleRemoveFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStyle: args);
+		WlBuf name;
+		call Js.TextOf: (Js.Arg: args argc 0) addr name;
+		WlBuf text;
+		u64 r: (JsV.Str: JsRt.blank);
+		if o.cls is style_class
+			call Css.StyleGet: o.data as ptr<DomNode> name.data name.len addr text;
+			r is (Js.NewString: text.data text.len);
+			call Css.StyleRemove: o.data as ptr<DomNode> name.data name.len;
+		;;
+		call name.Free;
+		call text.Free;
+	[end: r]
+
+	[StylePriorityFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStyle: args);
+		if o.cls is style_class
+			ptr<CssDecls> d: (Css.StyleDecls: o.data as ptr<DomNode>);
+			if d is not 0
+				WlBuf name;
+				call Js.TextOf: (Js.Arg: args argc 0) addr name;
+				bln yes: (Css.DeclPriority: d name.data name.len);
+				call name.Free;
+				if yes
+					return (Js.NewStringZ: 'important');
+				;;
+			;;
+		;;
+	[end: (JsV.Str: JsRt.blank)]
+
+	[ComputedHookGet: ptr<JsObj> o: 0; u64 key: 0; u64 recv: 0; ptr<u64> output: 0;]
+		WlBuf name;
+		if not (IsPropertyKey: key addr name)
+			call name.Free;
+			return 0;
+		;;
+		call Page.UpdateStyle: Page.current;
+		WlBuf text;
+		call Css.ComputedText: o.data as ptr<DomNode> name.data name.len addr text;
+		output:0 is (Js.NewString: text.data text.len);
+		call name.Free;
+		call text.Free;
+	[end: 1]
+
+	[NewComputed: ptr<DomNode> n: 0;]
+	[end: (JsV.Obj: (JsObjs.NewHost: computed_class style_proto n as ptr<u8>))]
+
+	# ---- el.dataset ----
+
+	# fooBar is data-foo-bar
+	[DataName: u64 key: 0; ptr<WlBuf> name: 0;]
+		if not (JsV.IsStr: key) return false;
+		ptr<JsStr> s: (JsStrs.Flat: (JsV.AsStr: key));
+		call name.AddZ: 'data-';
+		while u32 i: 0; i < s.bytes; i++;
+			u32 c: s.data:i;
+			if c >= 'A' and c <= 'Z'
+				call name.Add: '-';
+				call name.Add: (c + 32) as u8;
+			;;
+			else
+				call name.Add: c as u8;
+			;;
+		;;
+	[end: true]
+
+	[DataGet: ptr<JsObj> o: 0; u64 key: 0; u64 recv: 0; ptr<u64> output: 0;]
+		WlBuf name;
+		if not (DataName: key addr name)
+			call name.Free;
+			return 0;
+		;;
+		ptr<DomAttr> a: (Dom.Attr: o.data as ptr<DomNode> (WlAtoms.Get: name.data name.len));
+		call name.Free;
+		if a is 0 return 0;
+		output:0 is (Js.NewString: a.value a.value_len);
+	[end: 1]
+
+	[DataSet: ptr<JsObj> o: 0; u64 key: 0; u64 v: 0; u64 recv: 0;]
+		WlBuf name;
+		if not (DataName: key addr name)
+			call name.Free;
+			return 0;
+		;;
+		call SetAttrFrom: o.data as ptr<DomNode> (WlAtoms.Get: name.data name.len) v;
+		call name.Free;
+	[end: 1]
+
+	[DataDelete: ptr<JsObj> o: 0; u64 key: 0;]
+		WlBuf name;
+		if not (DataName: key addr name)
+			call name.Free;
+			return 0;
+		;;
+		call Dom.RemoveAttr: o.data as ptr<DomNode> (WlAtoms.Get: name.data name.len);
+		call name.Free;
+	[end: 1]
+
+	[DataHas: ptr<JsObj> o: 0; u64 key: 0;]
+		WlBuf name;
+		if not (DataName: key addr name)
+			call name.Free;
+			return 0;
+		;;
+		ptr<DomAttr> a: (Dom.Attr: o.data as ptr<DomNode> (WlAtoms.Get: name.data name.len));
+		call name.Free;
+		if a is 0 return 0;
+	[end: 1]
+
+	[DataKeys: ptr<JsObj> o: 0; ptr<JsObj> list: 0;]
+		ptr<DomNode> n: o.data as ptr<DomNode>;
+		ptr<DomAttr> a: n.attrs;
+		while a is not 0
+			if a.name.len > 5 and (WlText.Eq: a.name.text 5 'data-' 5)
+				WlBuf b;
+				u32 i: 5;
+				while i < a.name.len
+					u32 c: a.name.text:i;
+					if c is '-' and i + 1 < a.name.len
+						i++;
+						call b.Add: (WlText.Upper: a.name.text:i) as u8;
+					;;
+					else
+						call b.Add: c as u8;
+					;;
+					i++;
+				;;
+				call JsObjs.ArrayPush: list (Js.NewString: b.data b.len);
+				call b.Free;
+			;;
+			a is a.next;
+		;;
+	[end]
+
+	[DataGetOwn: ptr<JsObj> o: 0; u64 key: 0; ptr<JsDesc> d: 0;]
+		WlBuf name;
+		if not (DataName: key addr name)
+			call name.Free;
+			return 0;
+		;;
+		ptr<DomAttr> a: (Dom.Attr: o.data as ptr<DomNode> (WlAtoms.Get: name.data name.len));
+		call name.Free;
+		if a is 0 return 0;
+		d.value is (Js.NewString: a.value a.value_len);
+		d.getter is JsV.UNDEF;
+		d.setter is JsV.UNDEF;
+		d.flags is JsObjs.WEC;
+	[end: 1]
+
+	# ---- things the window keeps in step ----
+
+	[SyncWindow: ptr<Page> p: 0;]
+		call PageWindow.Sync: p;
+	[end]
+}

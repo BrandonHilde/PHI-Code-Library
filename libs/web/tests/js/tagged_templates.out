@@ -1,0 +1,18 @@
+a|b|c#a|b|c#1,2
+
+|\u0009#\n|\t#0
+##
+|#|#1
+true true true
+false
+true true
+undefined/\u{110000} undefined/\xg undefined/\01
+ab
+new tag true
+sum 3 and nested 2 and 4
+10 ab AA
+123 $ $$ {} ${} }
+ts 1,2 null undefined
+TypeError
+3:3
+3:3 3:3

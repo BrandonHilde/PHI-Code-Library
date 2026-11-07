@@ -1,0 +1,32 @@
+# How deep recursion may go. A program's stack is small (64 KB on PHI OS, 1 MB on Windows) and
+# running off it can't be caught there, so anything that recurses on what a page wrote (the JS
+# parser, its compiler, JSON, a native calling back into JS) calls Check at each level, and
+# gets an ordinary error instead. HTML, the DOM and the garbage collector don't recurse at all.
+#
+#   call WlStack.Check;      # throws when too much of the stack is in use
+
+phi.WlStack:Library
+{
+	u64 base: 0;              # the deepest-up place seen: where the stack started, near enough
+	u32 budget: 48000;        # safe everywhere; Weblib.Start sets it from what the host says
+
+	# bytes of stack in use below where the library was first entered
+	[Used]
+		int here: 0;
+		u64 place: (addr here) as u64;
+		if place > base
+			base is place;
+			return 0;
+		;;
+	[end: (base - place) as int]
+
+	[Check]
+		if (Used) as u32 > budget
+			throw 'too much recursion';
+		;;
+	[end]
+
+	# whether going count bytes deeper would still be within the budget
+	[Fits: u32 bytes: 0;]
+	[end: (Used) as u32 + bytes <= budget]
+}

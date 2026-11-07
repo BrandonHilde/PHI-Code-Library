@@ -1,0 +1,125 @@
+# Bytes and code points: ASCII classes, comparing, hashing, UTF-8 decoding.
+
+use memory.mem;
+
+phi.WlText:Library
+{
+	# set by Decode: how many bytes the code point took
+	u32 width: 0;
+
+	# ASCII whitespace as HTML and CSS mean it: tab, line feed, form feed, return, space
+	[IsSpace: u32 c: 0;]
+	[end: c is 32 or c is 10 or c is 9 or c is 13 or c is 12]
+
+	[IsDigit: u32 c: 0;]
+	[end: c >= 48 and c <= 57]
+
+	[IsAlpha: u32 c: 0;]
+	[end: (c >= 65 and c <= 90) or (c >= 97 and c <= 122)]
+
+	[IsAlnum: u32 c: 0;]
+	[end: (c >= 48 and c <= 57) or (c >= 65 and c <= 90) or (c >= 97 and c <= 122)]
+
+	[IsHex: u32 c: 0;]
+	[end: (c >= 48 and c <= 57) or (c >= 65 and c <= 70) or (c >= 97 and c <= 102)]
+
+	# 0 to 15; -1 if it isn't a hex digit
+	[HexValue: u32 c: 0;]
+		if c >= 48 and c <= 57 return (c - 48) as int;
+		if c >= 65 and c <= 70 return (c - 55) as int;
+		if c >= 97 and c <= 102 return (c - 87) as int;
+	[end: -1]
+
+	[Lower: u32 c: 0;]
+		if c >= 65 and c <= 90 return c + 32;
+	[end: c]
+
+	[Upper: u32 c: 0;]
+		if c >= 97 and c <= 122 return c - 32;
+	[end: c]
+
+	[Eq: ptr<u8> a: 0; u32 a_len: 0; ptr<u8> b: 0; u32 b_len: 0;]
+		if a_len is not b_len return false;
+		while u32 i: 0; i < a_len; i++;
+			if a:i is not b:i return false;
+		;;
+	[end: true]
+
+	# (a, a_len) against zero-terminated b
+	[EqZ: ptr<u8> a: 0; u32 a_len: 0; ptr<u8> b: 0;]
+		u32 i: 0;
+		while i < a_len
+			if b:i is 0 or a:i is not b:i return false;
+			i++;
+		;;
+	[end: b:i is 0]
+
+	# the same, with ASCII letters in either case equal
+	[EqNoCase: ptr<u8> a: 0; u32 a_len: 0; ptr<u8> b: 0; u32 b_len: 0;]
+		if a_len is not b_len return false;
+		while u32 i: 0; i < a_len; i++;
+			if (Lower: a:i) is not (Lower: b:i) return false;
+		;;
+	[end: true]
+
+	[EqNoCaseZ: ptr<u8> a: 0; u32 a_len: 0; ptr<u8> b: 0;]
+		u32 i: 0;
+		while i < a_len
+			if b:i is 0 or (Lower: a:i) is not (Lower: b:i) return false;
+			i++;
+		;;
+	[end: b:i is 0]
+
+	[LenZ: ptr<u8> text: 0;]
+		if text is 0 return 0;
+		u32 n: 0;
+		while text:n is not 0
+			n++;
+		;;
+	[end: n]
+
+	# FNV-1a
+	[Hash: ptr<u8> text: 0; u32 n: 0;]
+		u32 h: 2166136261;
+		while u32 i: 0; i < n; i++;
+			h is (h ^ text:i) * 16777619;
+		;;
+	[end: h]
+
+	# a copy on the heap, zero-terminated (the caller's to free)
+	[Dup: ptr<u8> text: 0; u32 n: 0;]
+		ptr<u8> copy: new u8[n + 1];
+		if copy is 0
+			throw 'out of memory copying ' n ' bytes';
+		;;
+		if n > 0
+			call Mem.Copy: copy text n;
+		;;
+	[end: copy]
+
+	# The code point at p, of avail bytes, and its size in width. Bad UTF-8 (a stray byte, a
+	# sequence cut short or too long for its value, a surrogate) gives U+FFFD and width 1.
+	[Decode: ptr<u8> p: 0; u32 avail: 0;]
+		width is 1;
+		if avail is 0 return 0xFFFD;
+		u32 c: p:0;
+		if c < 0x80 return c;
+		if c < 0xC2 or c > 0xF4 return 0xFFFD;
+		if c < 0xE0
+			if avail < 2 or (p:1 & 0xC0) is not 0x80 return 0xFFFD;
+			width is 2;
+			return ((c & 31) << 6) | (p:1 & 63);
+		;;
+		if c < 0xF0
+			if avail < 3 or (p:1 & 0xC0) is not 0x80 or (p:2 & 0xC0) is not 0x80 return 0xFFFD;
+			u32 three: ((c & 15) << 12) | ((p:1 & 63) << 6) | (p:2 & 63);
+			if three < 0x800 or (three >= 0xD800 and three <= 0xDFFF) return 0xFFFD;
+			width is 3;
+			return three;
+		;;
+		if avail < 4 or (p:1 & 0xC0) is not 0x80 or (p:2 & 0xC0) is not 0x80 or (p:3 & 0xC0) is not 0x80 return 0xFFFD;
+		u32 four: ((c & 7) << 18) | ((p:1 & 63) << 12) | ((p:2 & 63) << 6) | (p:3 & 63);
+		if four < 0x10000 or four > 0x10FFFF return 0xFFFD;
+		width is 4;
+	[end: four]
+}

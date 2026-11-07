@@ -1,0 +1,1456 @@
+# Objects: properties in insertion order (key, value, flags), searched linearly when small, with a
+# hash index once there are many; dense element storage with holes for index keys; prototype chains.
+#
+# A key, as the methods here take it, is a *key value* (see KeyOf): an int-tagged u32 for an array
+# index, or a string value of an interned string that isn't one, or a symbol value. GetAtom and
+# SetAtom take the pointer of an interned non-index string (or symbol) directly, and are quicker.
+#
+# Index keys live in elems when they're near enough together and have the default attributes. Any
+# other goes in the property table under its interned text, and the object has F_SPARSE. An element
+# is never in both places.
+
+struct.JsProp
+{
+	ptr<u8> key;           # a JsStr (interned) or JsSym; 0 where one was deleted
+	u64 value;             # or a JsAccessor's cell, with ACC
+	u32 flags;
+}
+
+struct.JsDesc
+{
+	u64 value;
+	u64 getter;
+	u64 setter;
+	u32 flags;             # JsObjs.W, E, C, ACC and H_...
+}
+
+# what makes a kind of host object (or a builtin with a payload) what it is. Every hook is optional;
+# see docs/JS-INTERNALS.md for what each one's result means.
+struct.JsClass
+{
+	ptr<u8> name;          # 'Date': what Object.prototype.toString says if nothing else does
+	u32 id;
+	method<ptr<JsObj>> trace;
+	method<ptr<JsObj>> finalize;
+	method<ptr<JsObj> u64 u64 ptr<u64>: int> get;       # object key receiver result
+	method<ptr<JsObj> u64 u64 u64: int> set;            # object key value receiver
+	method<ptr<JsObj> u64: int> has_key;                  # object key
+	method<ptr<JsObj> u64: int> del;                    # object key
+	method<ptr<JsObj> ptr<JsObj>> keys;                 # object, an array to add own keys to
+	method<ptr<JsObj> u64 ptr<JsDesc>: int> get_own;    # object key descriptor
+	method<ptr<JsObj> u64 ptr<JsDesc>: int> define;     # object key descriptor
+	method<ptr<JsObj> ptr<u64> int: u64> call_fn;       # object args argc: for callable hosts (with this at args:(-1))
+	method<ptr<JsObj> ptr<u64> int u64: u64> construct; # object args argc new_target
+	method<ptr<JsObj>: u64> get_proto;
+	method<ptr<JsObj> u64: int> set_proto;
+	method<ptr<JsObj>: int> is_extensible;
+	method<ptr<JsObj>: int> prevent_ext;
+	method<ptr<JsObj>: int> ephemeron;                  # marks values of live keys; how many it marked
+	method<ptr<JsObj>> weak_clear;                      # drops what the collection found dead
+}
+
+struct.JsObj
+{
+	ptr<JsCell> gc_next;
+	u8 kind;
+	u8 mark;
+	u16 flags;             # JsObjs.F_...
+	u32 size;
+	ptr<JsObj> proto;
+	ptr<JsProp> props;
+	ptr<u32> index;        # a hash index once there are many: place of a property plus one
+	ptr<u64> elems;
+	ptr<JsClass> cls;
+	ptr<u8> data;          # a host object's payload (and others': see the kinds)
+	u64 slot;              # a value the kind may keep, marked by the collector
+	u32 count;             # places used in props, deleted ones too
+	u32 cap;
+	u32 deleted;
+	u32 index_mask;
+	u32 elem_len;
+	u32 elem_cap;
+	u32 length;            # an array's length
+}
+
+struct.JsFn
+{
+	JsObj o;
+	ptr<JsCode> code;
+	ptr<JsScope> scope;
+	ptr<JsObj> home;       # where super looks: the object a method was defined on
+	ptr<JsFn> fields;      # a class constructor's: the function that sets up instance fields
+}
+
+struct.JsNativeFn
+{
+	JsObj o;
+	method<ptr<u64> int: u64> fn;
+	ptr<u8> name;          # zero-terminated, until 'name' is made
+	u64 data;              # what the native wants kept with it; read with Js.Callee
+	u64 data2;
+	int nargs;             # its 'length'
+	u32 magic;             # one native serving several functions can tell which
+	bln gc_safe;
+}
+
+struct.JsBoundFn
+{
+	JsObj o;
+	u64 target;
+	u64 this_val;
+	ptr<u64> args;
+	u32 argc;
+}
+
+phi.JsObjs:Library
+{
+	# property flags
+	const u32 W: 1;
+	const u32 E: 2;
+	const u32 C: 4;
+	const u32 WEC: 7;
+	const u32 WC: 5;           # what builtin methods have
+	const u32 ACC: 8;
+	const u32 MAPPED_P: 16;    # an arguments object's: the value's in the scope
+	# in a JsDesc: which fields were given
+	const u32 H_W: 32;
+	const u32 H_E: 64;
+	const u32 H_C: 128;
+	const u32 H_VALUE: 256;
+	const u32 H_GET: 512;
+	const u32 H_SET: 1024;
+
+	# object flags
+	const u32 F_NOEXT: 1;
+	const u32 F_SPARSE: 2;
+	const u32 F_LAZY: 4;       # a function whose length, name and prototype aren't made yet
+	const u32 F_CALLABLE: 8;
+	const u32 F_CTOR: 16;
+	const u32 F_LEN_RO: 32;    # an array whose length can't be written
+	const u32 F_SPECIAL: 64;   # the quick lookups must look closer: arrays, boxes, lazies, hooks
+	const u32 F_HOOKS: 128;
+	const u32 F_CLASS: 256;    # a class constructor
+
+	u64 MAPPED: 0xFFF9000000000005;
+
+	const u32 SMALL: 8;        # more properties than this get a hash index
+	const u32 MAX_GAP: 1024;   # a[i] this far past the end still stays dense
+	const u32 MAX_DENSE: 0x4000000;
+
+	# ---- making ----
+
+	[Alloc: u32 size: 0; u32 kind: 0; ptr<JsObj> proto: 0;]
+		ptr<JsObj> o: (JsGc.New: size kind) as ptr<JsObj>;
+		o.proto is proto;
+		o.slot is JsV.UNDEF;
+	[end: o]
+
+	[NewObject]
+	[end: (Alloc: sizeof JsObj JsGc.K_OBJECT JsRt.P.object)]
+
+	[NewWithProto: ptr<JsObj> proto: 0;]
+	[end: (Alloc: sizeof JsObj JsGc.K_OBJECT proto)]
+
+	[NewArray: u32 room: 0;]
+		ptr<JsObj> a: (Alloc: sizeof JsObj JsGc.K_ARRAY JsRt.P.array);
+		a.flags is F_SPECIAL as u16;
+		if room > 0
+			call ReserveElems: a room;
+		;;
+	[end: a]
+
+	[NewHost: ptr<JsClass> cl: 0; ptr<JsObj> proto: 0; ptr<u8> data: 0;]
+		ptr<JsObj> o: (Alloc: sizeof JsObj JsGc.K_HOST proto);
+		o.cls is cl;
+		o.data is data;
+		if cl is not 0
+			if cl.get is not 0 or cl.set is not 0 or cl.has_key is not 0 or cl.del is not 0 or cl.keys is not 0 or cl.get_own is not 0 or cl.define is not 0 or cl.get_proto is not 0 or cl.set_proto is not 0 or cl.is_extensible is not 0 or cl.prevent_ext is not 0
+				o.flags is (F_HOOKS | F_SPECIAL) as u16;
+			;;
+			if cl.call_fn is not 0
+				o.flags is o.flags | F_CALLABLE as u16;
+			;;
+			if cl.construct is not 0
+				o.flags is o.flags | F_CTOR as u16;
+			;;
+		;;
+	[end: o]
+
+	[NewSymbol: ptr<JsStr> description: 0;]
+		ptr<JsSym> s: (JsGc.New: sizeof JsSym JsGc.K_SYMBOL) as ptr<JsSym>;
+		s.desc is description;
+		ptr<JsRuntime> r: JsRt.r;
+		r.sym_hash is r.sym_hash * 2654435769 + 40503;
+		s.hash is r.sym_hash | 1;
+	[end: s]
+
+	[NewNative: method<ptr<u64> int: u64> fn: 0; ptr<u8> name: 0; int nargs: 0; bln gc_safe: false;]
+		ptr<JsNativeFn> f: (Alloc: sizeof JsNativeFn JsGc.K_NATIVE JsRt.P.function) as ptr<JsNativeFn>;
+		f.o.flags is (F_CALLABLE | F_LAZY | F_SPECIAL) as u16;
+		f.fn is fn;
+		f.name is name;
+		f.nargs is nargs;
+		f.gc_safe is gc_safe;
+		f.data is JsV.UNDEF;
+		f.data2 is JsV.UNDEF;
+	[end: f]
+
+	[NewClass: ptr<u8> name: 0;]
+		ptr<JsClass> cl: new JsClass;
+		if cl is 0
+			throw 'out of memory';
+		;;
+		cl.name is name;
+		ptr<JsRuntime> r: JsRt.r;
+		r.next_class_id is r.next_class_id + 1;
+		cl.id is r.next_class_id;
+	[end: cl]
+
+	[NewAccessor: u64 getter: 0; u64 setter: 0;]
+		ptr<JsAccessor> a: (JsGc.New: sizeof JsAccessor JsGc.K_ACCESSOR) as ptr<JsAccessor>;
+		a.getter is getter;
+		a.setter is setter;
+	[end: a]
+
+	# ---- keys ----
+
+	[KeyHash: ptr<u8> key: 0;]
+		ptr<JsStr> s: key as ptr<JsStr>;
+	[end: s.hash]
+
+	[IsSymKey: ptr<u8> key: 0;]
+		ptr<JsCell> c: key as ptr<JsCell>;
+	[end: c.kind is JsGc.K_SYMBOL]
+
+	# the key value for any JS value; may run JS (an object's toString)
+	[KeyOf: u64 v: 0;]
+		u32 tag: (v >> 48) as u32;
+		if tag is JsV.TAG_INT
+			if (v as int) >= 0 return v;
+		;;
+		elif tag is JsV.TAG_STR
+			return (KeyOfStr: (JsV.AsStr: v));
+		;;
+		elif tag is JsV.TAG_SYM
+			return v;
+		;;
+		elif tag is JsV.TAG_OBJ
+			v is (JsOps.ToPrimitive: v JsOps.HINT_STRING);
+			return (KeyOf: v);
+		;;
+		elif tag < JsV.TAG_SPECIAL
+			f64 d: (JsV.AsNum: v);
+			if d >= 0.0 and d < 4294967295.0
+				u32 u: d as u32;
+				if (u as f64) is d
+					# (-0 is the key "0" too)
+					return JsV.INT_BASE | u;
+				;;
+			;;
+		;;
+	[end: (KeyOfStr: (JsOps.ToStr: v))]
+
+	[KeyOfStr: ptr<JsStr> s: 0;]
+		ptr<JsStr> a: (JsStrs.InternStr: s);
+		if a.index is not JsStrs.NO_INDEX
+			return JsV.INT_BASE | a.index;
+		;;
+	[end: (JsV.Str: a)]
+
+	[KeyOfAtom: ptr<JsStr> a: 0;]
+	[end: (KeyOfStr: a)]
+
+	# the key value for text in the program, like 'name' or '0'
+	[KeyZ: ptr<u8> text: 0;]
+	[end: (KeyOfStr: (JsStrs.InternZ: text))]
+
+	[IsIndexKey: u64 k: 0;]
+	[end: (k >> 48) as u32 is JsV.TAG_INT]
+
+	# what the property table calls a key value
+	[KeyPtr: u64 k: 0;]
+		if (k >> 48) as u32 is JsV.TAG_INT
+			return (JsStrs.InternIndex: k as u32) as ptr<u8>;
+		;;
+	[end: (k & JsV.PTR_MASK) as ptr<u8>]
+
+	# a key value as JS sees a key: a string or a symbol
+	[KeyToValue: u64 k: 0;]
+		if (k >> 48) as u32 is JsV.TAG_INT
+			return (JsV.Str: (JsStrs.InternIndex: k as u32));
+		;;
+	[end: k]
+
+	[PtrToValue: ptr<u8> key: 0;]
+		if (IsSymKey: key)
+			return (JsV.Sym: key as ptr<JsSym>);
+		;;
+	[end: (JsV.Str: key as ptr<JsStr>)]
+
+	# ---- the property table ----
+
+	[Find: ptr<JsObj> o: 0; ptr<u8> key: 0;]
+		if (o.flags & F_LAZY) is not 0
+			call Materialize: o;
+		;;
+		ptr<JsProp> p: o.props;
+		if o.index is 0
+			ptr<JsProp> stop: p + o.count * sizeof JsProp;
+			while p < stop
+				if p.key is key return p;
+				p++ sizeof JsProp;
+			;;
+			return 0;
+		;;
+		ptr<JsStr> ks: key as ptr<JsStr>;
+		u32 mask: o.index_mask;
+		ptr<u32> tab: o.index;
+		u32 place: ks.hash & mask;
+		while true
+			u32 e: tab:place;
+			if e is 0 break;
+			if p:(e - 1).key is key
+				return p + (e - 1) * sizeof JsProp;
+			;;
+			place is (place + 1) & mask;
+		;;
+	[end: 0 as ptr<JsProp>]
+
+	[AddProp: ptr<JsObj> o: 0; ptr<u8> key: 0; u64 value: 0; u32 flags: 0;]
+		if o.count >= o.cap
+			call GrowProps: o;
+		;;
+		u32 i: o.count;
+		ptr<JsProp> p: o.props + i * sizeof JsProp;
+		p.key is key;
+		p.value is value;
+		p.flags is flags;
+		o.count is i + 1;
+		if o.index is not 0
+			u32 mask: o.index_mask;
+			u32 place: (KeyHash: key) & mask;
+			ptr<u32> tab: o.index;
+			while tab:place is not 0
+				place is (place + 1) & mask;
+			;;
+			tab:place is i + 1;
+		;;
+	[end: p]
+
+	[GrowProps: ptr<JsObj> o: 0;]
+		# a table with many holes is squeezed before it's grown
+		if o.deleted > 4 and o.deleted * 2 >= o.count
+			call Compact: o;
+			return;
+		;;
+		u32 room: o.cap * 2;
+		if room < 4
+			room is 4;
+		;;
+		ptr<JsProp> grown: (WlAlloc.Alloc: room * sizeof JsProp) as ptr<JsProp>;
+		if grown is 0
+			throw 'out of memory';
+		;;
+		if o.props is not 0
+			call Mem.Copy: grown as ptr<u8> o.props as ptr<u8> o.count * sizeof JsProp;
+			call WlAlloc.Free: o.props as ptr<u8> o.cap * sizeof JsProp;
+		;;
+		call JsGc.Account: (room - o.cap) * sizeof JsProp;
+		o.props is grown;
+		o.cap is room;
+		if room > SMALL
+			call RebuildIndex: o;
+		;;
+	[end]
+
+	[RebuildIndex: ptr<JsObj> o: 0;]
+		u32 size: o.cap * 2;
+		if o.index is not 0
+			free o.index;
+		;;
+		ptr<u32> tab: new u32[size];
+		if tab is 0
+			throw 'out of memory';
+		;;
+		o.index is tab;
+		u32 mask: size - 1;
+		o.index_mask is mask;
+		ptr<JsProp> p: o.props;
+		u32 n: o.count;
+		while u32 i: 0; i < n; i++;
+			ptr<u8> key: p:i.key;
+			if key is not 0
+				u32 place: (KeyHash: key) & mask;
+				while tab:place is not 0
+					place is (place + 1) & mask;
+				;;
+				tab:place is i + 1;
+			;;
+		;;
+	[end]
+
+	[Compact: ptr<JsObj> o: 0;]
+		ptr<JsProp> p: o.props;
+		u32 kept: 0;
+		u32 n: o.count;
+		while u32 i: 0; i < n; i++;
+			if p:i.key is not 0
+				if kept is not i
+					p:kept.key is p:i.key;
+					p:kept.value is p:i.value;
+					p:kept.flags is p:i.flags;
+				;;
+				kept++;
+			;;
+		;;
+		while u32 j: kept; j < n; j++;
+			p:j.key is 0;
+		;;
+		o.count is kept;
+		o.deleted is 0;
+		if o.index is not 0
+			call RebuildIndex: o;
+		;;
+	[end]
+
+	[RemoveProp: ptr<JsObj> o: 0; ptr<JsProp> p: 0;]
+		p.key is 0;
+		p.value is JsV.UNDEF;
+		o.deleted is o.deleted + 1;
+		# (a hash index keeps pointing at the empty place, which matches no key)
+	[end]
+
+	# ---- functions' lazy properties ----
+
+	[Materialize: ptr<JsObj> o: 0;]
+		o.flags is o.flags & (0xFFFF - F_LAZY);
+		if o.kind is JsGc.K_ARRAY or (o.flags & F_HOOKS) is not 0
+			return;
+		;;
+		if o.kind is not JsGc.K_BOXED
+			o.flags is o.flags & (0xFFFF - F_SPECIAL);
+		;;
+		if o.kind is JsGc.K_FUNCTION
+			ptr<JsFn> f: o as ptr<JsFn>;
+			ptr<JsCode> co: f.code;
+			call AddProp: o JsRt.A.length as ptr<u8> (JsV.Int: co.length) C;
+			ptr<JsStr> nm: co.name;
+			if nm is 0
+				nm is JsRt.blank;
+			;;
+			call AddProp: o JsRt.A.name as ptr<u8> (JsV.Str: nm) C;
+			if (co.flags & JsCodes.F_HAS_PROTO) is not 0
+				call MakeFnPrototype: f;
+			;;
+		;;
+		elif o.kind is JsGc.K_NATIVE
+			ptr<JsNativeFn> n: o as ptr<JsNativeFn>;
+			call AddProp: o JsRt.A.length as ptr<u8> (JsV.Int: n.nargs) C;
+			ptr<JsStr> nn: JsRt.blank;
+			if n.name is not 0
+				nn is (JsStrs.InternZ: n.name);
+			;;
+			call AddProp: o JsRt.A.name as ptr<u8> (JsV.Str: nn) C;
+		;;
+	[end]
+
+	[MakeFnPrototype: ptr<JsFn> f: 0;]
+		ptr<JsCode> co: f.code;
+		ptr<JsObj> proto: 0;
+		if (co.flags & JsCodes.F_GENERATOR) is not 0
+			if (co.flags & JsCodes.F_ASYNC) is not 0
+				proto is (NewWithProto: JsRt.P.async_generator);
+			;;
+			else
+				proto is (NewWithProto: JsRt.P.generator);
+			;;
+		;;
+		else
+			proto is (NewObject);
+			call AddProp: proto JsRt.A.constructor as ptr<u8> (JsV.Obj: f as ptr<JsObj>) WC;
+		;;
+		call AddProp: f as ptr<JsObj> JsRt.A.prototype as ptr<u8> (JsV.Obj: proto) W;
+	[end]
+
+	# ---- elements ----
+
+	[ReserveElems: ptr<JsObj> o: 0; u32 need: 0;]
+		if need <= o.elem_cap return;
+		if need > MAX_DENSE
+			call JsErr.Range: 'Array too large';
+		;;
+		u32 room: o.elem_cap + (o.elem_cap >> 1) + 4;
+		if room < need
+			room is need;
+		;;
+		ptr<u64> grown: (WlAlloc.Alloc: room * 8) as ptr<u64>;
+		if grown is 0
+			call JsErr.Range: 'Out of memory growing an array';
+		;;
+		if o.elems is not 0
+			call Mem.Copy: grown as ptr<u8> o.elems as ptr<u8> o.elem_len * 8;
+			call WlAlloc.Free: o.elems as ptr<u8> o.elem_cap * 8;
+		;;
+		call JsGc.Account: (room - o.elem_cap) * 8;
+		o.elems is grown;
+		o.elem_cap is room;
+	[end]
+
+	# Sets element i of o to a plain value (writable, enumerable, configurable), dense if it's near
+	# enough, sparse if it isn't. Doesn't look at what's there or touch length.
+	[PutElement: ptr<JsObj> o: 0; u32 i: 0; u64 v: 0;]
+		if i < o.elem_len
+			o.elems:i is v;
+			return;
+		;;
+		if i < MAX_DENSE and (i < o.elem_cap or i - o.elem_len <= MAX_GAP or i <= o.elem_len + (o.elem_len >> 2))
+			call ReserveElems: o i + 1;
+			ptr<u64> e: o.elems;
+			u32 n: o.elem_len;
+			while n < i
+				e:n is JsV.HOLE;
+				n++;
+			;;
+			e:i is v;
+			o.elem_len is i + 1;
+			return;
+		;;
+		call AddProp: o (JsStrs.InternIndex: i) as ptr<u8> v WEC;
+		o.flags is o.flags | F_SPARSE as u16;
+	[end]
+
+	# all elements move to the property table: for attributes a dense element can't have
+	[ToSparse: ptr<JsObj> o: 0;]
+		u32 n: o.elem_len;
+		ptr<u64> e: o.elems;
+		while u32 i: 0; i < n; i++;
+			u64 v: e:i;
+			if v is not JsV.HOLE
+				ptr<u8> key: (JsStrs.InternIndex: i) as ptr<u8>;
+				if v is MAPPED
+					call AddProp: o key JsV.UNDEF WEC | MAPPED_P;
+				;;
+				else
+					call AddProp: o key v WEC;
+				;;
+				o.flags is o.flags | F_SPARSE as u16;
+			;;
+		;;
+		o.elem_len is 0;
+	[end]
+
+	[ArrayPush: ptr<JsObj> a: 0; u64 v: 0;]
+		u32 i: a.length;
+		if i is a.elem_len and i < MAX_DENSE
+			if i >= a.elem_cap
+				call ReserveElems: a i + 1;
+			;;
+			a.elems:i is v;
+			a.elem_len is i + 1;
+			a.length is i + 1;
+			return;
+		;;
+		if i is 0xFFFFFFFF
+			call JsErr.Range: 'Invalid array length';
+		;;
+		call PutElement: a i v;
+		a.length is i + 1;
+	[end]
+
+	# ---- [[GetOwnProperty]] ----
+
+	# fills d in; false if o has no such own property
+	[GetOwn: ptr<JsObj> o: 0; u64 k: 0; ptr<JsDesc> d: 0;]
+		if (o.flags & F_HOOKS) is not 0 and o.cls.get_own is not 0
+			int r: (o.cls.get_own: o k d);
+			if r > 0 return true;
+			if r < 0 return false;
+		;;
+		if (k >> 48) as u32 is JsV.TAG_INT
+			u32 i: k as u32;
+			if i < o.elem_len
+				u64 v: o.elems:i;
+				if v is not JsV.HOLE
+					if v is MAPPED
+						ptr<JsScope> sc: o.data as ptr<JsScope>;
+						v is sc.slots:i;
+					;;
+					d.value is v;
+					d.flags is WEC;
+					return true;
+				;;
+			;;
+			if o.kind is JsGc.K_BOXED and (JsV.IsStr: o.slot)
+				ptr<JsStr> bs: (JsV.AsStr: o.slot);
+				if i < bs.len
+					d.value is (JsV.Str: (JsStrs.FromUnit: (JsStrs.UnitAt: bs i)));
+					d.flags is E;
+					return true;
+				;;
+			;;
+			if (o.flags & F_SPARSE) is 0 return false;
+		;;
+		else
+			if (o.flags & F_SPECIAL) is not 0
+				ptr<u8> ka: (k & JsV.PTR_MASK) as ptr<u8>;
+				if ka is JsRt.A.length as ptr<u8>
+					if o.kind is JsGc.K_ARRAY
+						d.value is (JsV.Uint: o.length);
+						if (o.flags & F_LEN_RO) is not 0
+							d.flags is 0;
+						;;
+						else
+							d.flags is W;
+						;;
+						return true;
+					;;
+					if o.kind is JsGc.K_BOXED and (JsV.IsStr: o.slot)
+						ptr<JsStr> ls: (JsV.AsStr: o.slot);
+						d.value is (JsV.Int: ls.len as int);
+						d.flags is 0;
+						return true;
+					;;
+				;;
+			;;
+		;;
+		ptr<JsProp> p: (Find: o (KeyPtr: k));
+		if p is 0 return false;
+	[end: (DescFromProp: o p k d)]
+
+	[DescFromProp: ptr<JsObj> o: 0; ptr<JsProp> p: 0; u64 k: 0; ptr<JsDesc> d: 0;]
+		d.flags is p.flags & (WEC | ACC);
+		if (p.flags & ACC) is not 0
+			ptr<JsAccessor> ac: (JsV.AsPtr: p.value) as ptr<JsAccessor>;
+			d.getter is ac.getter;
+			d.setter is ac.setter;
+			d.value is JsV.UNDEF;
+			return true;
+		;;
+		if (p.flags & MAPPED_P) is not 0
+			ptr<JsScope> sc: o.data as ptr<JsScope>;
+			d.value is sc.slots:((k as u32));
+			return true;
+		;;
+		d.value is p.value;
+	[end: true]
+
+	# ---- [[Get]] ----
+
+	[Get: ptr<JsObj> o: 0; u64 k: 0; u64 recv: 0;]
+		if (k >> 48) as u32 is JsV.TAG_INT
+			return (GetIndex: o k as u32 recv);
+		;;
+	[end: (GetAtom: o (k & JsV.PTR_MASK) as ptr<u8> recv)]
+
+	[GetAtom: ptr<JsObj> o: 0; ptr<u8> key: 0; u64 recv: 0;]
+		while o is not 0
+			if (o.flags & F_SPECIAL) is not 0
+				if o.kind is JsGc.K_ARRAY
+					if key is JsRt.A.length as ptr<u8>
+						return (JsV.Uint: o.length);
+					;;
+				;;
+				elif (o.flags & F_HOOKS) is not 0 or (o.kind is JsGc.K_BOXED and key is JsRt.A.length as ptr<u8>)
+					return (GetSlow: o (PtrKey: key) recv);
+				;;
+			;;
+			ptr<JsProp> p: (Find: o key);
+			if p is not 0
+				if (p.flags & ACC) is 0
+					return p.value;
+				;;
+				ptr<JsAccessor> ac: (JsV.AsPtr: p.value) as ptr<JsAccessor>;
+				if ac.getter is JsV.UNDEF
+					return JsV.UNDEF;
+				;;
+				return (JsVm.Call0: ac.getter recv);
+			;;
+			o is o.proto;
+		;;
+	[end: JsV.UNDEF]
+
+	# a key pointer (not an index) as a key value
+	[PtrKey: ptr<u8> key: 0;]
+	[end: (PtrToValue: key)]
+
+	[GetIndex: ptr<JsObj> o: 0; u32 i: 0; u64 recv: 0;]
+		while o is not 0
+			if (o.flags & F_HOOKS) is not 0 or o.kind is JsGc.K_BOXED or o.kind is JsGc.K_ARGUMENTS
+				return (GetSlow: o JsV.INT_BASE | i recv);
+			;;
+			if i < o.elem_len
+				u64 v: o.elems:i;
+				if v is not JsV.HOLE
+					return v;
+				;;
+			;;
+			if (o.flags & F_SPARSE) is not 0
+				return (GetSlow: o JsV.INT_BASE | i recv);
+			;;
+			o is o.proto;
+		;;
+	[end: JsV.UNDEF]
+
+	# the whole-spec way, one object at a time
+	[GetSlow: ptr<JsObj> o: 0; u64 k: 0; u64 recv: 0;]
+		JsDesc d;
+		u64 output: JsV.UNDEF;
+		while o is not 0
+			call WlStack.Check;
+			if (o.flags & F_HOOKS) is not 0
+				if o.cls.get is not 0
+					int r: (o.cls.get: o k recv addr output);
+					if r is not 0 return output;
+				;;
+			;;
+			if (GetOwn: o k addr d)
+				if (d.flags & ACC) is 0
+					return d.value;
+				;;
+				if d.getter is JsV.UNDEF
+					return JsV.UNDEF;
+				;;
+				return (JsVm.Call0: d.getter recv);
+			;;
+			o is (ProtoOf: o);
+		;;
+	[end: JsV.UNDEF]
+
+	# a property of any value: primitives look in their prototype
+	[GetV: u64 v: 0; u64 k: 0;]
+		u32 tag: (v >> 48) as u32;
+		if tag is JsV.TAG_OBJ
+			return (Get: (JsV.AsObj: v) k v);
+		;;
+		if tag is JsV.TAG_STR
+			ptr<JsStr> s: (JsV.AsStr: v);
+			if (k >> 48) as u32 is JsV.TAG_INT
+				if (k as u32) < s.len
+					return (JsV.Str: (JsStrs.FromUnit: (JsStrs.UnitAt: s k as u32)));
+				;;
+			;;
+			elif (k & JsV.PTR_MASK) as ptr<u8> is JsRt.A.length as ptr<u8>
+				return (JsV.Int: s.len as int);
+			;;
+		;;
+		ptr<JsObj> proto: (PrimProto: v);
+	[end: (Get: proto k v)]
+
+	# which prototype a primitive's properties come from; undefined and null throw, as they should
+	[PrimProto: u64 v: 0;]
+		u32 tag: (v >> 48) as u32;
+		if tag is JsV.TAG_STR return JsRt.P.string;
+		if tag is JsV.TAG_INT or tag < JsV.TAG_SPECIAL return JsRt.P.number;
+		if tag is JsV.TAG_SYM return JsRt.P.symbol;
+		if v is JsV.TRUE or v is JsV.FALSE return JsRt.P.boolean;
+		call JsErr.Type: 'Cannot read properties of undefined or null';
+	[end: 0 as ptr<JsObj>]
+
+	# ---- [[Set]] ----
+
+	[Set: ptr<JsObj> o: 0; u64 k: 0; u64 v: 0; u64 recv: 0;]
+		JsDesc d;
+		ptr<JsObj> cur: o;
+		while cur is not 0
+			if (cur.flags & F_HOOKS) is not 0 and cur.cls.set is not 0
+				int r: (cur.cls.set: cur k v recv);
+				if r is not 0 return r > 0;
+			;;
+			if (GetOwn: cur k addr d)
+				if (d.flags & ACC) is not 0
+					if d.setter is JsV.UNDEF return false;
+					call JsVm.Call1: d.setter recv v;
+					return true;
+				;;
+				if (d.flags & W) is 0 return false;
+				if (JsV.IsObj: recv) and (JsV.AsObj: recv) is cur
+					return (WriteOwn: cur k v);
+				;;
+				break;
+			;;
+			cur is (ProtoOf: cur);
+		;;
+		if not (JsV.IsObj: recv) return false;
+		ptr<JsObj> ro: (JsV.AsObj: recv);
+		if cur is not ro and (GetOwn: ro k addr d)
+			if (d.flags & ACC) is not 0 or (d.flags & W) is 0 return false;
+			d.value is v;
+			d.flags is H_VALUE;
+			return (DefineOwn: ro k addr d);
+		;;
+	[end: (CreateData: ro k v)]
+
+	# o has this writable own data property: its value changes
+	[WriteOwn: ptr<JsObj> o: 0; u64 k: 0; u64 v: 0;]
+		if (k >> 48) as u32 is JsV.TAG_INT
+			u32 i: k as u32;
+			if i < o.elem_len
+				u64 cur: o.elems:i;
+				if cur is MAPPED
+					ptr<JsScope> sc: o.data as ptr<JsScope>;
+					sc.slots:i is v;
+					return true;
+				;;
+				if cur is not JsV.HOLE
+					o.elems:i is v;
+					return true;
+				;;
+			;;
+		;;
+		elif (o.flags & F_SPECIAL) is not 0 and (k & JsV.PTR_MASK) as ptr<u8> is JsRt.A.length as ptr<u8> and o.kind is JsGc.K_ARRAY
+			return (SetArrayLength: o v);
+		;;
+		ptr<JsProp> p: (Find: o (KeyPtr: k));
+		if p is 0
+			# only a host's own hooks could say it's there and not have it
+			JsDesc d;
+			d.value is v;
+			d.flags is H_VALUE;
+			return (DefineOwn: o k addr d);
+		;;
+		if (p.flags & MAPPED_P) is not 0
+			ptr<JsScope> sm: o.data as ptr<JsScope>;
+			sm.slots:((k as u32)) is v;
+			return true;
+		;;
+		p.value is v;
+	[end: true]
+
+	# a property of any value, set; false if it failed
+	[SetV: u64 target: 0; u64 k: 0; u64 v: 0;]
+		if (JsV.IsObj: target)
+			return (Set: (JsV.AsObj: target) k v target);
+		;;
+		ptr<JsObj> proto: (PrimProto: target);
+	[end: (Set: proto k v target)]
+
+	[SetAtom: ptr<JsObj> o: 0; ptr<u8> key: 0; u64 v: 0;]
+		if (o.flags & F_SPECIAL) is 0
+			ptr<JsProp> p: (Find: o key);
+			if p is not 0 and (p.flags & (W | ACC)) is W
+				p.value is v;
+				return true;
+			;;
+		;;
+	[end: (Set: o (PtrKey: key) v (JsV.Obj: o))]
+
+	# ---- [[DefineOwnProperty]] ----
+
+	# {value: v, writable, enumerable, configurable all true}
+	[CreateData: ptr<JsObj> o: 0; u64 k: 0; u64 v: 0;]
+		if (o.flags & (F_HOOKS | F_NOEXT)) is 0
+			if (k >> 48) as u32 is JsV.TAG_INT
+				if o.kind is JsGc.K_OBJECT or o.kind is JsGc.K_ARRAY
+					u32 i: k as u32;
+					if (o.flags & F_SPARSE) is 0 and (i >= o.elem_len or o.elems:i is JsV.HOLE)
+						if o.kind is JsGc.K_ARRAY
+							if i >= o.length
+								if (o.flags & F_LEN_RO) is not 0 return false;
+								o.length is i + 1;
+							;;
+						;;
+						call PutElement: o i v;
+						return true;
+					;;
+				;;
+			;;
+			elif o.kind is JsGc.K_OBJECT
+				ptr<u8> key: (k & JsV.PTR_MASK) as ptr<u8>;
+				ptr<JsProp> have: (Find: o key);
+				if have is 0
+					call AddProp: o key v WEC;
+					return true;
+				;;
+			;;
+		;;
+		JsDesc d;
+		d.value is v;
+		d.flags is H_VALUE | H_W | H_E | H_C | WEC;
+	[end: (DefineOwn: o k addr d)]
+
+	# false if the definition isn't allowed
+	[DefineOwn: ptr<JsObj> o: 0; u64 k: 0; ptr<JsDesc> d: 0;]
+		if (o.flags & F_HOOKS) is not 0 and o.cls.define is not 0
+			int r: (o.cls.define: o k d);
+			if r is not 0 return r > 0;
+		;;
+		bln is_index: (k >> 48) as u32 is JsV.TAG_INT;
+		if o.kind is JsGc.K_ARRAY
+			if is_index
+				u32 i: k as u32;
+				if i >= o.length and (o.flags & F_LEN_RO) is not 0 return false;
+				if not (Ordinary: o k d) return false;
+				if i >= o.length
+					o.length is i + 1;
+				;;
+				return true;
+			;;
+			if (k & JsV.PTR_MASK) as ptr<u8> is JsRt.A.length as ptr<u8>
+				return (DefineArrayLength: o d);
+			;;
+		;;
+		elif o.kind is JsGc.K_ARGUMENTS and is_index
+			return (DefineArguments: o k d);
+		;;
+	[end: (Ordinary: o k d)]
+
+	# ValidateAndApplyPropertyDescriptor, from the spec
+	[Ordinary: ptr<JsObj> o: 0; u64 k: 0; ptr<JsDesc> d: 0;]
+		JsDesc cur;
+		u32 f: d.flags;
+		if not (GetOwn: o k addr cur)
+			if (o.flags & F_NOEXT) is not 0 return false;
+			return (CreateFrom: o k d);
+		;;
+		u32 cf: cur.flags;
+		if (cf & C) is 0
+			if (f & H_C) is not 0 and (f & C) is not 0 return false;
+			if (f & H_E) is not 0 and (f & E) is not (cf & E) return false;
+			if (f & (H_GET | H_SET)) is not 0
+				if (cf & ACC) is 0 return false;
+				if (f & H_GET) is not 0 and not (JsOps.SameValue: d.getter cur.getter) return false;
+				if (f & H_SET) is not 0 and not (JsOps.SameValue: d.setter cur.setter) return false;
+			;;
+			elif (f & (H_VALUE | H_W)) is not 0
+				if (cf & ACC) is not 0 return false;
+				if (cf & W) is 0
+					if (f & H_W) is not 0 and (f & W) is not 0 return false;
+					if (f & H_VALUE) is not 0 and not (JsOps.SameValue: d.value cur.value) return false;
+				;;
+			;;
+		;;
+		# the result, in cur
+		u32 nf: cf & (W | E | C | ACC);
+		if (f & H_E) is not 0
+			nf is (nf & (0xFF - E)) | (f & E);
+		;;
+		if (f & H_C) is not 0
+			nf is (nf & (0xFF - C)) | (f & C);
+		;;
+		if (f & (H_GET | H_SET)) is not 0
+			if (cf & ACC) is 0
+				cur.getter is JsV.UNDEF;
+				cur.setter is JsV.UNDEF;
+				nf is (nf | ACC) & (0xFF - W);
+			;;
+			if (f & H_GET) is not 0
+				cur.getter is d.getter;
+			;;
+			if (f & H_SET) is not 0
+				cur.setter is d.setter;
+			;;
+		;;
+		elif (f & (H_VALUE | H_W)) is not 0
+			if (cf & ACC) is not 0
+				cur.value is JsV.UNDEF;
+				nf is nf & (0xFF - ACC - W);
+			;;
+			if (f & H_VALUE) is not 0
+				cur.value is d.value;
+			;;
+			if (f & H_W) is not 0
+				nf is (nf & (0xFF - W)) | (f & W);
+			;;
+		;;
+		call Store: o k addr cur nf;
+	[end: true]
+
+	# a new own property from a descriptor, what it doesn't say being false or undefined
+	[CreateFrom: ptr<JsObj> o: 0; u64 k: 0; ptr<JsDesc> d: 0;]
+		u32 f: d.flags;
+		JsDesc n;
+		n.value is JsV.UNDEF;
+		n.getter is JsV.UNDEF;
+		n.setter is JsV.UNDEF;
+		u32 nf: f & (E | C);
+		if (f & (H_GET | H_SET)) is not 0
+			if (f & H_GET) is not 0
+				n.getter is d.getter;
+			;;
+			if (f & H_SET) is not 0
+				n.setter is d.setter;
+			;;
+			nf is nf | ACC;
+		;;
+		else
+			if (f & H_VALUE) is not 0
+				n.value is d.value;
+			;;
+			nf is nf | (f & W);
+		;;
+		call Store: o k addr n nf;
+	[end: true]
+
+	# puts a property into place, whether it's there already or not
+	[Store: ptr<JsObj> o: 0; u64 k: 0; ptr<JsDesc> v: 0; u32 flags: 0;]
+		u64 cell: v.value;
+		if (flags & ACC) is not 0
+			cell is (JsV.Cell: (NewAccessor: v.getter v.setter) as ptr<u8>);
+		;;
+		if (k >> 48) as u32 is JsV.TAG_INT
+			u32 i: k as u32;
+			bln dense: i < o.elem_len and o.elems:i is not JsV.HOLE;
+			if flags is WEC
+				if dense
+					o.elems:i is cell;
+					return;
+				;;
+				if (o.flags & F_SPARSE) is 0
+					call PutElement: o i cell;
+					return;
+				;;
+			;;
+			if dense
+				call ToSparse: o;
+			;;
+			o.flags is o.flags | F_SPARSE as u16;
+		;;
+		ptr<u8> key: (KeyPtr: k);
+		ptr<JsProp> p: (Find: o key);
+		if p is 0
+			call AddProp: o key cell flags;
+			return;
+		;;
+		p.value is cell;
+		p.flags is flags;
+	[end]
+
+	# ---- arrays' length ----
+
+	# `a.length = v`: false if refused (and throws RangeError for a bad length)
+	[SetArrayLength: ptr<JsObj> a: 0; u64 v: 0;]
+		JsDesc d;
+		d.value is v;
+		d.flags is H_VALUE;
+	[end: (DefineArrayLength: a addr d)]
+
+	[DefineArrayLength: ptr<JsObj> a: 0; ptr<JsDesc> d: 0;]
+		u32 f: d.flags;
+		if (f & (H_GET | H_SET)) is not 0 return false;
+		if (f & H_C) is not 0 and (f & C) is not 0 return false;
+		if (f & H_E) is not 0 and (f & E) is not 0 return false;
+		bln ro: (a.flags & F_LEN_RO) is not 0;
+		if (f & H_VALUE) is 0
+			if (f & H_W) is not 0
+				if (f & W) is not 0
+					if ro return false;
+				;;
+				else
+					a.flags is a.flags | F_LEN_RO as u16;
+				;;
+			;;
+			return true;
+		;;
+		f64 num: (JsOps.ToNumber: d.value);
+		u32 want: (JsOps.ToUint32Num: num);
+		if (want as f64) is not (JsOps.ToNumber: d.value)
+			call JsErr.Range: 'Invalid array length';
+		;;
+		if want is not a.length and ro return false;
+		if ro and (f & H_W) is not 0 and (f & W) is not 0 return false;
+		bln ok: (TruncateTo: a want);
+		if (f & H_W) is not 0 and (f & W) is 0
+			a.flags is a.flags | F_LEN_RO as u16;
+		;;
+	[end: ok]
+
+	# Cuts elements at want and above. A sparse one that can't be deleted stops it, one past itself.
+	[TruncateTo: ptr<JsObj> a: 0; u32 want: 0;]
+		if want >= a.length
+			a.length is want;
+			return true;
+		;;
+		if a.elem_len > want
+			a.elem_len is want;
+		;;
+		bln ok: true;
+		if (a.flags & F_SPARSE) is not 0
+			# from the highest index down
+			u32 stop_at: want;
+			ptr<JsProp> p: a.props;
+			u32 n: a.count;
+			while u32 i: 0; i < n; i++;
+				if p:i.key is not 0 and not (IsSymKey: p:i.key)
+					ptr<JsStr> ks: p:i.key as ptr<JsStr>;
+					if ks.index is not JsStrs.NO_INDEX and ks.index >= stop_at and (p:i.flags & C) is 0
+						stop_at is ks.index + 1;
+						ok is false;
+					;;
+				;;
+			;;
+			while u32 j: 0; j < n; j++;
+				if p:j.key is not 0 and not (IsSymKey: p:j.key)
+					ptr<JsStr> kt: p:j.key as ptr<JsStr>;
+					if kt.index is not JsStrs.NO_INDEX and kt.index >= stop_at
+						call RemoveProp: a p + j * sizeof JsProp;
+					;;
+				;;
+			;;
+			want is stop_at;
+		;;
+		a.length is want;
+		# a much shorter array needn't hold on to its room
+		if a.elem_cap > 64 and a.elem_len < (a.elem_cap >> 2)
+			u32 room: a.elem_len + 8;
+			ptr<u64> smaller: (WlAlloc.Alloc: room * 8) as ptr<u64>;
+			if smaller is not 0
+				call Mem.Copy: smaller as ptr<u8> a.elems as ptr<u8> a.elem_len * 8;
+				call WlAlloc.Free: a.elems as ptr<u8> a.elem_cap * 8;
+				a.elems is smaller;
+				a.elem_cap is room;
+			;;
+		;;
+	[end: ok]
+
+	# ---- arguments objects, whose elements can be their function's parameters ----
+
+	[DefineArguments: ptr<JsObj> o: 0; u64 k: 0; ptr<JsDesc> d: 0;]
+		u32 i: k as u32;
+		u32 f: d.flags;
+		bln mapped: false;
+		ptr<JsScope> sc: o.data as ptr<JsScope>;
+		ptr<JsProp> p: 0;
+		if i < o.elem_len and o.elems:i is MAPPED
+			mapped is true;
+		;;
+		elif (o.flags & F_SPARSE) is not 0
+			p is (Find: o (KeyPtr: k));
+			if p is not 0 and (p.flags & MAPPED_P) is not 0
+				mapped is true;
+			;;
+		;;
+		if not mapped
+			return (Ordinary: o k d);
+		;;
+		# Validate against the current state, then decide whether the mapping survives
+		u64 current: sc.slots:i;
+		if (f & (H_GET | H_SET)) is not 0 or ((f & H_W) is not 0 and (f & W) is 0)
+			# it stops being a parameter, with the value it has now
+			if (f & (H_GET | H_SET)) is 0 and (f & H_VALUE) is 0
+				d.value is current;
+				d.flags is f | H_VALUE;
+				f is d.flags;
+			;;
+			if p is not 0
+				if not (Ordinary: o k d) return false;
+				p is (Find: o (KeyPtr: k));
+				p.flags is p.flags & (0xFF - MAPPED_P);
+				if (f & H_VALUE) is not 0
+					sc.slots:i is d.value;
+				;;
+				return true;
+			;;
+			if (f & H_VALUE) is not 0
+				sc.slots:i is d.value;
+			;;
+			o.elems:i is current;
+			return (Ordinary: o k d);
+		;;
+		# Stays mapped; it may take on attributes that move it to the table
+		if not (Ordinary: o k d) return false;
+		if (f & H_VALUE) is not 0
+			sc.slots:i is d.value;
+		;;
+		p is 0;
+		if (o.flags & F_SPARSE) is not 0
+			p is (Find: o (KeyPtr: k));
+		;;
+		if p is not 0
+			p.flags is p.flags | MAPPED_P;
+		;;
+		elif i < o.elem_len
+			o.elems:i is MAPPED;
+		;;
+	[end: true]
+
+	# ---- has, delete ----
+
+	[Has: ptr<JsObj> o: 0; u64 k: 0;]
+		JsDesc d;
+		while o is not 0
+			call WlStack.Check;
+			if (o.flags & F_HOOKS) is not 0 and o.cls.has_key is not 0
+				int r: (o.cls.has_key: o k);
+				if r is not 0 return r > 0;
+			;;
+			if (GetOwn: o k addr d) return true;
+			o is (ProtoOf: o);
+		;;
+	[end: false]
+
+	[HasOwn: ptr<JsObj> o: 0; u64 k: 0;]
+		JsDesc d;
+	[end: (GetOwn: o k addr d)]
+
+	[Delete: ptr<JsObj> o: 0; u64 k: 0;]
+		if (o.flags & F_HOOKS) is not 0 and o.cls.del is not 0
+			int r: (o.cls.del: o k);
+			if r is not 0 return r > 0;
+		;;
+		if (k >> 48) as u32 is JsV.TAG_INT
+			u32 i: k as u32;
+			if i < o.elem_len and o.elems:i is not JsV.HOLE
+				o.elems:i is JsV.HOLE;
+				return true;
+			;;
+			if o.kind is JsGc.K_BOXED and (JsV.IsStr: o.slot)
+				ptr<JsStr> bs: (JsV.AsStr: o.slot);
+				if i < bs.len return false;
+			;;
+			if (o.flags & F_SPARSE) is 0 return true;
+		;;
+		elif (k & JsV.PTR_MASK) as ptr<u8> is JsRt.A.length as ptr<u8> and (o.kind is JsGc.K_ARRAY or (o.kind is JsGc.K_BOXED and (JsV.IsStr: o.slot)))
+			return false;
+		;;
+		ptr<JsProp> p: (Find: o (KeyPtr: k));
+		if p is 0 return true;
+		if (p.flags & C) is 0 return false;
+		call RemoveProp: o p;
+	[end: true]
+
+	# ---- the object's own state, through hooks if it has them ----
+
+	[ProtoOf: ptr<JsObj> o: 0;]
+		if (o.flags & F_HOOKS) is not 0 and o.cls.get_proto is not 0
+			u64 v: (o.cls.get_proto: o);
+			if (JsV.IsObj: v)
+				return (JsV.AsObj: v);
+			;;
+			return 0;
+		;;
+	[end: o.proto]
+
+	# false if refused
+	[SetProtoOf: ptr<JsObj> o: 0; ptr<JsObj> proto: 0;]
+		if (o.flags & F_HOOKS) is not 0 and o.cls.set_proto is not 0
+			u64 v: JsV.NULL;
+			if proto is not 0
+				v is (JsV.Obj: proto);
+			;;
+			int r: (o.cls.set_proto: o v);
+			if r is not 0 return r > 0;
+		;;
+		if o.proto is proto return true;
+		if (o.flags & F_NOEXT) is not 0 return false;
+		if o is JsRt.P.object return false;
+		# no cycles (a proxy in the chain ends the search, as the spec says)
+		ptr<JsObj> p: proto;
+		while p is not 0
+			if p is o return false;
+			if (p.flags & F_HOOKS) is not 0 and p.cls.get_proto is not 0 break;
+			p is p.proto;
+		;;
+		o.proto is proto;
+	[end: true]
+
+	[IsExtensible: ptr<JsObj> o: 0;]
+		if (o.flags & F_HOOKS) is not 0 and o.cls.is_extensible is not 0
+			return (o.cls.is_extensible: o) > 0;
+		;;
+	[end: (o.flags & F_NOEXT) is 0]
+
+	[PreventExtensions: ptr<JsObj> o: 0;]
+		if (o.flags & F_HOOKS) is not 0 and o.cls.prevent_ext is not 0
+			return (o.cls.prevent_ext: o) > 0;
+		;;
+		o.flags is o.flags | F_NOEXT as u16;
+	[end: true]
+
+	# ---- own keys ----
+
+	# An array of o's own keys as JS sees them, strings and symbols, in JS's order: index keys
+	# ascending, then strings in the order they were made, then symbols.
+	[OwnKeys: ptr<JsObj> o: 0;]
+		ptr<JsObj> output: (NewArray: o.elem_len + o.count + 2);
+		if (o.flags & F_HOOKS) is not 0 and o.cls.keys is not 0
+			call o.cls.keys: o output;
+			return output;
+		;;
+		call AddOrdinaryKeys: o output;
+	[end: output]
+
+	# what a keys hook adds after its own: the keys in the object's own table
+	[OrdinaryKeys: ptr<JsObj> o: 0;]
+		ptr<JsObj> output: (NewArray: o.elem_len + o.count + 2);
+		call AddOrdinaryKeys: o output;
+	[end: output]
+
+	[AddOrdinaryKeys: ptr<JsObj> o: 0; ptr<JsObj> output: 0;]
+		if (o.flags & F_LAZY) is not 0
+			call Materialize: o;
+		;;
+		call IndexKeys: o output;
+		if o.kind is JsGc.K_ARRAY or (o.kind is JsGc.K_BOXED and (JsV.IsStr: o.slot))
+			call ArrayPush: output (JsV.Str: JsRt.A.length);
+		;;
+		ptr<JsProp> p: o.props;
+		u32 n: o.count;
+		while u32 i: 0; i < n; i++;
+			ptr<u8> key: p:i.key;
+			if key is not 0 and not (IsSymKey: key)
+				ptr<JsStr> ks: key as ptr<JsStr>;
+				if ks.index is JsStrs.NO_INDEX
+					call ArrayPush: output (JsV.Str: ks);
+				;;
+			;;
+		;;
+		while u32 j: 0; j < n; j++;
+			ptr<u8> ky: p:j.key;
+			if ky is not 0 and (IsSymKey: ky)
+				ptr<JsSym> sy: ky as ptr<JsSym>;
+				if (sy.flags & JsStrs.SYM_PRIVATE) is 0
+					call ArrayPush: output (JsV.Sym: sy);
+				;;
+			;;
+		;;
+	[end]
+
+	[IndexKeys: ptr<JsObj> o: 0; ptr<JsObj> output: 0;]
+		if o.kind is JsGc.K_BOXED and (JsV.IsStr: o.slot)
+			ptr<JsStr> bs: (JsV.AsStr: o.slot);
+			while u32 c: 0; c < bs.len; c++;
+				call ArrayPush: output (JsV.Str: (JsStrs.InternIndex: c));
+			;;
+		;;
+		u32 n: o.elem_len;
+		if (o.flags & F_SPARSE) is 0
+			ptr<u64> e: o.elems;
+			while u32 i: 0; i < n; i++;
+				if e:i is not JsV.HOLE
+					call ArrayPush: output (JsV.Str: (JsStrs.InternIndex: i));
+				;;
+			;;
+			return;
+		;;
+		# with sparse ones too: gather every index, sort, and write them output
+		u32 total: 0;
+		ptr<JsProp> p: o.props;
+		while u32 m: 0; m < o.count; m++;
+			if p:m.key is not 0 and not (IsSymKey: p:m.key)
+				ptr<JsStr> k1: p:m.key as ptr<JsStr>;
+				if k1.index is not JsStrs.NO_INDEX
+					total++;
+				;;
+			;;
+		;;
+		ptr<u32> list: new u32[total + n + 1];
+		if list is 0
+			throw 'out of memory';
+		;;
+		u32 at_list: 0;
+		while u32 a: 0; a < n; a++;
+			if o.elems:a is not JsV.HOLE
+				list:at_list is a;
+				at_list++;
+			;;
+		;;
+		while u32 b: 0; b < o.count; b++;
+			if p:b.key is not 0 and not (IsSymKey: p:b.key)
+				ptr<JsStr> k2: p:b.key as ptr<JsStr>;
+				if k2.index is not JsStrs.NO_INDEX
+					list:at_list is k2.index;
+					at_list++;
+				;;
+			;;
+		;;
+		call SortU32: list at_list;
+		while u32 w: 0; w < at_list; w++;
+			call ArrayPush: output (JsV.Str: (JsStrs.InternIndex: list:w));
+		;;
+		free list;
+	[end]
+
+	# heapsort: no recursion, and no bad case a page could aim for
+	[SortU32: ptr<u32> a: 0; u32 n: 0;]
+		if n < 2 return;
+		u32 start: n / 2;
+		u32 stop: n;
+		while stop > 1
+			if start > 0
+				start--;
+			;;
+			else
+				stop--;
+				u32 t: a:stop;
+				a:stop is a:0;
+				a:0 is t;
+			;;
+			u32 root: start;
+			while root * 2 + 1 < stop
+				u32 child: root * 2 + 1;
+				if child + 1 < stop and a:child < a:(child + 1)
+					child++;
+				;;
+				if a:root >= a:child break;
+				u32 s: a:root;
+				a:root is a:child;
+				a:child is s;
+				root is child;
+			;;
+		;;
+	[end]
+
+	# what a for-in sees: enumerable string keys, along the chain, each once
+	[ForInKeys: ptr<JsObj> o: 0;]
+		ptr<JsObj> output: (NewArray: 8);
+		ptr<JsObj> level: o;
+		JsDesc d;
+		while level is not 0
+			call WlStack.Check;
+			ptr<JsObj> keys: (OwnKeys: level);
+			while u32 i: 0; i < keys.length; i++;
+				u64 kv: keys.elems:i;
+				if (JsV.IsStr: kv)
+					u64 k: (KeyOfStr: (JsV.AsStr: kv));
+					bln shadowed: false;
+					ptr<JsObj> below_level: o;
+					while below_level is not level
+						if (GetOwn: below_level k addr d)
+							shadowed is true;
+							break;
+						;;
+						below_level is (ProtoOf: below_level);
+					;;
+					if not shadowed and (GetOwn: level k addr d) and (d.flags & E) is not 0
+						call ArrayPush: output kv;
+					;;
+				;;
+			;;
+			level is (ProtoOf: level);
+		;;
+	[end: output]
+
+	# ---- helpers for builtins ----
+
+	# an array frozen: every element read-only, nothing can be added (a template's strings)
+	[FreezeArray: ptr<JsObj> a: 0;]
+		call ToSparse: a;
+		ptr<JsProp> p: a.props;
+		while u32 i: 0; i < a.count; i++;
+			if p:i.key is not 0
+				p:i.flags is p:i.flags & E;
+			;;
+		;;
+		a.flags is a.flags | (F_NOEXT | F_LEN_RO) as u16;
+	[end]
+
+	# a property of a plain value on o, with flags, replacing what's there (no checks)
+	[DefineValue: ptr<JsObj> o: 0; ptr<u8> key: 0; u64 v: 0; u32 flags: 0;]
+		ptr<JsProp> p: (Find: o key);
+		if p is not 0
+			p.value is v;
+			p.flags is flags;
+			return;
+		;;
+		call AddProp: o key v flags;
+	[end]
+
+	[DefineZ: ptr<JsObj> o: 0; ptr<u8> name: 0; u64 v: 0; u32 flags: 0;]
+		call DefineValue: o (JsStrs.InternZ: name) as ptr<u8> v flags;
+	[end]
+
+	[DefineGetter: ptr<JsObj> o: 0; ptr<u8> key: 0; u64 getter: 0; u64 setter: 0; u32 flags: 0;]
+		u64 cell: (JsV.Cell: (NewAccessor: getter setter) as ptr<u8>);
+		call DefineValue: o key cell flags | ACC;
+	[end]
+}

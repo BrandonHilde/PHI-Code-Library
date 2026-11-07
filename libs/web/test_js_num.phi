@@ -1,0 +1,173 @@
+# WlNum: numbers to text and back, exactly. Checks every conversion against what the
+# ECMAScript spec and IEEE 754 say, on values chosen to be hard.
+use js.js;
+
+phi.TestJsNum:Program
+{
+	call Js.Start;
+	call Show: 0.1 + 0.2;
+	call Show: 1e21;
+	call Show: 1e20;
+	call Show: 123456789012345680000.0;
+	call Show: -0.0;
+	call Show: 5e-324;
+	call Show: 1.7976931348623157e308;
+	call Show: 2.2250738585072014e-308;
+	call Show: 1e-7;
+	call Show: 0.000001;
+	call Show: 1.5;
+	call Show: 100.0;
+	call Show: 9007199254740992.0;
+	call Show: 4.35;
+	call Show: 2.5e-5;
+	call Show: 1.2345678901234567;
+	call Show: (WlNum.FromBits: 0x0000000000000002);
+	call Show: (WlNum.FromBits: 0x000FFFFFFFFFFFFF);
+	call Show: (WlNum.FromBits: 0x0010000000000000);
+	call Show: 1e23;
+	call Show: 5e-323;
+	call Show: 9.5367431640625e-7;
+	call Show: (WlNum.FromBits: 0x7FF0000000000000);
+	call Show: (WlNum.FromBits: 0xFFF0000000000000);
+	call Show: (WlNum.FromBits: 0x7FF8000000000000);
+
+	# reading
+	call ParseShow: '0.1';
+	call ParseShow: '1e400';
+	call ParseShow: '1e-400';
+	call ParseShow: '1.7976931348623157e308';
+	call ParseShow: '1.7976931348623159e308';
+	call ParseShow: '5e-324';
+	call ParseShow: '2.4703282292062327e-324';
+	call ParseShow: '2.4703282292062328e-324';
+	call ParseShow: '2.2250738585072011e-308';
+	call ParseShow: '9007199254740993';
+	call ParseShow: '9007199254740995';
+	call ParseShow: '.5';
+	call ParseShow: '5.';
+	call ParseShow: '.';
+	call ParseShow: '1e';
+	call ParseShow: '123456789012345678901234567890';
+	call ParseShow: '0.000000000000000000000000000000000000000001';
+	call ParseShow: '1.00000000000000011102230246251565404236316680908203125';
+	call ParseShow: '1.00000000000000011102230246251565404236316680908203124';
+	call ParseShow: '1.00000000000000011102230246251565404236316680908203126';
+
+	# what's printed reads back as the same bits, over many values
+	u64 seed: 88172645463325252;
+	int bad: 0;
+	WlBuf b;
+	while int i: 0; i < 3000; i++;
+		seed is seed ^ (seed << 13);
+		seed is seed ^ (seed >> 7);
+		seed is seed ^ (seed << 17);
+		f64 x: (WlNum.FromBits: seed);
+		if x is not x or not (WlNum.IsFinite: x)
+			continue;
+		;;
+		call b.Clear;
+		call WlNum.ToText: x addr b;
+		ptr<u8> text: b.data;
+		u32 tn: b.len;
+		bln neg: text:0 is '-';
+		if neg
+			text is text + 1;
+			tn--;
+		;;
+		f64 y: (WlNum.Parse: text tn);
+		if neg
+			y is 0.0 - y;
+		;;
+		if (WlNum.Bits64: y) is not (WlNum.Bits64: x)
+			bad++;
+			log 'round trip failed: ' b.data '\n';
+		;;
+	;;
+	log 'round trips failed ' bad '\n';
+
+	# other ways to write them
+	call Fixed: 1.005 2;
+	call Fixed: 0.5 0;
+	call Fixed: 1.5 0;
+	call Fixed: 2.5 0;
+	call Fixed: 1.45 1;
+	call Fixed: -0.0000001 2;
+	call Fixed: 123.456 2;
+	call Fixed: 0.0 2;
+	call Fixed: 1e21 2;
+	call Fixed: 0.000001 7;
+	call Fixed: 1000000000000000128.0 0;
+	call Exp: 12.5 1;
+	call Exp: 0.0 2;
+	call Exp: 123456.0 (-1);
+	call Exp: 0.00015 0;
+	call Exp: 1.0 3;
+	call Prec: 123.456 4;
+	call Prec: 0.000123 2;
+	call Prec: 1e21 3;
+	call Prec: 99.99 2;
+	call Prec: 0.0 3;
+	call Prec: 1.25 2;
+	call Radix: 255.0 16;
+	call Radix: 255.5 16;
+	call Radix: 0.5 2;
+	call Radix: -7.25 2;
+	call Radix: 0.1 3;
+	call Radix: 1e21 36;
+	call RadixParse: 'ff' 16;
+	call RadixParse: '20000000000001' 16;
+	call RadixParse: '20000000000003' 16;
+	call RadixParse: 'zz' 36;
+	call RadixParse: '12' 2;
+	exit 0;
+
+	[Show: f64 x: 0.0;]
+		WlBuf s;
+		call WlNum.ToText: x addr s;
+		log s.data '\n';
+		call s.Free;
+	[end]
+
+	[ParseShow: ptr<u8> text: 0;]
+		WlBuf s;
+		f64 x: (WlNum.Parse: text (WlText.LenZ: text));
+		call WlNum.ToText: x addr s;
+		log text ' -> ' s.data '\n';
+		call s.Free;
+	[end]
+
+	[Fixed: f64 x: 0.0; int f: 0;]
+		WlBuf s;
+		call WlNum.ToFixed: x f addr s;
+		log 'fixed ' f ' ' s.data '\n';
+		call s.Free;
+	[end]
+
+	[Exp: f64 x: 0.0; int f: 0;]
+		WlBuf s;
+		call WlNum.ToExponential: x f addr s;
+		log 'exp ' f ' ' s.data '\n';
+		call s.Free;
+	[end]
+
+	[Prec: f64 x: 0.0; int f: 0;]
+		WlBuf s;
+		call WlNum.ToPrecision: x f addr s;
+		log 'prec ' f ' ' s.data '\n';
+		call s.Free;
+	[end]
+
+	[Radix: f64 x: 0.0; int r: 0;]
+		WlBuf s;
+		call WlNum.ToRadix: x r addr s;
+		log 'radix ' r ' ' s.data '\n';
+		call s.Free;
+	[end]
+
+	[RadixParse: ptr<u8> t: 0; int r: 0;]
+		WlBuf s;
+		call WlNum.ToText: (WlNum.ParseRadix: t (WlText.LenZ: t) r) addr s;
+		log 'parse radix ' r ' ' t ' -> ' s.data '\n';
+		call s.Free;
+	[end]
+}

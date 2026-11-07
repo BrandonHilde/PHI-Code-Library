@@ -1,0 +1,25 @@
+a2 start | a1 start | sync end | then 1 | a1 after 1
+caught thrown
+in catch rej
+finally
+rejected with param
+recovered
+got hello
+m 3
+1 2
+native,t1,thenable,t2,t3,t4
+ag finally
+stop/true
+true
+p1
+plain
+1
+got undefined
+2
+ag finally
+1
+got undefined
+ag finally
+map
+1 true true
+main done

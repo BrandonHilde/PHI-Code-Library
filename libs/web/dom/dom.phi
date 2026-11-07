@@ -1,0 +1,599 @@
+# The document tree: what the HTML parser builds, CSS matches against, JS changes and a browser
+# lays out. Nothing here recurses, so a tree can be as deep as a page makes it.
+#
+# Every node belongs to its document, which frees them all together (Dom.FreeDocument); taking a
+# node out of the tree doesn't free it, since JS may still hold it. A browser drops the document
+# when it leaves the page.
+#
+#   ptr<DomDocument> doc: (Dom.NewDocument);
+#   ptr<DomNode> p: (Dom.CreateElement: doc (WlAtoms.GetZ: 'p'));
+#   call Dom.SetAttrZ: p 'class' 'intro';
+#   call Dom.Append: doc.root p;
+#   call Dom.Append: p (Dom.CreateTextZ: doc 'hello');
+#
+#   ptr<DomNode> n: doc.root;                 # every node under root, in document order
+#   while n is not 0
+#       n is (Dom.Next: n doc.root);
+#   ;;
+
+use memory.mem;
+use core.text;
+use core.atoms;
+use core.buf;
+
+enum.DomType
+{
+	ELEMENT: 1
+	TEXT: 3
+	CDATA: 4
+	PI: 7                   # a processing instruction: tag is its target, text its data
+	COMMENT: 8
+	DOCUMENT: 9
+	DOCTYPE: 10
+	FRAGMENT: 11
+}
+
+enum.DomNs
+{
+	HTML
+	SVG
+	MATHML
+}
+
+# what changed, for a document's on_change
+enum.DomChange
+{
+	CHILDREN                # a child was added or taken out: the node is the parent
+	ATTR                    # an attribute was set or removed: the node is the element
+	TEXT                    # a text or comment node's text
+}
+
+struct.DomAttr
+{
+	ptr<WlAtom> name;       # the local name
+	ptr<WlAtom> prefix;     # 'xlink' and the like, on foreign content; 0 otherwise
+	ptr<u8> value;          # zero-terminated, UTF-8, on the heap
+	u32 value_len;
+	ptr<DomAttr> next;      # in the order they were set
+}
+
+struct.DomNode
+{
+	DomType type;
+	DomNs ns;
+	u32 flags;              # Dom.DIRTY_STYLE ... and the HTML parser's own
+
+	ptr<DomDocument> doc;
+	ptr<DomNode> parent;
+	ptr<DomNode> first_child;
+	ptr<DomNode> last_child;
+	ptr<DomNode> prev;
+	ptr<DomNode> next;
+	ptr<DomNode> all_next;  # the document's list of every node it owns
+
+	# an element's name, in the case HTML's rules gave it; a doctype's name
+	ptr<WlAtom> tag;
+	ptr<DomAttr> attrs;
+
+	# a text or comment node's text; a doctype's public id
+	ptr<u8> text;
+	u32 text_len;
+	u32 text_cap;
+	# a doctype's system id
+	ptr<u8> text2;
+	u32 text2_len;
+
+	# kept up to date by SetAttr and RemoveAttr, for matching selectors fast
+	ptr<WlAtom> id_atom;
+	ptr<ptr<WlAtom>> classes;
+	u32 class_count;
+
+	# <template>'s contents: a FRAGMENT of the document (whose own content is the template)
+	ptr<DomNode> content;
+
+	# Places for what the other layers keep on a node. The DOM never looks inside them.
+	u64 js_wrapper;         # the JS object for this node (a JsValue; 0 until JS asks), which
+	                        # the JS engine marks: a node's wrapper lives as long as its document
+	ptr<u8> listeners;      # event listeners (js/bindings)
+	ptr<u8> style;          # the computed style (ptr<CssComputed>, css/)
+	ptr<u8> inline_style;   # the parsed style attribute (css/)
+	ptr<u8> layout;         # the browser's own: a layout box, say
+}
+
+struct.DomDocument
+{
+	ptr<DomNode> root;      # the DOCUMENT node
+	ptr<DomNode> all;       # every node it owns, newest first
+	u32 node_count;
+	bln quirks;             # no-quirks parsing unless the parser found otherwise
+	bln limited_quirks;
+	u32 version;            # goes up by one on every change, so a cache can see it's stale
+	method<ptr<DomNode> int> on_change;     # called after every change (see DomChange), if set
+	ptr<u8> url;            # the document's address, zero-terminated (the document's to free)
+	ptr<u8> host_data;      # the browser's own: its tab, say
+}
+
+phi.Dom:Library
+{
+	const u32 DIRTY_STYLE: 1;        # this element's style must be worked out again
+	const u32 DIRTY_CHILD: 2;        # something under it is DIRTY_STYLE
+	const u32 DIRTY_LAYOUT: 4;       # for the browser: it needs laying out again
+	const u32 DIRTY_TREE: 8;         # children were added or taken out (CSS looks at this for :first-child and the like)
+	const u32 FIRST_PARSER_FLAG: 0x100;   # flags from here up are the HTML parser's own
+
+	ptr<WlAtom> A_ID: 0;
+	ptr<WlAtom> A_CLASS: 0;
+
+	[Start]
+		if A_ID is not 0 return;
+		A_ID is (WlAtoms.GetZ: 'id');
+		A_CLASS is (WlAtoms.GetZ: 'class');
+	[end]
+
+	# ---- making nodes
+
+	[NewNode: ptr<DomDocument> doc: 0; DomType type: DomType.ELEMENT;]
+		ptr<DomNode> n: new DomNode;
+		if n is 0
+			throw 'out of memory for a node';
+		;;
+		n.type is type;
+		n.doc is doc;
+		n.flags is DIRTY_STYLE;
+		n.all_next is doc.all;
+		doc.all is n;
+		doc.node_count++;
+	[end: n]
+
+	[NewDocument]
+		call Start;
+		ptr<DomDocument> doc: new DomDocument;
+		if doc is 0
+			throw 'out of memory for a document';
+		;;
+		doc.root is (NewNode: doc DomType.DOCUMENT);
+	[end: doc]
+
+	[CreateElement: ptr<DomDocument> doc: 0; ptr<WlAtom> tag: 0; DomNs ns: DomNs.HTML;]
+		ptr<DomNode> n: (NewNode: doc DomType.ELEMENT);
+		n.tag is tag;
+		n.ns is ns;
+	[end: n]
+
+	[CreateElementZ: ptr<DomDocument> doc: 0; ptr<u8> tag: 0;]
+	[end: (CreateElement: doc (WlAtoms.GetZ: tag))]
+
+	[CreateText: ptr<DomDocument> doc: 0; ptr<u8> text: 0; u32 n: 0;]
+		ptr<DomNode> node: (NewNode: doc DomType.TEXT);
+		call SetText: node text n;
+	[end: node]
+
+	[CreateTextZ: ptr<DomDocument> doc: 0; ptr<u8> text: 0;]
+	[end: (CreateText: doc text (WlText.LenZ: text))]
+
+	[CreateComment: ptr<DomDocument> doc: 0; ptr<u8> text: 0; u32 n: 0;]
+		ptr<DomNode> node: (NewNode: doc DomType.COMMENT);
+		call SetText: node text n;
+	[end: node]
+
+	[CreateDoctype: ptr<DomDocument> doc: 0; ptr<WlAtom> name: 0; ptr<u8> public_id: 0; u32 public_len: 0; ptr<u8> system_id: 0; u32 system_len: 0;]
+		ptr<DomNode> node: (NewNode: doc DomType.DOCTYPE);
+		node.tag is name;
+		call SetText: node public_id public_len;
+		node.text2 is (WlText.Dup: system_id system_len);
+		node.text2_len is system_len;
+	[end: node]
+
+	[CreateFragment: ptr<DomDocument> doc: 0;]
+	[end: (NewNode: doc DomType.FRAGMENT)]
+
+	# ---- text
+
+	[SetText: ptr<DomNode> node: 0; ptr<u8> text: 0; u32 n: 0;]
+		if node.text is 0 or node.text_cap < n + 1
+			u32 room: n + 1;
+			if room < 16
+				room is 16;
+			;;
+			ptr<u8> grown: new u8[room];
+			if grown is 0
+				throw 'out of memory for text';
+			;;
+			if node.text is not 0
+				free node.text;
+			;;
+			node.text is grown;
+			node.text_cap is room;
+		;;
+		if n > 0
+			call Mem.Move: node.text text n;
+		;;
+		node.text:n is 0;
+		node.text_len is n;
+		call Changed: node DomChange.TEXT;
+	[end]
+
+	# more text at the end (grows by doubling, so the parser's many small pieces are cheap)
+	[AddText: ptr<DomNode> node: 0; ptr<u8> text: 0; u32 n: 0;]
+		u32 need: node.text_len + n + 1;
+		if node.text is 0 or node.text_cap < need
+			u32 room: node.text_cap * 2;
+			if room < need
+				room is need;
+			;;
+			if room < 16
+				room is 16;
+			;;
+			ptr<u8> grown: new u8[room];
+			if grown is 0
+				throw 'out of memory for text';
+			;;
+			if node.text is not 0
+				if node.text_len > 0
+					call Mem.Copy: grown node.text node.text_len;
+				;;
+				free node.text;
+			;;
+			node.text is grown;
+			node.text_cap is room;
+		;;
+		if n > 0
+			call Mem.Copy: node.text + node.text_len text n;
+		;;
+		node.text_len is node.text_len + n;
+		node.text:(node.text_len) is 0;
+		call Changed: node DomChange.TEXT;
+	[end]
+
+	# ---- the tree
+
+	# whether a is node or holds it
+	[Contains: ptr<DomNode> a: 0; ptr<DomNode> node: 0;]
+		while node is not 0
+			if node is a return true;
+			node is node.parent;
+		;;
+	[end: false]
+
+	# take node out of wherever it is (not freed); nothing if it isn't in a tree
+	[Remove: ptr<DomNode> node: 0;]
+		ptr<DomNode> parent: node.parent;
+		if parent is 0 return;
+		if node.prev is not 0
+			node.prev.next is node.next;
+		;;
+		else
+			parent.first_child is node.next;
+		;;
+		if node.next is not 0
+			node.next.prev is node.prev;
+		;;
+		else
+			parent.last_child is node.prev;
+		;;
+		node.parent is 0;
+		node.prev is 0;
+		node.next is 0;
+		call Changed: parent DomChange.CHILDREN;
+	[end]
+
+	# node put under parent, before ref (at the end if ref is 0), taken from where it was. A
+	# node can't go inside itself: that's an error, which the bindings have checked first.
+	[InsertBefore: ptr<DomNode> parent: 0; ptr<DomNode> node: 0; ptr<DomNode> ref: 0;]
+		# a node with no children can hold nothing but itself, and asking first keeps building a
+		# deep tree from the top down from walking every ancestor at every step
+		if node is parent or (node.first_child is not 0 and (Contains: node parent))
+			throw 'a node cannot go inside itself';
+		;;
+		if ref is node
+			ref is node.next;
+		;;
+		call Remove: node;
+		node.parent is parent;
+		node.next is ref;
+		if ref is 0
+			node.prev is parent.last_child;
+			if parent.last_child is not 0
+				parent.last_child.next is node;
+			;;
+			else
+				parent.first_child is node;
+			;;
+			parent.last_child is node;
+		;;
+		else
+			node.prev is ref.prev;
+			if ref.prev is not 0
+				ref.prev.next is node;
+			;;
+			else
+				parent.first_child is node;
+			;;
+			ref.prev is node;
+		;;
+		call Changed: parent DomChange.CHILDREN;
+	[end]
+
+	[Append: ptr<DomNode> parent: 0; ptr<DomNode> node: 0;]
+		call InsertBefore: parent node 0;
+	[end]
+
+	# ---- walking
+
+	# the node after this one in document order, staying under root; 0 at the end
+	[Next: ptr<DomNode> node: 0; ptr<DomNode> root: 0;]
+		if node.first_child is not 0 return node.first_child;
+	[end: (NextSkipping: node root)]
+
+	# the same, skipping what's under node
+	[NextSkipping: ptr<DomNode> node: 0; ptr<DomNode> root: 0;]
+		while node is not 0 and node is not root
+			if node.next is not 0 return node.next;
+			node is node.parent;
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	[FirstElementChild: ptr<DomNode> node: 0;]
+		ptr<DomNode> c: node.first_child;
+		while c is not 0
+			if c.type is DomType.ELEMENT return c;
+			c is c.next;
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	[NextElement: ptr<DomNode> node: 0;]
+		ptr<DomNode> c: node.next;
+		while c is not 0
+			if c.type is DomType.ELEMENT return c;
+			c is c.next;
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	[PrevElement: ptr<DomNode> node: 0;]
+		ptr<DomNode> c: node.prev;
+		while c is not 0
+			if c.type is DomType.ELEMENT return c;
+			c is c.prev;
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	# <html>, <head> and <body>, by their names: 0 if there isn't one
+	[DocumentElement: ptr<DomDocument> doc: 0;]
+	[end: (FirstElementChild: doc.root)]
+
+	[ChildNamed: ptr<DomNode> parent: 0; ptr<u8> name: 0;]
+		if parent is 0 return 0;
+		ptr<WlAtom> atom: (WlAtoms.GetZ: name);
+		ptr<DomNode> c: parent.first_child;
+		while c is not 0
+			if c.type is DomType.ELEMENT and c.tag is atom return c;
+			c is c.next;
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	[Head: ptr<DomDocument> doc: 0;]
+	[end: (ChildNamed: (DocumentElement: doc) 'head')]
+
+	[Body: ptr<DomDocument> doc: 0;]
+		ptr<DomNode> body: (ChildNamed: (DocumentElement: doc) 'body');
+		if body is not 0 return body;
+	[end: (ChildNamed: (DocumentElement: doc) 'frameset')]
+
+	# the first element with this id under root (in the tree only), or 0
+	[FindById: ptr<DomNode> root: 0; ptr<WlAtom> id: 0;]
+		ptr<DomNode> n: root;
+		while n is not 0
+			if n.type is DomType.ELEMENT and n.id_atom is id return n;
+			n is (Next: n root);
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	# all the text under node, added to output, as textContent reads it
+	[TextContent: ptr<DomNode> node: 0; WlBuf output;]
+		if node.type is DomType.TEXT or node.type is DomType.CDATA or node.type is DomType.COMMENT
+			call output.AddN: node.text node.text_len;
+			return;
+		;;
+		ptr<DomNode> n: node.first_child;
+		while n is not 0
+			if n.type is DomType.TEXT or n.type is DomType.CDATA
+				call output.AddN: n.text n.text_len;
+			;;
+			n is (Next: n node);
+		;;
+	[end]
+
+	# ---- attributes
+
+	[Attr: ptr<DomNode> element: 0; ptr<WlAtom> name: 0;]
+		ptr<DomAttr> a: element.attrs;
+		while a is not 0
+			if a.name is name return a;
+			a is a.next;
+		;;
+	[end: 0 as ptr<DomAttr>]
+
+	[AttrZ: ptr<DomNode> element: 0; ptr<u8> name: 0;]
+	[end: (Attr: element (WlAtoms.GetZ: name))]
+
+	# its value as zero-terminated text, or 0 if it isn't there
+	[AttrValue: ptr<DomNode> element: 0; ptr<u8> name: 0;]
+		ptr<DomAttr> a: (AttrZ: element name);
+		if a is 0 return 0;
+	[end: a.value]
+
+	[SetAttr: ptr<DomNode> element: 0; ptr<WlAtom> name: 0; ptr<u8> value: 0; u32 n: 0;]
+		ptr<DomAttr> a: (Attr: element name);
+		if a is 0
+			a is new DomAttr;
+			if a is 0
+				throw 'out of memory for an attribute';
+			;;
+			a.name is name;
+			if element.attrs is 0
+				element.attrs is a;
+			;;
+			else
+				ptr<DomAttr> last: element.attrs;
+				while last.next is not 0
+					last is last.next;
+				;;
+				last.next is a;
+			;;
+		;;
+		ptr<u8> copy: (WlText.Dup: value n);
+		if a.value is not 0
+			free a.value;
+		;;
+		a.value is copy;
+		a.value_len is n;
+		call AttrChanged: element name;
+	[end: a]
+
+	[SetAttrZ: ptr<DomNode> element: 0; ptr<u8> name: 0; ptr<u8> value: 0;]
+	[end: (SetAttr: element (WlAtoms.GetZ: name) value (WlText.LenZ: value))]
+
+	[RemoveAttr: ptr<DomNode> element: 0; ptr<WlAtom> name: 0;]
+		ptr<DomAttr> a: element.attrs;
+		ptr<DomAttr> before: 0;
+		while a is not 0
+			if a.name is name
+				if before is 0
+					element.attrs is a.next;
+				;;
+				else
+					before.next is a.next;
+				;;
+				free a.value;
+				free a;
+				call AttrChanged: element name;
+				return true;
+			;;
+			before is a;
+			a is a.next;
+		;;
+	[end: false]
+
+	# whether an element has this class (an atom, so compare with WlAtoms.Get)
+	[HasClass: ptr<DomNode> element: 0; ptr<WlAtom> name: 0;]
+		while u32 i: 0; i < element.class_count; i++;
+			if element.classes:i is name return true;
+		;;
+	[end: false]
+
+	# ---- freeing
+
+	[FreeDocument: ptr<DomDocument> doc: 0;]
+		if doc is 0 return;
+		ptr<DomNode> n: doc.all;
+		while n is not 0
+			ptr<DomNode> next_one: n.all_next;
+			call FreeNode: n;
+			n is next_one;
+		;;
+		if doc.url is not 0
+			free doc.url;
+		;;
+		free doc;
+	[end]
+
+	# ---- inside
+
+	[FreeNode: ptr<DomNode> n: 0;]
+		ptr<DomAttr> a: n.attrs;
+		while a is not 0
+			ptr<DomAttr> next_one: a.next;
+			free a.value;
+			free a;
+			a is next_one;
+		;;
+		if n.text is not 0
+			free n.text;
+		;;
+		if n.text2 is not 0
+			free n.text2;
+		;;
+		if n.classes is not 0
+			free n.classes;
+		;;
+		free n;
+	[end]
+
+	[Changed: ptr<DomNode> node: 0; DomChange what: DomChange.CHILDREN;]
+		ptr<DomDocument> doc: node.doc;
+		doc.version++;
+		if what is DomChange.CHILDREN
+			node.flags is node.flags | DIRTY_TREE;
+		;;
+		elif what is DomChange.TEXT and node.parent is not 0
+			# :empty can see text come and go
+			node.parent.flags is node.parent.flags | DIRTY_TREE;
+		;;
+		if doc.on_change is not 0
+			call doc.on_change: node what as int;
+		;;
+	[end]
+
+	[AttrChanged: ptr<DomNode> element: 0; ptr<WlAtom> name: 0;]
+		if name is A_ID
+			call RefreshId: element;
+		;;
+		elif name is A_CLASS
+			call RefreshClasses: element;
+		;;
+		element.flags is element.flags | DIRTY_STYLE;
+		call Changed: element DomChange.ATTR;
+	[end]
+
+	[RefreshId: ptr<DomNode> element: 0;]
+		ptr<DomAttr> a: (Attr: element A_ID);
+		if a is 0 or a.value_len is 0
+			element.id_atom is 0;
+		;;
+		else
+			element.id_atom is (WlAtoms.Get: a.value a.value_len);
+		;;
+	[end]
+
+	# the class attribute split at whitespace, as atoms
+	[RefreshClasses: ptr<DomNode> element: 0;]
+		if element.classes is not 0
+			free element.classes;
+		;;
+		element.classes is 0;
+		element.class_count is 0;
+		ptr<DomAttr> a: (Attr: element A_CLASS);
+		if a is 0 return;
+		u32 words: 0;
+		bln inside: false;
+		while u32 i: 0; i < a.value_len; i++;
+			bln space: (WlText.IsSpace: a.value:i);
+			if space is false and inside is false
+				words++;
+			;;
+			inside is (space is false);
+		;;
+		if words is 0 return;
+		ptr<ptr<WlAtom>> list: new ptr<WlAtom>[words];
+		if list is 0
+			throw 'out of memory for classes';
+		;;
+		u32 pos: 0;
+		u32 made: 0;
+		while pos < a.value_len
+			while pos < a.value_len and (WlText.IsSpace: a.value:pos)
+				pos++;
+			;;
+			u32 start: pos;
+			while pos < a.value_len and (WlText.IsSpace: a.value:pos) is false
+				pos++;
+			;;
+			if pos > start
+				list:made is (WlAtoms.Get: a.value + start pos - start);
+				made++;
+			;;
+		;;
+		element.classes is list;
+		element.class_count is made;
+	[end]
+}

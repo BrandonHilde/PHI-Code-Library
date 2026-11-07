@@ -1,0 +1,1122 @@
+# calc(), min(), max(), clamp(): parsed with their types checked, simplified as far as they can be
+# (so `calc(1in + 4px)` is just 100px), and what can't be simplified kept as a prefix-order list of
+# CssVals in a CALC value, which CssCalc.Compute turns to pixels and percentages, and
+# CssCalc.Resolve finishes once layout knows what percentages are of.
+#
+# In the list, a FUNC item's code is one of OP_* and its bits how many arguments follow.
+
+use core.text;
+use core.buf;
+use core.arena;
+use core.stack;
+use css.lexer;
+use css.tables;
+use css.values;
+
+struct.CssCalcN
+{
+	ptr<CssCalcN> first;    # children
+	ptr<CssCalcN> next;     # the next sibling
+	f64 num;
+	u32 type;               # CssCalc.M_*: for a sum of lengths and percentages, both bits
+	u8 op;
+	u8 unit;                # a leaf's: 0 for a number, CU_PCT for a percentage
+}
+
+# a value reduced to so much of each unit, and what wouldn't reduce
+struct.CssCalcOpaque
+{
+	ptr<CssCalcOpaque> next;
+	f64 coef;
+	u8 op;
+	u32 count;
+	ptr<ptr<u8>> args;      # ptr<CssCalcLin>s
+}
+
+struct.CssCalcLin
+{
+	f64 c[60];
+	ptr<CssCalcOpaque> opaque;
+}
+
+phi.CssCalc:Library
+{
+	const u32 M_NUM: 1;
+	const u32 M_LEN: 2;
+	const u32 M_PCT: 4;
+	const u32 M_ANGLE: 8;
+	const u32 M_TIME: 16;
+	const u32 M_RES: 32;
+	const u32 M_FLEX: 64;
+
+	const u32 OP_LEAF: 0;
+	const u32 OP_SUM: 1;
+	const u32 OP_PROD: 2;
+	const u32 OP_INV: 3;
+	const u32 OP_MIN: 4;
+	const u32 OP_MAX: 5;
+	const u32 OP_CLAMP: 6;
+
+	const u32 CU_PCT: 58;   # in CssCalcLin.c: 0 for a number, 1 up for a CssU, this for percent
+	const u32 MAX_DEPTH: 32;
+	const u32 MAX_NODES: 4000;
+
+	ptr<CssTok> t: 0;
+	u32 stop: 0;
+	u32 pos: 0;
+	u32 depth: 0;
+	u32 nodes: 0;
+	WlArena arena;
+
+	# for the value made: what Parse leaves
+	CssVal result;
+
+	# The calc-like function at index i of tokens, whose result must fit the mask. On success
+	# result holds it (a plain value when it simplified to one) and returns true.
+	[Parse: ptr<CssTok> tokens: 0; u32 i: 0; u32 mask: 0;]
+		if arena.total > 0
+			call arena.Free;
+		;;
+		t is tokens;
+		stop is t:i.match;
+		pos is i + 1;
+		depth is 0;
+		nodes is 0;
+		ptr<CssCalcN> root: 0;
+		bln ok: false;
+		if call ok is ParseFunc: i addr root throws err
+			ok is false;
+		;;
+		if ok
+			if root.type is 0 or (root.type & mask) is not root.type
+				ok is false;
+			;;
+			# a number is only a number: it can't stand for a length
+		;;
+		if ok
+			call Finish: root;
+		;;
+		call arena.Free;
+	[end: ok]
+
+	[IsMathFunc: u32 kw: 0;]
+	[end: kw is CssK.CALC or kw is CssK.MIN or kw is CssK.MAX or kw is CssK.CLAMP]
+
+	[Node: u32 op: 0;]
+		nodes++;
+		if nodes > MAX_NODES
+			throw 'calc too big';
+		;;
+		ptr<CssCalcN> n: (arena.Alloc: sizeof CssCalcN) as ptr<CssCalcN>;
+		n.op is op as u8;
+	[end: n]
+
+	[Skip]
+		while t:pos.type is CssLex.WS and pos < stop
+			pos++;
+		;;
+	[end]
+
+	[ParseFunc: u32 i: 0; ptr<ptr<CssCalcN>> into_node: 0;]
+		call WlStack.Check;
+		if depth >= MAX_DEPTH
+			throw 'calc too deep';
+		;;
+		depth++;
+		u32 kw: (Kw: addr t:i);
+		u32 saved: stop;
+		stop is t:i.match;
+		pos is i + 1;
+		bln ok: false;
+		call Skip;
+		if kw is CssK.CALC
+			ok is (ParseSum: into_node);
+			call Skip;
+		;;
+		else
+			ptr<CssCalcN> f: 0;
+			when kw
+				is CssK.MIN
+					f is (Node: OP_MIN);
+				;;
+				is CssK.MAX
+					f is (Node: OP_MAX);
+				;;
+				else
+					f is (Node: OP_CLAMP);
+				;;
+			;;
+			u32 count: 0;
+			ptr<CssCalcN> last: 0;
+			ok is true;
+			while ok
+				ptr<CssCalcN> arg: 0;
+				ok is (ParseSum: addr arg);
+				if ok
+					if last is 0
+						f.first is arg;
+					;;
+					else
+						last.next is arg;
+					;;
+					last is arg;
+					count++;
+					call Skip;
+				;;
+				if pos < stop and t:pos.type is CssLex.COMMA
+					pos++;
+					call Skip;
+				;;
+				else
+					break;
+				;;
+			;;
+			if kw is CssK.CLAMP and count is not 3
+				ok is false;
+			;;
+			if ok
+				f.type is (MergeTypes: f.first);
+				ok is (f.type is not 0);
+				into_node:0 is f;
+			;;
+		;;
+		if ok and pos is not stop
+			ok is false;
+		;;
+		stop is saved;
+		pos is t:i.match + 1;
+		depth--;
+	[end: ok]
+
+	[Kw: ptr<CssTok> tk: 0;]
+		if tk.kw is 0
+			ptr<WlAtom> a: (WlAtoms.GetLower: tk.text tk.len);
+			u32 k: (a.prop >> 12) & 0xFFF;
+			if k is 0
+				k is 0xFFFF;
+			;;
+			tk.kw is k as u16;
+		;;
+		if tk.kw is 0xFFFF return 0;
+	[end: tk.kw as u32]
+
+	# what a sum or comparison of these is: 0 if they don't go together
+	[MergeTypes: ptr<CssCalcN> list: 0;]
+		u32 type: 0;
+		ptr<CssCalcN> n: list;
+		while n is not 0
+			if type is 0
+				type is n.type;
+			;;
+			elif type is n.type
+				# the same
+			;;
+			elif (type | n.type) & (M_LEN | M_PCT) is (type | n.type)
+				type is type | n.type;
+			;;
+			else
+				return 0;
+			;;
+			n is n.next;
+		;;
+	[end: type]
+
+	# sum = product [ (+ | -) product ]*, the operators with space around them
+	[ParseSum: ptr<ptr<CssCalcN>> into_node: 0;]
+		ptr<CssCalcN> first: 0;
+		if (ParseProduct: addr first) is false return false;
+		into_node:0 is first;
+		ptr<CssCalcN> sum: 0;
+		ptr<CssCalcN> last: first;
+		while true
+			u32 here: pos;
+			if t:pos.type is not CssLex.WS or pos >= stop
+				break;
+			;;
+			call Skip;
+			if pos >= stop or t:pos.type is not CssLex.DELIM or (t:pos.num is not 43.0 and t:pos.num is not 45.0)
+				pos is here;
+				break;
+			;;
+			bln minus: t:pos.num is 45.0;
+			pos++;
+			if t:pos.type is not CssLex.WS or pos >= stop return false;
+			call Skip;
+			ptr<CssCalcN> term: 0;
+			if (ParseProduct: addr term) is false return false;
+			if minus
+				ptr<CssCalcN> neg: (Node: OP_PROD);
+				ptr<CssCalcN> m1: (Node: OP_LEAF);
+				m1.num is -1.0;
+				m1.type is M_NUM;
+				neg.first is m1;
+				m1.next is term;
+				neg.type is term.type;
+				term is neg;
+			;;
+			if sum is 0
+				sum is (Node: OP_SUM);
+				sum.first is first;
+				into_node:0 is sum;
+			;;
+			last.next is term;
+			last is term;
+			sum.type is (MergeTypes: sum.first);
+			if sum.type is 0 return false;
+		;;
+	[end: true]
+
+	# product = value [ (* | /) value ]*
+	[ParseProduct: ptr<ptr<CssCalcN>> into_node: 0;]
+		ptr<CssCalcN> first: 0;
+		if (ParseValue: addr first) is false return false;
+		into_node:0 is first;
+		ptr<CssCalcN> prod: 0;
+		ptr<CssCalcN> last: first;
+		while true
+			u32 here: pos;
+			call Skip;
+			if pos >= stop or t:pos.type is not CssLex.DELIM or (t:pos.num is not 42.0 and t:pos.num is not 47.0)
+				pos is here;
+				break;
+			;;
+			bln divide: t:pos.num is 47.0;
+			pos++;
+			call Skip;
+			ptr<CssCalcN> v: 0;
+			if (ParseValue: addr v) is false return false;
+			if divide
+				if v.type is not M_NUM return false;
+				ptr<CssCalcN> inv: (Node: OP_INV);
+				inv.first is v;
+				inv.type is M_NUM;
+				v is inv;
+			;;
+			if prod is 0
+				prod is (Node: OP_PROD);
+				prod.first is first;
+				prod.type is first.type;
+				into_node:0 is prod;
+			;;
+			# only one side of a product can be anything but a number
+			if prod.type is M_NUM
+				prod.type is v.type;
+			;;
+			elif v.type is not M_NUM
+				return false;
+			;;
+			last.next is v;
+			last is v;
+		;;
+	[end: true]
+
+	[ParseValue: ptr<ptr<CssCalcN>> into_node: 0;]
+		if pos >= stop return false;
+		ptr<CssTok> tk: addr t:pos;
+		u32 type: tk.type;
+		if type is CssLex.NUMBER
+			ptr<CssCalcN> n: (Node: OP_LEAF);
+			n.num is tk.num;
+			n.type is M_NUM;
+			into_node:0 is n;
+			pos++;
+			return true;
+		;;
+		if type is CssLex.PERCENTAGE
+			ptr<CssCalcN> n: (Node: OP_LEAF);
+			n.num is tk.num;
+			n.type is M_PCT;
+			n.unit is CU_PCT as u8;
+			into_node:0 is n;
+			pos++;
+			return true;
+		;;
+		if type is CssLex.DIMENSION
+			u32 unit: (CssProps.UnitOfKw: (Kw: tk));
+			if unit is 0 return false;
+			ptr<CssCalcN> n: (Node: OP_LEAF);
+			n.num is tk.num;
+			n.unit is unit as u8;
+			n.type is (MaskOfUnit: unit);
+			# units that convert become the one they convert to
+			call Canon: n;
+			into_node:0 is n;
+			pos++;
+			return true;
+		;;
+		if type is CssLex.LPAREN
+			call WlStack.Check;
+			if depth >= MAX_DEPTH
+				throw 'calc too deep';
+			;;
+			depth++;
+			u32 close: tk.match;
+			u32 saved: stop;
+			stop is close;
+			pos++;
+			call Skip;
+			bln ok: (ParseSum: into_node);
+			call Skip;
+			if pos is not stop
+				ok is false;
+			;;
+			stop is saved;
+			pos is close + 1;
+			depth--;
+			return ok;
+		;;
+		if type is CssLex.FUNCTION
+			u32 kw: (Kw: tk);
+			if (IsMathFunc: kw) is false return false;
+			return (ParseFunc: pos into_node);
+		;;
+		if type is CssLex.IDENT
+			ptr<CssCalcN> n: (Node: OP_LEAF);
+			n.type is M_NUM;
+			if tk.len is 1 and (tk.text:0 is 101 or tk.text:0 is 69)
+				n.num is 2.718281828459045;
+			;;
+			elif (WlText.EqNoCaseZ: tk.text tk.len 'pi')
+				n.num is 3.141592653589793;
+			;;
+			elif (WlText.EqNoCaseZ: tk.text tk.len 'infinity')
+				n.num is 3.0e38;
+			;;
+			elif (WlText.EqNoCaseZ: tk.text tk.len '-infinity')
+				n.num is -3.0e38;
+			;;
+			else
+				return false;
+			;;
+			into_node:0 is n;
+			pos++;
+			return true;
+		;;
+	[end: false]
+
+	[MaskOfUnit: u32 unit: 0;]
+		if unit <= CssU.LAST_LENGTH return M_LEN;
+		if unit <= CssU.LAST_ANGLE return M_ANGLE;
+		if unit <= CssU.LAST_TIME return M_TIME;
+		if unit <= CssU.LAST_RES return M_RES;
+		if unit is CssU.FR return M_FLEX;
+	[end: 0]
+
+	# how many canonical units one of this unit is; 0 if it depends on where it's used
+	[ToCanon: u32 unit: 0;]
+		when unit
+			is CssU.PX
+				return 1.0;
+			;;
+			is CssU.CM
+				return 37.79527559055118;
+			;;
+			is CssU.MM
+				return 3.779527559055118;
+			;;
+			is CssU.Q
+				return 0.9448818897637795;
+			;;
+			is CssU.IN
+				return 96.0;
+			;;
+			is CssU.PT
+				return 1.3333333333333333;
+			;;
+			is CssU.PC
+				return 16.0;
+			;;
+			is CssU.DEG
+				return 1.0;
+			;;
+			is CssU.RAD
+				return 57.29577951308232;
+			;;
+			is CssU.GRAD
+				return 0.9;
+			;;
+			is CssU.TURN
+				return 360.0;
+			;;
+			is CssU.S
+				return 1.0;
+			;;
+			is CssU.MS
+				return 0.001;
+			;;
+			is CssU.DPPX CssU.X
+				return 1.0;
+			;;
+			is CssU.DPI
+				return 0.010416666666666666;
+			;;
+			is CssU.DPCM
+				return 0.026458333333333334;
+			;;
+		;;
+	[end: 0.0]
+
+	[CanonUnit: u32 unit: 0;]
+		when unit
+			is CssU.CM CssU.MM CssU.Q CssU.IN CssU.PT CssU.PC
+				return CssU.PX;
+			;;
+			is CssU.RAD CssU.GRAD CssU.TURN
+				return CssU.DEG;
+			;;
+			is CssU.MS
+				return CssU.S;
+			;;
+			is CssU.DPI CssU.DPCM CssU.X
+				return CssU.DPPX;
+			;;
+		;;
+	[end: unit]
+
+	[Canon: ptr<CssCalcN> n: 0;]
+		u32 unit: n.unit;
+		f64 factor: (ToCanon: unit);
+		if factor is not 0.0
+			n.num is n.num * factor;
+			n.unit is (CanonUnit: unit) as u8;
+		;;
+	[end]
+
+	# ---- simplifying
+
+	[NewLin]
+		ptr<CssCalcLin> l: (arena.Alloc: sizeof CssCalcLin) as ptr<CssCalcLin>;
+	[end: l]
+
+	# what a node comes to, as so much of each unit
+	[Fold: ptr<CssCalcN> n: 0;]
+		call WlStack.Check;
+		ptr<CssCalcLin> l: (NewLin);
+		when n.op as u32
+			is OP_LEAF
+				l.c:(n.unit) is n.num;
+			;;
+			is OP_SUM
+				ptr<CssCalcN> kid: n.first;
+				while kid is not 0
+					call AddLin: l (Fold: kid) 1.0;
+					kid is kid.next;
+				;;
+			;;
+			is OP_PROD
+				f64 factor: 1.0;
+				ptr<CssCalcLin> other: 0;
+				ptr<CssCalcN> kid: n.first;
+				while kid is not 0
+					ptr<CssCalcLin> f: (Fold: kid);
+					if kid.type is M_NUM and f.opaque is 0
+						factor is factor * f.c:0;
+					;;
+					elif other is 0
+						other is f;
+					;;
+					else
+						# a number that wouldn't fold, times something else: keep it as a whole
+						other is f;
+					;;
+					kid is kid.next;
+				;;
+				if other is 0
+					l.c:0 is factor;
+				;;
+				else
+					call AddLin: l other factor;
+				;;
+			;;
+			is OP_INV
+				ptr<CssCalcLin> f: (Fold: n.first);
+				if f.c:0 is 0.0
+					# dividing by zero is infinity, which clamps
+					l.c:0 is 3.0e38;
+				;;
+				else
+					l.c:0 is 1.0 / f.c:0;
+				;;
+			;;
+			else
+				call FoldCompare: n l;
+			;;
+		;;
+	[end: l]
+
+	[AddLin: ptr<CssCalcLin> to: 0; ptr<CssCalcLin> from: 0; f64 mul: 1.0;]
+		while u32 i: 0; i < 60; i++;
+			if from.c:i is not 0.0
+				to.c:i is to.c:i + from.c:i * mul;
+			;;
+		;;
+		ptr<CssCalcOpaque> o: from.opaque;
+		while o is not 0
+			ptr<CssCalcOpaque> copy: (arena.Alloc: sizeof CssCalcOpaque) as ptr<CssCalcOpaque>;
+			copy.coef is o.coef * mul;
+			copy.op is o.op;
+			copy.count is o.count;
+			copy.args is o.args;
+			copy.next is to.opaque;
+			to.opaque is copy;
+			o is o.next;
+		;;
+	[end]
+
+	# which single unit this holds, if it holds one: 60 if it holds several or something opaque,
+	# 0 for a number (or nothing), the index otherwise
+	[SingleUnit: ptr<CssCalcLin> l: 0;]
+		if l.opaque is not 0 return 60;
+		u32 found: 0;
+		while u32 i: 1; i < 60; i++;
+			if l.c:i is not 0.0
+				if found is not 0 or l.c:0 is not 0.0 return 60;
+				found is i;
+			;;
+		;;
+	[end: found]
+
+	[FoldCompare: ptr<CssCalcN> n: 0; ptr<CssCalcLin> l: 0;]
+		ptr<ptr<u8>> args: (arena.Alloc: MAX_NODES / 100 * sizeof ptr<u8>) as ptr<ptr<u8>>;
+		u32 count: 0;
+		ptr<CssCalcN> kid: n.first;
+		u32 unit: 0;
+		bln same: true;
+		while kid is not 0
+			if count >= MAX_NODES / 100
+				throw 'calc too big';
+			;;
+			ptr<CssCalcLin> f: (Fold: kid);
+			args:count is f as ptr<u8>;
+			u32 su: (SingleUnit: f);
+			if su is 60
+				same is false;
+			;;
+			elif su is not 0
+				if unit is 0
+					unit is su;
+				;;
+				elif unit is not su
+					same is false;
+				;;
+			;;
+			count++;
+			kid is kid.next;
+		;;
+		if same
+			f64 best: 0.0;
+			when n.op as u32
+				is OP_MIN
+					while u32 i: 0; i < count; i++;
+						f64 v: (LinValue: args:i unit);
+						if i is 0 or v < best
+							best is v;
+						;;
+					;;
+				;;
+				is OP_MAX
+					while u32 i: 0; i < count; i++;
+						f64 v: (LinValue: args:i unit);
+						if i is 0 or v > best
+							best is v;
+						;;
+					;;
+				;;
+				else
+					f64 low: (LinValue: args:0 unit);
+					f64 mid: (LinValue: args:1 unit);
+					f64 high: (LinValue: args:2 unit);
+					best is mid;
+					if best > high
+						best is high;
+					;;
+					if best < low
+						best is low;
+					;;
+				;;
+			;;
+			l.c:unit is best;
+			return;
+		;;
+		ptr<CssCalcOpaque> o: (arena.Alloc: sizeof CssCalcOpaque) as ptr<CssCalcOpaque>;
+		o.coef is 1.0;
+		o.op is n.op;
+		o.count is count;
+		o.args is args;
+		l.opaque is o;
+	[end]
+
+	[LinValue: ptr<u8> lin: 0; u32 unit: 0;]
+		ptr<CssCalcLin> l: lin as ptr<CssCalcLin>;
+		f64 v: l.c:unit;
+	[end: v]
+
+	# ---- the result
+
+	ptr<CssVal> out_items: 0;
+	u32 out_n: 0;
+	u32 out_cap: 0;
+
+	[Out]
+		if out_n >= out_cap
+			u32 room: out_cap * 2;
+			if room is 0
+				room is 64;
+			;;
+			ptr<CssVal> grown: new CssVal[room];
+			if grown is 0
+				throw 'out of memory for calc';
+			;;
+			if out_items is not 0
+				call Mem.Copy: grown out_items out_n * sizeof CssVal;
+				free out_items;
+			;;
+			out_items is grown;
+			out_cap is room;
+		;;
+		ptr<CssVal> v: addr out_items:out_n;
+		v.bits is 0;
+		v.code is 0;
+		v.kind is 0;
+		v.unit is 0;
+		out_n++;
+	[end: v]
+
+	[SetLeaf: ptr<CssVal> v: 0; u32 slot: 0; f64 num: 0.0;]
+		v.code is 0;
+		if slot is 0
+			v.kind is CssV.NUM as u8;
+			v.unit is 0;
+		;;
+		elif slot is CU_PCT
+			v.kind is CssV.PCT as u8;
+			v.unit is 0;
+		;;
+		else
+			u32 mask: (MaskOfUnit: slot);
+			if mask is M_LEN
+				v.kind is CssV.LEN as u8;
+			;;
+			elif mask is M_ANGLE
+				v.kind is CssV.ANGLE as u8;
+			;;
+			elif mask is M_TIME
+				v.kind is CssV.TIME as u8;
+			;;
+			elif mask is M_RES
+				v.kind is CssV.RES as u8;
+			;;
+			else
+				v.kind is CssV.FLEX as u8;
+			;;
+			v.unit is slot as u8;
+		;;
+		call v.SetNum: num;
+	[end]
+
+	[Finish: ptr<CssCalcN> root: 0;]
+		ptr<CssCalcLin> l: (Fold: root);
+		u32 su: (SingleUnit: l);
+		if su is not 60
+			# it came to one number of one unit
+			f64 num: l.c:su;
+			call SetLeaf: addr result su num;
+			if su is 0 and root.type is not M_NUM
+				# a sum that came to zero of something: zero of its own type
+				if (root.type & M_LEN) is not 0
+					call SetLeaf: addr result CssU.PX 0.0;
+				;;
+				elif (root.type & M_PCT) is not 0
+					call SetLeaf: addr result CU_PCT 0.0;
+				;;
+				elif root.type is M_ANGLE
+					call SetLeaf: addr result CssU.DEG 0.0;
+				;;
+				elif root.type is M_TIME
+					call SetLeaf: addr result CssU.S 0.0;
+				;;
+			;;
+			return;
+		;;
+		out_n is 0;
+		call EmitLin: l;
+		result.kind is CssV.CALC as u8;
+		result.code is 0;
+		result.unit is 0;
+		result.bits is (CssCxs.NewList: out_items out_n);
+	[end]
+
+	[EmitLin: ptr<CssCalcLin> l: 0;]
+		call WlStack.Check;
+		u32 terms: 0;
+		while u32 i: 0; i < 60; i++;
+			if l.c:i is not 0.0
+				terms++;
+			;;
+		;;
+		ptr<CssCalcOpaque> o: l.opaque;
+		while o is not 0
+			terms++;
+			o is o.next;
+		;;
+		if terms is 0
+			call SetLeaf: (Out) 0 0.0;
+			return;
+		;;
+		if terms > 1
+			ptr<CssVal> sum: (Out);
+			sum.kind is CssV.FUNC as u8;
+			sum.code is OP_SUM as u16;
+			sum.bits is terms;
+		;;
+		# numbers, then percentages, then the units, as their serialization wants
+		if l.c:0 is not 0.0
+			call SetLeaf: (Out) 0 l.c:0;
+		;;
+		if l.c:(CU_PCT) is not 0.0
+			call SetLeaf: (Out) CU_PCT l.c:(CU_PCT);
+		;;
+		while u32 i: 1; i < CU_PCT; i++;
+			if l.c:i is not 0.0
+				call SetLeaf: (Out) i l.c:i;
+			;;
+		;;
+		o is l.opaque;
+		while o is not 0
+			if o.coef is not 1.0
+				ptr<CssVal> prod: (Out);
+				prod.kind is CssV.FUNC as u8;
+				prod.code is OP_PROD as u16;
+				prod.bits is 2;
+				call SetLeaf: (Out) 0 o.coef;
+			;;
+			ptr<CssVal> f: (Out);
+			f.kind is CssV.FUNC as u8;
+			f.code is o.op as u16;
+			f.bits is o.count;
+			while u32 k: 0; k < o.count; k++;
+				call EmitLin: o.args:k as ptr<CssCalcLin>;
+			;;
+			o is o.next;
+		;;
+	[end]
+
+	# ---- at compute time
+
+	# how big one of a font-relative or viewport-relative unit is, from the engine (css/cascade)
+	f64 cur_em: 16.0;
+	f64 cur_rem: 16.0;
+	f64 cur_vw: 8.0;
+	f64 cur_vh: 6.0;
+	f64 cur_lh: 19.2;
+
+	[PxOf: u32 unit: 0;]
+		when unit
+			is CssU.PX
+				return 1.0;
+			;;
+			is CssU.EM
+				return cur_em;
+			;;
+			is CssU.REM
+				return cur_rem;
+			;;
+			is CssU.EX CssU.CH CssU.CAP
+				return cur_em * 0.5;
+			;;
+			is CssU.IC
+				return cur_em;
+			;;
+			is CssU.LH
+				return cur_lh;
+			;;
+			is CssU.RLH
+				return cur_rem * 1.2;
+			;;
+			is CssU.VW CssU.SVW CssU.LVW CssU.DVW CssU.VI CssU.SVI CssU.LVI CssU.DVI
+				viewport_used is true;
+				return cur_vw;
+			;;
+			is CssU.VH CssU.SVH CssU.LVH CssU.DVH CssU.VB CssU.SVB CssU.LVB CssU.DVB
+				viewport_used is true;
+				return cur_vh;
+			;;
+			is CssU.VMIN CssU.SVMIN CssU.LVMIN CssU.DVMIN
+				viewport_used is true;
+				if cur_vw < cur_vh return cur_vw;
+				return cur_vh;
+			;;
+			is CssU.VMAX CssU.SVMAX CssU.LVMAX CssU.DVMAX
+				viewport_used is true;
+				if cur_vw > cur_vh return cur_vw;
+				return cur_vh;
+			;;
+		;;
+	[end: (ToCanon: unit)]
+
+	bln viewport_used: false;
+
+	# the items of a calc with its lengths in pixels, simplified if it can be: into result
+	[Compute: ptr<CssVal> v: 0;]
+		ptr<CssCx> cx: (CssCxs.At: v.bits);
+		f64 px: 0.0;
+		f64 pct: 0.0;
+		ci is 0;
+		citems is cx.items;
+		bln simple: (ComputeLinear: 1.0 addr px addr pct);
+		if simple
+			if pct is 0.0
+				call CssV.SetLen: addr result px CssU.PX;
+				return;
+			;;
+			if px is 0.0
+				call CssV.SetNumber: addr result CssV.PCT pct;
+				return;
+			;;
+			out_n is 0;
+			ptr<CssVal> sum: (Out);
+			sum.kind is CssV.FUNC as u8;
+			sum.code is OP_SUM as u16;
+			sum.bits is 2;
+			call SetLeaf: (Out) CU_PCT pct;
+			call SetLeaf: (Out) CssU.PX px;
+			result.kind is CssV.CALC as u8;
+			result.code is 0;
+			result.unit is 0;
+			result.bits is (CssCxs.NewList: out_items out_n);
+			return;
+		;;
+		# keep its shape, with the lengths resolved
+		out_n is 0;
+		while u32 i: 0; i < cx.len; i++;
+			ptr<CssVal> from: addr cx.items:i;
+			ptr<CssVal> to: (Out);
+			to.bits is from.bits;
+			to.code is from.code;
+			to.kind is from.kind;
+			to.unit is from.unit;
+			if to.kind is CssV.LEN as u8
+				call CssV.SetLen: to (from.Num) * (PxOf: from.unit) CssU.PX;
+			;;
+		;;
+		result.kind is CssV.CALC as u8;
+		result.code is 0;
+		result.unit is 0;
+		result.bits is (CssCxs.NewList: out_items out_n);
+	[end]
+
+	u32 ci: 0;
+	ptr<CssVal> citems: 0;
+
+	# adds the expression at citems:ci, times mul, to px and pct; false if it has a comparison
+	# that percentages might change
+	[ComputeLinear: f64 mul: 1.0; ptr<f64> px: 0; ptr<f64> pct: 0;]
+		call WlStack.Check;
+		ptr<CssVal> it: addr citems:ci;
+		ci++;
+		u32 kind: it.kind;
+		if kind is CssV.LEN
+			px:0 is px:0 + mul * (it.Num) * (PxOf: it.unit);
+			return true;
+		;;
+		if kind is CssV.PCT
+			pct:0 is pct:0 + mul * (it.Num);
+			return true;
+		;;
+		if kind is CssV.NUM
+			# numbers only get here beside other numbers, which aren't kept in a calc
+			return true;
+		;;
+		if kind is not CssV.FUNC return true;
+		u32 op: it.code;
+		if op is OP_SUM
+			while u32 i: 0; i < it.bits; i++;
+				if (ComputeLinear: mul px pct) is false return false;
+			;;
+			return true;
+		;;
+		if op is OP_PROD
+			ptr<CssVal> coef: addr citems:ci;
+			ci++;
+			return (ComputeLinear: mul * (coef.Num) px pct);
+		;;
+		# a comparison: fine if nothing in it is a percentage
+		u32 from: ci;
+		u32 count: it.bits;
+		f64 best: 0.0;
+		f64 values[3];
+		while u32 i: 0; i < count; i++;
+			f64 p2: 0.0;
+			f64 q2: 0.0;
+			if (ComputeLinear: 1.0 addr p2 addr q2) is false return false;
+			if q2 is not 0.0 return false;
+			if op is OP_MIN
+				if i is 0 or p2 < best
+					best is p2;
+				;;
+			;;
+			elif op is OP_MAX
+				if i is 0 or p2 > best
+					best is p2;
+				;;
+			;;
+			elif i < 3
+				values:i is p2;
+			;;
+		;;
+		if op is OP_CLAMP
+			best is values:1;
+			if best > values:2
+				best is values:2;
+			;;
+			if best < values:0
+				best is values:0;
+			;;
+		;;
+		px:0 is px:0 + mul * best;
+	[end: true]
+
+	# what a CALC value comes to, once percentages are of base
+	[Resolve: ptr<CssVal> v: 0; f64 base: 0.0;]
+		ptr<CssCx> cx: (CssCxs.At: v.bits);
+		ci is 0;
+		citems is cx.items;
+		f64 r: (Eval: base);
+	[end: r]
+
+	[Eval: f64 base: 0.0;]
+		call WlStack.Check;
+		ptr<CssVal> it: addr citems:ci;
+		ci++;
+		u32 kind: it.kind;
+		if kind is CssV.PCT return (it.Num) * base / 100.0;
+		if kind is not CssV.FUNC
+			if kind is CssV.LEN return (it.Num) * (PxOf: it.unit);
+			return (it.Num);
+		;;
+		u32 op: it.code;
+		u32 count: it.bits;
+		if op is OP_SUM
+			f64 sum: 0.0;
+			while u32 i: 0; i < count; i++;
+				sum is sum + (Eval: base);
+			;;
+			return sum;
+		;;
+		if op is OP_PROD
+			f64 a: (Eval: base);
+			f64 b: (Eval: base);
+			return a * b;
+		;;
+		f64 best: 0.0;
+		f64 values[3];
+		while u32 i: 0; i < count; i++;
+			f64 x: (Eval: base);
+			if op is OP_MIN
+				if i is 0 or x < best
+					best is x;
+				;;
+			;;
+			elif op is OP_MAX
+				if i is 0 or x > best
+					best is x;
+				;;
+			;;
+			elif i < 3
+				values:i is x;
+			;;
+		;;
+		if op is OP_CLAMP
+			best is values:1;
+			if best > values:2
+				best is values:2;
+			;;
+			if best < values:0
+				best is values:0;
+			;;
+		;;
+	[end: best]
+
+	# ---- as text
+
+	[Serialize: ptr<CssVal> v: 0; ptr<WlBuf> b: 0;]
+		ptr<CssCx> cx: (CssCxs.At: v.bits);
+		ci is 0;
+		citems is cx.items;
+		ptr<CssVal> it: addr citems:0;
+		if it.kind is CssV.FUNC as u8 and it.code >= OP_MIN as u16
+			call Write: b true;
+			return;
+		;;
+		call b.AddZ: 'calc(';
+		call Write: b true;
+		call b.Add: ')';
+	[end]
+
+	[Write: ptr<WlBuf> b: 0; bln top: false;]
+		call WlStack.Check;
+		ptr<CssVal> it: addr citems:ci;
+		ci++;
+		u32 kind: it.kind;
+		if kind is not CssV.FUNC
+			call CssSer.Value: it b;
+			return;
+		;;
+		u32 op: it.code;
+		u32 count: it.bits;
+		if op is OP_SUM
+			if top is false
+				call b.Add: '(';
+			;;
+			while u32 i: 0; i < count; i++;
+				ptr<CssVal> nx: addr citems:ci;
+				if i > 0
+					if nx.kind is not CssV.FUNC as u8 and (nx.Num) < 0.0
+						call b.AddZ: ' - ';
+						ci++;
+						ptr<CssVal> flip: addr scratch;
+						flip.kind is nx.kind;
+						flip.unit is nx.unit;
+						flip.code is nx.code;
+						flip.bits is nx.bits;
+						call flip.SetNum: 0.0 - (nx.Num);
+						call CssSer.Value: flip b;
+						continue;
+					;;
+					call b.AddZ: ' + ';
+				;;
+				call Write: b false;
+			;;
+			if top is false
+				call b.Add: ')';
+			;;
+			return;
+		;;
+		if op is OP_PROD
+			call Write: b false;
+			call b.AddZ: ' * ';
+			call Write: b false;
+			return;
+		;;
+		when op
+			is OP_MIN
+				call b.AddZ: 'min(';
+			;;
+			is OP_MAX
+				call b.AddZ: 'max(';
+			;;
+			else
+				call b.AddZ: 'clamp(';
+			;;
+		;;
+		while u32 i: 0; i < count; i++;
+			if i > 0
+				call b.AddZ: ', ';
+			;;
+			call Write: b true;
+		;;
+		call b.Add: ')';
+	[end]
+
+	CssVal scratch;
+}

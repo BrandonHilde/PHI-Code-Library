@@ -1,0 +1,2641 @@
+# The HTML tokenizer: the WHATWG state machine, over bytes.
+#
+# Input goes through HtmlDecoder first (bad UTF-8 to U+FFFD, a BOM dropped, CR and CRLF to LF), so
+# what the states read is always valid UTF-8 with no CR. Every byte that matters to a state is
+# ASCII, so a state can treat the rest as "anything else" and copy them along.
+#
+# A state either consumes something and returns true, or finds it needs input that isn't there
+# yet and returns false without consuming, so any state can stop at any byte and go on when more
+# arrives. All the tokenizer's state is in the struct, none on the stack, which is also what lets
+# document.write run the tokenizer again from inside the sink.
+#
+# Tokens go to `sink` as they're finished, read from the struct's fields. The sink must not hold
+# on to them: chars point into the input or a buffer the next token reuses.
+#
+# The spec's RCDATA, RAWTEXT, script data and script data escaped end tag states are the same but
+# for the state they fall back to, so they're one set here (TEXT_END_OPEN, TEXT_END_NAME) with the
+# fallback in text_state. The ambiguous ampersand state only differs from its return state in
+# which parse error it reports, and this parser reports none, so it goes straight to that state.
+
+use memory.mem;
+use core.text;
+use core.atoms;
+use core.buf;
+use html.names;
+use html.entlookup;
+
+phi.HtmlT:Library
+{
+	# token kinds
+	const u32 CHARS: 1;         # chars, chars_len: no NUL in them
+	const u32 NUL: 2;           # a U+0000, which the tree builder drops or replaces
+	const u32 START: 3;
+	const u32 END_TAG: 4;
+	const u32 COMMENT: 5;
+	const u32 DOCTYPE: 6;
+	const u32 PI: 7;            # pi_target; chars, chars_len are its data
+	const u32 EOF: 8;
+}
+
+phi.HtmlS:Library
+{
+	# the hot ones first: Run dispatches in groups of 16
+	const u32 DATA: 0;
+	const u32 TAG_OPEN: 1;
+	const u32 END_TAG_OPEN: 2;
+	const u32 TAG_NAME: 3;
+	const u32 BEFORE_ATTR_NAME: 4;
+	const u32 ATTR_NAME: 5;
+	const u32 AFTER_ATTR_NAME: 6;
+	const u32 BEFORE_ATTR_VALUE: 7;
+	const u32 ATTR_VALUE_DQ: 8;
+	const u32 ATTR_VALUE_SQ: 9;
+	const u32 ATTR_VALUE_UNQ: 10;
+	const u32 AFTER_ATTR_VALUE: 11;
+	const u32 SELF_CLOSING: 12;
+	const u32 CHAR_REF: 13;
+	const u32 NUMERIC_REF: 14;
+	const u32 HEX_START: 15;
+
+	const u32 RCDATA: 16;
+	const u32 RAWTEXT: 17;
+	const u32 SCRIPT_DATA: 18;
+	const u32 PLAINTEXT: 19;
+	const u32 TEXT_LT: 20;
+	const u32 TEXT_END_OPEN: 21;
+	const u32 TEXT_END_NAME: 22;
+	const u32 SCRIPT_LT: 23;
+	const u32 ESC_START: 24;
+	const u32 ESC_START_DASH: 25;
+	const u32 ESCAPED: 26;
+	const u32 ESC_DASH: 27;
+	const u32 ESC_DASH_DASH: 28;
+	const u32 ESC_LT: 29;
+	const u32 DBL_ESC_START: 30;
+	const u32 DBL_ESCAPED: 31;
+
+	const u32 DBL_DASH: 32;
+	const u32 DBL_DASH_DASH: 33;
+	const u32 DBL_LT: 34;
+	const u32 DBL_ESC_END: 35;
+	const u32 BOGUS_COMMENT: 36;
+	const u32 MARKUP_OPEN: 37;
+	const u32 COMMENT_START: 38;
+	const u32 COMMENT_START_DASH: 39;
+	const u32 COMMENT: 40;
+	const u32 COMMENT_LT: 41;
+	const u32 COMMENT_LT_BANG: 42;
+	const u32 COMMENT_LT_BANG_DASH: 43;
+	const u32 COMMENT_LT_BANG_DASH_DASH: 44;
+	const u32 COMMENT_END_DASH: 45;
+	const u32 COMMENT_END: 46;
+	const u32 COMMENT_END_BANG: 47;
+
+	const u32 DOCTYPE: 48;
+	const u32 BEFORE_DOCTYPE_NAME: 49;
+	const u32 DOCTYPE_NAME: 50;
+	const u32 AFTER_DOCTYPE_NAME: 51;
+	const u32 AFTER_PUBLIC_KEYWORD: 52;
+	const u32 BEFORE_PUBLIC_ID: 53;
+	const u32 PUBLIC_ID_DQ: 54;
+	const u32 PUBLIC_ID_SQ: 55;
+	const u32 AFTER_PUBLIC_ID: 56;
+	const u32 BETWEEN_IDS: 57;
+	const u32 AFTER_SYSTEM_KEYWORD: 58;
+	const u32 BEFORE_SYSTEM_ID: 59;
+	const u32 SYSTEM_ID_DQ: 60;
+	const u32 SYSTEM_ID_SQ: 61;
+	const u32 AFTER_SYSTEM_ID: 62;
+	const u32 BOGUS_DOCTYPE: 63;
+
+	const u32 CDATA: 64;
+	const u32 CDATA_BRACKET: 65;
+	const u32 CDATA_END: 66;
+	const u32 PI_OPEN: 67;
+	const u32 PI_TARGET: 68;
+	const u32 PI_AFTER_TARGET: 69;
+	const u32 PI_DATA: 70;
+	const u32 PI_QUESTION: 71;
+	const u32 HEX_REF: 72;
+	const u32 DEC_REF: 73;
+}
+
+# UTF-8 to code points as the Encoding standard does it (a bad sequence is one U+FFFD for each
+# maximal part of it), and newlines normalized. A sequence or a CRLF can straddle two calls.
+struct.HtmlDecoder
+{
+	u32 cp;                 # the code point being put together
+	u32 needed;             # how many more bytes it needs
+	u32 lower;              # what the next byte may be
+	u32 upper;
+	bln last_cr;            # the last character was a CR: a LF now is part of it
+	bln bom_done;           # past the place a BOM could be
+
+	[Run: ptr<u8> bytes: 0; u32 count: 0; WlBuf output;]
+		u32 i: 0;
+		while i < count
+			u32 c: bytes:i;
+			if needed is 0
+				if c < 0x80
+					bom_done is true;
+					if last_cr
+						last_cr is false;
+						if c is 10
+							i++;
+							continue;
+						;;
+					;;
+					if c is 13
+						call output.Add: 10;
+						last_cr is true;
+						i++;
+						continue;
+					;;
+					# a run of ASCII goes across whole
+					u32 j: i + 1;
+					while j < count and bytes:j < 0x80 and bytes:j is not 13
+						j++;
+					;;
+					call output.AddN: bytes + i j - i;
+					i is j;
+					continue;
+				;;
+				i++;
+				if c >= 0xC2 and c <= 0xDF
+					needed is 1;
+					cp is c & 0x1F;
+				;;
+				elif c >= 0xE0 and c <= 0xEF
+					if c is 0xE0
+						lower is 0xA0;
+					;;
+					if c is 0xED
+						upper is 0x9F;
+					;;
+					needed is 2;
+					cp is c & 0xF;
+				;;
+				elif c >= 0xF0 and c <= 0xF4
+					if c is 0xF0
+						lower is 0x90;
+					;;
+					if c is 0xF4
+						upper is 0x8F;
+					;;
+					needed is 3;
+					cp is c & 7;
+				;;
+				else
+					call Done: 0xFFFD output;
+				;;
+				continue;
+			;;
+			u32 low: lower;
+			u32 high: upper;
+			if low is 0
+				low is 0x80;
+			;;
+			if high is 0
+				high is 0xBF;
+			;;
+			if c < low or c > high
+				# bad: one U+FFFD for what came before, and this byte starts again
+				needed is 0;
+				lower is 0;
+				upper is 0;
+				cp is 0;
+				call Done: 0xFFFD output;
+				continue;
+			;;
+			lower is 0;
+			upper is 0;
+			cp is (cp << 6) | (c & 0x3F);
+			needed--;
+			i++;
+			if needed is 0
+				u32 whole: cp;
+				cp is 0;
+				call Done: whole output;
+			;;
+		;;
+	[end]
+
+	# no more bytes: a sequence left unfinished is one U+FFFD
+	[Finish: WlBuf output;]
+		if needed is not 0
+			needed is 0;
+			lower is 0;
+			upper is 0;
+			cp is 0;
+			call Done: 0xFFFD output;
+		;;
+	[end]
+
+	[Done: u32 code: 0; WlBuf output;]
+		last_cr is false;
+		if bom_done is false
+			bom_done is true;
+			if code is 0xFEFF return;
+		;;
+		call output.AddCode: code;
+	[end]
+}
+
+struct.HtmlTokAttr
+{
+	ptr<WlAtom> name;
+	u32 off;                # its value is at this offset in vals
+	u32 len;
+}
+
+struct.HtmlTokenizer
+{
+	# the input: what's before pos is done; lim is where reading stops for now
+	WlBuf ib;
+	u32 pos;
+	u32 lim;
+	bln at_eof;             # no input will come after lim
+	bln stop;               # Run returns at once: the parser is paused or has failed
+	bln eof_sent;
+
+	u32 state;
+	u32 text_state;         # where TEXT_LT and TEXT_END_* go back to
+	u32 ret_state;          # where a character reference goes back to
+
+	# where tokens go, and who to ask whether the current node is foreign (for CDATA)
+	method<ptr<HtmlTokenizer>> sink;
+	method<ptr<HtmlTokenizer>: int> cdata_allowed;
+	ptr<u8> owner;
+
+	# the token
+	u32 kind;
+	ptr<u8> chars;
+	u32 chars_len;
+	ptr<WlAtom> name;       # a tag's name, in lowercase
+	u32 code;               # name.tag
+	bln self_closing;
+	ptr<HtmlTokAttr> attrs;
+	u32 attr_count;
+	u32 attr_cap;
+	WlBuf vals;
+	ptr<WlAtom> pi_target;
+	WlBuf cm;               # a comment's or processing instruction's data
+	WlBuf dt_name;
+	WlBuf dt_public;
+	WlBuf dt_system;
+	bln dt_has_name;
+	bln dt_has_public;
+	bln dt_has_system;
+	bln dt_quirks;
+
+	# being read
+	u32 pending_kind;
+	WlBuf tag_buf;
+	WlBuf attr_buf;
+	bln attr_dup;           # this attribute's name was already there: its value goes nowhere
+	bln attr_open;          # attrs' last entry is taking its value
+	WlBuf tmp;
+	ptr<WlAtom> last_start;
+	u32 ref_code;
+	u8 ref_x;               # the x or X of a &#x, as written
+	u8 ref_buf[12];
+
+	# seen names, once a tag has too many attributes to compare with each
+	ptr<u32> seen;
+	u32 seen_cap;
+	bln seen_on;
+
+	[Free]
+		call ib.Free;
+		call vals.Free;
+		call cm.Free;
+		call dt_name.Free;
+		call dt_public.Free;
+		call dt_system.Free;
+		call tag_buf.Free;
+		call attr_buf.Free;
+		call tmp.Free;
+		if attrs is not 0
+			free attrs;
+		;;
+		if seen is not 0
+			free seen;
+		;;
+		attrs is 0;
+		seen is 0;
+		attr_cap is 0;
+		seen_cap is 0;
+	[end]
+
+	# ---- the machine
+
+	[Run]
+		bln go: true;
+		while go
+			if stop or eof_sent return;
+			u32 s: state;
+			if s < 16
+				if s < 8
+					if s is 0
+						go is (StData);
+					;;
+					elif s is 3
+						go is (StTagName);
+					;;
+					elif s is 4
+						go is (StBeforeAttrName);
+					;;
+					elif s is 5
+						go is (StAttrName);
+					;;
+					elif s is 1
+						go is (StTagOpen);
+					;;
+					elif s is 7
+						go is (StBeforeAttrValue);
+					;;
+					elif s is 6
+						go is (StAfterAttrName);
+					;;
+					else
+						go is (StEndTagOpen);
+					;;
+				;;
+				else
+					if s is 8
+						go is (StAttrValueQuoted: 34);
+					;;
+					elif s is 9
+						go is (StAttrValueQuoted: 39);
+					;;
+					elif s is 11
+						go is (StAfterAttrValue);
+					;;
+					elif s is 10
+						go is (StAttrValueUnquoted);
+					;;
+					elif s is 13
+						go is (StCharRef);
+					;;
+					elif s is 12
+						go is (StSelfClosing);
+					;;
+					elif s is 14
+						go is (StNumericRef);
+					;;
+					else
+						go is (StHexStart);
+					;;
+				;;
+			;;
+			elif s < 32
+				go is (RunTextGroup: s);
+			;;
+			elif s < 48
+				go is (RunCommentGroup: s);
+			;;
+			elif s < 64
+				go is (RunDoctypeGroup: s);
+			;;
+			else
+				go is (RunLastGroup: s);
+			;;
+		;;
+	[end]
+
+	[RunTextGroup: u32 s: 0;]
+		if s is HtmlS.SCRIPT_DATA return (StRawRun: s);
+		if s is HtmlS.RCDATA return (StRawRun: s);
+		if s is HtmlS.RAWTEXT return (StRawRun: s);
+		if s is HtmlS.PLAINTEXT return (StRawRun: s);
+		when s
+			is HtmlS.TEXT_LT
+				return (StTextLt);
+			;;
+			is HtmlS.TEXT_END_OPEN
+				return (StTextEndOpen);
+			;;
+			is HtmlS.TEXT_END_NAME
+				return (StTextEndName);
+			;;
+			is HtmlS.SCRIPT_LT
+				return (StScriptLt);
+			;;
+			is HtmlS.ESC_START
+				return (StEscStart);
+			;;
+			is HtmlS.ESC_START_DASH
+				return (StEscStartDash);
+			;;
+			is HtmlS.ESCAPED
+				return (StEscaped);
+			;;
+			is HtmlS.ESC_DASH
+				return (StEscDash);
+			;;
+			is HtmlS.ESC_DASH_DASH
+				return (StEscDashDash);
+			;;
+			is HtmlS.ESC_LT
+				return (StEscLt);
+			;;
+			is HtmlS.DBL_ESC_START
+				return (StDblEscStart);
+			;;
+			else
+				return (StDblEscaped);
+			;;
+		;;
+	[end: false]
+
+	[RunCommentGroup: u32 s: 0;]
+		if s is HtmlS.COMMENT return (StComment);
+		when s
+			is HtmlS.DBL_DASH
+				return (StDblDash);
+			;;
+			is HtmlS.DBL_DASH_DASH
+				return (StDblDashDash);
+			;;
+			is HtmlS.DBL_LT
+				return (StDblLt);
+			;;
+			is HtmlS.DBL_ESC_END
+				return (StDblEscEnd);
+			;;
+			is HtmlS.BOGUS_COMMENT
+				return (StBogusComment);
+			;;
+			is HtmlS.MARKUP_OPEN
+				return (StMarkupOpen);
+			;;
+			is HtmlS.COMMENT_START
+				return (StCommentStart);
+			;;
+			is HtmlS.COMMENT_START_DASH
+				return (StCommentStartDash);
+			;;
+			is HtmlS.COMMENT_LT
+				return (StCommentLt);
+			;;
+			is HtmlS.COMMENT_LT_BANG
+				return (StCommentLtBang);
+			;;
+			is HtmlS.COMMENT_LT_BANG_DASH
+				return (StCommentLtBangDash);
+			;;
+			is HtmlS.COMMENT_LT_BANG_DASH_DASH
+				return (StCommentLtBangDashDash);
+			;;
+			is HtmlS.COMMENT_END_DASH
+				return (StCommentEndDash);
+			;;
+			is HtmlS.COMMENT_END
+				return (StCommentEnd);
+			;;
+			else
+				return (StCommentEndBang);
+			;;
+		;;
+	[end: false]
+
+	[RunDoctypeGroup: u32 s: 0;]
+		when s
+			is HtmlS.DOCTYPE
+				return (StDoctype);
+			;;
+			is HtmlS.BEFORE_DOCTYPE_NAME
+				return (StBeforeDoctypeName);
+			;;
+			is HtmlS.DOCTYPE_NAME
+				return (StDoctypeName);
+			;;
+			is HtmlS.AFTER_DOCTYPE_NAME
+				return (StAfterDoctypeName);
+			;;
+			is HtmlS.AFTER_PUBLIC_KEYWORD
+				return (StAfterKeyword: true);
+			;;
+			is HtmlS.BEFORE_PUBLIC_ID
+				return (StBeforeId: true);
+			;;
+			is HtmlS.PUBLIC_ID_DQ
+				return (StId: dt_public 34);
+			;;
+			is HtmlS.PUBLIC_ID_SQ
+				return (StId: dt_public 39);
+			;;
+			is HtmlS.AFTER_PUBLIC_ID
+				return (StAfterPublicId);
+			;;
+			is HtmlS.BETWEEN_IDS
+				return (StBetweenIds);
+			;;
+			is HtmlS.AFTER_SYSTEM_KEYWORD
+				return (StAfterKeyword: false);
+			;;
+			is HtmlS.BEFORE_SYSTEM_ID
+				return (StBeforeId: false);
+			;;
+			is HtmlS.SYSTEM_ID_DQ
+				return (StId: dt_system 34);
+			;;
+			is HtmlS.SYSTEM_ID_SQ
+				return (StId: dt_system 39);
+			;;
+			is HtmlS.AFTER_SYSTEM_ID
+				return (StAfterSystemId);
+			;;
+			else
+				return (StBogusDoctype);
+			;;
+		;;
+	[end: false]
+
+	[RunLastGroup: u32 s: 0;]
+		when s
+			is HtmlS.CDATA
+				return (StCdata);
+			;;
+			is HtmlS.CDATA_BRACKET
+				return (StCdataBracket);
+			;;
+			is HtmlS.CDATA_END
+				return (StCdataEnd);
+			;;
+			is HtmlS.PI_OPEN
+				return (StPiOpen);
+			;;
+			is HtmlS.PI_TARGET
+				return (StPiTarget);
+			;;
+			is HtmlS.PI_AFTER_TARGET
+				return (StPiAfterTarget);
+			;;
+			is HtmlS.PI_DATA
+				return (StPiData);
+			;;
+			is HtmlS.PI_QUESTION
+				return (StPiQuestion);
+			;;
+			is HtmlS.HEX_REF
+				return (StHexRef);
+			;;
+			else
+				return (StDecRef);
+			;;
+		;;
+	[end: false]
+
+	# ---- what the tree builder and tests call
+
+	# a state that holds text, and comes back to itself after a '<' that wasn't an end tag
+	[SetTextState: u32 s: 0;]
+		state is s;
+		text_state is s;
+	[end]
+
+	# ---- emitting
+
+	[EmitChars: ptr<u8> text: 0; u32 count: 0;]
+		if count is 0 return;
+		kind is HtmlT.CHARS;
+		chars is text;
+		chars_len is count;
+		call sink: self;
+	[end]
+
+	[EmitNul]
+		kind is HtmlT.NUL;
+		chars is 0;
+		chars_len is 0;
+		call sink: self;
+	[end]
+
+	[EmitReplacement]
+		call EmitChars: '\xEF\xBF\xBD' 3;
+	[end]
+
+	[EmitEof]
+		eof_sent is true;
+		kind is HtmlT.EOF;
+		call sink: self;
+	[end]
+
+	[EmitTag]
+		state is HtmlS.DATA;
+		call CloseAttr;
+		kind is pending_kind;
+		ptr<WlAtom> atom: (WlAtoms.Get: tag_buf.data tag_buf.len);
+		name is atom;
+		code is atom.tag;
+		if kind is HtmlT.START
+			last_start is atom;
+		;;
+		call sink: self;
+	[end]
+
+	[EmitComment]
+		kind is HtmlT.COMMENT;
+		chars is cm.data;
+		chars_len is cm.len;
+		call sink: self;
+	[end]
+
+	[EmitDoctype]
+		kind is HtmlT.DOCTYPE;
+		call sink: self;
+	[end]
+
+	[EmitPi]
+		kind is HtmlT.PI;
+		chars is cm.data;
+		chars_len is cm.len;
+		call sink: self;
+	[end]
+
+	# ---- tags
+
+	[NewTag: u32 which: 0;]
+		pending_kind is which;
+		call tag_buf.Clear;
+		if tag_buf.data is 0
+			call tag_buf.Reserve: 16;
+		;;
+		call vals.Clear;
+		attr_count is 0;
+		self_closing is false;
+		attr_open is false;
+		attr_dup is false;
+		seen_on is false;
+	[end]
+
+	# the name so far is a whole attribute's name now: see if it's a new one
+	[EndAttrName]
+		ptr<WlAtom> atom: (WlAtoms.Get: attr_buf.data attr_buf.len);
+		call attr_buf.Clear;
+		attr_dup is (AttrSeen: atom);
+		if attr_dup return;
+		if attr_count is attr_cap
+			u32 room: attr_cap * 2;
+			if room < 8
+				room is 8;
+			;;
+			ptr<HtmlTokAttr> grown: new HtmlTokAttr[room];
+			if grown is 0
+				throw 'out of memory for attributes';
+			;;
+			if attr_count > 0
+				call Mem.Copy: grown attrs attr_count * sizeof HtmlTokAttr;
+				free attrs;
+			;;
+			attrs is grown;
+			attr_cap is room;
+		;;
+		attrs:attr_count.name is atom;
+		attrs:attr_count.off is vals.len;
+		attrs:attr_count.len is 0;
+		attr_count++;
+		attr_open is true;
+		if seen_on
+			call SeenAdd: atom attr_count;
+		;;
+	[end]
+
+	# the value is whole: nothing more goes on it
+	[CloseAttr]
+		if attr_open
+			u32 last: attr_count - 1;
+			attrs:last.len is vals.len - attrs:last.off;
+			attr_open is false;
+		;;
+		attr_dup is false;
+	[end]
+
+	# whether this name is already on the tag. Past a few names, by a small hash table, so a tag
+	# with a hostile number of attributes stays linear.
+	[AttrSeen: ptr<WlAtom> atom: 0;]
+		if attr_count <= 16
+			while u32 i: 0; i < attr_count; i++;
+				if attrs:i.name is atom return true;
+			;;
+			return false;
+		;;
+		if seen_on is false
+			call SeenBuild;
+		;;
+		u32 mask: seen_cap - 1;
+		u32 at_slot: atom.hash & mask;
+		while seen:at_slot is not 0
+			if attrs:(seen:at_slot - 1).name is atom return true;
+			at_slot is (at_slot + 1) & mask;
+		;;
+	[end: false]
+
+	[SeenBuild]
+		if seen_cap < 64
+			if seen is not 0
+				free seen;
+			;;
+			seen is new u32[64];
+			if seen is 0
+				throw 'out of memory for attributes';
+			;;
+			seen_cap is 64;
+		;;
+		else
+			call Mem.Fill: seen as ptr<u8> 0 seen_cap * 4;
+		;;
+		seen_on is true;
+		while u32 i: 0; i < attr_count; i++;
+			call SeenAdd: attrs:i.name i + 1;
+		;;
+	[end]
+
+	[SeenAdd: ptr<WlAtom> atom: 0; u32 index_plus_one: 0;]
+		if (attr_count + 1) * 2 > seen_cap
+			u32 room: seen_cap * 2;
+			ptr<u32> grown: new u32[room];
+			if grown is 0
+				throw 'out of memory for attributes';
+			;;
+			free seen;
+			seen is grown;
+			seen_cap is room;
+			u32 mask2: room - 1;
+			while u32 i: 0; i < attr_count; i++;
+				u32 slot2: attrs:i.name.hash & mask2;
+				while seen:slot2 is not 0
+					slot2 is (slot2 + 1) & mask2;
+				;;
+				seen:slot2 is i + 1;
+			;;
+			return;
+		;;
+		u32 mask: seen_cap - 1;
+		u32 slot: atom.hash & mask;
+		while seen:slot is not 0
+			slot is (slot + 1) & mask;
+		;;
+		seen:slot is index_plus_one;
+	[end]
+
+	# ---- the states
+
+	[StData]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		if i >= e
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c > 60
+				i++;
+				continue;
+			;;
+			if c is 60 or c is 38 or c is 0 break;
+			i++;
+		;;
+		u32 start: pos;
+		pos is i;
+		if i >= e
+			call EmitChars: d + start i - start;
+			return true;
+		;;
+		pos is i + 1;
+		if c is 60
+			state is HtmlS.TAG_OPEN;
+		;;
+		elif c is 38
+			ret_state is HtmlS.DATA;
+			state is HtmlS.CHAR_REF;
+		;;
+		if i > start
+			call EmitChars: d + start i - start;
+		;;
+		if c is 0
+			call EmitNul;
+		;;
+	[end: true]
+
+	# RCDATA, RAWTEXT, script data and PLAINTEXT: a run up to the next character that matters
+	[StRawRun: u32 s: 0;]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		if i >= e
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: 0;
+		bln plain: s is HtmlS.PLAINTEXT;
+		bln refs: s is HtmlS.RCDATA;
+		while i < e
+			c is d:i;
+			if c is 0 break;
+			if plain is false and c is 60 break;
+			if refs and c is 38 break;
+			i++;
+		;;
+		u32 start: pos;
+		pos is i;
+		if i >= e
+			call EmitChars: d + start i - start;
+			return true;
+		;;
+		pos is i + 1;
+		if c is 60
+			if s is HtmlS.SCRIPT_DATA
+				state is HtmlS.SCRIPT_LT;
+			;;
+			else
+				state is HtmlS.TEXT_LT;
+			;;
+		;;
+		elif c is 38
+			ret_state is s;
+			state is HtmlS.CHAR_REF;
+		;;
+		if i > start
+			call EmitChars: d + start i - start;
+		;;
+		if c is 0
+			call EmitReplacement;
+		;;
+	[end: true]
+
+	[StTagOpen]
+		if pos >= lim
+			if at_eof is false return false;
+			state is HtmlS.DATA;
+			call EmitChars: '<' 1;
+			return true;
+		;;
+		u32 c: ib.data:pos;
+		if (WlText.IsAlpha: c)
+			call NewTag: HtmlT.START;
+			state is HtmlS.TAG_NAME;
+			return true;
+		;;
+		if c is '/'
+			pos++;
+			state is HtmlS.END_TAG_OPEN;
+			return true;
+		;;
+		if c is '!'
+			pos++;
+			state is HtmlS.MARKUP_OPEN;
+			return true;
+		;;
+		if c is '?'
+			pos++;
+			call tmp.Clear;
+			state is HtmlS.PI_OPEN;
+			return true;
+		;;
+		state is HtmlS.DATA;
+		call EmitChars: '<' 1;
+	[end: true]
+
+	[StEndTagOpen]
+		if pos >= lim
+			if at_eof is false return false;
+			state is HtmlS.DATA;
+			call EmitChars: '</' 2;
+			return true;
+		;;
+		u32 c: ib.data:pos;
+		if (WlText.IsAlpha: c)
+			call NewTag: HtmlT.END_TAG;
+			state is HtmlS.TAG_NAME;
+			return true;
+		;;
+		if c is '>'
+			pos++;
+			state is HtmlS.DATA;
+			return true;
+		;;
+		call cm.Clear;
+		state is HtmlS.BOGUS_COMMENT;
+	[end: true]
+
+	[StTagName]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c > 'Z'
+				i++;
+				continue;
+			;;
+			if c is 32 or c is '/' or c is '>' or c is 10 or c is 9 or c is 12 or c is 0 or (c >= 'A' and c <= 'Z') break;
+			i++;
+		;;
+		if i > pos
+			call tag_buf.AddN: d + pos i - pos;
+			pos is i;
+		;;
+		if i >= e
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		pos is i + 1;
+		if c is '>'
+			call EmitTag;
+			return true;
+		;;
+		if c is 32 or c is 10 or c is 9 or c is 12
+			state is HtmlS.BEFORE_ATTR_NAME;
+		;;
+		elif c is '/'
+			state is HtmlS.SELF_CLOSING;
+		;;
+		elif c is 0
+			call tag_buf.AddN: '\xEF\xBF\xBD' 3;
+		;;
+		else
+			call tag_buf.Add: (c + 32) as u8;
+		;;
+	[end: true]
+
+	[StBeforeAttrName]
+		ptr<u8> d: ib.data;
+		while pos < lim and (WlText.IsSpace: d:pos)
+			pos++;
+		;;
+		if pos >= lim
+			if at_eof is false return false;
+			state is HtmlS.AFTER_ATTR_NAME;
+			return true;
+		;;
+		u32 c: d:pos;
+		if c is '/' or c is '>'
+			state is HtmlS.AFTER_ATTR_NAME;
+			return true;
+		;;
+		call CloseAttr;
+		call attr_buf.Clear;
+		if attr_buf.data is 0
+			call attr_buf.Reserve: 16;
+		;;
+		if c is '='
+			# a name that starts with = keeps it
+			call attr_buf.Add: '=';
+			pos++;
+		;;
+		state is HtmlS.ATTR_NAME;
+	[end: true]
+
+	[StAttrName]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c > 'Z'
+				i++;
+				continue;
+			;;
+			if c is 32 or c is '/' or c is '>' or c is '=' or c is 10 or c is 9 or c is 12 or c is 0 or (c >= 'A' and c <= 'Z') break;
+			i++;
+		;;
+		if i > pos
+			call attr_buf.AddN: d + pos i - pos;
+			pos is i;
+		;;
+		if i >= e
+			if at_eof is false return false;
+			call EndAttrName;
+			state is HtmlS.AFTER_ATTR_NAME;
+			return true;
+		;;
+		if c is 0
+			pos++;
+			call attr_buf.AddN: '\xEF\xBF\xBD' 3;
+			return true;
+		;;
+		if c >= 'A' and c <= 'Z'
+			pos++;
+			call attr_buf.Add: (c + 32) as u8;
+			return true;
+		;;
+		call EndAttrName;
+		if c is '='
+			pos++;
+			state is HtmlS.BEFORE_ATTR_VALUE;
+		;;
+		else
+			state is HtmlS.AFTER_ATTR_NAME;
+		;;
+	[end: true]
+
+	[StAfterAttrName]
+		ptr<u8> d: ib.data;
+		while pos < lim and (WlText.IsSpace: d:pos)
+			pos++;
+		;;
+		if pos >= lim
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: d:pos;
+		if c is '/'
+			pos++;
+			state is HtmlS.SELF_CLOSING;
+			return true;
+		;;
+		if c is '='
+			pos++;
+			state is HtmlS.BEFORE_ATTR_VALUE;
+			return true;
+		;;
+		if c is '>'
+			pos++;
+			call EmitTag;
+			return true;
+		;;
+		call CloseAttr;
+		call attr_buf.Clear;
+		if attr_buf.data is 0
+			call attr_buf.Reserve: 16;
+		;;
+		state is HtmlS.ATTR_NAME;
+	[end: true]
+
+	[StBeforeAttrValue]
+		ptr<u8> d: ib.data;
+		while pos < lim and (WlText.IsSpace: d:pos)
+			pos++;
+		;;
+		if pos >= lim
+			if at_eof is false return false;
+			state is HtmlS.ATTR_VALUE_UNQ;
+			return true;
+		;;
+		u32 c: d:pos;
+		if c is 34
+			pos++;
+			state is HtmlS.ATTR_VALUE_DQ;
+			return true;
+		;;
+		if c is 39
+			pos++;
+			state is HtmlS.ATTR_VALUE_SQ;
+			return true;
+		;;
+		if c is '>'
+			pos++;
+			call EmitTag;
+			return true;
+		;;
+		state is HtmlS.ATTR_VALUE_UNQ;
+	[end: true]
+
+	[StAttrValueQuoted: u32 quote: 0;]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c is quote or c is 38 or c is 0 break;
+			i++;
+		;;
+		if i > pos
+			call AddValue: d + pos i - pos;
+			pos is i;
+		;;
+		if i >= e
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		pos is i + 1;
+		if c is quote
+			state is HtmlS.AFTER_ATTR_VALUE;
+		;;
+		elif c is 38
+			ret_state is state;
+			state is HtmlS.CHAR_REF;
+		;;
+		else
+			call AddValue: '\xEF\xBF\xBD' 3;
+		;;
+	[end: true]
+
+	[StAttrValueUnquoted]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c is 32 or c is '>' or c is 38 or c is 10 or c is 9 or c is 12 or c is 0 break;
+			i++;
+		;;
+		if i > pos
+			call AddValue: d + pos i - pos;
+			pos is i;
+		;;
+		if i >= e
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		pos is i + 1;
+		if c is '>'
+			call EmitTag;
+		;;
+		elif c is 38
+			ret_state is state;
+			state is HtmlS.CHAR_REF;
+		;;
+		elif c is 0
+			call AddValue: '\xEF\xBF\xBD' 3;
+		;;
+		else
+			state is HtmlS.BEFORE_ATTR_NAME;
+		;;
+	[end: true]
+
+	[AddValue: ptr<u8> text: 0; u32 count: 0;]
+		if attr_dup is false
+			call vals.AddN: text count;
+		;;
+	[end]
+
+	[StAfterAttrValue]
+		if pos >= lim
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: ib.data:pos;
+		if (WlText.IsSpace: c)
+			pos++;
+			state is HtmlS.BEFORE_ATTR_NAME;
+			return true;
+		;;
+		if c is '/'
+			pos++;
+			state is HtmlS.SELF_CLOSING;
+			return true;
+		;;
+		if c is '>'
+			pos++;
+			call EmitTag;
+			return true;
+		;;
+		state is HtmlS.BEFORE_ATTR_NAME;
+	[end: true]
+
+	[StSelfClosing]
+		if pos >= lim
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		if ib.data:pos is '>'
+			pos++;
+			self_closing is true;
+			call EmitTag;
+			return true;
+		;;
+		state is HtmlS.BEFORE_ATTR_NAME;
+	[end: true]
+
+	# ---- character references
+
+	[InAttr]
+	[end: ret_state is HtmlS.ATTR_VALUE_DQ or ret_state is HtmlS.ATTR_VALUE_SQ or ret_state is HtmlS.ATTR_VALUE_UNQ]
+
+	# flush what a reference came to, and go back. The state changes first: emitting can't run a
+	# script, but the sink must see the state that's true now.
+	[RefOut: ptr<u8> text: 0; u32 count: 0;]
+		state is ret_state;
+		if (InAttr)
+			call AddValue: text count;
+		;;
+		else
+			call EmitChars: text count;
+		;;
+	[end]
+
+	# pos is just past the &
+	[StCharRef]
+		if pos >= lim
+			if at_eof is false return false;
+			call RefOut: '&' 1;
+			return true;
+		;;
+		ptr<u8> d: ib.data;
+		u32 c: d:pos;
+		if c is '#'
+			pos++;
+			ref_code is 0;
+			ref_x is 0;
+			state is HtmlS.NUMERIC_REF;
+			return true;
+		;;
+		if (WlText.IsAlnum: c) is false
+			call RefOut: '&' 1;
+			return true;
+		;;
+		call HtmlEntities.Lookup: d + pos lim - pos at_eof;
+		if HtmlEntities.need_more return false;
+		int line: HtmlEntities.found;
+		if line < 0
+			call RefOut: '&' 1;
+			return true;
+		;;
+		u32 matched: HtmlEntities.found_len;
+		if d:(pos + matched - 1) is not ';' and (InAttr)
+			# the next character decides, and it's there or the input has ended: Lookup looked
+			u32 after: pos + matched;
+			if after < lim
+				u32 next_char: d:after;
+				if next_char is '=' or (WlText.IsAlnum: next_char)
+					call RefOut: '&' 1;
+					return true;
+				;;
+			;;
+		;;
+		u32 made: (HtmlEntities.Decode: line as u32 addr ref_buf:0);
+		pos is pos + matched;
+		call RefOut: addr ref_buf:0 made;
+	[end: true]
+
+	[StNumericRef]
+		if pos >= lim
+			if at_eof is false return false;
+			call RefOut: '&#' 2;
+			return true;
+		;;
+		u32 c: ib.data:pos;
+		if c is 'x' or c is 'X'
+			pos++;
+			ref_x is c as u8;
+			state is HtmlS.HEX_START;
+			return true;
+		;;
+		if (WlText.IsDigit: c)
+			state is HtmlS.DEC_REF;
+			return true;
+		;;
+		call RefOut: '&#' 2;
+	[end: true]
+
+	[StHexStart]
+		if pos >= lim
+			if at_eof is false return false;
+		;;
+		elif (WlText.IsHex: ib.data:pos)
+			state is HtmlS.HEX_REF;
+			return true;
+		;;
+		ref_buf:0 is '&';
+		ref_buf:1 is '#';
+		ref_buf:2 is ref_x;
+		call RefOut: addr ref_buf:0 3;
+	[end: true]
+
+	[StHexRef]
+		ptr<u8> d: ib.data;
+		while pos < lim
+			u32 c: d:pos;
+			if (WlText.IsHex: c) is false
+				if c is ';'
+					pos++;
+				;;
+				call RefEnd;
+				return true;
+			;;
+			pos++;
+			ref_code is ref_code * 16 + (WlText.HexValue: c) as u32;
+			if ref_code > 0x10FFFF
+				ref_code is 0x110000;
+			;;
+		;;
+		if at_eof is false return false;
+		call RefEnd;
+	[end: true]
+
+	[StDecRef]
+		ptr<u8> d: ib.data;
+		while pos < lim
+			u32 c: d:pos;
+			if (WlText.IsDigit: c) is false
+				if c is ';'
+					pos++;
+				;;
+				call RefEnd;
+				return true;
+			;;
+			pos++;
+			ref_code is ref_code * 10 + c - '0';
+			if ref_code > 0x10FFFF
+				ref_code is 0x110000;
+			;;
+		;;
+		if at_eof is false return false;
+		call RefEnd;
+	[end: true]
+
+	[RefEnd]
+		u32 cp: ref_code;
+		if cp is 0 or cp > 0x10FFFF or (cp >= 0xD800 and cp <= 0xDFFF)
+			cp is 0xFFFD;
+		;;
+		elif cp >= 0x80 and cp <= 0x9F
+			cp is (Windows1252: cp);
+		;;
+		u32 made: (HtmlEntities.Encode: cp addr ref_buf:0);
+		call RefOut: addr ref_buf:0 made;
+	[end]
+
+	# the spec's table for the numbers 0x80 to 0x9F
+	[Windows1252: u32 cp: 0;]
+		when cp
+			is 0x80
+				return 0x20AC;
+			;;
+			is 0x82
+				return 0x201A;
+			;;
+			is 0x83
+				return 0x0192;
+			;;
+			is 0x84
+				return 0x201E;
+			;;
+			is 0x85
+				return 0x2026;
+			;;
+			is 0x86
+				return 0x2020;
+			;;
+			is 0x87
+				return 0x2021;
+			;;
+			is 0x88
+				return 0x02C6;
+			;;
+			is 0x89
+				return 0x2030;
+			;;
+			is 0x8A
+				return 0x0160;
+			;;
+			is 0x8B
+				return 0x2039;
+			;;
+			is 0x8C
+				return 0x0152;
+			;;
+			is 0x8E
+				return 0x017D;
+			;;
+			is 0x91
+				return 0x2018;
+			;;
+			is 0x92
+				return 0x2019;
+			;;
+			is 0x93
+				return 0x201C;
+			;;
+			is 0x94
+				return 0x201D;
+			;;
+			is 0x95
+				return 0x2022;
+			;;
+			is 0x96
+				return 0x2013;
+			;;
+			is 0x97
+				return 0x2014;
+			;;
+			is 0x98
+				return 0x02DC;
+			;;
+			is 0x99
+				return 0x2122;
+			;;
+			is 0x9A
+				return 0x0161;
+			;;
+			is 0x9B
+				return 0x203A;
+			;;
+			is 0x9C
+				return 0x0153;
+			;;
+			is 0x9E
+				return 0x017E;
+			;;
+			is 0x9F
+				return 0x0178;
+			;;
+		;;
+	[end: cp]
+
+	# ---- RCDATA, RAWTEXT and script data end tags
+
+	[StTextLt]
+		if pos < lim
+			if ib.data:pos is '/'
+				pos++;
+				call tmp.Clear;
+				state is HtmlS.TEXT_END_OPEN;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is text_state;
+		call EmitChars: '<' 1;
+	[end: true]
+
+	[StTextEndOpen]
+		if pos < lim
+			if (WlText.IsAlpha: ib.data:pos)
+				call NewTag: HtmlT.END_TAG;
+				state is HtmlS.TEXT_END_NAME;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is text_state;
+		call EmitChars: '</' 2;
+	[end: true]
+
+	[StTextEndName]
+		ptr<u8> d: ib.data;
+		while pos < lim
+			u32 c: d:pos;
+			if (WlText.IsAlpha: c) is false
+				if (Appropriate)
+					if (WlText.IsSpace: c)
+						pos++;
+						state is HtmlS.BEFORE_ATTR_NAME;
+						return true;
+					;;
+					if c is '/'
+						pos++;
+						state is HtmlS.SELF_CLOSING;
+						return true;
+					;;
+					if c is '>'
+						pos++;
+						call EmitTag;
+						return true;
+					;;
+				;;
+				call TextEndGiveUp;
+				return true;
+			;;
+			pos++;
+			call tmp.Add: c as u8;
+			call tag_buf.Add: (WlText.Lower: c) as u8;
+		;;
+		if at_eof is false return false;
+		call TextEndGiveUp;
+	[end: true]
+
+	[TextEndGiveUp]
+		state is text_state;
+		call EmitChars: '</' 2;
+		call EmitChars: tmp.data tmp.len;
+	[end]
+
+	[Appropriate]
+		if last_start is 0 return false;
+	[end: (WlText.Eq: last_start.text last_start.len tag_buf.data tag_buf.len)]
+
+	# ---- script data
+
+	[StScriptLt]
+		if pos < lim
+			u32 c: ib.data:pos;
+			if c is '/'
+				pos++;
+				call tmp.Clear;
+				text_state is HtmlS.SCRIPT_DATA;
+				state is HtmlS.TEXT_END_OPEN;
+				return true;
+			;;
+			if c is '!'
+				pos++;
+				state is HtmlS.ESC_START;
+				call EmitChars: '<!' 2;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is HtmlS.SCRIPT_DATA;
+		call EmitChars: '<' 1;
+	[end: true]
+
+	[StEscStart]
+		if pos < lim
+			if ib.data:pos is '-'
+				pos++;
+				state is HtmlS.ESC_START_DASH;
+				call EmitChars: '-' 1;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is HtmlS.SCRIPT_DATA;
+	[end: true]
+
+	[StEscStartDash]
+		if pos < lim
+			if ib.data:pos is '-'
+				pos++;
+				state is HtmlS.ESC_DASH_DASH;
+				call EmitChars: '-' 1;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is HtmlS.SCRIPT_DATA;
+	[end: true]
+
+	[StEscaped]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		if i >= e
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c is '-' or c is '<' or c is 0 break;
+			i++;
+		;;
+		u32 start: pos;
+		pos is i;
+		if i >= e
+			call EmitChars: d + start i - start;
+			return true;
+		;;
+		pos is i + 1;
+		if c is '-'
+			state is HtmlS.ESC_DASH;
+			call EmitChars: d + start i + 1 - start;
+			return true;
+		;;
+		if c is '<'
+			state is HtmlS.ESC_LT;
+		;;
+		call EmitChars: d + start i - start;
+		if c is 0
+			call EmitReplacement;
+		;;
+	[end: true]
+
+	[StEscDash]
+		if pos >= lim
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: ib.data:pos;
+		if c is '-'
+			pos++;
+			state is HtmlS.ESC_DASH_DASH;
+			call EmitChars: '-' 1;
+			return true;
+		;;
+		if c is '<'
+			pos++;
+			state is HtmlS.ESC_LT;
+			return true;
+		;;
+		state is HtmlS.ESCAPED;
+	[end: true]
+
+	[StEscDashDash]
+		if pos >= lim
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: ib.data:pos;
+		if c is '-'
+			pos++;
+			call EmitChars: '-' 1;
+			return true;
+		;;
+		if c is '<'
+			pos++;
+			state is HtmlS.ESC_LT;
+			return true;
+		;;
+		if c is '>'
+			pos++;
+			state is HtmlS.SCRIPT_DATA;
+			call EmitChars: '>' 1;
+			return true;
+		;;
+		state is HtmlS.ESCAPED;
+	[end: true]
+
+	[StEscLt]
+		if pos < lim
+			u32 c: ib.data:pos;
+			if c is '/'
+				pos++;
+				call tmp.Clear;
+				text_state is HtmlS.ESCAPED;
+				state is HtmlS.TEXT_END_OPEN;
+				return true;
+			;;
+			if (WlText.IsAlpha: c)
+				call tmp.Clear;
+				state is HtmlS.DBL_ESC_START;
+				call EmitChars: '<' 1;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is HtmlS.ESCAPED;
+		call EmitChars: '<' 1;
+	[end: true]
+
+	[IsScriptWord]
+	[end: (WlText.EqZ: tmp.data tmp.len 'script')]
+
+	[StDblEscStart]
+		if pos >= lim
+			if at_eof is false return false;
+			state is HtmlS.ESCAPED;
+			return true;
+		;;
+		ptr<u8> d: ib.data;
+		u32 c: d:pos;
+		if (WlText.IsSpace: c) or c is '/' or c is '>'
+			if (IsScriptWord)
+				state is HtmlS.DBL_ESCAPED;
+			;;
+			else
+				state is HtmlS.ESCAPED;
+			;;
+			pos++;
+			call EmitChars: d + pos - 1 1;
+			return true;
+		;;
+		if (WlText.IsAlpha: c)
+			pos++;
+			call tmp.Add: (WlText.Lower: c) as u8;
+			call EmitChars: d + pos - 1 1;
+			return true;
+		;;
+		state is HtmlS.ESCAPED;
+	[end: true]
+
+	[StDblEscaped]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		if i >= e
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c is '-' or c is '<' or c is 0 break;
+			i++;
+		;;
+		u32 start: pos;
+		pos is i;
+		if i >= e
+			call EmitChars: d + start i - start;
+			return true;
+		;;
+		pos is i + 1;
+		if c is 0
+			call EmitChars: d + start i - start;
+			call EmitReplacement;
+			return true;
+		;;
+		if c is '-'
+			state is HtmlS.DBL_DASH;
+		;;
+		else
+			state is HtmlS.DBL_LT;
+		;;
+		call EmitChars: d + start i + 1 - start;
+	[end: true]
+
+	[StDblDash]
+		if pos >= lim
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: ib.data:pos;
+		if c is '-'
+			pos++;
+			state is HtmlS.DBL_DASH_DASH;
+			call EmitChars: '-' 1;
+			return true;
+		;;
+		if c is '<'
+			pos++;
+			state is HtmlS.DBL_LT;
+			call EmitChars: '<' 1;
+			return true;
+		;;
+		state is HtmlS.DBL_ESCAPED;
+	[end: true]
+
+	[StDblDashDash]
+		if pos >= lim
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: ib.data:pos;
+		if c is '-'
+			pos++;
+			call EmitChars: '-' 1;
+			return true;
+		;;
+		if c is '<'
+			pos++;
+			state is HtmlS.DBL_LT;
+			call EmitChars: '<' 1;
+			return true;
+		;;
+		if c is '>'
+			pos++;
+			state is HtmlS.SCRIPT_DATA;
+			call EmitChars: '>' 1;
+			return true;
+		;;
+		state is HtmlS.DBL_ESCAPED;
+	[end: true]
+
+	[StDblLt]
+		if pos < lim
+			if ib.data:pos is '/'
+				pos++;
+				call tmp.Clear;
+				state is HtmlS.DBL_ESC_END;
+				call EmitChars: '/' 1;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is HtmlS.DBL_ESCAPED;
+	[end: true]
+
+	[StDblEscEnd]
+		if pos >= lim
+			if at_eof is false return false;
+			state is HtmlS.DBL_ESCAPED;
+			return true;
+		;;
+		ptr<u8> d: ib.data;
+		u32 c: d:pos;
+		if (WlText.IsSpace: c) or c is '/' or c is '>'
+			if (IsScriptWord)
+				state is HtmlS.ESCAPED;
+			;;
+			else
+				state is HtmlS.DBL_ESCAPED;
+			;;
+			pos++;
+			call EmitChars: d + pos - 1 1;
+			return true;
+		;;
+		if (WlText.IsAlpha: c)
+			pos++;
+			call tmp.Add: (WlText.Lower: c) as u8;
+			call EmitChars: d + pos - 1 1;
+			return true;
+		;;
+		state is HtmlS.DBL_ESCAPED;
+	[end: true]
+
+	# ---- comments
+
+	[StBogusComment]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c is '>' or c is 0 break;
+			i++;
+		;;
+		if i > pos
+			call cm.AddN: d + pos i - pos;
+			pos is i;
+		;;
+		if i >= e
+			if at_eof is false return false;
+			call EmitComment;
+			call EmitEof;
+			return false;
+		;;
+		pos is i + 1;
+		if c is 0
+			call cm.AddN: '\xEF\xBF\xBD' 3;
+			return true;
+		;;
+		state is HtmlS.DATA;
+		call EmitComment;
+	[end: true]
+
+	# whether the next bytes are word: 1 yes, 0 no, -1 not enough input to say
+	[Match: ptr<u8> word: 0; u32 count: 0; bln any_case: false;]
+		ptr<u8> d: ib.data;
+		u32 have: lim - pos;
+		u32 i: 0;
+		while i < count
+			if i >= have
+				if at_eof return 0;
+				return -1;
+			;;
+			u32 c: d:(pos + i);
+			if any_case
+				c is (WlText.Lower: c);
+			;;
+			if c is not (WlText.Lower: word:i) and c is not word:i return 0;
+			i++;
+		;;
+	[end: 1]
+
+	[StMarkupOpen]
+		int dashes: (Match: '--' 2);
+		if dashes is 1
+			pos is pos + 2;
+			call cm.Clear;
+			state is HtmlS.COMMENT_START;
+			return true;
+		;;
+		int doctype: (Match: 'doctype' 7 true);
+		if doctype is 1
+			pos is pos + 7;
+			state is HtmlS.DOCTYPE;
+			return true;
+		;;
+		int cdata: (MatchExact: '[CDATA[' 7);
+		if cdata is 1
+			pos is pos + 7;
+			if cdata_allowed is not 0 and (cdata_allowed: self) is not 0
+				state is HtmlS.CDATA;
+			;;
+			else
+				call cm.Clear;
+				call cm.AddN: '[CDATA[' 7;
+				state is HtmlS.BOGUS_COMMENT;
+			;;
+			return true;
+		;;
+		if dashes < 0 or doctype < 0 or cdata < 0 return false;
+		call cm.Clear;
+		state is HtmlS.BOGUS_COMMENT;
+	[end: true]
+
+	[MatchExact: ptr<u8> word: 0; u32 count: 0;]
+		ptr<u8> d: ib.data;
+		u32 have: lim - pos;
+		u32 i: 0;
+		while i < count
+			if i >= have
+				if at_eof return 0;
+				return -1;
+			;;
+			if d:(pos + i) is not word:i return 0;
+			i++;
+		;;
+	[end: 1]
+
+	[StCommentStart]
+		if pos < lim
+			u32 c: ib.data:pos;
+			if c is '-'
+				pos++;
+				state is HtmlS.COMMENT_START_DASH;
+				return true;
+			;;
+			if c is '>'
+				pos++;
+				state is HtmlS.DATA;
+				call EmitComment;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is HtmlS.COMMENT;
+	[end: true]
+
+	[EofInComment]
+		call EmitComment;
+		call EmitEof;
+	[end]
+
+	[StCommentStartDash]
+		if pos >= lim
+			if at_eof is false return false;
+			call EofInComment;
+			return false;
+		;;
+		u32 c: ib.data:pos;
+		if c is '-'
+			pos++;
+			state is HtmlS.COMMENT_END;
+			return true;
+		;;
+		if c is '>'
+			pos++;
+			state is HtmlS.DATA;
+			call EmitComment;
+			return true;
+		;;
+		call cm.Add: '-';
+		state is HtmlS.COMMENT;
+	[end: true]
+
+	[StComment]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c is '-' or c is '<' or c is 0 break;
+			i++;
+		;;
+		if i > pos
+			call cm.AddN: d + pos i - pos;
+			pos is i;
+		;;
+		if i >= e
+			if at_eof is false return false;
+			call EofInComment;
+			return false;
+		;;
+		pos is i + 1;
+		if c is '<'
+			call cm.Add: '<';
+			state is HtmlS.COMMENT_LT;
+		;;
+		elif c is '-'
+			state is HtmlS.COMMENT_END_DASH;
+		;;
+		else
+			call cm.AddN: '\xEF\xBF\xBD' 3;
+		;;
+	[end: true]
+
+	[StCommentLt]
+		if pos < lim
+			u32 c: ib.data:pos;
+			if c is '!'
+				pos++;
+				call cm.Add: '!';
+				state is HtmlS.COMMENT_LT_BANG;
+				return true;
+			;;
+			if c is '<'
+				pos++;
+				call cm.Add: '<';
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is HtmlS.COMMENT;
+	[end: true]
+
+	[StCommentLtBang]
+		if pos < lim
+			if ib.data:pos is '-'
+				pos++;
+				state is HtmlS.COMMENT_LT_BANG_DASH;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is HtmlS.COMMENT;
+	[end: true]
+
+	[StCommentLtBangDash]
+		if pos < lim
+			if ib.data:pos is '-'
+				pos++;
+				state is HtmlS.COMMENT_LT_BANG_DASH_DASH;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is HtmlS.COMMENT_END_DASH;
+	[end: true]
+
+	[StCommentLtBangDashDash]
+		if pos >= lim and at_eof is false return false;
+		state is HtmlS.COMMENT_END;
+	[end: true]
+
+	[StCommentEndDash]
+		if pos >= lim
+			if at_eof is false return false;
+			call EofInComment;
+			return false;
+		;;
+		if ib.data:pos is '-'
+			pos++;
+			state is HtmlS.COMMENT_END;
+			return true;
+		;;
+		call cm.Add: '-';
+		state is HtmlS.COMMENT;
+	[end: true]
+
+	[StCommentEnd]
+		if pos >= lim
+			if at_eof is false return false;
+			call EofInComment;
+			return false;
+		;;
+		u32 c: ib.data:pos;
+		if c is '>'
+			pos++;
+			state is HtmlS.DATA;
+			call EmitComment;
+			return true;
+		;;
+		if c is '!'
+			pos++;
+			state is HtmlS.COMMENT_END_BANG;
+			return true;
+		;;
+		if c is '-'
+			pos++;
+			call cm.Add: '-';
+			return true;
+		;;
+		call cm.AddN: '--' 2;
+		state is HtmlS.COMMENT;
+	[end: true]
+
+	[StCommentEndBang]
+		if pos >= lim
+			if at_eof is false return false;
+			call EofInComment;
+			return false;
+		;;
+		u32 c: ib.data:pos;
+		if c is '-'
+			pos++;
+			call cm.AddN: '--!' 3;
+			state is HtmlS.COMMENT_END_DASH;
+			return true;
+		;;
+		if c is '>'
+			pos++;
+			state is HtmlS.DATA;
+			call EmitComment;
+			return true;
+		;;
+		call cm.AddN: '--!' 3;
+		state is HtmlS.COMMENT;
+	[end: true]
+
+	# ---- DOCTYPE
+
+	[NewDoctype]
+		call dt_name.Clear;
+		call dt_public.Clear;
+		call dt_system.Clear;
+		dt_has_name is false;
+		dt_has_public is false;
+		dt_has_system is false;
+		dt_quirks is false;
+	[end]
+
+	[EofInDoctype]
+		dt_quirks is true;
+		call EmitDoctype;
+		call EmitEof;
+	[end]
+
+	[StDoctype]
+		if pos >= lim
+			if at_eof is false return false;
+			call NewDoctype;
+			call EofInDoctype;
+			return false;
+		;;
+		if (WlText.IsSpace: ib.data:pos)
+			pos++;
+		;;
+		state is HtmlS.BEFORE_DOCTYPE_NAME;
+	[end: true]
+
+	[StBeforeDoctypeName]
+		ptr<u8> d: ib.data;
+		while pos < lim and (WlText.IsSpace: d:pos)
+			pos++;
+		;;
+		if pos >= lim
+			if at_eof is false return false;
+			call NewDoctype;
+			call EofInDoctype;
+			return false;
+		;;
+		call NewDoctype;
+		if d:pos is '>'
+			pos++;
+			dt_quirks is true;
+			state is HtmlS.DATA;
+			call EmitDoctype;
+			return true;
+		;;
+		dt_has_name is true;
+		state is HtmlS.DOCTYPE_NAME;
+	[end: true]
+
+	[StDoctypeName]
+		ptr<u8> d: ib.data;
+		while pos < lim
+			u32 c: d:pos;
+			pos++;
+			if (WlText.IsSpace: c)
+				state is HtmlS.AFTER_DOCTYPE_NAME;
+				return true;
+			;;
+			if c is '>'
+				state is HtmlS.DATA;
+				call EmitDoctype;
+				return true;
+			;;
+			if c is 0
+				call dt_name.AddN: '\xEF\xBF\xBD' 3;
+			;;
+			else
+				call dt_name.Add: (WlText.Lower: c) as u8;
+			;;
+		;;
+		if at_eof is false return false;
+		call EofInDoctype;
+	[end: false]
+
+	[StAfterDoctypeName]
+		ptr<u8> d: ib.data;
+		while pos < lim and (WlText.IsSpace: d:pos)
+			pos++;
+		;;
+		if pos >= lim
+			if at_eof is false return false;
+			call EofInDoctype;
+			return false;
+		;;
+		if d:pos is '>'
+			pos++;
+			state is HtmlS.DATA;
+			call EmitDoctype;
+			return true;
+		;;
+		int pub: (Match: 'public' 6 true);
+		if pub is 1
+			pos is pos + 6;
+			state is HtmlS.AFTER_PUBLIC_KEYWORD;
+			return true;
+		;;
+		int sys_kw: (Match: 'system' 6 true);
+		if sys_kw is 1
+			pos is pos + 6;
+			state is HtmlS.AFTER_SYSTEM_KEYWORD;
+			return true;
+		;;
+		if pub < 0 or sys_kw < 0 return false;
+		dt_quirks is true;
+		state is HtmlS.BOGUS_DOCTYPE;
+	[end: true]
+
+	[OpenId: bln public_id: false; u32 c: 0;]
+		if public_id
+			dt_has_public is true;
+			if c is 34
+				state is HtmlS.PUBLIC_ID_DQ;
+			;;
+			else
+				state is HtmlS.PUBLIC_ID_SQ;
+			;;
+		;;
+		else
+			dt_has_system is true;
+			if c is 34
+				state is HtmlS.SYSTEM_ID_DQ;
+			;;
+			else
+				state is HtmlS.SYSTEM_ID_SQ;
+			;;
+		;;
+	[end]
+
+	[StAfterKeyword: bln public_id: false;]
+		if pos >= lim
+			if at_eof is false return false;
+			call EofInDoctype;
+			return false;
+		;;
+		u32 c: ib.data:pos;
+		if (WlText.IsSpace: c)
+			pos++;
+			if public_id
+				state is HtmlS.BEFORE_PUBLIC_ID;
+			;;
+			else
+				state is HtmlS.BEFORE_SYSTEM_ID;
+			;;
+			return true;
+		;;
+		if c is 34 or c is 39
+			pos++;
+			call OpenId: public_id c;
+			return true;
+		;;
+		if c is '>'
+			pos++;
+			dt_quirks is true;
+			state is HtmlS.DATA;
+			call EmitDoctype;
+			return true;
+		;;
+		dt_quirks is true;
+		state is HtmlS.BOGUS_DOCTYPE;
+	[end: true]
+
+	[StBeforeId: bln public_id: false;]
+		ptr<u8> d: ib.data;
+		while pos < lim and (WlText.IsSpace: d:pos)
+			pos++;
+		;;
+		if pos >= lim
+			if at_eof is false return false;
+			call EofInDoctype;
+			return false;
+		;;
+		u32 c: d:pos;
+		if c is 34 or c is 39
+			pos++;
+			call OpenId: public_id c;
+			return true;
+		;;
+		if c is '>'
+			pos++;
+			dt_quirks is true;
+			state is HtmlS.DATA;
+			call EmitDoctype;
+			return true;
+		;;
+		dt_quirks is true;
+		state is HtmlS.BOGUS_DOCTYPE;
+	[end: true]
+
+	# inside a public or system identifier
+	[StId: WlBuf id; u32 quote: 0;]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c is quote or c is '>' or c is 0 break;
+			i++;
+		;;
+		if i > pos
+			call id.AddN: d + pos i - pos;
+			pos is i;
+		;;
+		if i >= e
+			if at_eof is false return false;
+			call EofInDoctype;
+			return false;
+		;;
+		pos is i + 1;
+		if c is quote
+			if state is HtmlS.PUBLIC_ID_DQ or state is HtmlS.PUBLIC_ID_SQ
+				state is HtmlS.AFTER_PUBLIC_ID;
+			;;
+			else
+				state is HtmlS.AFTER_SYSTEM_ID;
+			;;
+			return true;
+		;;
+		if c is 0
+			call id.AddN: '\xEF\xBF\xBD' 3;
+			return true;
+		;;
+		dt_quirks is true;
+		state is HtmlS.DATA;
+		call EmitDoctype;
+	[end: true]
+
+	[StAfterPublicId]
+		if pos >= lim
+			if at_eof is false return false;
+			call EofInDoctype;
+			return false;
+		;;
+		u32 c: ib.data:pos;
+		if (WlText.IsSpace: c)
+			pos++;
+			state is HtmlS.BETWEEN_IDS;
+			return true;
+		;;
+		if c is '>'
+			pos++;
+			state is HtmlS.DATA;
+			call EmitDoctype;
+			return true;
+		;;
+		if c is 34 or c is 39
+			pos++;
+			call OpenId: false c;
+			return true;
+		;;
+		dt_quirks is true;
+		state is HtmlS.BOGUS_DOCTYPE;
+	[end: true]
+
+	[StBetweenIds]
+		ptr<u8> d: ib.data;
+		while pos < lim and (WlText.IsSpace: d:pos)
+			pos++;
+		;;
+		if pos >= lim
+			if at_eof is false return false;
+			call EofInDoctype;
+			return false;
+		;;
+		u32 c: d:pos;
+		if c is '>'
+			pos++;
+			state is HtmlS.DATA;
+			call EmitDoctype;
+			return true;
+		;;
+		if c is 34 or c is 39
+			pos++;
+			call OpenId: false c;
+			return true;
+		;;
+		dt_quirks is true;
+		state is HtmlS.BOGUS_DOCTYPE;
+	[end: true]
+
+	[StAfterSystemId]
+		ptr<u8> d: ib.data;
+		while pos < lim and (WlText.IsSpace: d:pos)
+			pos++;
+		;;
+		if pos >= lim
+			if at_eof is false return false;
+			call EofInDoctype;
+			return false;
+		;;
+		if d:pos is '>'
+			pos++;
+			state is HtmlS.DATA;
+			call EmitDoctype;
+			return true;
+		;;
+		state is HtmlS.BOGUS_DOCTYPE;
+	[end: true]
+
+	[StBogusDoctype]
+		ptr<u8> d: ib.data;
+		while pos < lim
+			u32 c: d:pos;
+			pos++;
+			if c is '>'
+				state is HtmlS.DATA;
+				call EmitDoctype;
+				return true;
+			;;
+		;;
+		if at_eof is false return false;
+		call EmitDoctype;
+		call EmitEof;
+	[end: false]
+
+	# ---- CDATA sections
+
+	[StCdata]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		if i >= e
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c is ']' or c is 0 break;
+			i++;
+		;;
+		u32 start: pos;
+		pos is i;
+		if i >= e
+			call EmitChars: d + start i - start;
+			return true;
+		;;
+		pos is i + 1;
+		if c is ']'
+			state is HtmlS.CDATA_BRACKET;
+		;;
+		if i > start
+			call EmitChars: d + start i - start;
+		;;
+		if c is 0
+			call EmitNul;
+		;;
+	[end: true]
+
+	[StCdataBracket]
+		if pos < lim
+			if ib.data:pos is ']'
+				pos++;
+				state is HtmlS.CDATA_END;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is HtmlS.CDATA;
+		call EmitChars: ']' 1;
+	[end: true]
+
+	[StCdataEnd]
+		if pos < lim
+			u32 c: ib.data:pos;
+			if c is ']'
+				pos++;
+				call EmitChars: ']' 1;
+				return true;
+			;;
+			if c is '>'
+				pos++;
+				state is HtmlS.DATA;
+				return true;
+			;;
+		;;
+		elif at_eof is false
+			return false;
+		;;
+		state is HtmlS.CDATA;
+		call EmitChars: ']]' 2;
+	[end: true]
+
+	# ---- processing instructions
+
+	[TmpToBogusComment]
+		call cm.Clear;
+		call cm.Add: '?';
+		call cm.AddN: tmp.data tmp.len;
+		state is HtmlS.BOGUS_COMMENT;
+	[end]
+
+	[StPiOpen]
+		if pos >= lim
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		u32 c: ib.data:pos;
+		if (WlText.IsAlpha: c) or c is '_'
+			state is HtmlS.PI_TARGET;
+			return true;
+		;;
+		call TmpToBogusComment;
+	[end: true]
+
+	[StPiTarget]
+		ptr<u8> d: ib.data;
+		while pos < lim
+			u32 c: d:pos;
+			if c is 32 or c is 10 or c is 9 or c is 12 or c is '?' or c is '>'
+				if (WlText.EqNoCaseZ: tmp.data tmp.len 'xml') or (WlText.EqNoCaseZ: tmp.data tmp.len 'xml-stylesheet')
+					call TmpToBogusComment;
+					return true;
+				;;
+				pi_target is (WlAtoms.Get: tmp.data tmp.len);
+				call cm.Clear;
+				state is HtmlS.PI_AFTER_TARGET;
+				return true;
+			;;
+			if (WlText.IsAlnum: c) or c is '-' or c is '_'
+				pos++;
+				call tmp.Add: c as u8;
+			;;
+			else
+				call TmpToBogusComment;
+				return true;
+			;;
+		;;
+		if at_eof is false return false;
+		call EmitEof;
+	[end: false]
+
+	[StPiAfterTarget]
+		ptr<u8> d: ib.data;
+		while pos < lim and (WlText.IsSpace: d:pos)
+			pos++;
+		;;
+		if pos >= lim and at_eof is false return false;
+		state is HtmlS.PI_DATA;
+	[end: true]
+
+	[StPiData]
+		ptr<u8> d: ib.data;
+		u32 i: pos;
+		u32 e: lim;
+		u32 c: 0;
+		while i < e
+			c is d:i;
+			if c is '?' or c is '>' break;
+			i++;
+		;;
+		if i > pos
+			call cm.AddN: d + pos i - pos;
+			pos is i;
+		;;
+		if i >= e
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		pos is i + 1;
+		if c is '?'
+			state is HtmlS.PI_QUESTION;
+			return true;
+		;;
+		state is HtmlS.DATA;
+		call EmitPi;
+	[end: true]
+
+	[StPiQuestion]
+		if pos >= lim
+			if at_eof is false return false;
+			call EmitEof;
+			return false;
+		;;
+		if ib.data:pos is '>'
+			pos++;
+			state is HtmlS.DATA;
+			call EmitPi;
+			return true;
+		;;
+		call cm.Add: '?';
+		state is HtmlS.PI_DATA;
+	[end: true]
+}

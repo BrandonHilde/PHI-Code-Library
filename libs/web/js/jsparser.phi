@@ -1,0 +1,3178 @@
+# The parser: tokens to a syntax tree in a WlArena, with the early errors the language asks for. It
+# recurses on what the page wrote, so WlStack.Check is called on each level, and it uses precedence
+# climbing rather than one method per operator level. A parenthesis or a literal that turns out to
+# be an arrow's parameters or a destructuring target is parsed as an expression first and rewritten
+# once the => or = shows up (ToPattern), so nothing is ever parsed twice.
+
+struct.JsNode
+{
+	u16 kind;              # JsN.*
+	u16 op;                # the token kind of an operator; a VARDECL's or PROP's kind
+	u32 flags;             # JsN.FN_... on functions, JsN.X_... on others
+	u32 line;
+	u32 pos;               # in the source, for Function.prototype.toString and for TDZ checks
+	u32 stop;
+	ptr<JsNode> a;
+	ptr<JsNode> b;
+	ptr<JsNode> c;
+	ptr<JsNode> d;
+	ptr<JsNode> e;
+	ptr<JsNode> next;      # the next in a list
+	ptr<JsStr> name;
+	ptr<JsStr> raw;
+	ptr<u8> info;          # filled in by scope analysis: a JsVar, JsBlock or JsFnInfo
+	f64 num;
+}
+
+struct.JsLabel
+{
+	ptr<JsLabel> next;
+	ptr<JsStr> name;
+	bln is_loop;
+}
+
+# what's true of the function being parsed
+struct.JsPCtx
+{
+	ptr<JsPCtx> parent;
+	ptr<JsLabel> labels;
+	ptr<JsNode> vars;       # var names, in a list of IDENTs, for hoisting
+	ptr<JsNode> vars_tail;
+	u32 iter_depth;
+	u32 breakable_depth;
+	bln is_gen;
+	bln is_async;
+	bln is_arrow;
+	bln is_function;
+	bln super_call;
+	bln super_prop;
+	bln new_target;
+	bln in_field;           # a class field's initializer: `arguments` is an error
+	bln in_static_block;
+	bln in_params;          # parameters of a generator or async function: no yield or await expressions
+}
+
+# the node kinds and their flags
+phi.JsN:Library
+{
+	const u32 NUM: 1;
+	const u32 STR: 2;
+	const u32 TEMPLATE: 3;     # a: list of STR (quasis) and expressions by turns
+	const u32 TAGGED: 4;       # a: tag, b: TEMPLATE
+	const u32 REGEX: 5;        # name: body, raw: flags
+	const u32 IDENT: 6;
+	const u32 THIS: 7;
+	const u32 SUPER: 8;
+	const u32 NULL: 9;
+	const u32 TRUE: 10;
+	const u32 FALSE: 11;
+	const u32 ARRAY: 12;       # a: list of expressions, SPREAD, HOLE
+	const u32 OBJECT: 13;      # a: list of PROP
+	const u32 PROP: 14;        # a: key (STR, NUM, or an expression if X_COMPUTED), b: value, op: P_...
+	const u32 SPREAD: 15;
+	const u32 HOLE: 16;
+	const u32 FUNC: 17;        # a: params, b: body, d: var names, name
+	const u32 CLASS: 18;       # a: heritage, b: members (PROP), c: constructor FUNC, d: instance fields FUNC, e: static FUNC
+	const u32 UNARY: 19;
+	const u32 UPDATE: 20;      # op: INC or DEC; X_PREFIX
+	const u32 BINARY: 21;
+	const u32 LOGICAL: 22;
+	const u32 ASSIGN: 23;      # op: ASSIGN or a compound one
+	const u32 COND: 24;
+	const u32 CALL: 25;        # a: callee, b: args
+	const u32 NEW: 26;
+	const u32 MEMBER: 27;      # a: object, name
+	const u32 INDEX: 28;       # a: object, b: key
+	const u32 PRIVATE: 29;     # a: object, name: #x
+	const u32 PRIVATE_IN: 30;  # name: #x, a: the right side
+	const u32 OPTCHAIN: 31;    # a: the chain, whose links have X_OPT where there's a ?.
+	const u32 SEQ: 32;         # a: list
+	const u32 YIELD: 33;       # a: value, X_DELEGATE for yield*
+	const u32 AWAIT: 34;
+	const u32 NEWTARGET: 35;
+	const u32 ARRPAT: 36;      # a: list of targets, DEFAULT, REST, HOLE
+	const u32 OBJPAT: 37;      # a: list of PROP (b: target or DEFAULT) and REST
+	const u32 DEFAULT: 38;     # a: target, b: its default
+	const u32 REST: 39;
+	const u32 DECLARATOR: 41;  # a: target, b: init
+	const u32 VARDECL: 42;     # op: K_VAR, K_CONST or 1 for let; a: list of DECLARATOR
+	const u32 BLOCK: 43;
+	const u32 EMPTY: 44;
+	const u32 EXPR: 45;
+	const u32 IF: 46;          # a: test, b: then, c: else
+	const u32 FOR: 47;         # a: init, b: test, c: update, d: body
+	const u32 FORIN: 48;       # a: left, b: right, d: body
+	const u32 FOROF: 49;       # the same; X_AWAIT
+	const u32 WHILE: 50;       # a: test, d: body
+	const u32 DOWHILE: 51;
+	const u32 RETURN: 52;
+	const u32 BREAK: 53;       # name: label
+	const u32 CONTINUE: 54;
+	const u32 THROW: 55;
+	const u32 TRY: 56;         # a: block, b: catch param, c: catch block, d: finally
+	const u32 SWITCH: 57;      # a: discriminant, b: list of CASE
+	const u32 CASE: 58;        # a: test (0 for default), b: statements
+	const u32 LABELED: 59;     # name, a: statement
+	const u32 FUNCDECL: 61;    # a: FUNC
+	const u32 CLASSDECL: 62;   # a: CLASS
+
+	# PROP's op
+	const u32 P_INIT: 0;
+	const u32 P_GET: 1;
+	const u32 P_SET: 2;
+	const u32 P_METHOD: 3;
+	const u32 P_SPREAD: 4;
+	const u32 P_FIELD: 5;
+	const u32 P_BLOCK: 6;      # a static block: b: FUNC
+
+	# flags on functions
+	const u32 FN_ARROW: 1;
+	const u32 FN_ASYNC: 2;
+	const u32 FN_GEN: 4;
+	const u32 FN_METHOD: 8;    # no prototype, can't be constructed
+	const u32 FN_GETTER: 16;
+	const u32 FN_SETTER: 32;
+	const u32 FN_CTOR: 64;     # a class constructor
+	const u32 FN_DERIVED: 128;
+	const u32 FN_STRICT: 256;
+	const u32 FN_EXPR_BODY: 512;
+	const u32 FN_SIMPLE: 1024;
+	const u32 FN_DECL: 2048;
+	const u32 FN_PEXPR: 4096;  # parameters with expressions in them, so the body has a scope of its own
+	const u32 FN_FIELDS: 8192; # made up to initialize a class's fields: b's the class
+	const u32 FN_DEFAULT: 16384;
+	const u32 FN_SCRIPT: 32768;
+	const u32 FN_EVAL: 65536;
+	const u32 FN_STATIC_INIT: 131072;
+	const u32 FN_NAME_REF: 262144;
+
+	# flags on others
+	const u32 X_COMPUTED: 1;
+	const u32 X_SHORTHAND: 2;
+	const u32 X_STATIC: 4;
+	const u32 X_PRIVATE: 8;
+	const u32 X_PREFIX: 16;
+	const u32 X_DELEGATE: 32;
+	const u32 X_OPT: 64;
+	const u32 X_PARENS: 0x1000000;
+	const u32 X_AWAIT: 256;
+	const u32 X_PROTO: 512;    # __proto__: value
+	const u32 X_COMMA_AFTER: 1024;
+	const u32 X_ANNEXB: 2048;  # a var made for a function in a block
+	const u32 X_NO_SUPER_CHECK: 4096;  # on a template piece: its cooked value is undefined
+	const u32 X_TDZ: 8192;     # on a reference: its variable may not be initialized yet
+}
+
+phi.JsParse:Library
+{
+	ptr<WlArena> arena: 0;
+	ptr<JsPCtx> ctx: 0;
+	bln no_in: false;
+	u32 cover_err_line: 0;    # a {a=1} or a second __proto__ that's only fine if this turns out a pattern
+	ptr<u8> cover_err_msg: 0;
+	bln arg_yield_await: false;   # (seen in a parenthesized list: an arrow's parameters can't have them)
+	bln saw_await_name: false;    # `await` used as a name: an async arrow's parameters can't have that
+
+	const u32 SUPER_NONE: 0;
+
+	# ---- helpers ----
+
+	[FailAt: ptr<u8> msg: 0; u32 line: 0;]
+		WlBuf b;
+		call b.AddZ: msg;
+		call b.AddZ: ' (line ';
+		call b.AddInt: line as int;
+		call b.Add: ')';
+		ptr<JsStr> s: (JsStrs.New: b.data b.len);
+		call b.Free;
+		call JsErr.Throw: (JsV.Obj: (JsErr.MakeStr: JsRt.P.syntax_error s));
+	[end]
+
+	[Fail: ptr<u8> msg: 0;]
+		call FailAt: msg JsLex.tok.line;
+	[end]
+
+	[Unexpected]
+		if JsLex.tok.kind is JsT.EOF
+			call Fail: 'Unexpected end of input';
+		;;
+		call Fail: 'Unexpected token';
+	[end]
+
+	[Node: u32 kind: 0;]
+		ptr<JsNode> n: (arena.Alloc: sizeof JsNode) as ptr<JsNode>;
+		n.kind is kind as u16;
+		n.line is JsLex.tok.line;
+		n.pos is JsLex.tok.start;
+	[end: n]
+
+	[Done: ptr<JsNode> n: 0;]
+		n.stop is JsLex.last_stop;
+	[end: n]
+
+	[Next]
+		call JsLex.Next;
+	[end]
+
+	[Eat: u32 kind: 0;]
+		if JsLex.tok.kind is kind
+			call JsLex.Next;
+			return true;
+		;;
+	[end: false]
+
+	[Expect: u32 kind: 0;]
+		if JsLex.tok.kind is not kind
+			call Unexpected;
+		;;
+		call JsLex.Next;
+	[end]
+
+	# the contextual word, written plainly
+	[IsWord: ptr<JsStr> word: 0;]
+	[end: JsLex.tok.kind is JsT.IDENT and JsLex.tok.text is word and not JsLex.tok.escaped]
+
+	[Semicolon]
+		u32 k: JsLex.tok.kind;
+		if k is JsT.SEMI
+			call JsLex.Next;
+			return;
+		;;
+		if k is JsT.RBRACE or k is JsT.EOF or JsLex.tok.nl_before return;
+		call Unexpected;
+	[end]
+
+	[CheckCover]
+		if cover_err_msg is not 0
+			call FailAt: cover_err_msg cover_err_line;
+		;;
+	[end]
+
+	# ---- a whole program ----
+
+	[Script: bln is_eval: false; bln starts_strict: false;]
+		ptr<JsPCtx> c: (arena.Alloc: sizeof JsPCtx) as ptr<JsPCtx>;
+		ctx is c;
+		no_in is false;
+		cover_err_msg is 0;
+		JsLex.strict is starts_strict;
+		call JsLex.Next;
+		ptr<JsNode> f: (Node: JsN.FUNC);
+		f.flags is JsN.FN_SCRIPT | JsN.FN_SIMPLE;
+		if is_eval
+			f.flags is f.flags | JsN.FN_EVAL;
+		;;
+		f.b is (Directives: f);
+		ptr<JsNode> tail: f.b;
+		if tail is not 0
+			while tail.next is not 0
+				tail is tail.next;
+			;;
+		;;
+		while JsLex.tok.kind is not JsT.EOF
+			ptr<JsNode> s: (StatementItem);
+			if tail is 0
+				f.b is s;
+			;;
+			else
+				tail.next is s;
+			;;
+			tail is s;
+		;;
+		f.stop is JsLex.tok.start;
+		f.d is c.vars;
+		if JsLex.strict
+			f.flags is f.flags | JsN.FN_STRICT;
+		;;
+	[end: f]
+
+	# The first statements of a body, as long as they're strings: one may be "use strict". Returns
+	# the list of them (they're ordinary expression statements, too).
+	[Directives: ptr<JsNode> f: 0;]
+		ptr<JsNode> head: 0;
+		ptr<JsNode> tail: 0;
+		bln saw_octal: false;
+		while JsLex.tok.kind is JsT.STR
+			u32 start: JsLex.tok.start;
+			u32 stop_at: JsLex.tok.stop;
+			bln escaped: JsLex.tok.escaped;
+			if JsLex.tok_octal
+				saw_octal is true;
+			;;
+			ptr<JsNode> s: (StatementItem);
+			if head is 0
+				head is s;
+			;;
+			else
+				tail.next is s;
+			;;
+			tail is s;
+			# a directive is a statement of just the string
+			if s.kind is not JsN.EXPR or s.a.kind is not JsN.STR or (s.a.flags & JsN.X_PARENS) is not 0
+				break;
+			;;
+			if s.a.stop is not stop_at
+				break;
+			;;
+			if not escaped and stop_at - start is 12 and s.a.name is JsRt.A.use_strict
+				if f is not 0 and (f.flags & JsN.FN_SCRIPT) is 0 and (f.flags & JsN.FN_SIMPLE) is 0
+					call Fail: 'Illegal use strict directive in function with non-simple parameter list';
+				;;
+				if saw_octal
+					call Fail: 'Octal escape sequences are not allowed in strict mode';
+				;;
+				JsLex.strict is true;
+				# the token after it was read as sloppy code, which only matters for an octal
+				if JsLex.tok.kind is JsT.NUM or JsLex.tok.kind is JsT.STR
+					call Rescan;
+				;;
+			;;
+		;;
+	[end: head]
+
+	[Rescan]
+		JsLex.pos is JsLex.tok.start;
+		JsLex.line is JsLex.tok.line;
+		bln nl: JsLex.tok.nl_before;
+		call JsLex.Next;
+		JsLex.tok.nl_before is nl;
+	[end]
+
+	# ---- statements ----
+
+	# something that can start a declaration at this point
+	[LetStartsDecl]
+		if not (IsWord: JsRt.A.let) return false;
+		u32 k: (JsLex.Peek);
+		if k is JsT.LBRACK or k is JsT.LBRACE or k is JsT.IDENT return true;
+		# let yield, let await, keywords: errors best reported as a declaration, unless in or instanceof
+		if k >= JsT.KW and k is not JsT.K_IN and k is not JsT.K_INSTANCEOF return not JsLex.peeked.nl_before;
+	[end: false]
+
+	[StatementItem]
+		call WlStack.Check;
+		u32 k: JsLex.tok.kind;
+		if k is JsT.K_FUNCTION
+			return (FunctionDecl: 0);
+		;;
+		if k is JsT.K_CLASS
+			return (ClassDecl);
+		;;
+		if k is JsT.K_CONST
+			return (VarStatement: JsT.K_CONST);
+		;;
+		if k is JsT.IDENT
+			if (LetStartsDecl)
+				return (VarStatement: 1);
+			;;
+			if (IsWord: JsRt.A.async)
+				u32 p: (JsLex.Peek);
+				if p is JsT.K_FUNCTION and not JsLex.peeked.nl_before
+					return (FunctionDecl: JsN.FN_ASYNC);
+				;;
+			;;
+		;;
+	[end: (Statement)]
+
+	# not a declaration (the body of an if or a loop)
+	[SubStatement: bln allow_function: false;]
+		u32 k: JsLex.tok.kind;
+		if k is JsT.K_CLASS or k is JsT.K_CONST
+			call Unexpected;
+		;;
+		if k is JsT.K_FUNCTION
+			if JsLex.strict or not allow_function
+				call Fail: 'In strict mode code, functions can only be declared at top level or inside a block';
+			;;
+			if (JsLex.Peek) is JsT.MUL
+				call Fail: 'Generators can only be declared at the top level or inside a block';
+			;;
+			# as though it were in a block of its own
+			ptr<JsNode> b: (Node: JsN.BLOCK);
+			b.a is (FunctionDecl: 0);
+			return (Done: b);
+		;;
+		if k is JsT.IDENT
+			if (IsWord: JsRt.A.let)
+				u32 p: (JsLex.Peek);
+				if p is JsT.LBRACK
+					call Fail: 'Lexical declaration cannot appear in a single-statement context';
+				;;
+				if (p is JsT.LBRACE or p is JsT.IDENT) and not JsLex.peeked.nl_before
+					call Fail: 'Lexical declaration cannot appear in a single-statement context';
+				;;
+			;;
+			if (IsWord: JsRt.A.async)
+				if (JsLex.Peek) is JsT.K_FUNCTION and not JsLex.peeked.nl_before
+					call Fail: 'Async functions can only be declared at the top level or inside a block';
+				;;
+			;;
+		;;
+	[end: (Statement)]
+
+	[Statement]
+		call WlStack.Check;
+		u32 k: JsLex.tok.kind;
+		ptr<JsNode> n: 0;
+		if k < JsT.KW
+			if k is JsT.LBRACE
+				return (Block);
+			;;
+			if k is JsT.SEMI
+				n is (Node: JsN.EMPTY);
+				call Next;
+				return (Done: n);
+			;;
+			if k is JsT.IDENT and (not JsLex.tok.escaped or (JsLex.KeywordOf: JsLex.tok.text) is 0 or (JsLex.KeywordOf: JsLex.tok.text) >= JsT.STRICT_WORD)
+				if (JsLex.Peek) is JsT.COLON
+					return (Labeled);
+				;;
+			;;
+			return (ExpressionStatement);
+		;;
+		when k
+			is JsT.K_VAR
+				return (VarStatement: JsT.K_VAR);
+			;;
+			is JsT.K_IF
+				return (IfStatement);
+			;;
+			is JsT.K_FOR
+				return (ForStatement);
+			;;
+			is JsT.K_WHILE
+				n is (Node: JsN.WHILE);
+				call Next;
+				call Expect: JsT.LPAREN;
+				n.a is (Expression);
+				call Expect: JsT.RPAREN;
+				n.d is (LoopBody);
+				return (Done: n);
+			;;
+			is JsT.K_DO
+				n is (Node: JsN.DOWHILE);
+				call Next;
+				n.d is (LoopBody);
+				if JsLex.tok.kind is not JsT.K_WHILE
+					call Unexpected;
+				;;
+				call Next;
+				call Expect: JsT.LPAREN;
+				n.a is (Expression);
+				call Expect: JsT.RPAREN;
+				# a semicolon here is optional, whatever comes next
+				call Eat: JsT.SEMI;
+				return (Done: n);
+			;;
+			is JsT.K_RETURN
+				if not ctx.is_function
+					call Fail: 'Illegal return statement';
+				;;
+				n is (Node: JsN.RETURN);
+				call Next;
+				if JsLex.tok.kind is not JsT.SEMI and JsLex.tok.kind is not JsT.RBRACE and JsLex.tok.kind is not JsT.EOF and not JsLex.tok.nl_before
+					n.a is (Expression);
+				;;
+				call Semicolon;
+				return (Done: n);
+			;;
+			is JsT.K_BREAK JsT.K_CONTINUE
+				return (BreakContinue);
+			;;
+			is JsT.K_THROW
+				n is (Node: JsN.THROW);
+				call Next;
+				if JsLex.tok.nl_before
+					call Fail: 'Illegal newline after throw';
+				;;
+				n.a is (Expression);
+				call Semicolon;
+				return (Done: n);
+			;;
+			is JsT.K_TRY
+				return (TryStatement);
+			;;
+			is JsT.K_SWITCH
+				return (SwitchStatement);
+			;;
+			is JsT.K_DEBUGGER
+				n is (Node: JsN.EMPTY);
+				call Next;
+				call Semicolon;
+				return (Done: n);
+			;;
+			is JsT.K_WITH
+				call Fail: 'with statements are not supported';
+			;;
+			is JsT.K_IMPORT
+				call Fail: 'Cannot use import statement outside a module';
+			;;
+			is JsT.K_EXPORT
+				call Unexpected;
+			;;
+		;;
+	[end: (ExpressionStatement)]
+
+	[ExpressionStatement]
+		ptr<JsNode> n: (Node: JsN.EXPR);
+		n.a is (Expression);
+		call Semicolon;
+	[end: (Done: n)]
+
+	[Block]
+		ptr<JsNode> n: (Node: JsN.BLOCK);
+		call Expect: JsT.LBRACE;
+		n.a is (StatementList);
+		call Expect: JsT.RBRACE;
+	[end: (Done: n)]
+
+	# statements up to a }
+	[StatementList]
+		ptr<JsNode> head: 0;
+		ptr<JsNode> tail: 0;
+		while JsLex.tok.kind is not JsT.RBRACE
+			if JsLex.tok.kind is JsT.EOF
+				call Unexpected;
+			;;
+			ptr<JsNode> s: (StatementItem);
+			if head is 0
+				head is s;
+			;;
+			else
+				tail.next is s;
+			;;
+			tail is s;
+		;;
+	[end: head]
+
+	[LoopBody]
+		ctx.iter_depth is ctx.iter_depth + 1;
+		ctx.breakable_depth is ctx.breakable_depth + 1;
+		ptr<JsNode> s: (SubStatement: false);
+		call CheckNoLabelledFn: s;
+		ctx.iter_depth is ctx.iter_depth - 1;
+		ctx.breakable_depth is ctx.breakable_depth - 1;
+	[end: s]
+
+	[CheckNoLabelledFn: ptr<JsNode> s: 0;]
+		while s.kind is JsN.LABELED
+			s is s.a;
+		;;
+		if s.kind is JsN.FUNCDECL
+			call FailAt: 'A labelled function can not be the body of a statement' s.line;
+		;;
+	[end]
+
+	[Labeled]
+		ptr<JsNode> n: (Node: JsN.LABELED);
+		n.name is (BindingName);
+		ptr<JsLabel> l: ctx.labels;
+		while l is not 0
+			if l.name is n.name
+				call Fail: 'Label has already been declared';
+			;;
+			l is l.next;
+		;;
+		call Expect: JsT.COLON;
+		ptr<JsLabel> made: (arena.Alloc: sizeof JsLabel) as ptr<JsLabel>;
+		made.name is n.name;
+		made.next is ctx.labels;
+		# a label on a loop (through any more labels) can be continued
+		u32 k: JsLex.tok.kind;
+		made.is_loop is k is JsT.K_FOR or k is JsT.K_WHILE or k is JsT.K_DO;
+		if k is JsT.IDENT and (JsLex.Peek) is JsT.COLON
+			made.is_loop is (LabelChainIsLoop);
+		;;
+		ctx.labels is made;
+		if k is JsT.K_FUNCTION
+			if JsLex.strict
+				call Fail: 'In strict mode code, functions can only be declared at top level or inside a block';
+			;;
+			if (JsLex.Peek) is JsT.MUL
+				call Fail: 'Generators can only be declared at the top level or inside a block';
+			;;
+			n.a is (FunctionDecl: 0);
+		;;
+		else
+			n.a is (SubStatement: false);
+		;;
+		ctx.labels is made.next;
+	[end: (Done: n)]
+
+	# a: b: c: for ... : looks along the labels without moving
+	[LabelChainIsLoop]
+		u32 saved_pos: JsLex.pos;
+		u32 saved_line: JsLex.line;
+		JsTok saved;
+		saved is JsLex.tok;
+		bln result: false;
+		while JsLex.tok.kind is JsT.IDENT
+			call JsLex.Next;
+			if JsLex.tok.kind is not JsT.COLON break;
+			call JsLex.Next;
+			u32 k: JsLex.tok.kind;
+			if k is JsT.K_FOR or k is JsT.K_WHILE or k is JsT.K_DO
+				result is true;
+				break;
+			;;
+		;;
+		JsLex.tok is saved;
+		JsLex.pos is saved_pos;
+		JsLex.line is saved_line;
+	[end: result]
+
+	[BreakContinue]
+		bln is_break: JsLex.tok.kind is JsT.K_BREAK;
+		ptr<JsNode> n: (Node: JsN.CONTINUE);
+		if is_break
+			n.kind is JsN.BREAK as u16;
+		;;
+		call Next;
+		if JsLex.tok.kind is JsT.IDENT and not JsLex.tok.nl_before
+			n.name is (BindingName);
+			ptr<JsLabel> l: ctx.labels;
+			while l is not 0 and l.name is not n.name
+				l is l.next;
+			;;
+			if l is 0
+				call Fail: 'Undefined label';
+			;;
+			if not is_break and not l.is_loop
+				call Fail: 'Illegal continue statement: label does not denote an iteration statement';
+			;;
+		;;
+		elif is_break
+			if ctx.breakable_depth is 0
+				call Fail: 'Illegal break statement';
+			;;
+		;;
+		elif ctx.iter_depth is 0
+			call Fail: 'Illegal continue statement';
+		;;
+		call Semicolon;
+	[end: (Done: n)]
+
+	[IfStatement]
+		ptr<JsNode> n: (Node: JsN.IF);
+		call Next;
+		call Expect: JsT.LPAREN;
+		n.a is (Expression);
+		call Expect: JsT.RPAREN;
+		n.b is (SubStatement: true);
+		call CheckNoLabelledFn: n.b;
+		# else-if chains can be very long: they're a loop here, not nested calls
+		ptr<JsNode> cur: n;
+		while JsLex.tok.kind is JsT.K_ELSE
+			call Next;
+			if JsLex.tok.kind is not JsT.K_IF
+				cur.c is (SubStatement: true);
+				call CheckNoLabelledFn: cur.c;
+				break;
+			;;
+			ptr<JsNode> more: (Node: JsN.IF);
+			call Next;
+			call Expect: JsT.LPAREN;
+			more.a is (Expression);
+			call Expect: JsT.RPAREN;
+			more.b is (SubStatement: true);
+			call CheckNoLabelledFn: more.b;
+			cur.c is more;
+			cur is more;
+		;;
+	[end: (Done: n)]
+
+	[TryStatement]
+		ptr<JsNode> n: (Node: JsN.TRY);
+		call Next;
+		n.a is (Block);
+		if JsLex.tok.kind is JsT.K_CATCH
+			call Next;
+			if (Eat: JsT.LPAREN)
+				n.b is (BindingTarget);
+				call Expect: JsT.RPAREN;
+			;;
+			n.c is (Block);
+		;;
+		if JsLex.tok.kind is JsT.K_FINALLY
+			call Next;
+			n.d is (Block);
+		;;
+		if n.c is 0 and n.d is 0
+			call Fail: 'Missing catch or finally after try';
+		;;
+	[end: (Done: n)]
+
+	[SwitchStatement]
+		ptr<JsNode> n: (Node: JsN.SWITCH);
+		call Next;
+		call Expect: JsT.LPAREN;
+		n.a is (Expression);
+		call Expect: JsT.RPAREN;
+		call Expect: JsT.LBRACE;
+		ctx.breakable_depth is ctx.breakable_depth + 1;
+		ptr<JsNode> tail: 0;
+		bln has_default: false;
+		while JsLex.tok.kind is not JsT.RBRACE
+			ptr<JsNode> c: (Node: JsN.CASE);
+			if JsLex.tok.kind is JsT.K_CASE
+				call Next;
+				c.a is (Expression);
+			;;
+			elif JsLex.tok.kind is JsT.K_DEFAULT
+				if has_default
+					call Fail: 'More than one default clause in switch statement';
+				;;
+				has_default is true;
+				call Next;
+			;;
+			else
+				call Unexpected;
+			;;
+			call Expect: JsT.COLON;
+			ptr<JsNode> stail: 0;
+			while JsLex.tok.kind is not JsT.K_CASE and JsLex.tok.kind is not JsT.K_DEFAULT and JsLex.tok.kind is not JsT.RBRACE
+				if JsLex.tok.kind is JsT.EOF
+					call Unexpected;
+				;;
+				ptr<JsNode> s: (StatementItem);
+				if stail is 0
+					c.b is s;
+				;;
+				else
+					stail.next is s;
+				;;
+				stail is s;
+			;;
+			if tail is 0
+				n.b is c;
+			;;
+			else
+				tail.next is c;
+			;;
+			tail is c;
+		;;
+		call Next;
+		ctx.breakable_depth is ctx.breakable_depth - 1;
+	[end: (Done: n)]
+
+	# var, let or const: `kind` is K_VAR, K_CONST or 1
+	[VarStatement: u32 kind: 0;]
+		ptr<JsNode> n: (VarDeclarations: kind);
+		call RequireInits: n;
+		call Semicolon;
+	[end: (Done: n)]
+
+	[VarDeclarations: u32 kind: 0;]
+		ptr<JsNode> n: (Node: JsN.VARDECL);
+		n.op is kind as u16;
+		call Next;
+		ptr<JsNode> tail: 0;
+		while true
+			ptr<JsNode> d: (Node: JsN.DECLARATOR);
+			d.a is (BindingTargetFor: kind);
+			if (Eat: JsT.ASSIGN)
+				d.b is (AssignNoCover);
+				call NameAnonymous: d.b d.a;
+			;;
+			d.stop is JsLex.last_stop;
+			if tail is 0
+				n.a is d;
+			;;
+			else
+				tail.next is d;
+			;;
+			tail is d;
+			if not (Eat: JsT.COMMA) break;
+		;;
+	[end: (Done: n)]
+
+	# a for's first part: a declaration's first target with no initializer is checked by the caller
+	[RequireInits: ptr<JsNode> decl: 0;]
+		ptr<JsNode> d: decl.a;
+		while d is not 0
+			if d.b is 0
+				if decl.op is JsT.K_CONST or d.a.kind is not JsN.IDENT
+					call FailAt: 'Missing initializer in declaration' d.line;
+				;;
+			;;
+			d is d.next;
+		;;
+	[end]
+
+	[ForStatement]
+		ptr<JsNode> n: (Node: JsN.FOR);
+		call Next;
+		bln is_await: false;
+		if (IsWord: JsRt.A.await)
+			if not ctx.is_async
+				call Unexpected;
+			;;
+			is_await is true;
+			call Next;
+		;;
+		call Expect: JsT.LPAREN;
+		ptr<JsNode> init: 0;
+		u32 k: JsLex.tok.kind;
+		bln saw_let: (IsWord: JsRt.A.let);
+		bln starts_async: (IsWord: JsRt.A.async);
+		if k is JsT.SEMI
+			if is_await
+				call Unexpected;
+			;;
+		;;
+		elif k is JsT.K_VAR or k is JsT.K_CONST or (saw_let and (ForLetIsDecl))
+			u32 kind: k;
+			if k is JsT.IDENT
+				kind is 1;
+			;;
+			no_in is true;
+			init is (VarDeclarations: kind);
+			no_in is false;
+			if (JsLex.tok.kind is JsT.K_IN and not is_await) or (IsWord: JsRt.A.of)
+				bln is_of: JsLex.tok.kind is not JsT.K_IN;
+				ptr<JsNode> first: init.a;
+				if first.next is not 0
+					call Fail: 'Invalid left-hand side in for-loop: must have a single binding';
+				;;
+				if first.b is not 0
+					# only `for (var a = 1 in x)`, in sloppy code, is allowed
+					if is_of or JsLex.strict or kind is not JsT.K_VAR or first.a.kind is not JsN.IDENT
+						call Fail: 'for-in loop variable declaration may not have an initializer';
+					;;
+				;;
+				return (ForInOf: n init is_of is_await);
+			;;
+			if is_await
+				call Unexpected;
+			;;
+			call RequireInits: init;
+		;;
+		else
+			ptr<u8> saved_msg: cover_err_msg;
+			cover_err_msg is 0;
+			no_in is true;
+			init is (ExpressionCover);
+			no_in is false;
+			if (JsLex.tok.kind is JsT.K_IN and not is_await) or (IsWord: JsRt.A.of)
+				bln of2: JsLex.tok.kind is not JsT.K_IN;
+				if of2 and not is_await and init.kind is JsN.IDENT and (init.flags & JsN.X_PARENS) is 0
+					if starts_async
+						call Fail: 'The left-hand side of a for-of loop may not be async';
+					;;
+				;;
+				if saw_let and of2
+					call Fail: 'The left-hand side of a for-of loop may not be let';
+				;;
+				cover_err_msg is saved_msg;
+				init is (ToAssignTarget: init);
+				return (ForInOf: n init of2 is_await);
+			;;
+			if is_await
+				call Unexpected;
+			;;
+			call CheckCover;
+			cover_err_msg is saved_msg;
+		;;
+		n.a is init;
+		call Expect: JsT.SEMI;
+		if JsLex.tok.kind is not JsT.SEMI
+			n.b is (Expression);
+		;;
+		call Expect: JsT.SEMI;
+		if JsLex.tok.kind is not JsT.RPAREN
+			n.c is (Expression);
+		;;
+		call Expect: JsT.RPAREN;
+		n.d is (LoopBody);
+	[end: (Done: n)]
+
+	# in `for (let ...`: whether let starts a declaration
+	[ForLetIsDecl]
+		u32 k: (JsLex.Peek);
+		if k is JsT.IDENT or k is JsT.LBRACK or k is JsT.LBRACE return true;
+		# for (let in x) and for (let = 1 ...) use a variable called let, in sloppy code
+		if JsLex.strict and k >= JsT.KW and k is not JsT.K_IN return true;
+	[end: false]
+
+	[ForInOf: ptr<JsNode> n: 0; ptr<JsNode> left: 0; bln is_of: false; bln is_await: false;]
+		call Next;
+		n.a is left;
+		if is_of
+			n.kind is JsN.FOROF as u16;
+			if is_await
+				n.flags is n.flags | JsN.X_AWAIT;
+			;;
+			n.b is (AssignNoCover);
+		;;
+		else
+			n.kind is JsN.FORIN as u16;
+			n.b is (Expression);
+		;;
+		call Expect: JsT.RPAREN;
+		n.d is (LoopBody);
+	[end: (Done: n)]
+
+	# ---- names and binding patterns ----
+
+	# whether this word can name something here; fails if it can't
+	[CheckBindable: ptr<JsStr> name: 0; bln escaped: false;]
+		u32 kw: (JsLex.KeywordOf: name);
+		if kw is 0
+			if name is JsRt.A.await
+				if ctx.is_async or ctx.in_static_block
+					call Fail: 'await is not allowed here';
+				;;
+				if ctx.in_params and ctx.is_async
+					call Fail: 'await is not allowed here';
+				;;
+			;;
+			return;
+		;;
+		if kw < JsT.STRICT_WORD
+			call Fail: 'Unexpected reserved word';
+		;;
+		if JsLex.strict
+			call Fail: 'Unexpected strict mode reserved word';
+		;;
+		if name is JsRt.A.yield and ctx.is_gen
+			call Fail: 'yield is not allowed here';
+		;;
+	[end]
+
+	# an identifier being declared or read
+	[BindingName]
+		if JsLex.tok.kind is not JsT.IDENT
+			call Unexpected;
+		;;
+		ptr<JsStr> name: JsLex.tok.text;
+		call CheckBindable: name JsLex.tok.escaped;
+		call Next;
+	[end: name]
+
+	[CheckNotEvalArgs: ptr<JsStr> name: 0;]
+		if JsLex.strict and (name is JsRt.A.eval or name is JsRt.A.arguments)
+			call Fail: 'Unexpected eval or arguments in strict mode';
+		;;
+	[end]
+
+	[BindingTarget]
+	[end: (BindingTargetFor: JsT.K_VAR + 1000)]
+
+	# kind: K_VAR adds its names to the function's list, 1 or K_CONST can't bind `let`
+	[BindingTargetFor: u32 kind: 0;]
+		call WlStack.Check;
+		u32 k: JsLex.tok.kind;
+		if k is JsT.LBRACK
+			return (ArrayBinding: kind);
+		;;
+		if k is JsT.LBRACE
+			return (ObjectBinding: kind);
+		;;
+		ptr<JsNode> n: (Node: JsN.IDENT);
+		n.name is (BindingName);
+		call CheckNotEvalArgs: n.name;
+		if n.name is JsRt.A.let and (kind is 1 or kind is JsT.K_CONST)
+			call FailAt: 'let is disallowed as a lexically bound name' n.line;
+		;;
+		if kind is JsT.K_VAR
+			call AddVar: n.name n.line 0;
+		;;
+	[end: (Done: n)]
+
+	[AddVar: ptr<JsStr> name: 0; u32 line: 0; u32 flags: 0;]
+		ptr<JsNode> v: (Node: JsN.IDENT);
+		v.name is name;
+		v.line is line;
+		v.flags is flags;
+		if ctx.vars_tail is 0
+			ctx.vars is v;
+		;;
+		else
+			ctx.vars_tail.next is v;
+		;;
+		ctx.vars_tail is v;
+	[end]
+
+	# target, with = default after it if there is one
+	[BindingElement: u32 kind: 0;]
+		ptr<JsNode> t: (BindingTargetFor: kind);
+		if JsLex.tok.kind is not JsT.ASSIGN return t;
+		ptr<JsNode> d: (Node: JsN.DEFAULT);
+		d.line is t.line;
+		d.pos is t.pos;
+		call Next;
+		d.a is t;
+		bln saved_in: no_in;
+		no_in is false;
+		d.b is (AssignNoCover);
+		no_in is saved_in;
+		call NameAnonymous: d.b t;
+	[end: (Done: d)]
+
+	[ArrayBinding: u32 kind: 0;]
+		ptr<JsNode> n: (Node: JsN.ARRPAT);
+		call Next;
+		ptr<JsNode> tail: 0;
+		while JsLex.tok.kind is not JsT.RBRACK
+			ptr<JsNode> e: 0;
+			if JsLex.tok.kind is JsT.COMMA
+				e is (Node: JsN.HOLE);
+			;;
+			elif JsLex.tok.kind is JsT.ELLIPSIS
+				e is (Node: JsN.REST);
+				call Next;
+				e.a is (BindingTargetFor: kind);
+				if JsLex.tok.kind is not JsT.RBRACK
+					call Fail: 'Rest element must be last element';
+				;;
+			;;
+			else
+				e is (BindingElement: kind);
+			;;
+			if tail is 0
+				n.a is e;
+			;;
+			else
+				tail.next is e;
+			;;
+			tail is e;
+			if JsLex.tok.kind is not JsT.RBRACK
+				call Expect: JsT.COMMA;
+			;;
+		;;
+		call Next;
+	[end: (Done: n)]
+
+	[ObjectBinding: u32 kind: 0;]
+		ptr<JsNode> n: (Node: JsN.OBJPAT);
+		call Next;
+		ptr<JsNode> tail: 0;
+		while JsLex.tok.kind is not JsT.RBRACE
+			ptr<JsNode> e: 0;
+			if JsLex.tok.kind is JsT.ELLIPSIS
+				e is (Node: JsN.REST);
+				call Next;
+				ptr<JsNode> t: (Node: JsN.IDENT);
+				t.name is (BindingName);
+				call CheckNotEvalArgs: t.name;
+				if kind is JsT.K_VAR
+					call AddVar: t.name t.line 0;
+				;;
+				e.a is t;
+				if JsLex.tok.kind is not JsT.RBRACE
+					call Fail: 'Rest element must be last element';
+				;;
+			;;
+			else
+				e is (Node: JsN.PROP);
+				bln plain_name: JsLex.tok.kind is JsT.IDENT;
+				ptr<JsStr> word: JsLex.tok.text;
+				bln word_escaped: JsLex.tok.escaped;
+				u32 word_kind: JsLex.tok.kind;
+				call PropertyName: e;
+				if (Eat: JsT.COLON)
+					e.b is (BindingElement: kind);
+				;;
+				else
+					# a shorthand: the key must be able to be a name
+					if not plain_name
+						call Unexpected;
+					;;
+					call CheckBindable: word word_escaped;
+					call CheckNotEvalArgs: word;
+					if word is JsRt.A.let and (kind is 1 or kind is JsT.K_CONST)
+						call Fail: 'let is disallowed as a lexically bound name';
+					;;
+					ptr<JsNode> id: (Node: JsN.IDENT);
+					id.name is word;
+					id.pos is e.pos;
+					id.line is e.line;
+					id.stop is JsLex.last_stop;
+					if kind is JsT.K_VAR
+						call AddVar: word e.line 0;
+					;;
+					e.b is id;
+					if JsLex.tok.kind is JsT.ASSIGN
+						ptr<JsNode> d: (Node: JsN.DEFAULT);
+						call Next;
+						d.a is id;
+						bln saved_in: no_in;
+						no_in is false;
+						d.b is (AssignNoCover);
+						no_in is saved_in;
+						call NameAnonymous: d.b id;
+						e.b is d;
+					;;
+				;;
+			;;
+			if tail is 0
+				n.a is e;
+			;;
+			else
+				tail.next is e;
+			;;
+			tail is e;
+			if JsLex.tok.kind is not JsT.RBRACE
+				call Expect: JsT.COMMA;
+			;;
+		;;
+		call Next;
+	[end: (Done: n)]
+
+	# a property's key: identifier-like, string, number, or [computed], into p.a and flags
+	[PropertyName: ptr<JsNode> p: 0;]
+		u32 k: JsLex.tok.kind;
+		ptr<JsNode> key: 0;
+		if k is JsT.IDENT or k >= JsT.KW
+			key is (Node: JsN.STR);
+			key.name is JsLex.tok.text;
+			call Next;
+		;;
+		elif k is JsT.STR
+			key is (Node: JsN.STR);
+			key.name is JsLex.tok.text;
+			call Next;
+		;;
+		elif k is JsT.NUM
+			key is (Node: JsN.NUM);
+			key.num is JsLex.tok.num;
+			call Next;
+		;;
+		elif k is JsT.LBRACK
+			call Next;
+			bln saved_in: no_in;
+			no_in is false;
+			key is (AssignNoCover);
+			no_in is saved_in;
+			call Expect: JsT.RBRACK;
+			p.flags is p.flags | JsN.X_COMPUTED;
+		;;
+		else
+			call Unexpected;
+		;;
+		p.a is key;
+	[end]
+
+	# ---- expressions ----
+
+	[Expression]
+		ptr<u8> saved: cover_err_msg;
+		cover_err_msg is 0;
+		ptr<JsNode> e: (ExpressionCover);
+		call CheckCover;
+		cover_err_msg is saved;
+	[end: e]
+
+	[ExpressionCover]
+		ptr<JsNode> first: (Assign);
+		if JsLex.tok.kind is not JsT.COMMA return first;
+		ptr<JsNode> n: (Node: JsN.SEQ);
+		n.pos is first.pos;
+		n.line is first.line;
+		n.a is first;
+		ptr<JsNode> tail: first;
+		while (Eat: JsT.COMMA)
+			ptr<JsNode> e: (Assign);
+			tail.next is e;
+			tail is e;
+		;;
+	[end: (Done: n)]
+
+	# an assignment expression in a place where it can't turn out to be a pattern
+	[AssignNoCover]
+		ptr<u8> saved: cover_err_msg;
+		cover_err_msg is 0;
+		ptr<JsNode> e: (Assign);
+		call CheckCover;
+		cover_err_msg is saved;
+	[end: e]
+
+	[Assign]
+		call WlStack.Check;
+		u32 k: JsLex.tok.kind;
+		# arrow functions with one plain parameter, and yield and async, which start with a word
+		if k is JsT.IDENT
+			ptr<JsStr> word: JsLex.tok.text;
+			if word is JsRt.A.yield and ctx.is_gen and not JsLex.tok.escaped
+				return (Yield);
+			;;
+			if word is JsRt.A.async and not JsLex.tok.escaped
+				ptr<JsNode> maybe: (AsyncArrowStart);
+				if maybe is not 0 return maybe;
+			;;
+			else
+				u32 pk: (JsLex.Peek);
+				if pk is JsT.ARROW and not JsLex.peeked.nl_before
+					return (ArrowFromName: 0);
+				;;
+			;;
+		;;
+		ptr<u8> outer_msg: cover_err_msg;
+		u32 outer_line: cover_err_line;
+		cover_err_msg is 0;
+		ptr<JsNode> left: (Conditional);
+		u32 op: JsLex.tok.kind;
+		if op >= JsT.ASSIGN and op <= JsT.NULLISH_A
+			if op is JsT.LAND_A or op is JsT.LOR_A or op is JsT.NULLISH_A
+				if left.kind is JsN.CALL
+					call FailAt: 'Invalid left-hand side in assignment' left.line;
+				;;
+				call CheckSimpleTarget: left;
+			;;
+			elif op is JsT.ASSIGN
+				if left.kind is JsN.ARRAY or left.kind is JsN.OBJECT
+					if (left.flags & JsN.X_PARENS) is not 0
+						call Fail: 'Invalid destructuring assignment target';
+					;;
+					cover_err_msg is 0;
+					left is (ToPattern: left false);
+				;;
+				else
+					call CheckSimpleTarget: left;
+				;;
+			;;
+			else
+				call CheckSimpleTarget: left;
+			;;
+			call CheckCover;
+			ptr<JsNode> n: (Node: JsN.ASSIGN);
+			n.pos is left.pos;
+			n.line is left.line;
+			n.op is op as u16;
+			call Next;
+			n.a is left;
+			n.b is (AssignNoCover);
+			if op is JsT.ASSIGN or op is JsT.LAND_A or op is JsT.LOR_A or op is JsT.NULLISH_A
+				if (left.flags & JsN.X_PARENS) is 0
+					call NameAnonymous: n.b left;
+				;;
+			;;
+			cover_err_msg is outer_msg;
+			cover_err_line is outer_line;
+			return (Done: n);
+		;;
+		# keep the first error seen, for whoever finds out this wasn't a pattern
+		if cover_err_msg is 0
+			cover_err_msg is outer_msg;
+			cover_err_line is outer_line;
+		;;
+	[end: left]
+
+	# something assignable: an identifier or a member; fails otherwise
+	[CheckSimpleTarget: ptr<JsNode> t: 0;]
+		u32 k: t.kind;
+		if k is JsN.IDENT
+			call CheckNotEvalArgs: t.name;
+			return;
+		;;
+		if k is JsN.MEMBER or k is JsN.INDEX or k is JsN.PRIVATE
+			return;
+		;;
+		# f() = 1 is an error only when it runs, in sloppy code, for the web's sake
+		if k is JsN.CALL and not JsLex.strict and (t.flags & JsN.X_OPT) is 0
+			return;
+		;;
+		call FailAt: 'Invalid left-hand side in assignment' t.line;
+	[end]
+
+	[ToAssignTarget: ptr<JsNode> t: 0;]
+		if t.kind is JsN.ARRAY or t.kind is JsN.OBJECT
+			if (t.flags & JsN.X_PARENS) is not 0
+				call Fail: 'Invalid destructuring assignment target';
+			;;
+			cover_err_msg is 0;
+			return (ToPattern: t false);
+		;;
+		call CheckSimpleTarget: t;
+	[end: t]
+
+	# Rewrites an expression as a pattern. binding: for an arrow's parameters, where only names and
+	# patterns are allowed (not a.b).
+	[ToPattern: ptr<JsNode> e: 0; bln binding: false;]
+		call WlStack.Check;
+		u32 k: e.kind;
+		if k is JsN.IDENT
+			if binding and (e.flags & JsN.X_PARENS) is not 0
+				call FailAt: 'Invalid destructuring assignment target' e.line;
+			;;
+			call CheckNotEvalArgs: e.name;
+			return e;
+		;;
+		if k is JsN.MEMBER or k is JsN.INDEX or k is JsN.PRIVATE
+			if binding
+				call FailAt: 'Invalid destructuring assignment target' e.line;
+			;;
+			return e;
+		;;
+		if k is JsN.ARRPAT or k is JsN.OBJPAT or k is JsN.DEFAULT
+			return e;
+		;;
+		if (e.flags & JsN.X_PARENS) is not 0
+			call FailAt: 'Invalid destructuring assignment target' e.line;
+		;;
+		if k is JsN.ASSIGN and e.op is JsT.ASSIGN as u16
+			# = default: its left was checked as a target or pattern when it was parsed
+			if binding
+				call ToPattern: e.a true;
+			;;
+			e.kind is JsN.DEFAULT as u16;
+			return e;
+		;;
+		if k is JsN.ARRAY
+			e.kind is JsN.ARRPAT as u16;
+			ptr<JsNode> c: e.a;
+			ptr<JsNode> prev: 0;
+			while c is not 0
+				ptr<JsNode> following: c.next;
+				ptr<JsNode> made: c;
+				if c.kind is JsN.SPREAD
+					if following is not 0 or (e.flags & JsN.X_COMMA_AFTER) is not 0
+						call FailAt: 'Rest element must be last element' c.line;
+					;;
+					c.kind is JsN.REST as u16;
+					if c.a.kind is JsN.ASSIGN
+						call FailAt: 'Invalid destructuring assignment target' c.line;
+					;;
+					c.a is (ToPattern: c.a binding);
+				;;
+				elif c.kind is not JsN.HOLE
+					made is (ToPattern: c binding);
+				;;
+				made.next is following;
+				if prev is 0
+					e.a is made;
+				;;
+				else
+					prev.next is made;
+				;;
+				prev is made;
+				c is following;
+			;;
+			return e;
+		;;
+		if k is JsN.OBJECT
+			e.kind is JsN.OBJPAT as u16;
+			ptr<JsNode> p: e.a;
+			while p is not 0
+				if p.op is JsN.P_SPREAD as u16
+					if p.next is not 0 or (e.flags & JsN.X_COMMA_AFTER) is not 0
+						call FailAt: 'Rest element must be last element' p.line;
+					;;
+					p.kind is JsN.REST as u16;
+					if p.a.kind is not JsN.IDENT and (binding or (p.a.kind is not JsN.MEMBER and p.a.kind is not JsN.INDEX and p.a.kind is not JsN.PRIVATE))
+						call FailAt: 'Invalid destructuring assignment target' p.line;
+					;;
+					if p.a.kind is JsN.IDENT
+						call CheckNotEvalArgs: p.a.name;
+					;;
+				;;
+				elif p.op is not JsN.P_INIT as u16
+					call FailAt: 'Invalid destructuring assignment target' p.line;
+				;;
+				else
+					ptr<JsNode> keep_next: p.next;
+					p.b is (ToPattern: p.b binding);
+					p.next is keep_next;
+				;;
+				p is p.next;
+			;;
+			return e;
+		;;
+		call FailAt: 'Invalid destructuring assignment target' e.line;
+	[end: e]
+
+	# an arrow function, not in parentheses: it can't be an operand of anything
+	[IsBareArrow: ptr<JsNode> n: 0;]
+	[end: n.kind is JsN.FUNC and (n.flags & JsN.FN_ARROW) is not 0 and (n.flags & JsN.X_PARENS) is 0]
+
+	[Conditional]
+		ptr<JsNode> test: (Binary: 0);
+		if JsLex.tok.kind is not JsT.QUESTION or (IsBareArrow: test) return test;
+		# a ? b : c ? d : e ... is a loop, for long chains
+		ptr<JsNode> first: 0;
+		ptr<JsNode> cur: 0;
+		while JsLex.tok.kind is JsT.QUESTION
+			ptr<JsNode> n: (Node: JsN.COND);
+			n.pos is test.pos;
+			n.line is test.line;
+			call Next;
+			n.a is test;
+			bln saved_in: no_in;
+			no_in is false;
+			n.b is (AssignNoCover);
+			no_in is saved_in;
+			call Expect: JsT.COLON;
+			if first is 0
+				first is n;
+			;;
+			else
+				cur.c is n;
+			;;
+			cur is n;
+			# what comes next might be plain, an arrow, or an assignment
+			u32 k: JsLex.tok.kind;
+			if k is JsT.IDENT or k is JsT.LPAREN or k is JsT.LBRACK or k is JsT.LBRACE or k is JsT.K_CLASS
+				n.c is (AssignNoCover);
+				call Done: n;
+				break;
+			;;
+			test is (Binary: 0);
+			if JsLex.tok.kind is not JsT.QUESTION
+				if JsLex.tok.kind >= JsT.ASSIGN and JsLex.tok.kind <= JsT.NULLISH_A
+					call CheckSimpleTarget: test;
+					ptr<JsNode> asg: (Node: JsN.ASSIGN);
+					asg.pos is test.pos;
+					asg.op is JsLex.tok.kind as u16;
+					call Next;
+					asg.a is test;
+					asg.b is (AssignNoCover);
+					test is (Done: asg);
+				;;
+				n.c is test;
+				call Done: n;
+				break;
+			;;
+		;;
+		ptr<JsNode> walk: first;
+		while walk is not 0 and walk.stop is 0
+			walk.stop is JsLex.last_stop;
+			walk is walk.c;
+			if walk is not 0 and walk.kind is not JsN.COND
+				break;
+			;;
+		;;
+	[end: first]
+
+	# how tightly a token binds as a binary operator; 0 if it isn't one
+	[Prec: u32 k: 0;]
+		if k < JsT.ADD
+			return 0 as u32;
+		;;
+		if k <= JsT.GE
+			when k
+				is JsT.MUL JsT.DIV JsT.MOD
+					return 12 as u32;
+				;;
+				is JsT.ADD JsT.SUB
+					return 11 as u32;
+				;;
+				is JsT.LT JsT.GT JsT.LE JsT.GE
+					return 9 as u32;
+				;;
+				is JsT.EQ JsT.NE JsT.SEQ JsT.SNE
+					return 8 as u32;
+				;;
+				is JsT.SHL JsT.SAR JsT.SHR
+					return 10 as u32;
+				;;
+				is JsT.LAND
+					return 4 as u32;
+				;;
+				is JsT.LOR
+					return 3 as u32;
+				;;
+				is JsT.BAND
+					return 7 as u32;
+				;;
+				is JsT.BXOR
+					return 6 as u32;
+				;;
+				is JsT.BOR
+					return 5 as u32;
+				;;
+				is JsT.NULLISH
+					return 2 as u32;
+				;;
+				is JsT.EXP
+					return 13 as u32;
+				;;
+			;;
+			return 0 as u32;
+		;;
+		if k is JsT.K_INSTANCEOF return 9 as u32;
+		if k is JsT.K_IN and not no_in return 9 as u32;
+	[end: 0 as u32]
+
+	# precedence climbing: everything binding tighter than min, joined by loops where it can be
+	[Binary: u32 min: 0;]
+		ptr<JsNode> left: 0;
+		if JsLex.tok.kind is JsT.PRIVATE
+			# #x in y
+			left is (Node: JsN.PRIVATE_IN);
+			left.name is JsLex.tok.text;
+			call Next;
+			if JsLex.tok.kind is not JsT.K_IN or min >= 9 or no_in
+				call Unexpected;
+			;;
+			call Next;
+			left.a is (Binary: 9);
+			call Done: left;
+		;;
+		else
+			left is (Unary);
+			if (IsBareArrow: left)
+				if min > 0
+					call Fail: 'Malformed arrow function parameter list';
+				;;
+				return left;
+			;;
+		;;
+		while true
+			u32 k: JsLex.tok.kind;
+			u32 p: (Prec: k);
+			if p is 0 or p <= min break;
+			if k is JsT.EXP
+				if left.kind is JsN.UNARY and (left.flags & JsN.X_PARENS) is 0
+					call Fail: 'Unary operator used immediately before exponentiation expression';
+				;;
+				if left.kind is JsN.AWAIT and (left.flags & JsN.X_PARENS) is 0
+					call Fail: 'Unary operator used immediately before exponentiation expression';
+				;;
+				# right to left
+				p is p - 1;
+			;;
+			ptr<JsNode> n: (Node: JsN.BINARY);
+			n.pos is left.pos;
+			n.line is JsLex.tok.line;
+			n.op is k as u16;
+			call Next;
+			n.a is left;
+			n.b is (Binary: p);
+			if k is JsT.LAND or k is JsT.LOR or k is JsT.NULLISH
+				n.kind is JsN.LOGICAL as u16;
+				# ?? doesn't mix with && or || without parentheses
+				if k is JsT.NULLISH
+					call CheckNoMix: left;
+					call CheckNoMix: n.b;
+				;;
+				else
+					call CheckNotNullish: left;
+					call CheckNotNullish: n.b;
+				;;
+			;;
+			left is (Done: n);
+		;;
+	[end: left]
+
+	[CheckNoMix: ptr<JsNode> e: 0;]
+		if e.kind is JsN.LOGICAL and (e.flags & JsN.X_PARENS) is 0 and e.op is not JsT.NULLISH as u16
+			call Fail: 'Cannot mix ?? with || or && without parentheses';
+		;;
+	[end]
+
+	[CheckNotNullish: ptr<JsNode> e: 0;]
+		if e.kind is JsN.LOGICAL and (e.flags & JsN.X_PARENS) is 0 and e.op is JsT.NULLISH as u16
+			call Fail: 'Cannot mix ?? with || or && without parentheses';
+		;;
+	[end]
+
+	[Unary]
+		call WlStack.Check;
+		u32 k: JsLex.tok.kind;
+		if k is JsT.NOT or k is JsT.TILDE or k is JsT.ADD or k is JsT.SUB or k is JsT.K_TYPEOF or k is JsT.K_VOID or k is JsT.K_DELETE
+			ptr<JsNode> n: (Node: JsN.UNARY);
+			n.op is k as u16;
+			call Next;
+			n.a is (Unary);
+			if (IsBareArrow: n.a)
+				call Fail: 'Malformed arrow function parameter list';
+			;;
+			if k is JsT.K_DELETE
+				if JsLex.strict and n.a.kind is JsN.IDENT
+					call Fail: 'Delete of an unqualified identifier in strict mode';
+				;;
+				ptr<JsNode> inner: n.a;
+				if inner.kind is JsN.PRIVATE or (inner.kind is JsN.OPTCHAIN and inner.a.kind is JsN.PRIVATE)
+					call Fail: 'Private fields can not be deleted';
+				;;
+			;;
+			return (Done: n);
+		;;
+		if k is JsT.INC or k is JsT.DEC
+			ptr<JsNode> u: (Node: JsN.UPDATE);
+			u.op is k as u16;
+			u.flags is JsN.X_PREFIX;
+			call Next;
+			u.a is (Unary);
+			call CheckSimpleTarget: u.a;
+			return (Done: u);
+		;;
+		if k is JsT.IDENT and JsLex.tok.text is JsRt.A.await and not JsLex.tok.escaped and (ctx.is_async or ctx.in_static_block)
+			if ctx.in_params or ctx.in_static_block
+				call Fail: 'await is not allowed here';
+			;;
+			ptr<JsNode> w: (Node: JsN.AWAIT);
+			arg_yield_await is true;
+			call Next;
+			w.a is (Unary);
+			return (Done: w);
+		;;
+		ptr<JsNode> e: (LeftHandSide);
+		k is JsLex.tok.kind;
+		if (k is JsT.INC or k is JsT.DEC) and not JsLex.tok.nl_before
+			call CheckSimpleTarget: e;
+			ptr<JsNode> p: (Node: JsN.UPDATE);
+			p.pos is e.pos;
+			p.line is e.line;
+			p.op is k as u16;
+			p.a is e;
+			call Next;
+			return (Done: p);
+		;;
+	[end: e]
+
+	[LeftHandSide]
+		ptr<JsNode> e: 0;
+		u32 k: JsLex.tok.kind;
+		if k is JsT.K_NEW
+			e is (NewExpression);
+		;;
+		elif k is JsT.K_SUPER
+			e is (SuperExpression);
+		;;
+		elif k is JsT.K_IMPORT
+			call Fail: 'Cannot use import outside a module';
+		;;
+		else
+			e is (Primary);
+		;;
+	[end: (CallTail: e true)]
+
+	# .x [x] (x) `x` ?.x after an expression. allow_call is false in new's callee.
+	[CallTail: ptr<JsNode> e: 0; bln allow_call: true;]
+		if (IsBareArrow: e) return e;
+		bln in_chain: false;
+		u32 start: e.pos;
+		u32 start_line: e.line;
+		while true
+			u32 k: JsLex.tok.kind;
+			ptr<JsNode> n: 0;
+			if k is JsT.DOT
+				call Next;
+				if JsLex.tok.kind is JsT.PRIVATE
+					n is (Node: JsN.PRIVATE);
+					n.name is JsLex.tok.text;
+				;;
+				elif JsLex.tok.kind is JsT.IDENT or JsLex.tok.kind >= JsT.KW
+					n is (Node: JsN.MEMBER);
+					n.name is JsLex.tok.text;
+				;;
+				else
+					call Unexpected;
+				;;
+				call Next;
+				n.a is e;
+			;;
+			elif k is JsT.LBRACK
+				n is (Node: JsN.INDEX);
+				call Next;
+				n.a is e;
+				bln saved_in: no_in;
+				no_in is false;
+				n.b is (Expression);
+				no_in is saved_in;
+				call Expect: JsT.RBRACK;
+			;;
+			elif k is JsT.LPAREN
+				if not allow_call
+					return e;
+				;;
+				n is (Node: JsN.CALL);
+				n.a is e;
+				n.b is (Arguments);
+			;;
+			elif k is JsT.TEMPLATE
+				if in_chain
+					call Fail: 'Invalid tagged template on optional chain';
+				;;
+				n is (Node: JsN.TAGGED);
+				n.a is e;
+				n.b is (Template: true);
+			;;
+			elif k is JsT.QDOT
+				if not allow_call
+					call Fail: 'Invalid optional chain from new expression';
+				;;
+				in_chain is true;
+				call Next;
+				u32 t: JsLex.tok.kind;
+				if t is JsT.LPAREN
+					n is (Node: JsN.CALL);
+					n.a is e;
+					n.b is (Arguments);
+				;;
+				elif t is JsT.LBRACK
+					n is (Node: JsN.INDEX);
+					call Next;
+					n.a is e;
+					bln saved_in2: no_in;
+					no_in is false;
+					n.b is (Expression);
+					no_in is saved_in2;
+					call Expect: JsT.RBRACK;
+				;;
+				elif t is JsT.PRIVATE
+					n is (Node: JsN.PRIVATE);
+					n.name is JsLex.tok.text;
+					n.a is e;
+					call Next;
+				;;
+				elif t is JsT.IDENT or t >= JsT.KW
+					n is (Node: JsN.MEMBER);
+					n.name is JsLex.tok.text;
+					n.a is e;
+					call Next;
+				;;
+				elif t is JsT.TEMPLATE
+					call Fail: 'Invalid tagged template on optional chain';
+				;;
+				else
+					call Unexpected;
+				;;
+				n.flags is n.flags | JsN.X_OPT;
+			;;
+			else
+				break;
+			;;
+			n.pos is start;
+			n.line is JsLex.last_line;
+			e is (Done: n);
+		;;
+		if in_chain
+			ptr<JsNode> chain: (Node: JsN.OPTCHAIN);
+			chain.pos is start;
+			chain.line is start_line;
+			chain.a is e;
+			return (Done: chain);
+		;;
+	[end: e]
+
+	[Arguments]
+		call Expect: JsT.LPAREN;
+		bln saved_in: no_in;
+		no_in is false;
+		ptr<JsNode> head: 0;
+		ptr<JsNode> tail: 0;
+		while JsLex.tok.kind is not JsT.RPAREN
+			ptr<JsNode> a: 0;
+			if JsLex.tok.kind is JsT.ELLIPSIS
+				a is (Node: JsN.SPREAD);
+				call Next;
+				a.a is (AssignNoCover);
+				call Done: a;
+			;;
+			else
+				a is (AssignNoCover);
+			;;
+			if head is 0
+				head is a;
+			;;
+			else
+				tail.next is a;
+			;;
+			tail is a;
+			if JsLex.tok.kind is not JsT.RPAREN
+				call Expect: JsT.COMMA;
+			;;
+		;;
+		call Next;
+		no_in is saved_in;
+	[end: head]
+
+	[NewExpression]
+		ptr<JsNode> n: (Node: JsN.NEW);
+		call Next;
+		if JsLex.tok.kind is JsT.DOT
+			call Next;
+			if not (IsWord: JsRt.A.target)
+				call Unexpected;
+			;;
+			if not ctx.new_target
+				call Fail: 'new.target expression is not allowed here';
+			;;
+			call Next;
+			n.kind is JsN.NEWTARGET as u16;
+			return (Done: n);
+		;;
+		call WlStack.Check;
+		ptr<JsNode> callee: 0;
+		u32 k: JsLex.tok.kind;
+		if k is JsT.K_NEW
+			callee is (NewExpression);
+		;;
+		elif k is JsT.K_SUPER
+			callee is (SuperExpression);
+			if callee.kind is JsN.CALL
+				call Fail: 'Cannot call super in a new expression';
+			;;
+		;;
+		elif k is JsT.K_IMPORT
+			call Fail: 'Cannot use new with import';
+		;;
+		else
+			callee is (Primary);
+		;;
+		n.a is (CallTail: callee false);
+		if JsLex.tok.kind is JsT.LPAREN
+			n.b is (Arguments);
+		;;
+	[end: (Done: n)]
+
+	[SuperExpression]
+		ptr<JsNode> s: (Node: JsN.SUPER);
+		call Next;
+		u32 k: JsLex.tok.kind;
+		if k is JsT.LPAREN
+			if not ctx.super_call
+				call Fail: 'super keyword unexpected here';
+			;;
+			ptr<JsNode> c: (Node: JsN.CALL);
+			c.pos is s.pos;
+			c.a is s;
+			c.b is (Arguments);
+			return (Done: c);
+		;;
+		if not ctx.super_prop
+			call Fail: 'super keyword unexpected here';
+		;;
+		if k is JsT.DOT
+			call Next;
+			if JsLex.tok.kind is not JsT.IDENT and JsLex.tok.kind < JsT.KW
+				call Unexpected;
+			;;
+			ptr<JsNode> m: (Node: JsN.MEMBER);
+			m.pos is s.pos;
+			m.name is JsLex.tok.text;
+			m.a is s;
+			call Next;
+			return (Done: m);
+		;;
+		if k is JsT.LBRACK
+			ptr<JsNode> x: (Node: JsN.INDEX);
+			x.pos is s.pos;
+			call Next;
+			x.a is s;
+			bln saved_in: no_in;
+			no_in is false;
+			x.b is (Expression);
+			no_in is saved_in;
+			call Expect: JsT.RBRACK;
+			return (Done: x);
+		;;
+		call Fail: 'super keyword unexpected here';
+	[end: s]
+
+	[Primary]
+		u32 k: JsLex.tok.kind;
+		ptr<JsNode> n: 0;
+		if k is JsT.IDENT
+			if (IsWord: JsRt.A.async)
+				if (JsLex.Peek) is JsT.K_FUNCTION and not JsLex.peeked.nl_before
+					call Next;
+					return (FunctionExpr: JsN.FN_ASYNC);
+				;;
+			;;
+			n is (Node: JsN.IDENT);
+			n.name is (BindingName);
+			if n.name is JsRt.A.await
+				saw_await_name is true;
+			;;
+			if n.name is JsRt.A.arguments and ctx.in_field
+				call FailAt: 'arguments is not allowed in class field initializer or static initialization block' n.line;
+			;;
+			return (Done: n);
+		;;
+		if k is JsT.NUM
+			n is (Node: JsN.NUM);
+			n.num is JsLex.tok.num;
+			call Next;
+			return (Done: n);
+		;;
+		if k is JsT.STR
+			n is (Node: JsN.STR);
+			n.name is JsLex.tok.text;
+			call Next;
+			return (Done: n);
+		;;
+		if k is JsT.LPAREN
+			return (Parenthesized);
+		;;
+		if k is JsT.LBRACK
+			return (ArrayLiteral);
+		;;
+		if k is JsT.LBRACE
+			return (ObjectLiteral);
+		;;
+		if k is JsT.TEMPLATE
+			return (Template: false);
+		;;
+		if k is JsT.DIV or k is JsT.DIV_A
+			call JsLex.RescanRegex;
+			n is (Node: JsN.REGEX);
+			n.name is JsLex.tok.text;
+			n.raw is JsLex.tok.raw;
+			call Next;
+			return (Done: n);
+		;;
+		if k < JsT.KW
+			call Unexpected;
+		;;
+		when k
+			is JsT.K_THIS
+				n is (Node: JsN.THIS);
+			;;
+			is JsT.K_NULL
+				n is (Node: JsN.NULL);
+			;;
+			is JsT.K_TRUE
+				n is (Node: JsN.TRUE);
+			;;
+			is JsT.K_FALSE
+				n is (Node: JsN.FALSE);
+			;;
+			is JsT.K_FUNCTION
+				return (FunctionExpr: 0);
+			;;
+			is JsT.K_CLASS
+				return (Class: false);
+			;;
+			else
+				call Unexpected;
+			;;
+		;;
+		call Next;
+	[end: (Done: n)]
+
+	[Parenthesized]
+		u32 start: JsLex.tok.start;
+		u32 start_line: JsLex.tok.line;
+		call Next;
+		bln saved_in: no_in;
+		no_in is false;
+		ptr<u8> outer_msg: cover_err_msg;
+		u32 outer_line: cover_err_line;
+		cover_err_msg is 0;
+		bln saved_ya: arg_yield_await;
+		arg_yield_await is false;
+		ptr<JsNode> head: 0;
+		ptr<JsNode> tail: 0;
+		bln only_arrow: false;       # () or (...x) or (a,) can only be parameters
+		if JsLex.tok.kind is JsT.RPAREN
+			only_arrow is true;
+		;;
+		while JsLex.tok.kind is not JsT.RPAREN
+			ptr<JsNode> e: 0;
+			if JsLex.tok.kind is JsT.ELLIPSIS
+				only_arrow is true;
+				e is (Node: JsN.REST);
+				call Next;
+				e.a is (BindingTargetFor: 1000);
+				call Done: e;
+				if JsLex.tok.kind is not JsT.RPAREN
+					call Fail: 'Rest parameter must be last formal parameter';
+				;;
+			;;
+			else
+				e is (Assign);
+			;;
+			if head is 0
+				head is e;
+			;;
+			else
+				tail.next is e;
+			;;
+			tail is e;
+			if JsLex.tok.kind is not JsT.RPAREN
+				call Expect: JsT.COMMA;
+				if JsLex.tok.kind is JsT.RPAREN
+					only_arrow is true;
+				;;
+			;;
+		;;
+		call Next;
+		no_in is saved_in;
+		if JsLex.tok.kind is JsT.ARROW and not JsLex.tok.nl_before
+			if arg_yield_await
+				call Fail: 'Yield or await expression not allowed in formal parameter';
+			;;
+			arg_yield_await is saved_ya;
+			cover_err_msg is outer_msg;
+			cover_err_line is outer_line;
+			return (ArrowFromList: head start start_line 0);
+		;;
+		arg_yield_await is arg_yield_await or saved_ya;
+		if only_arrow
+			call Unexpected;
+		;;
+		call CheckCover;
+		cover_err_msg is outer_msg;
+		cover_err_line is outer_line;
+		# (a, b) is a sequence; either way it's now in parentheses
+		if head.next is not 0
+			ptr<JsNode> s: (Arena_Seq: head start start_line);
+			s.flags is s.flags | JsN.X_PARENS;
+			return s;
+		;;
+		head.flags is head.flags | JsN.X_PARENS;
+	[end: head]
+
+	[Arena_Seq: ptr<JsNode> head: 0; u32 start: 0; u32 line: 0;]
+		ptr<JsNode> s: (Node: JsN.SEQ);
+		s.pos is start;
+		s.line is line;
+		s.a is head;
+	[end: (Done: s)]
+
+	[ArrayLiteral]
+		ptr<JsNode> n: (Node: JsN.ARRAY);
+		call Next;
+		bln saved_in: no_in;
+		no_in is false;
+		ptr<JsNode> tail: 0;
+		while JsLex.tok.kind is not JsT.RBRACK
+			ptr<JsNode> e: 0;
+			if JsLex.tok.kind is JsT.COMMA
+				e is (Node: JsN.HOLE);
+			;;
+			elif JsLex.tok.kind is JsT.ELLIPSIS
+				e is (Node: JsN.SPREAD);
+				call Next;
+				e.a is (Assign);
+				call Done: e;
+			;;
+			else
+				e is (Assign);
+			;;
+			if tail is 0
+				n.a is e;
+			;;
+			else
+				tail.next is e;
+			;;
+			tail is e;
+			if JsLex.tok.kind is not JsT.RBRACK
+				call Expect: JsT.COMMA;
+				if JsLex.tok.kind is JsT.RBRACK and e.kind is JsN.SPREAD
+					n.flags is n.flags | JsN.X_COMMA_AFTER;
+				;;
+			;;
+		;;
+		call Next;
+		no_in is saved_in;
+	[end: (Done: n)]
+
+	[ObjectLiteral]
+		ptr<JsNode> n: (Node: JsN.OBJECT);
+		call Next;
+		bln saved_in: no_in;
+		no_in is false;
+		ptr<JsNode> tail: 0;
+		bln has_proto: false;
+		while JsLex.tok.kind is not JsT.RBRACE
+			ptr<JsNode> p: (ObjectMember);
+			if (p.flags & JsN.X_PROTO) is not 0
+				if has_proto and cover_err_msg is 0
+					cover_err_msg is 'Duplicate __proto__ fields are not allowed in object literals';
+					cover_err_line is p.line;
+				;;
+				has_proto is true;
+			;;
+			if tail is 0
+				n.a is p;
+			;;
+			else
+				tail.next is p;
+			;;
+			tail is p;
+			if JsLex.tok.kind is not JsT.RBRACE
+				call Expect: JsT.COMMA;
+				if JsLex.tok.kind is JsT.RBRACE and p.op is JsN.P_SPREAD as u16
+					n.flags is n.flags | JsN.X_COMMA_AFTER;
+				;;
+			;;
+		;;
+		call Next;
+		no_in is saved_in;
+	[end: (Done: n)]
+
+	# after the key's first word: whether this word was a modifier (get, set, async) and not the key
+	[IsModifier]
+		u32 p: (JsLex.Peek);
+		if p is JsT.COMMA or p is JsT.COLON or p is JsT.LPAREN or p is JsT.RBRACE or p is JsT.ASSIGN or p is JsT.SEMI or p is JsT.EOF
+			return false;
+		;;
+	[end: true]
+
+	[ObjectMember]
+		ptr<JsNode> p: (Node: JsN.PROP);
+		if JsLex.tok.kind is JsT.ELLIPSIS
+			p.op is JsN.P_SPREAD as u16;
+			call Next;
+			p.a is (Assign);
+			return (Done: p);
+		;;
+		u32 fn_flags: JsN.FN_METHOD;
+		u32 kind: JsN.P_INIT;
+		bln is_word: JsLex.tok.kind is JsT.IDENT;
+		ptr<JsStr> word: JsLex.tok.text;
+		bln word_escaped: JsLex.tok.escaped;
+		if is_word and not word_escaped
+			if word is JsRt.A.get and (IsModifier)
+				kind is JsN.P_GET;
+				fn_flags is fn_flags | JsN.FN_GETTER;
+				call Next;
+				is_word is false;
+			;;
+			elif word is JsRt.A.set and (IsModifier)
+				kind is JsN.P_SET;
+				fn_flags is fn_flags | JsN.FN_SETTER;
+				call Next;
+				is_word is false;
+			;;
+			elif word is JsRt.A.async and (IsModifier) and not JsLex.peeked.nl_before
+				kind is JsN.P_METHOD;
+				fn_flags is fn_flags | JsN.FN_ASYNC;
+				call Next;
+				is_word is false;
+			;;
+		;;
+		if JsLex.tok.kind is JsT.MUL
+			if kind is JsN.P_GET or kind is JsN.P_SET
+				call Unexpected;
+			;;
+			kind is JsN.P_METHOD;
+			fn_flags is fn_flags | JsN.FN_GEN;
+			call Next;
+			is_word is false;
+		;;
+		u32 key_start: JsLex.tok.start;
+		u32 key_kind: JsLex.tok.kind;
+		call PropertyName: p;
+		if kind is not JsN.P_INIT or JsLex.tok.kind is JsT.LPAREN
+			if kind is JsN.P_INIT
+				kind is JsN.P_METHOD;
+			;;
+			p.op is kind as u16;
+			p.b is (FunctionRest: fn_flags p.pos 0);
+			call NameFromKey: p;
+			return (Done: p);
+		;;
+		if (Eat: JsT.COLON)
+			p.b is (Assign);
+			if (p.flags & JsN.X_COMPUTED) is 0 and p.a.kind is JsN.STR and p.a.name is JsRt.A.proto
+				p.flags is p.flags | JsN.X_PROTO;
+			;;
+			else
+				call NameFromKey: p;
+			;;
+			return (Done: p);
+		;;
+		# a shorthand, with perhaps = default (only allowed if this turns out to be a pattern)
+		if not is_word
+			call Unexpected;
+		;;
+		call CheckBindable: word word_escaped;
+		if word is JsRt.A.arguments and ctx.in_field
+			call Fail: 'arguments is not allowed in class field initializer';
+		;;
+		ptr<JsNode> id: (Node: JsN.IDENT);
+		id.name is word;
+		id.pos is key_start;
+		id.line is p.line;
+		id.stop is key_start + word.bytes;
+		p.flags is p.flags | JsN.X_SHORTHAND;
+		p.b is id;
+		if JsLex.tok.kind is JsT.ASSIGN
+			if cover_err_msg is 0
+				cover_err_msg is 'Invalid shorthand property initializer';
+				cover_err_line is JsLex.tok.line;
+			;;
+			call CheckNotEvalArgs: word;
+			ptr<JsNode> d: (Node: JsN.DEFAULT);
+			d.pos is key_start;
+			call Next;
+			d.a is id;
+			d.b is (AssignNoCoverKeep);
+			call NameAnonymous: d.b id;
+			p.b is (Done: d);
+		;;
+	[end: (Done: p)]
+
+	# as AssignNoCover, but leaves an error from before it standing
+	[AssignNoCoverKeep]
+		ptr<u8> saved: cover_err_msg;
+		u32 saved_line: cover_err_line;
+		ptr<JsNode> e: (AssignNoCover);
+		cover_err_msg is saved;
+		cover_err_line is saved_line;
+	[end: e]
+
+	[Template: bln tagged: false;]
+		ptr<JsNode> n: (Node: JsN.TEMPLATE);
+		ptr<JsNode> tail: 0;
+		while true
+			if JsLex.tok.bad_cooked and not tagged
+				call Fail: 'Invalid escape sequence in template';
+			;;
+			ptr<JsNode> q: (Node: JsN.STR);
+			q.name is JsLex.tok.text;
+			q.raw is JsLex.tok.raw;
+			if JsLex.tok.bad_cooked
+				q.flags is JsN.X_NO_SUPER_CHECK;
+			;;
+			if tail is 0
+				n.a is q;
+			;;
+			else
+				tail.next is q;
+			;;
+			tail is q;
+			bln last: JsLex.tok.tail;
+			if last
+				call Next;
+				break;
+			;;
+			call Next;
+			ptr<JsNode> e: (Expression);
+			tail.next is e;
+			tail is e;
+			if JsLex.tok.kind is not JsT.RBRACE
+				call Unexpected;
+			;;
+			call JsLex.RescanTemplate;
+		;;
+	[end: (Done: n)]
+
+	[Yield]
+		ptr<JsNode> n: (Node: JsN.YIELD);
+		if ctx.in_params
+			call Fail: 'Yield expression not allowed in formal parameter';
+		;;
+		arg_yield_await is true;
+		call Next;
+		if not JsLex.tok.nl_before
+			u32 k: JsLex.tok.kind;
+			if k is JsT.MUL
+				n.flags is JsN.X_DELEGATE;
+				call Next;
+				n.a is (Assign);
+			;;
+			elif k is not JsT.RPAREN and k is not JsT.RBRACK and k is not JsT.RBRACE and k is not JsT.COMMA and k is not JsT.SEMI and k is not JsT.COLON and k is not JsT.EOF and k is not JsT.K_IN and not (k is JsT.TEMPLATE and false)
+				n.a is (Assign);
+			;;
+		;;
+	[end: (Done: n)]
+
+	# ---- functions ----
+
+	[EnterCtx: u32 flags: 0;]
+		ptr<JsPCtx> c: (arena.Alloc: sizeof JsPCtx) as ptr<JsPCtx>;
+		c.parent is ctx;
+		c.is_function is true;
+		c.is_gen is (flags & JsN.FN_GEN) is not 0;
+		c.is_async is (flags & JsN.FN_ASYNC) is not 0;
+		if (flags & JsN.FN_ARROW) is not 0
+			# an arrow sees its surroundings' super, new.target and arguments rule
+			c.is_arrow is true;
+			c.super_call is ctx.super_call;
+			c.super_prop is ctx.super_prop;
+			c.new_target is ctx.new_target;
+			c.in_field is ctx.in_field;
+		;;
+		else
+			c.new_target is true;
+			c.super_prop is (flags & JsN.FN_METHOD) is not 0;
+			c.super_call is (flags & JsN.FN_CTOR) is not 0 and (flags & JsN.FN_DERIVED) is not 0;
+		;;
+		ctx is c;
+	[end]
+
+	[FunctionDecl: u32 flags: 0;]
+		ptr<JsNode> d: (Node: JsN.FUNCDECL);
+		if (flags & JsN.FN_ASYNC) is not 0
+			call Next;
+		;;
+		u32 start: JsLex.tok.start;
+		if (flags & JsN.FN_ASYNC) is not 0
+			start is d.pos;
+		;;
+		call Expect: JsT.K_FUNCTION;
+		if (Eat: JsT.MUL)
+			flags is flags | JsN.FN_GEN;
+		;;
+		ptr<JsStr> name: (BindingName);
+		call CheckNotEvalArgs: name;
+		d.a is (FunctionRest: flags | JsN.FN_DECL start name);
+		d.a.name is name;
+		# a function in a block in sloppy code also makes a var (Annex B), if nothing's in the way
+		if not JsLex.strict and (flags & (JsN.FN_ASYNC | JsN.FN_GEN)) is 0
+			d.flags is d.flags | JsN.X_ANNEXB;
+			call AddVar: name d.line JsN.X_ANNEXB;
+		;;
+	[end: (Done: d)]
+
+	[FunctionExpr: u32 flags: 0;]
+		u32 start: JsLex.tok.start;
+		if (flags & JsN.FN_ASYNC) is not 0
+			start is JsLex.last_start;
+		;;
+		u32 start_line: JsLex.tok.line;
+		call Expect: JsT.K_FUNCTION;
+		if (Eat: JsT.MUL)
+			flags is flags | JsN.FN_GEN;
+		;;
+		ptr<JsStr> name: 0;
+		if JsLex.tok.kind is JsT.IDENT
+			# its name is seen as though from inside: yield and await follow the function's own kind
+			ptr<JsPCtx> saved: ctx;
+			call EnterCtx: flags;
+			name is (BindingName);
+			ctx is saved;
+			call CheckNotEvalArgs: name;
+		;;
+	[end: (FunctionRest: flags start name)]
+
+	# (params) { body }, in a context of its own
+	[FunctionRest: u32 flags: 0; u32 start: 0; ptr<JsStr> name: 0;]
+		call WlStack.Check;
+		ptr<JsNode> f: (Node: JsN.FUNC);
+		f.pos is start;
+		f.name is name;
+		if name is not 0 and (flags & JsN.FN_DECL) is 0
+			f.flags is f.flags | JsN.FN_NAME_REF;
+		;;
+		bln saved_strict: JsLex.strict;
+		bln saved_in: no_in;
+		no_in is false;
+		ptr<JsPCtx> outer: ctx;
+		ptr<u8> saved_cover: cover_err_msg;
+		cover_err_msg is 0;
+		call EnterCtx: flags;
+		f.flags is f.flags | flags | JsN.FN_SIMPLE;
+		ctx.in_params is ctx.is_gen or ctx.is_async;
+		call Expect: JsT.LPAREN;
+		f.a is (FormalParams: f);
+		ctx.in_params is false;
+		call FunctionBody: f saved_strict;
+		if JsLex.strict
+			f.flags is f.flags | JsN.FN_STRICT;
+		;;
+		f.d is ctx.vars;
+		ctx is outer;
+		JsLex.strict is saved_strict;
+		no_in is saved_in;
+		cover_err_msg is saved_cover;
+		# what the getter and setter forms insist on
+		if (flags & JsN.FN_GETTER) is not 0 and f.a is not 0
+			call FailAt: 'Getter must not have any formal parameters' f.line;
+		;;
+		if (flags & JsN.FN_SETTER) is not 0
+			if f.a is 0 or f.a.next is not 0 or f.a.kind is JsN.REST
+				call FailAt: 'Setter must have exactly one formal parameter' f.line;
+			;;
+		;;
+		f.stop is JsLex.last_stop;
+	[end: f]
+
+	[FormalParams: ptr<JsNode> f: 0;]
+		ptr<JsNode> head: 0;
+		ptr<JsNode> tail: 0;
+		while JsLex.tok.kind is not JsT.RPAREN
+			ptr<JsNode> p: 0;
+			if JsLex.tok.kind is JsT.ELLIPSIS
+				p is (Node: JsN.REST);
+				call Next;
+				p.a is (BindingTargetFor: 1000);
+				call Done: p;
+				f.flags is f.flags & (0xFFFFFFFF - JsN.FN_SIMPLE);
+				if JsLex.tok.kind is not JsT.RPAREN
+					call Fail: 'Rest parameter must be last formal parameter';
+				;;
+			;;
+			else
+				p is (BindingElement: 1000);
+				if p.kind is not JsN.IDENT
+					f.flags is f.flags & (0xFFFFFFFF - JsN.FN_SIMPLE);
+				;;
+			;;
+			if head is 0
+				head is p;
+			;;
+			else
+				tail.next is p;
+			;;
+			tail is p;
+			if JsLex.tok.kind is not JsT.RPAREN
+				call Expect: JsT.COMMA;
+			;;
+		;;
+		call Next;
+	[end: head]
+
+	[FunctionBody: ptr<JsNode> f: 0; bln outer_strict: false;]
+		if JsLex.tok.kind is not JsT.LBRACE
+			call Unexpected;
+		;;
+		call Next;
+		f.b is (BodyStatements: f);
+		# reading the } last: the token after it belongs to the code outside
+		if JsLex.tok.kind is not JsT.RBRACE
+			call Unexpected;
+		;;
+		if JsLex.strict
+			f.flags is f.flags | JsN.FN_STRICT;
+		;;
+		call CheckParams: f;
+		# the next token is read under the outer function's strictness
+		JsLex.strict is outer_strict;
+		call Next;
+	[end]
+
+	[BodyStatements: ptr<JsNode> f: 0;]
+		ptr<JsNode> head: (Directives: f);
+		ptr<JsNode> tail: head;
+		if tail is not 0
+			while tail.next is not 0
+				tail is tail.next;
+			;;
+		;;
+		while JsLex.tok.kind is not JsT.RBRACE
+			if JsLex.tok.kind is JsT.EOF
+				call Unexpected;
+			;;
+			ptr<JsNode> s: (StatementItem);
+			if head is 0
+				head is s;
+			;;
+			else
+				tail.next is s;
+			;;
+			tail is s;
+		;;
+	[end: head]
+
+	# the rules that depend on the whole function: only known once the body has said whether it's strict
+	[CheckParams: ptr<JsNode> f: 0;]
+		bln strict_now: JsLex.strict;
+		if strict_now and f.name is not 0
+			if f.name is JsRt.A.eval or f.name is JsRt.A.arguments
+				call FailAt: 'Unexpected eval or arguments in strict mode' f.line;
+			;;
+			u32 kw: (JsLex.KeywordOf: f.name);
+			if kw >= JsT.STRICT_WORD
+				call FailAt: 'Unexpected strict mode reserved word' f.line;
+			;;
+		;;
+		bln simple: (f.flags & JsN.FN_SIMPLE) is not 0;
+		bln unique: not simple or strict_now or (f.flags & (JsN.FN_ARROW | JsN.FN_METHOD)) is not 0;
+		ptr<JsNode> p: f.a;
+		while p is not 0
+			call CheckPatternNames: p strict_now;
+			p is p.next;
+		;;
+		if unique
+			call CheckDuplicates: f;
+		;;
+	[end]
+
+	[CheckPatternNames: ptr<JsNode> t: 0; bln strict_now: false;]
+		call WlStack.Check;
+		u32 k: t.kind;
+		if k is JsN.IDENT
+			if strict_now
+				if t.name is JsRt.A.eval or t.name is JsRt.A.arguments
+					call FailAt: 'Unexpected eval or arguments in strict mode' t.line;
+				;;
+				if (JsLex.KeywordOf: t.name) >= JsT.STRICT_WORD
+					call FailAt: 'Unexpected strict mode reserved word' t.line;
+				;;
+			;;
+			return;
+		;;
+		if k is JsN.DEFAULT or k is JsN.REST
+			call CheckPatternNames: t.a strict_now;
+			return;
+		;;
+		if k is JsN.PROP
+			call CheckPatternNames: t.b strict_now;
+			return;
+		;;
+		if k is JsN.ARRPAT or k is JsN.OBJPAT
+			ptr<JsNode> c: t.a;
+			while c is not 0
+				if c.kind is not JsN.HOLE
+					call CheckPatternNames: c strict_now;
+				;;
+				c is c.next;
+			;;
+		;;
+	[end]
+
+	# a parameter's names may not repeat: the names are threaded on a list as they're found
+	[CheckDuplicates: ptr<JsNode> f: 0;]
+		ptr<JsNode> p: f.a;
+		seen_names is 0;
+		while p is not 0
+			call CollectNames: p;
+			p is p.next;
+		;;
+	[end]
+
+	ptr<JsNameLink> seen_names: 0;
+
+	[CollectNames: ptr<JsNode> t: 0;]
+		call WlStack.Check;
+		u32 k: t.kind;
+		if k is JsN.IDENT
+			ptr<JsNameLink> l: seen_names;
+			while l is not 0
+				if l.name is t.name
+					call FailAt: 'Duplicate parameter name not allowed in this context' t.line;
+				;;
+				l is l.next;
+			;;
+			ptr<JsNameLink> made: (arena.Alloc: sizeof JsNameLink) as ptr<JsNameLink>;
+			made.name is t.name;
+			made.next is seen_names;
+			seen_names is made;
+			return;
+		;;
+		if k is JsN.DEFAULT or k is JsN.REST
+			call CollectNames: t.a;
+			return;
+		;;
+		if k is JsN.PROP
+			call CollectNames: t.b;
+			return;
+		;;
+		if k is JsN.ARRPAT or k is JsN.OBJPAT
+			ptr<JsNode> c: t.a;
+			while c is not 0
+				if c.kind is not JsN.HOLE
+					call CollectNames: c;
+				;;
+				c is c.next;
+			;;
+		;;
+	[end]
+
+	# ---- arrows ----
+
+	# name => ...  (at the word)
+	[ArrowFromName: u32 flags: 0;]
+		ptr<JsNode> id: (Node: JsN.IDENT);
+		u32 start: JsLex.tok.start;
+		u32 start_line: JsLex.tok.line;
+		ptr<JsPCtx> saved: ctx;
+		if (flags & JsN.FN_ASYNC) is not 0
+			# `await` can't name an async arrow's parameter
+			if JsLex.tok.text is JsRt.A.await
+				call Fail: 'await is not allowed here';
+			;;
+		;;
+		id.name is (BindingName);
+		call Done: id;
+	[end: (ArrowFromList: id start start_line flags)]
+
+	# A list of expressions that are in fact parameters. JsLex.tok is the =>.
+	[ArrowFromList: ptr<JsNode> list: 0; u32 start: 0; u32 start_line: 0; u32 flags: 0;]
+		call WlStack.Check;
+		if JsLex.tok.nl_before
+			call Fail: 'Unexpected token =>';
+		;;
+		ptr<JsNode> f: (Node: JsN.FUNC);
+		f.pos is start;
+		f.line is start_line;
+		f.flags is flags | JsN.FN_ARROW | JsN.FN_SIMPLE;
+		# rewrite the list in place
+		ptr<JsNode> c: list;
+		ptr<JsNode> prev: 0;
+		while c is not 0
+			ptr<JsNode> following: c.next;
+			ptr<JsNode> made: c;
+			if c.kind is not JsN.REST
+				if c.kind is JsN.ARRAY or c.kind is JsN.OBJECT
+					cover_err_msg is 0;
+				;;
+				made is (ToPattern: c true);
+				call CheckBindingOnly: made;
+			;;
+			if made.kind is not JsN.IDENT
+				f.flags is f.flags & (0xFFFFFFFF - JsN.FN_SIMPLE);
+			;;
+			made.next is following;
+			if prev is 0
+				f.a is made;
+			;;
+			else
+				prev.next is made;
+			;;
+			prev is made;
+			c is following;
+		;;
+		call Next;
+		bln saved_strict: JsLex.strict;
+		bln saved_in: no_in;
+		ptr<JsPCtx> outer: ctx;
+		ptr<u8> saved_cover: cover_err_msg;
+		cover_err_msg is 0;
+		call EnterCtx: f.flags;
+		f.d is 0;
+		if JsLex.tok.kind is JsT.LBRACE
+			no_in is false;
+			call Next;
+			f.b is (BodyStatements: f);
+			if JsLex.tok.kind is not JsT.RBRACE
+				call Unexpected;
+			;;
+			if JsLex.strict
+				f.flags is f.flags | JsN.FN_STRICT;
+			;;
+			call CheckParams: f;
+			JsLex.strict is saved_strict;
+			call Next;
+		;;
+		else
+			f.flags is f.flags | JsN.FN_EXPR_BODY;
+			ptr<JsNode> r: (Node: JsN.RETURN);
+			r.a is (AssignNoCover);
+			call Done: r;
+			f.b is r;
+			if JsLex.strict
+				f.flags is f.flags | JsN.FN_STRICT;
+			;;
+			call CheckParams: f;
+		;;
+		f.d is ctx.vars;
+		ctx is outer;
+		JsLex.strict is saved_strict;
+		no_in is saved_in;
+		cover_err_msg is saved_cover;
+	[end: (Done: f)]
+
+	# a pattern that came from an expression can't have had member targets, as parameters
+	[CheckBindingOnly: ptr<JsNode> t: 0;]
+		call WlStack.Check;
+		u32 k: t.kind;
+		if k is JsN.MEMBER or k is JsN.INDEX or k is JsN.PRIVATE
+			call FailAt: 'Invalid destructuring assignment target' t.line;
+		;;
+		if k is JsN.DEFAULT or k is JsN.REST
+			call CheckBindingOnly: t.a;
+			return;
+		;;
+		if k is JsN.PROP
+			call CheckBindingOnly: t.b;
+			return;
+		;;
+		if k is JsN.ARRPAT or k is JsN.OBJPAT
+			ptr<JsNode> c: t.a;
+			while c is not 0
+				if c.kind is not JsN.HOLE
+					call CheckBindingOnly: c;
+				;;
+				c is c.next;
+			;;
+		;;
+	[end]
+
+	[TwoAheadIsArrow]
+		u32 saved_pos: JsLex.pos;
+		u32 saved_line: JsLex.line;
+		JsTok saved;
+		saved is JsLex.tok;
+		call JsLex.Next;
+		call JsLex.Next;
+		bln result: JsLex.tok.kind is JsT.ARROW;
+		JsLex.tok is saved;
+		JsLex.pos is saved_pos;
+		JsLex.line is saved_line;
+	[end: result]
+
+	# At the word async. An arrow if `async x =>` or `async (...) =>`, which is returned; otherwise 0
+	# and nothing has moved, unless it was a call, which comes back whole.
+	[AsyncArrowStart]
+		u32 p: (JsLex.Peek);
+		if JsLex.peeked.nl_before return 0 as ptr<JsNode>;
+		if p is JsT.IDENT
+			# async x => ... (and otherwise async is just a name)
+			if not (TwoAheadIsArrow)
+				return 0;
+			;;
+			u32 start: JsLex.tok.start;
+			u32 start_line: JsLex.tok.line;
+			call Next;
+			ptr<JsPCtx> saved: ctx;
+			if JsLex.tok.text is JsRt.A.await
+				call Fail: 'await is not allowed here';
+			;;
+			ptr<JsNode> id: (Node: JsN.IDENT);
+			id.name is (BindingName);
+			call Done: id;
+			if JsLex.tok.kind is not JsT.ARROW
+				call Unexpected;
+			;;
+			return (ArrowFromList: id start start_line JsN.FN_ASYNC);
+		;;
+		if p is JsT.ARROW
+			# async => ... has a parameter called async
+			return (ArrowFromName: 0);
+		;;
+		if p is not JsT.LPAREN return 0 as ptr<JsNode>;
+		# async ( ... : either a call to something called async, or an arrow's parameters
+		ptr<JsNode> callee: (Node: JsN.IDENT);
+		callee.name is JsLex.tok.text;
+		u32 start2: JsLex.tok.start;
+		u32 line2: JsLex.tok.line;
+		call Next;
+		call Done: callee;
+		ptr<u8> outer_msg: cover_err_msg;
+		u32 outer_line: cover_err_line;
+		cover_err_msg is 0;
+		bln saved_ya: arg_yield_await;
+		arg_yield_await is false;
+		call Next;
+		bln saved_in: no_in;
+		no_in is false;
+		ptr<JsNode> head: 0;
+		ptr<JsNode> tail: 0;
+		bln has_rest_like: false;
+		bln saved_await: saw_await_name;
+		bln comma_after_rest: false;
+		saw_await_name is false;
+		while JsLex.tok.kind is not JsT.RPAREN
+			ptr<JsNode> e: 0;
+			if JsLex.tok.kind is JsT.ELLIPSIS
+				has_rest_like is true;
+				e is (Node: JsN.SPREAD);
+				call Next;
+				e.a is (Assign);
+				call Done: e;
+			;;
+			else
+				e is (Assign);
+			;;
+			if head is 0
+				head is e;
+			;;
+			else
+				tail.next is e;
+			;;
+			tail is e;
+			if JsLex.tok.kind is not JsT.RPAREN
+				call Expect: JsT.COMMA;
+				if JsLex.tok.kind is JsT.RPAREN and e.kind is JsN.SPREAD
+					comma_after_rest is true;
+				;;
+			;;
+		;;
+		call Next;
+		no_in is saved_in;
+		bln await_in_list: saw_await_name;
+		saw_await_name is saved_await or await_in_list;
+		if JsLex.tok.kind is JsT.ARROW and not JsLex.tok.nl_before
+			if arg_yield_await or await_in_list
+				call Fail: 'Yield or await expression not allowed in formal parameter';
+			;;
+			if comma_after_rest
+				call Fail: 'Rest parameter must be last formal parameter';
+			;;
+			arg_yield_await is saved_ya;
+			cover_err_msg is outer_msg;
+			cover_err_line is outer_line;
+			# spreads become rests; `await` in the list is an error
+			ptr<JsNode> w: head;
+			while w is not 0
+				if w.kind is JsN.SPREAD
+					if w.next is not 0 or w.a.kind is JsN.ASSIGN
+						call Fail: 'Rest parameter must be last formal parameter';
+					;;
+					w.kind is JsN.REST as u16;
+					w.a is (ToPattern: w.a true);
+				;;
+				call CheckNoAwaitName: w;
+				w is w.next;
+			;;
+			return (ArrowFromList: head start2 line2 JsN.FN_ASYNC);
+		;;
+		arg_yield_await is arg_yield_await or saved_ya;
+		call CheckCover;
+		cover_err_msg is outer_msg;
+		cover_err_line is outer_line;
+		ptr<JsNode> c: (Node: JsN.CALL);
+		c.pos is start2;
+		c.line is line2;
+		c.a is callee;
+		c.b is head;
+		call Done: c;
+		# it's a call: the rest of the expression goes on from here
+		ptr<JsNode> more: (CallTail: c true);
+	[end: (FinishFrom: more)]
+
+	[CheckNoAwaitName: ptr<JsNode> t: 0;]
+		if t.kind is JsN.IDENT and t.name is JsRt.A.await
+			call FailAt: 'await is not allowed here' t.line;
+		;;
+		if t.kind is JsN.ASSIGN or t.kind is JsN.DEFAULT or t.kind is JsN.REST
+			call CheckNoAwaitName: t.a;
+		;;
+	[end]
+
+	# Having read a whole left-hand side by another road, the operators after it. (Only an async(...)
+	# call comes here, so this is rare.)
+	[FinishFrom: ptr<JsNode> left: 0;]
+		while true
+			u32 k: JsLex.tok.kind;
+			u32 p: (Prec: k);
+			if p is 0 break;
+			if k is JsT.EXP
+				p is p - 1;
+			;;
+			ptr<JsNode> n: (Node: JsN.BINARY);
+			n.pos is left.pos;
+			n.op is k as u16;
+			call Next;
+			n.a is left;
+			n.b is (Binary: p);
+			if k is JsT.LAND or k is JsT.LOR or k is JsT.NULLISH
+				n.kind is JsN.LOGICAL as u16;
+			;;
+			left is (Done: n);
+		;;
+		if JsLex.tok.kind is JsT.QUESTION
+			ptr<JsNode> c: (Node: JsN.COND);
+			c.pos is left.pos;
+			call Next;
+			c.a is left;
+			c.b is (AssignNoCover);
+			call Expect: JsT.COLON;
+			c.c is (AssignNoCover);
+			return (Done: c);
+		;;
+		u32 op: JsLex.tok.kind;
+		if op >= JsT.ASSIGN and op <= JsT.NULLISH_A
+			call CheckSimpleTarget: left;
+			ptr<JsNode> a: (Node: JsN.ASSIGN);
+			a.pos is left.pos;
+			a.op is op as u16;
+			call Next;
+			a.a is left;
+			a.b is (AssignNoCover);
+			return (Done: a);
+		;;
+	[end: left]
+
+	# ---- naming anonymous functions by what they're assigned to ----
+
+	[IsAnonymousFn: ptr<JsNode> v: 0;]
+		if (v.flags & JsN.X_PARENS) is not 0 and v.kind is not JsN.FUNC and v.kind is not JsN.CLASS return false;
+		if v.kind is JsN.FUNC return v.name is 0;
+		if v.kind is JsN.CLASS return v.name is 0;
+	[end: false]
+
+	[NameAnonymous: ptr<JsNode> v: 0; ptr<JsNode> target: 0;]
+		if target.kind is JsN.IDENT and (IsAnonymousFn: v)
+			v.raw is target.name;
+		;;
+	[end]
+
+	# key: value, or a method: the value's name comes from a key known now; a computed one's set when it runs
+	[NameFromKey: ptr<JsNode> p: 0;]
+		if (p.flags & JsN.X_COMPUTED) is not 0 or p.b is 0 return;
+		ptr<JsNode> v: p.b;
+		if not (IsAnonymousFn: v) return;
+		ptr<JsStr> name: p.a.name;
+		if p.a.kind is JsN.NUM
+			name is (JsStrs.InternStr: (JsOps.NumToStr: p.a.num));
+		;;
+		if p.op is JsN.P_GET as u16 or p.op is JsN.P_SET as u16
+			WlBuf b;
+			if p.op is JsN.P_GET as u16
+				call b.AddZ: 'get ';
+			;;
+			else
+				call b.AddZ: 'set ';
+			;;
+			call JsStrs.Flat: name;
+			call b.AddN: name.data name.bytes;
+			name is (JsStrs.Intern: b.data b.len);
+			call b.Free;
+		;;
+		v.raw is name;
+	[end]
+
+	# ---- classes ----
+
+	[ClassDecl]
+		ptr<JsNode> d: (Node: JsN.CLASSDECL);
+		d.a is (Class: true);
+	[end: (Done: d)]
+
+	[Class: bln is_decl: false;]
+		call WlStack.Check;
+		ptr<JsNode> n: (Node: JsN.CLASS);
+		bln saved_strict: JsLex.strict;
+		JsLex.strict is true;
+		call Next;
+		if JsLex.tok.kind is JsT.IDENT and not (IsWord: JsRt.A.let)
+			n.name is (BindingName);
+			call CheckNotEvalArgs: n.name;
+		;;
+		elif is_decl
+			call Unexpected;
+		;;
+		if JsLex.tok.kind is JsT.K_EXTENDS
+			call Next;
+			# a left-hand side expression
+			n.a is (LeftHandSide);
+			if (IsBareArrow: n.a)
+				call Fail: 'Malformed arrow function parameter list';
+			;;
+		;;
+		call Expect: JsT.LBRACE;
+		bln saved_in: no_in;
+		no_in is false;
+		ptr<JsNode> tail: 0;
+		while JsLex.tok.kind is not JsT.RBRACE
+			if (Eat: JsT.SEMI)
+				continue;
+			;;
+			ptr<JsNode> m: (ClassMember: n);
+			if m is 0
+				continue;
+			;;
+			if tail is 0
+				n.b is m;
+			;;
+			else
+				tail.next is m;
+			;;
+			tail is m;
+		;;
+		no_in is saved_in;
+		call CheckPrivateDuplicates: n;
+		# the } : what follows is outside the class's strictness
+		JsLex.strict is saved_strict;
+		call Next;
+		call Done: n;
+		if n.c is 0
+			# the default constructor
+			ptr<JsNode> f: (Node: JsN.FUNC);
+			f.flags is JsN.FN_CTOR | JsN.FN_STRICT | JsN.FN_DEFAULT | JsN.FN_SIMPLE;
+			if n.a is not 0
+				f.flags is f.flags | JsN.FN_DERIVED;
+			;;
+			f.line is n.line;
+			n.c is f;
+		;;
+		n.c.pos is n.pos;
+		n.c.stop is n.stop;
+		n.c.raw is n.name;
+		if n.raw is not 0
+			n.c.raw is n.raw;
+		;;
+		# made-up functions for what runs per instance, and once for the class
+		ptr<JsNode> scan: n.b;
+		while scan is not 0
+			bln stat: (scan.flags & JsN.X_STATIC) is not 0;
+			bln is_field: scan.op is JsN.P_FIELD as u16;
+			bln is_block: scan.op is JsN.P_BLOCK as u16;
+			bln private_method: (scan.flags & JsN.X_PRIVATE) is not 0 and not is_field;
+			if stat and (is_field or is_block) and n.e is 0
+				n.e is (FieldsFn: n JsN.FN_STATIC_INIT);
+			;;
+			if not stat and (is_field or private_method) and n.d is 0
+				n.d is (FieldsFn: n 0);
+			;;
+			scan is scan.next;
+		;;
+	[end: n]
+
+	[FieldsFn: ptr<JsNode> cl: 0; u32 extra: 0;]
+		ptr<JsNode> f: (Node: JsN.FUNC);
+		f.flags is JsN.FN_METHOD | JsN.FN_FIELDS | JsN.FN_STRICT | JsN.FN_SIMPLE | extra;
+		f.b is cl;
+		f.line is cl.line;
+	[end: f]
+
+	[ClassMember: ptr<JsNode> cl: 0;]
+		ptr<JsNode> p: (Node: JsN.PROP);
+		u32 fn_flags: JsN.FN_METHOD;
+		u32 kind: JsN.P_METHOD;
+		bln is_modifier_kind: false;
+		u32 start: JsLex.tok.start;
+		if (IsWord: JsRt.A.static)
+			u32 pk: (JsLex.Peek);
+			if pk is JsT.LBRACE
+				call Next;
+				return (StaticBlock: p);
+			;;
+			if pk is not JsT.LPAREN and pk is not JsT.ASSIGN and pk is not JsT.SEMI and pk is not JsT.RBRACE
+				if not (pk is JsT.EOF)
+					call Next;
+					p.flags is p.flags | JsN.X_STATIC;
+				;;
+			;;
+		;;
+		bln is_word: JsLex.tok.kind is JsT.IDENT and not JsLex.tok.escaped;
+		ptr<JsStr> word: JsLex.tok.text;
+		if is_word
+			u32 next_kind: (JsLex.Peek);
+			bln modifier: next_kind is not JsT.LPAREN and next_kind is not JsT.ASSIGN and next_kind is not JsT.SEMI and next_kind is not JsT.RBRACE and next_kind is not JsT.EOF;
+			if word is JsRt.A.get and modifier and not JsLex.peeked.nl_before
+				kind is JsN.P_GET;
+				fn_flags is fn_flags | JsN.FN_GETTER;
+				call Next;
+			;;
+			elif word is JsRt.A.set and modifier and not JsLex.peeked.nl_before
+				kind is JsN.P_SET;
+				fn_flags is fn_flags | JsN.FN_SETTER;
+				call Next;
+			;;
+			elif word is JsRt.A.async and modifier and not JsLex.peeked.nl_before
+				fn_flags is fn_flags | JsN.FN_ASYNC;
+				call Next;
+			;;
+		;;
+		if JsLex.tok.kind is JsT.MUL
+			if kind is not JsN.P_METHOD
+				call Unexpected;
+			;;
+			fn_flags is fn_flags | JsN.FN_GEN;
+			call Next;
+		;;
+		bln plain_special: (fn_flags & (JsN.FN_GEN | JsN.FN_ASYNC)) is not 0 or kind is not JsN.P_METHOD;
+		if JsLex.tok.kind is JsT.PRIVATE
+			if JsLex.tok.text.bytes is 11 and (JsStrs.EqZ: JsLex.tok.text 'constructor')
+				call Fail: 'Classes may not have a private field named #constructor';
+			;;
+			ptr<JsNode> key: (Node: JsN.STR);
+			key.name is JsLex.tok.text;
+			p.a is key;
+			p.flags is p.flags | JsN.X_PRIVATE;
+			call Next;
+		;;
+		else
+			call PropertyName: p;
+		;;
+		bln computed: (p.flags & JsN.X_COMPUTED) is not 0;
+		bln is_private: (p.flags & JsN.X_PRIVATE) is not 0;
+		bln named_ctor: not computed and not is_private and p.a.kind is JsN.STR and p.a.name is JsRt.A.constructor;
+		bln named_proto: not computed and not is_private and p.a.kind is JsN.STR and p.a.name is JsRt.A.prototype;
+		bln is_static: (p.flags & JsN.X_STATIC) is not 0;
+		if JsLex.tok.kind is not JsT.LPAREN
+			# a field
+			if kind is not JsN.P_METHOD or (fn_flags & (JsN.FN_GEN | JsN.FN_ASYNC)) is not 0
+				call Unexpected;
+			;;
+			if named_ctor or (is_static and named_proto)
+				call Fail: 'Classes may not have a field named constructor or prototype';
+			;;
+			p.op is JsN.P_FIELD as u16;
+			if (Eat: JsT.ASSIGN)
+				p.b is (FieldInit);
+				if not computed
+					call NameFromKeyFn: p;
+				;;
+			;;
+			call Semicolon;
+			return (Done: p);
+		;;
+		if is_static and named_proto
+			call Fail: 'Classes may not have a static property named prototype';
+		;;
+		if named_ctor and not is_static
+			if plain_special
+				call Fail: 'Class constructor may not be an accessor or a generator';
+			;;
+			if cl.c is not 0
+				call Fail: 'A class may only have one constructor';
+			;;
+			fn_flags is JsN.FN_METHOD | JsN.FN_CTOR;
+			if cl.a is not 0
+				fn_flags is fn_flags | JsN.FN_DERIVED;
+			;;
+			ptr<JsNode> ctor: (FunctionRest: fn_flags start 0);
+			ctor.flags is ctor.flags & (0xFFFFFFFF - JsN.FN_METHOD);
+			cl.c is ctor;
+			return 0;
+		;;
+		p.op is kind as u16;
+		p.b is (FunctionRest: fn_flags start 0);
+		call NameFromKeyFn: p;
+	[end: (Done: p)]
+
+	[NameFromKeyFn: ptr<JsNode> p: 0;]
+		if (p.flags & JsN.X_PRIVATE) is 0
+			call NameFromKey: p;
+			return;
+		;;
+		ptr<JsNode> v: p.b;
+		if (IsAnonymousFn: v)
+			WlBuf b;
+			if p.op is JsN.P_GET as u16
+				call b.AddZ: 'get ';
+			;;
+			elif p.op is JsN.P_SET as u16
+				call b.AddZ: 'set ';
+			;;
+			call b.Add: '#';
+			call b.AddN: p.a.name.data p.a.name.bytes;
+			v.raw is (JsStrs.Intern: b.data b.len);
+			call b.Free;
+		;;
+	[end]
+
+	[FieldInit]
+		# as if in a method of its own, for super and `arguments`
+		ptr<JsPCtx> outer: ctx;
+		call EnterCtx: JsN.FN_METHOD;
+		ctx.in_field is true;
+		ptr<JsNode> e: (AssignNoCover);
+		ctx is outer;
+	[end: e]
+
+	[StaticBlock: ptr<JsNode> p: 0;]
+		p.op is JsN.P_BLOCK as u16;
+		p.flags is p.flags | JsN.X_STATIC;
+		ptr<JsNode> f: (Node: JsN.FUNC);
+		f.flags is JsN.FN_METHOD | JsN.FN_STRICT | JsN.FN_SIMPLE;
+		ptr<JsPCtx> outer: ctx;
+		call EnterCtx: JsN.FN_METHOD;
+		ctx.in_field is true;
+		ctx.in_static_block is true;
+		ctx.is_function is false;
+		call Next;
+		f.b is (StatementList);
+		f.d is ctx.vars;
+		ctx is outer;
+		call Next;
+		p.b is (Done: f);
+	[end: (Done: p)]
+
+	# #x may be declared once, or as one getter and one setter
+	[CheckPrivateDuplicates: ptr<JsNode> cl: 0;]
+		ptr<JsNode> a: cl.b;
+		while a is not 0
+			if (a.flags & JsN.X_PRIVATE) is not 0
+				ptr<JsNode> b: a.next;
+				while b is not 0
+					if (b.flags & JsN.X_PRIVATE) is not 0 and b.a.name is a.a.name
+						bln pair: (a.op is JsN.P_GET as u16 and b.op is JsN.P_SET as u16) or (a.op is JsN.P_SET as u16 and b.op is JsN.P_GET as u16);
+						if not pair or (a.flags & JsN.X_STATIC) is not (b.flags & JsN.X_STATIC)
+							call FailAt: 'Identifier has already been declared' b.line;
+						;;
+					;;
+					b is b.next;
+				;;
+			;;
+			a is a.next;
+		;;
+	[end]
+}
+
+struct.JsNameLink
+{
+	ptr<JsNameLink> next;
+	ptr<JsStr> name;
+}

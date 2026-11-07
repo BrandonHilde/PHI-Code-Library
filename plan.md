@@ -4,7 +4,9 @@ A collection of libraries written in [PHI](../PHI), each of which builds to a `.
 program can include with a single `use`. The first three are a **Web Library**, an **Image Library**
 and a **Font Library**, and more will follow.
 
-Written 2026-11-06. Status: Phase 0 is done, and Phase 1 is next. No library has been built here yet.
+Written 2026-11-06. Status (2026-11-07): Phase 0 is done, and Phase 1's move is done but not
+committed. weblib builds here, and all its tests pass from here (38 of 38 runs as Linux programs,
+and the compiled test). Phase 2 can start.
 
 | Library | File | What it does | Starts from |
 |---|---|---|---|
@@ -145,26 +147,43 @@ hostile input, code that can go anywhere, the two kinds of test, what counts as 
 
 **Done when:** `.\build.ps1 -Test` builds and tests a throwaway chain from a clean checkout.
 **Done 2026-11-06:** all 7 checks in `tools/check_build.ps1` went the right way.
+**On Linux, 2026-11-07:** all 7 again, under `pwsh` 7.6 on Fedora 42, with PHI on .NET 10. `build.ps1`
+and `check_build.ps1` now find `phi` without `.exe`, turn `libraries.psd1`'s `\` paths into `/` for
+`phi`, and run the PowerShell they're in rather than `powershell`.
 
 ### Phase 1: Bring in the Web Library
 
 Copy, don't move, and leave `C:\labs\AI\browse` alone until the new copy has proved itself.
 
+`browse` turned up on the Linux computer as `../browse` on 2026-11-07, and the move was done from there.
+It was removed from this computer afterwards; the owner keeps a backup of it on a drive.
+
 **The move:**
-- [ ] Run weblib's tests in `browse` on the rebuilt compiler, and write down the results. PHI has
+- [x] Run weblib's tests in `browse` on the rebuilt compiler, and write down the results. PHI has
       changed since they last ran (text too long for a `str` is now an error, for one), so any new
-      failures need to be known about before the move, not confused with it afterwards
-- [ ] Check that nothing being brought in was copied from outside GPL code, and list what came
-      from elsewhere and its license (entity and Unicode tables, test suites)
-- [ ] Copy `weblib/` to `libs/web/`, along with its docs and the tools it needs. The test browser stays
-      out, as its own project
+      failures need to be known about before the move, not confused with it afterwards.
+      **2026-11-07, on Linux, PHI on .NET 10, from a copy of `browse` (so it was left untouched):
+      37 of 38 runs passed in 23 minutes.** These were the first runs as Linux programs (the old
+      results are Windows'). The one failure, `test_js_limits (linux)`, is the 32-bit check that the
+      heap running out is a `RangeError`: it assumes the heap stops at 128 MB, as a 32-bit Windows
+      program's does, but a 32-bit Linux program's grows with `brk` and has no cap, so filling it
+      took longer than the test's 600 s (see [phi-notes.md](docs/phi-notes.md)). PHI now lets a
+      program set its heap's limit, 128 MB by default in 32-bit code, and the test passes
+- [x] Check that nothing being brought in was copied from outside GPL code, and list what came
+      from elsewhere and its license: [libs/web/THIRD_PARTY.md](libs/web/THIRD_PARTY.md). WPT's and
+      Unicode's license texts weren't beside their data, and now are
+- [x] Copy `weblib/` to `libs/web/`, along with its docs and the tools it needs (in `tools/web/`). The
+      test browser stays out, as its own project, and so does `browser_roots.py`, which is its
 - [ ] Commit the small suites (html5lib, CSS parsing, JS fixtures, about 5 MB), with their licenses
-- [ ] Leave out test262 (217 MB): a script in `tools/` fetches it at a pinned commit, and the runner
-      skips clearly when it's absent
-- [ ] Fix paths that assumed the old layout (the Python runners)
-- [ ] Add `weblib` to `libraries.psd1`
-- [ ] Give weblib's long tests the time they need (`-Timeout`, or the tests' own time comment)
-- [ ] Add the compiled-library tests in `tests/use/`
+- [x] Leave out test262 (217 MB): `tools/web/fetch_test262.py` fetches it at commit `d115437`, and
+      `js_test262.py` says so when it's absent. `test_js262`'s self-test needed three of its harness
+      files, which are kept with the self-test's own fixtures
+- [x] Fix paths that assumed the old layout (the Python runners and generators, the README, DESIGN.md)
+- [x] Add `weblib` to `libraries.psd1`
+- [x] Give weblib's long tests the time they need: the tests' own time comments cover the four long
+      ones, and `.\build.ps1 web -Test -Timeout 600` gives the rest what the README always used
+- [x] Add the compiled-library tests in `tests/use/`: `test_weblib` parses, serializes and runs a
+      script through `weblib.philib` alone
 
 **Tidying, in commits of its own after the move passes:**
 - [ ] Update `DESIGN.md`'s trap list. PHI has fixed several since it was written, including 5
@@ -173,6 +192,10 @@ Copy, don't move, and leave `C:\labs\AI\browse` alone until the new copy has pro
 
 **Done when:** all 19 test programs pass from the new location under plain `phi test`, and the suite
 results match the baseline below (or differences are explained).
+**2026-11-07:** from `libs/web`, through `.\build.ps1 web -Test -Timeout 600` in 24 minutes, the same 37
+of 38 as the baseline, with the same one failure, and `tests/use` 2 of 2. All 19 pass on `linux64`.
+Once PHI's heap limit was the program's to set (see the first item above): 38 of 38, in 4 minutes.
+The outside suites (the table below) haven't been rerun here yet.
 
 **Then, bringing weblib in line with [the conventions](docs/conventions.md)** (this doesn't hold up the
 phases after it):
@@ -322,8 +345,10 @@ This repo doesn't change the PHI compiler, as weblib's design already says. Requ
 
 ## Decisions needed
 
-**`C:\labs\AI\browse` after Phase 1 (deferred).** The owner will deal with it later. Nothing in this plan
-deletes or changes it. It isn't in git, so a deletion would be permanent.
+**`NOTICE` and weblib's tables.** `html/entities.phi` (from the HTML Standard's list, CC BY 4.0) and
+`js/unicode.phi` and `js/casemap.phi` (from Unicode's data, Unicode License v3) are built into every
+program that uses weblib. Whether `NOTICE` should name them is the owner's call
+([libs/web/THIRD_PARTY.md](libs/web/THIRD_PARTY.md) lists them).
 
 ## Decisions made (2026-11-06)
 
@@ -335,3 +360,5 @@ deletes or changes it. It isn't in git, so a deletion would be permanent.
 | Order | Image before Font |
 | Scope | This repo only makes `.philib` files for other PHI projects to use, with no applications in it |
 | Targets | Not handled here. PHI's compiler handles them and the project using a library chooses, so this repo passes no `--target` and writes nothing for a particular system. It doesn't use PHI OS |
+| `browse` after the move (2026-11-07) | Not needed here: the owner keeps it backed up on a drive, and the copy on the Linux computer was removed |
+| A 32-bit program's heap (2026-11-07) | The program's to decide (`Heap.most_bytes` in PHI), 128 MB by default in 32-bit code on every system |

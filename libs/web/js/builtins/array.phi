@@ -1,0 +1,326 @@
+# Array, the minimum to run and test the engine; more can be added with Js.DefineNative on
+# JsRt.P.array. The array iterators live here too.
+
+phi.JsArrayBuiltins:Library
+{
+	[Init]
+		ptr<JsObj> proto: (JsObjs.Alloc: sizeof JsObj JsGc.K_ARRAY JsRt.P.object);
+		proto.flags is JsObjs.F_SPECIAL as u16;
+		JsRt.P.array is proto;
+		ptr<JsNativeFn> c: (Js.DefineClass: 'Array' addr Construct 1 proto);
+		ptr<JsObj> co: c as ptr<JsObj>;
+		call Js.DefineNative: co 'isArray' addr IsArray 1;
+		call Js.DefineNative: proto 'push' addr Push 1;
+		call Js.DefineNative: proto 'pop' addr Pop 0;
+		call Js.DefineNative: proto 'join' addr Join 1;
+		call Js.DefineNative: proto 'slice' addr Slice 2;
+		call Js.DefineNative: proto 'indexOf' addr IndexOf 1;
+		call Js.DefineNative: proto 'toString' addr ToString 0;
+		ptr<JsNativeFn> values: (Js.DefineNative: proto 'values' addr Values 0);
+		JsRt.P.array_values is values as ptr<JsObj>;
+		call JsObjs.DefineValue: proto JsRt.S.iterator as ptr<u8> (JsV.Obj: values as ptr<JsObj>) JsObjs.WC;
+		call Js.DefineNative: proto 'keys' addr KeysFn 0;
+		call Js.DefineNative: proto 'entries' addr Entries 0;
+		# %ArrayIteratorPrototype%
+		ptr<JsObj> ip: (JsObjs.NewWithProto: JsRt.P.iterator);
+		JsRt.P.array_iterator is ip;
+		ptr<JsNativeFn> nx: (Js.DefineNative: ip 'next' addr IterNext 0);
+		JsRt.P.array_iter_next is nx as ptr<JsObj>;
+		call JsObjs.DefineValue: ip JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'Array Iterator') JsObjs.C;
+		if JsBuiltins.array_iter_class is 0
+			JsBuiltins.array_iter_class is (JsObjs.NewClass: 'Array Iterator');
+			JsBuiltins.array_iter_class.trace is addr TraceIter;
+			JsBuiltins.array_iter_class.finalize is addr FreeIter;
+		;;
+		# species, for those who look
+		call Js.DefineSymbolGetter: co JsRt.S.species '[Symbol.species]' addr Species 0;
+	[end]
+
+	[Species: ptr<u64> args: 0; int argc: 0;]
+	[end: args:(-1)]
+
+	[TraceIter: ptr<JsObj> o: 0;]
+		ptr<JsArrayIter> ai: o.data as ptr<JsArrayIter>;
+		call JsGc.Mark: ai.target;
+	[end]
+
+	[FreeIter: ptr<JsObj> o: 0;]
+		free o.data;
+	[end]
+
+	# new Array(n) or new Array(a, b ...), new.target's prototype if there is one
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		ptr<JsObj> a: (JsObjs.NewArray: 0);
+		if (JsV.IsObj: nt)
+			a.proto is (JsOps.ProtoFromCtor: nt JsRt.P.array);
+		;;
+		if argc is 1 and (JsV.IsNum: args:0)
+			f64 x: (JsV.AsNum: args:0);
+			u32 n: (JsOps.ToUint32Num: x);
+			if (n as f64) is not x
+				call JsErr.Range: 'Invalid array length';
+			;;
+			a.length is n;
+			return (JsV.Obj: a);
+		;;
+		while int i: 0; i < argc; i++;
+			call JsObjs.ArrayPush: a args:i;
+		;;
+	[end: (JsV.Obj: a)]
+
+	[IsArray: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Bool: (JsOps.IsArray: (Js.Arg: args argc 0)))]
+
+	# the length of any array-like
+	[LengthOf: ptr<JsObj> o: 0;]
+		if o.kind is JsGc.K_ARRAY
+			return o.length as f64;
+		;;
+	[end: (JsOps.ToLength: (JsObjs.GetAtom: o JsRt.A.length as ptr<u8> (JsV.Obj: o)))]
+
+	[SetLength: ptr<JsObj> o: 0; f64 n: 0.0;]
+		if not (JsObjs.Set: o (JsV.Str: JsRt.A.length) (JsV.Num: n) (JsV.Obj: o))
+			call JsErr.Type: 'Cannot assign to read only property length';
+		;;
+	[end]
+
+	# a key value for an index that may be past what a u32 holds
+	[IndexKey: f64 i: 0.0;]
+		if i < 4294967295.0
+			return JsV.INT_BASE | (i as u32);
+		;;
+	[end: (JsObjs.KeyOfStr: (JsOps.NumToStr: i))]
+
+	[Push: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		# the plain case
+		if o.kind is JsGc.K_ARRAY and (o.flags & (JsObjs.F_NOEXT | JsObjs.F_LEN_RO | JsObjs.F_SPARSE)) is 0 and o.length is o.elem_len and (JsVm.ProtosPlain: o)
+			while int i: 0; i < argc; i++;
+				call JsObjs.ArrayPush: o args:i;
+			;;
+			return (JsV.Uint: o.length);
+		;;
+		f64 len: (LengthOf: o);
+		if len + (argc as f64) > 9007199254740991.0
+			call JsErr.Type: 'Pushing too many elements';
+		;;
+		while int j: 0; j < argc; j++;
+			if not (JsObjs.Set: o (IndexKey: len) args:j (JsV.Obj: o))
+				call JsErr.Type: 'Cannot add property: object is not extensible';
+			;;
+			len is len + 1.0;
+		;;
+		call SetLength: o len;
+	[end: (JsV.Num: len)]
+
+	[Pop: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		f64 len: (LengthOf: o);
+		if len is 0.0
+			call SetLength: o 0.0;
+			return JsV.UNDEF;
+		;;
+		f64 last: len - 1.0;
+		u64 k: (IndexKey: last);
+		u64 v: (JsObjs.Get: o k (JsV.Obj: o));
+		if not (JsObjs.Delete: o k)
+			call JsErr.Type: 'Cannot delete property';
+		;;
+		call SetLength: o last;
+	[end: v]
+
+	[Join: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		# an array that holds itself: the inner one comes out empty, as in browsers
+		while u32 w: 0; w < join_depth; w++;
+			if join_list:w is o
+				return (JsV.Str: JsRt.blank);
+			;;
+		;;
+		bln tracked: join_depth < 256;
+		if tracked
+			join_list:join_depth is o;
+			join_depth++;
+		;;
+		u32 depth_here: join_depth;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		u64 result: 0;
+		if call result is JoinBody: o args argc throws err
+			if tracked
+				join_depth is depth_here - 1;
+			;;
+			call Js.Rethrow: addr t err;
+		;;
+		if tracked
+			join_depth is depth_here - 1;
+		;;
+	[end: result]
+
+	ptr<JsObj> join_list[256];
+	u32 join_depth: 0;
+
+	[JoinBody: ptr<JsObj> o: 0; ptr<u64> args: 0; int argc: 0;]
+		f64 len: (LengthOf: o);
+		u64 sepv: (Js.Arg: args argc 0);
+		WlBuf sep;
+		if sepv is JsV.UNDEF
+			call sep.Add: ',';
+		;;
+		else
+			call Js.TextOf: sepv addr sep;
+		;;
+		WlBuf output;
+		call WlStack.Check;
+		f64 i: 0.0;
+		while i < len
+			call Js.Checkpoint;
+			if i > 0.0 and sep.len > 0
+				call output.AddN: sep.data sep.len;
+			;;
+			u64 e: (JsObjs.Get: o (IndexKey: i) (JsV.Obj: o));
+			if e is not JsV.UNDEF and e is not JsV.NULL
+				call Js.TextOf: e addr output;
+			;;
+			i is i + 1.0;
+		;;
+		u64 r: (JsV.Str: (JsStrs.New: output.data output.len));
+		call output.Free;
+		call sep.Free;
+	[end: r]
+
+	[ToString: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		ptr<JsObj> o: (JsOps.ToObject: t);
+		u64 j: (JsObjs.GetAtom: o (JsStrs.InternZ: 'join') as ptr<u8> (JsV.Obj: o));
+		if (JsOps.IsCallable: j)
+			return (JsVm.Call0: j (JsV.Obj: o));
+		;;
+		ptr<JsProp> ots: (JsObjs.Find: JsRt.P.object JsRt.A.toString as ptr<u8>);
+	[end: (JsVm.Call0: ots.value (JsV.Obj: o))]
+
+	[Slice: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		f64 len: (LengthOf: o);
+		f64 from: (JsOps.RelativeIndex: (Js.Arg: args argc 0) len 0.0);
+		f64 upto: (JsOps.RelativeIndex: (Js.Arg: args argc 1) len len);
+		ptr<JsObj> output: (SpeciesCreate: o (Float.Abs: upto - from));
+		f64 n: 0.0;
+		while from < upto
+			call Js.Checkpoint;
+			u64 k: (IndexKey: from);
+			if (JsObjs.Has: o k)
+				if not (JsObjs.CreateData: output (IndexKey: n) (JsObjs.Get: o k (JsV.Obj: o)))
+					call JsErr.Type: 'Cannot add element to the new array';
+				;;
+			;;
+			from is from + 1.0;
+			n is n + 1.0;
+		;;
+		call SetLength: output n;
+	[end: (JsV.Obj: output)]
+
+	# ArraySpeciesCreate: an array, unless this one's constructor says otherwise
+	[SpeciesCreate: ptr<JsObj> o: 0; f64 n: 0.0;]
+		if (JsOps.IsArray: (JsV.Obj: o))
+			u64 c: (JsObjs.GetAtom: o JsRt.A.constructor as ptr<u8> (JsV.Obj: o));
+			if (JsV.IsObj: c)
+				c is (JsObjs.GetAtom: (JsV.AsObj: c) JsRt.S.species as ptr<u8> c);
+				if c is JsV.NULL
+					c is JsV.UNDEF;
+				;;
+			;;
+			if c is not JsV.UNDEF
+				ptr<JsProp> own: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: 'Array') as ptr<u8>);
+				bln is_builtin: own is not 0 and own.value is c;
+				if not is_builtin
+					if not (JsOps.IsConstructor: c)
+						call JsErr.Type: 'Symbol.species is not a constructor';
+					;;
+					call Js.Push: (JsV.Num: n);
+					u64 made: (Js.Construct: c 1);
+					if not (JsV.IsObj: made)
+						call JsErr.Type: 'The species constructor did not make an object';
+					;;
+					return (JsV.AsObj: made);
+				;;
+			;;
+		;;
+		if n > 4294967295.0
+			call JsErr.Range: 'Invalid array length';
+		;;
+	[end: (JsObjs.NewArray: 0)]
+
+	[IndexOf: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		f64 len: (LengthOf: o);
+		if len is 0.0
+			return (JsV.Int: -1);
+		;;
+		f64 i: (JsOps.RelativeIndex: (Js.Arg: args argc 1) len 0.0);
+		u64 want: (Js.Arg: args argc 0);
+		while i < len
+			call Js.Checkpoint;
+			u64 k: (IndexKey: i);
+			if (JsObjs.Has: o k)
+				if (JsOps.StrictEq: (JsObjs.Get: o k (JsV.Obj: o)) want)
+					return (JsV.Num: i);
+				;;
+			;;
+			i is i + 1.0;
+		;;
+	[end: (JsV.Int: -1)]
+
+	[NewIter: u64 target: 0; u32 kind: 0;]
+		ptr<JsArrayIter> ai: new JsArrayIter;
+		if ai is 0
+			throw 'out of memory';
+		;;
+		ai.target is target;
+		ai.kind is kind;
+		ptr<JsObj> it: (JsObjs.NewHost: JsBuiltins.array_iter_class JsRt.P.array_iterator ai as ptr<u8>);
+	[end: (JsV.Obj: it)]
+
+	[Values: ptr<u64> args: 0; int argc: 0;]
+	[end: (NewIter: (JsV.Obj: (JsOps.ToObject: args:(-1))) 1)]
+
+	[KeysFn: ptr<u64> args: 0; int argc: 0;]
+	[end: (NewIter: (JsV.Obj: (JsOps.ToObject: args:(-1))) 0)]
+
+	[Entries: ptr<u64> args: 0; int argc: 0;]
+	[end: (NewIter: (JsV.Obj: (JsOps.ToObject: args:(-1))) 2)]
+
+	[IterNext: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if not (JsV.IsObj: t)
+			call JsErr.Type: 'next method called on something that is not an Array Iterator';
+		;;
+		ptr<JsObj> io: (JsV.AsObj: t);
+		if io.cls is not JsBuiltins.array_iter_class
+			call JsErr.Type: 'next method called on something that is not an Array Iterator';
+		;;
+		ptr<JsArrayIter> ai: io.data as ptr<JsArrayIter>;
+		if ai.target is JsV.UNDEF
+			return (JsBuiltins.IterResult: JsV.UNDEF true);
+		;;
+		ptr<JsObj> o: (JsV.AsObj: ai.target);
+		f64 len: (LengthOf: o);
+		u32 i: ai.index;
+		if (i as f64) >= len
+			ai.target is JsV.UNDEF;
+			return (JsBuiltins.IterResult: JsV.UNDEF true);
+		;;
+		ai.index is i + 1;
+		if ai.kind is 0
+			return (JsBuiltins.IterResult: (JsV.Uint: i) false);
+		;;
+		u64 v: (JsObjs.GetIndex: o i ai.target);
+		if ai.kind is 1
+			return (JsBuiltins.IterResult: v false);
+		;;
+		ptr<JsObj> pair: (JsObjs.NewArray: 2);
+		call JsObjs.ArrayPush: pair (JsV.Uint: i);
+		call JsObjs.ArrayPush: pair v;
+	[end: (JsBuiltins.IterResult: (JsV.Obj: pair) false)]
+}

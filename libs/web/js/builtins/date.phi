@@ -1,0 +1,963 @@
+# Date. Time is milliseconds since 1970 in UTC, kept as an f64. A browser sets the local time zone with
+# JsDate.tz_minutes (east of UTC is positive); until it does, local time is UTC. There are no daylight saving
+# rules here: one offset holds all year.
+
+struct.JsDateData
+{
+	f64 t;                 # NaN for an invalid date
+}
+
+phi.JsDate:Library
+{
+	ptr<JsClass> date_class: 0;
+	int tz_minutes: 0;
+
+	const u32 F_YEAR: 0;
+	const u32 F_MONTH: 1;
+	const u32 F_DATE: 2;
+	const u32 F_HOURS: 3;
+	const u32 F_MINUTES: 4;
+	const u32 F_SECONDS: 5;
+	const u32 F_MS: 6;
+	const u32 F_DAY: 7;
+	const u32 UTC_BIT: 16;
+
+	# filled in by Split
+	f64 y_: 0.0;
+	f64 mo_: 0.0;
+	f64 d_: 0.0;
+	f64 h_: 0.0;
+	f64 mi_: 0.0;
+	f64 s_: 0.0;
+	f64 ms_: 0.0;
+	f64 wd_: 0.0;
+
+	[Init]
+		if date_class is 0
+			date_class is (JsObjs.NewClass: 'Date');
+			date_class.finalize is addr Finalize;
+		;;
+		ptr<JsObj> p: (JsObjs.NewObject);
+		JsRt.P.date is p;
+		ptr<JsNativeFn> c: (Js.DefineClass: 'Date' addr Construct 7 p);
+		ptr<JsObj> co: c as ptr<JsObj>;
+		call Js.DefineNative: co 'now' addr Now 0;
+		call Js.DefineNative: co 'parse' addr ParseFn 1;
+		call Js.DefineNative: co 'UTC' addr Utc 7;
+		call Getter: p 'getFullYear' 'getUTCFullYear' F_YEAR;
+		call Getter: p 'getMonth' 'getUTCMonth' F_MONTH;
+		call Getter: p 'getDate' 'getUTCDate' F_DATE;
+		call Getter: p 'getHours' 'getUTCHours' F_HOURS;
+		call Getter: p 'getMinutes' 'getUTCMinutes' F_MINUTES;
+		call Getter: p 'getSeconds' 'getUTCSeconds' F_SECONDS;
+		call Getter: p 'getMilliseconds' 'getUTCMilliseconds' F_MS;
+		call Getter: p 'getDay' 'getUTCDay' F_DAY;
+		call Setter: p 'setFullYear' 'setUTCFullYear' F_YEAR 3;
+		call Setter: p 'setMonth' 'setUTCMonth' F_MONTH 2;
+		call Setter: p 'setDate' 'setUTCDate' F_DATE 1;
+		call Setter: p 'setHours' 'setUTCHours' F_HOURS 4;
+		call Setter: p 'setMinutes' 'setUTCMinutes' F_MINUTES 3;
+		call Setter: p 'setSeconds' 'setUTCSeconds' F_SECONDS 2;
+		call Setter: p 'setMilliseconds' 'setUTCMilliseconds' F_MS 1;
+		call Js.DefineNative: p 'getYear' addr GetYear 0;
+		call Js.DefineNative: p 'setYear' addr SetYear 1;
+		call Js.DefineNative: p 'getTime' addr GetTime 0;
+		call Js.DefineNative: p 'valueOf' addr GetTime 0;
+		call Js.DefineNative: p 'setTime' addr SetTime 1;
+		call Js.DefineNative: p 'getTimezoneOffset' addr GetOffset 0;
+		call Js.DefineNative: p 'toISOString' addr ToIso 0;
+		call Js.DefineNative: p 'toJSON' addr ToJson 1;
+		call Text: p 'toString' 0;
+		call Text: p 'toDateString' 1;
+		call Text: p 'toTimeString' 2;
+		ptr<JsNativeFn> u: (Text: p 'toUTCString' 3);
+		call JsObjs.DefineZ: p 'toGMTString' (JsV.Obj: u as ptr<JsObj>) JsObjs.WC;
+		call Text: p 'toLocaleString' 4;
+		call Text: p 'toLocaleDateString' 5;
+		call Text: p 'toLocaleTimeString' 6;
+		ptr<JsNativeFn> tp: (JsObjs.NewNative: addr ToPrim '[Symbol.toPrimitive]' 1 false);
+		call JsObjs.DefineValue: p JsRt.S.toPrimitive as ptr<u8> (JsV.Obj: tp as ptr<JsObj>) JsObjs.C;
+	[end]
+
+	[Getter: ptr<JsObj> p: 0; ptr<u8> local: 0; ptr<u8> utc: 0; u32 field: 0;]
+		ptr<JsNativeFn> a: (Js.DefineNative: p local addr GetField 0);
+		a.magic is field;
+		ptr<JsNativeFn> b: (Js.DefineNative: p utc addr GetField 0);
+		b.magic is field | UTC_BIT;
+	[end]
+
+	[Setter: ptr<JsObj> p: 0; ptr<u8> local: 0; ptr<u8> utc: 0; u32 field: 0; int nargs: 0;]
+		ptr<JsNativeFn> a: (Js.DefineNative: p local addr SetField nargs);
+		a.magic is field;
+		ptr<JsNativeFn> b: (Js.DefineNative: p utc addr SetField nargs);
+		b.magic is field | UTC_BIT;
+	[end]
+
+	[Text: ptr<JsObj> p: 0; ptr<u8> name: 0; u32 kind: 0;]
+		ptr<JsNativeFn> f: (Js.DefineNative: p name addr ToText 0);
+		f.magic is kind;
+	[end: f]
+
+	[Finalize: ptr<JsObj> o: 0;]
+		free o.data;
+	[end]
+
+	[Nan]
+	[end: (WlNum.FromBits: 0x7FF8000000000000)]
+
+	# ---- the calendar ----
+
+	# days since 1970 of a civil date, with month 0 to 11 (Howard Hinnant's algorithm)
+	[DaysFromCivil: f64 y: 0.0; f64 m: 0.0; f64 d: 0.0;]
+		f64 yr: y;
+		if m < 2.0
+			yr is yr - 1.0;
+		;;
+		f64 era: (Float.Floor: yr / 400.0);
+		f64 yoe: yr - era * 400.0;
+		f64 mp: m - 2.0;
+		if m < 2.0
+			mp is m + 10.0;
+		;;
+		f64 doy: (Float.Floor: (153.0 * mp + 2.0) / 5.0) + d - 1.0;
+		f64 doe: yoe * 365.0 + (Float.Floor: yoe / 4.0) - (Float.Floor: yoe / 100.0) + doy;
+	[end: era * 146097.0 + doe - 719468.0]
+
+	# all the fields of a time into y_ ...
+	[Split: f64 t: 0.0;]
+		f64 days: (Float.Floor: t / 86400000.0);
+		f64 in_day: t - days * 86400000.0;
+		ms_ is in_day % 1000.0;
+		f64 secs: (Float.Floor: in_day / 1000.0);
+		s_ is secs % 60.0;
+		f64 mins: (Float.Floor: secs / 60.0);
+		mi_ is mins % 60.0;
+		h_ is (Float.Floor: mins / 60.0);
+		wd_ is (days + 4.0) % 7.0;
+		if wd_ < 0.0
+			wd_ is wd_ + 7.0;
+		;;
+		f64 z: days + 719468.0;
+		f64 era: (Float.Floor: z / 146097.0);
+		f64 doe: z - era * 146097.0;
+		f64 yoe: (Float.Floor: (doe - (Float.Floor: doe / 1460.0) + (Float.Floor: doe / 36524.0) - (Float.Floor: doe / 146096.0)) / 365.0);
+		f64 doy: doe - (365.0 * yoe + (Float.Floor: yoe / 4.0) - (Float.Floor: yoe / 100.0));
+		f64 mp: (Float.Floor: (5.0 * doy + 2.0) / 153.0);
+		d_ is doy - (Float.Floor: (153.0 * mp + 2.0) / 5.0) + 1.0;
+		if mp < 10.0
+			mo_ is mp + 2.0;
+		;;
+		else
+			mo_ is mp - 10.0;
+		;;
+		y_ is yoe + era * 400.0;
+		if mo_ < 2.0
+			y_ is y_ + 1.0;
+		;;
+	[end]
+
+	# MakeDay and MakeTime and MakeDate together: any field out of range carries over; NaN if any is NaN
+	[Make: f64 y: 0.0; f64 mo: 0.0; f64 d: 0.0; f64 h: 0.0; f64 mi: 0.0; f64 s: 0.0; f64 ms: 0.0;]
+		if not (WlNum.IsFinite: y) or not (WlNum.IsFinite: mo) or not (WlNum.IsFinite: d) or not (WlNum.IsFinite: h) or not (WlNum.IsFinite: mi) or not (WlNum.IsFinite: s) or not (WlNum.IsFinite: ms)
+			return (Nan);
+		;;
+		f64 yi: (Float.Trunc: y);
+		f64 moi: (Float.Trunc: mo);
+		f64 ym: yi + (Float.Floor: moi / 12.0);
+		if (Float.Abs: ym) > 400000.0
+			return (Nan);
+		;;
+		f64 mn: moi - (Float.Floor: moi / 12.0) * 12.0;
+		f64 day: (DaysFromCivil: ym mn 1.0) + (Float.Trunc: d) - 1.0;
+		f64 time: (Float.Trunc: h) * 3600000.0 + (Float.Trunc: mi) * 60000.0 + (Float.Trunc: s) * 1000.0 + (Float.Trunc: ms);
+	[end: day * 86400000.0 + time]
+
+	[Clip: f64 t: 0.0;]
+		if not (WlNum.IsFinite: t) or (Float.Abs: t) > 8640000000000000.0
+			return (Nan);
+		;;
+	[end: (Float.Trunc: t) + 0.0]
+
+	[Local: f64 t: 0.0;]
+	[end: t + (tz_minutes as f64) * 60000.0]
+
+	[ToUtc: f64 t: 0.0;]
+	[end: t - (tz_minutes as f64) * 60000.0]
+
+	[Current]
+		# OS.Now is whole seconds, so the milliseconds come from the program's clock, lined up the first time
+		f64 secs: (OS.Now) as f64;
+		f64 ticks: (OS.GetTicks) as f64;
+		if not clock_set
+			clock_set is true;
+			clock_base is secs * 1000.0 - ticks;
+		;;
+	[end: clock_base + ticks]
+
+	bln clock_set: false;
+	f64 clock_base: 0.0;
+
+	# ---- objects ----
+
+	[New: f64 t: 0.0; ptr<JsObj> proto: 0;]
+		ptr<JsDateData> d: new JsDateData;
+		if d is 0
+			throw 'out of memory';
+		;;
+		d.t is t;
+		ptr<JsObj> o: (JsObjs.NewHost: date_class proto d as ptr<u8>);
+	[end: o]
+
+	[This: ptr<u64> args: 0;]
+		u64 v: args:(-1);
+		if (JsV.IsObj: v)
+			ptr<JsObj> o: (JsV.AsObj: v);
+			if o.cls is date_class
+				return o.data as ptr<JsDateData>;
+			;;
+		;;
+		call JsErr.Type: 'this is not a Date object';
+	[end: 0 as ptr<JsDateData>]
+
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			WlBuf b;
+			call Format: (Current) 0 addr b;
+			u64 text: (JsV.Str: (JsStrs.FromBuf: addr b));
+			call b.Free;
+			return text;
+		;;
+		f64 t: 0.0;
+		if argc is 0
+			t is (Clip: (Float.Floor: (Current)));
+		;;
+		elif argc is 1
+			u64 v: args:0;
+			if (JsV.IsObj: v) and (JsV.AsObj: v) as ptr<JsObj> is not 0
+				ptr<JsObj> vo: (JsV.AsObj: v);
+				if vo.cls is date_class
+					ptr<JsDateData> od: vo.data as ptr<JsDateData>;
+					t is od.t;
+					return (JsV.Obj: (New: t (JsOps.ProtoFromCtor: nt JsRt.P.date)));
+				;;
+			;;
+			u64 prim: (JsOps.ToPrimitive: v JsOps.HINT_DEFAULT);
+			if (JsV.IsStr: prim)
+				t is (Parse: (JsV.AsStr: prim));
+			;;
+			else
+				t is (Clip: (JsOps.ToNumber: prim));
+			;;
+		;;
+		else
+			t is (Clip: (ToUtc: (FromArgs: args argc)));
+		;;
+	[end: (JsV.Obj: (New: t (JsOps.ProtoFromCtor: nt JsRt.P.date)))]
+
+	# year, month and the rest, as the Date constructor and Date.UTC read them
+	[FromArgs: ptr<u64> args: 0; int argc: 0;]
+		f64 y: (JsOps.ToNumber: (Js.Arg: args argc 0));
+		f64 mo: 0.0;
+		f64 d: 1.0;
+		f64 h: 0.0;
+		f64 mi: 0.0;
+		f64 s: 0.0;
+		f64 ms: 0.0;
+		if argc > 1
+			mo is (JsOps.ToNumber: args:1);
+		;;
+		if argc > 2
+			d is (JsOps.ToNumber: args:2);
+		;;
+		if argc > 3
+			h is (JsOps.ToNumber: args:3);
+		;;
+		if argc > 4
+			mi is (JsOps.ToNumber: args:4);
+		;;
+		if argc > 5
+			s is (JsOps.ToNumber: args:5);
+		;;
+		if argc > 6
+			ms is (JsOps.ToNumber: args:6);
+		;;
+		if y is y
+			f64 yi: (Float.Trunc: y);
+			if yi >= 0.0 and yi <= 99.0
+				y is 1900.0 + yi;
+			;;
+		;;
+	[end: (Make: y mo d h mi s ms)]
+
+	[Now: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Num: (Float.Floor: (Current)))]
+
+	[Utc: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Num: (Clip: (FromArgs: args argc)))]
+
+	[ParseFn: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Num: (Parse: (JsOps.ToStr: (Js.Arg: args argc 0))))]
+
+	[GetTime: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsDateData> d: (This: args);
+	[end: (JsV.Num: d.t)]
+
+	[SetTime: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsDateData> d: (This: args);
+		d.t is (Clip: (JsOps.ToNumber: (Js.Arg: args argc 0)));
+	[end: (JsV.Num: d.t)]
+
+	[GetOffset: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsDateData> d: (This: args);
+		if d.t is not d.t
+			return JsV.NAN;
+		;;
+	[end: (JsV.Int: 0 - tz_minutes)]
+
+	[GetField: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<JsDateData> d: (This: args);
+		if d.t is not d.t
+			return JsV.NAN;
+		;;
+		f64 t: d.t;
+		if (self.magic & UTC_BIT) is 0
+			t is (Local: t);
+		;;
+		call Split: t;
+		f64 r: 0.0;
+		when self.magic & 15
+			is F_YEAR
+				r is y_;
+			;;
+			is F_MONTH
+				r is mo_;
+			;;
+			is F_DATE
+				r is d_;
+			;;
+			is F_HOURS
+				r is h_;
+			;;
+			is F_MINUTES
+				r is mi_;
+			;;
+			is F_SECONDS
+				r is s_;
+			;;
+			is F_MS
+				r is ms_;
+			;;
+			is F_DAY
+				r is wd_;
+			;;
+		;;
+	[end: (JsV.Num: r)]
+
+	# Sets a field and those after it that are given: setHours(h, m, s, ms), setMonth(m, d), setFullYear(y, m, d)
+	[SetField: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<JsDateData> d: (This: args);
+		u32 field: self.magic & 15;
+		bln utc: (self.magic & UTC_BIT) is not 0;
+		# the time is read before the arguments are converted, as the spec has it, whatever they do
+		f64 t: d.t;
+		f64 v0: (JsOps.ToNumber: (Js.Arg: args argc 0));
+		f64 v1: 0.0;
+		f64 v2: 0.0;
+		f64 v3: 0.0;
+		if argc > 1
+			v1 is (JsOps.ToNumber: args:1);
+		;;
+		if argc > 2
+			v2 is (JsOps.ToNumber: args:2);
+		;;
+		if argc > 3
+			v3 is (JsOps.ToNumber: args:3);
+		;;
+		if t is not t
+			if field is not F_YEAR
+				return JsV.NAN;
+			;;
+			t is 0.0;
+		;;
+		elif not utc
+			t is (Local: t);
+		;;
+		call Split: t;
+		f64 y: y_;
+		f64 mo: mo_;
+		f64 da: d_;
+		f64 h: h_;
+		f64 mi: mi_;
+		f64 s: s_;
+		f64 ms: ms_;
+		when field
+			is F_YEAR
+				y is v0;
+				if argc > 1
+					mo is v1;
+				;;
+				if argc > 2
+					da is v2;
+				;;
+			;;
+			is F_MONTH
+				mo is v0;
+				if argc > 1
+					da is v1;
+				;;
+			;;
+			is F_DATE
+				da is v0;
+			;;
+			is F_HOURS
+				h is v0;
+				if argc > 1
+					mi is v1;
+				;;
+				if argc > 2
+					s is v2;
+				;;
+				if argc > 3
+					ms is v3;
+				;;
+			;;
+			is F_MINUTES
+				mi is v0;
+				if argc > 1
+					s is v1;
+				;;
+				if argc > 2
+					ms is v2;
+				;;
+			;;
+			is F_SECONDS
+				s is v0;
+				if argc > 1
+					ms is v1;
+				;;
+			;;
+			is F_MS
+				ms is v0;
+			;;
+		;;
+		f64 made: (Make: y mo da h mi s ms);
+		if not utc
+			made is (ToUtc: made);
+		;;
+		d.t is (Clip: made);
+	[end: (JsV.Num: d.t)]
+
+	[GetYear: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsDateData> d: (This: args);
+		if d.t is not d.t
+			return JsV.NAN;
+		;;
+		call Split: (Local: d.t);
+	[end: (JsV.Num: y_ - 1900.0)]
+
+	[SetYear: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsDateData> d: (This: args);
+		f64 y: (JsOps.ToNumber: (Js.Arg: args argc 0));
+		if y is not y
+			d.t is (Nan);
+			return JsV.NAN;
+		;;
+		f64 yi: (Float.Trunc: y);
+		if yi >= 0.0 and yi <= 99.0
+			yi is yi + 1900.0;
+		;;
+		f64 t: 0.0;
+		if d.t is d.t
+			t is (Local: d.t);
+		;;
+		call Split: t;
+		d.t is (Clip: (ToUtc: (Make: yi mo_ d_ h_ mi_ s_ ms_)));
+	[end: (JsV.Num: d.t)]
+
+	# ---- text ----
+
+	[Pad: ptr<WlBuf> b: 0; f64 v: 0.0; int width: 0;]
+		int n: v as int;
+		int digits: 1;
+		int m: n;
+		while m >= 10
+			m is m / 10;
+			digits++;
+		;;
+		while digits < width
+			call b.Add: '0';
+			digits++;
+		;;
+		call b.AddInt: n;
+	[end]
+
+	[Year: ptr<WlBuf> b: 0; f64 y: 0.0;]
+		if y < 0.0
+			call b.Add: '-';
+			call Pad: b y * -1.0 6;
+		;;
+		else
+			call Pad: b y 4;
+		;;
+	[end]
+
+	[DayName: ptr<WlBuf> b: 0; f64 w: 0.0;]
+		ptr<u8> names: 'SunMonTueWedThuFriSat';
+		call b.AddN: names + (w as u32) * 3 3;
+	[end]
+
+	[MonthName: ptr<WlBuf> b: 0; f64 m: 0.0;]
+		ptr<u8> names: 'JanFebMarAprMayJunJulAugSepOctNovDec';
+		call b.AddN: names + (m as u32) * 3 3;
+	[end]
+
+	[Zone: ptr<WlBuf> b: 0;]
+		call b.AddZ: 'GMT';
+		int z: tz_minutes;
+		if z < 0
+			call b.Add: '-';
+			z is 0 - z;
+		;;
+		else
+			call b.Add: '+';
+		;;
+		call Pad: b (z / 60) as f64 2;
+		call Pad: b (z % 60) as f64 2;
+	[end]
+
+	[Clock: ptr<WlBuf> b: 0;]
+		call Pad: b h_ 2;
+		call b.Add: ':';
+		call Pad: b mi_ 2;
+		call b.Add: ':';
+		call Pad: b s_ 2;
+	[end]
+
+	[Format: f64 t: 0.0; u32 kind: 0; ptr<WlBuf> b: 0;]
+		if t is not t
+			call b.AddZ: 'Invalid Date';
+			return;
+		;;
+		if kind is 3
+			call Split: t;
+			call DayName: b wd_;
+			call b.AddZ: ', ';
+			call Pad: b d_ 2;
+			call b.Add: 32;
+			call MonthName: b mo_;
+			call b.Add: 32;
+			call Year: b y_;
+			call b.Add: 32;
+			call Clock: b;
+			call b.AddZ: ' GMT';
+			return;
+		;;
+		call Split: (Local: t);
+		when kind
+			is 0 1
+				call DayName: b wd_;
+				call b.Add: 32;
+				call MonthName: b mo_;
+				call b.Add: 32;
+				call Pad: b d_ 2;
+				call b.Add: 32;
+				call Year: b y_;
+				if kind is 0
+					call b.Add: 32;
+					call Clock: b;
+					call b.Add: 32;
+					call Zone: b;
+				;;
+			;;
+			is 2
+				call Clock: b;
+				call b.Add: 32;
+				call Zone: b;
+			;;
+			is 4 5
+				# en-US, the only locale here
+				call b.AddInt: (mo_ as int) + 1;
+				call b.Add: '/';
+				call b.AddInt: d_ as int;
+				call b.Add: '/';
+				call b.AddInt: y_ as int;
+				if kind is 4
+					call b.AddZ: ', ';
+					call Clock12: b;
+				;;
+			;;
+			is 6
+				call Clock12: b;
+			;;
+		;;
+	[end]
+
+	[Clock12: ptr<WlBuf> b: 0;]
+		f64 h: h_ % 12.0;
+		if h is 0.0
+			h is 12.0;
+		;;
+		call b.AddInt: h as int;
+		call b.Add: ':';
+		call Pad: b mi_ 2;
+		call b.Add: ':';
+		call Pad: b s_ 2;
+		if h_ < 12.0
+			call b.AddZ: ' AM';
+		;;
+		else
+			call b.AddZ: ' PM';
+		;;
+	[end]
+
+	[ToText: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<JsDateData> d: (This: args);
+		WlBuf b;
+		call Format: d.t self.magic addr b;
+		u64 r: (JsV.Str: (JsStrs.FromBuf: addr b));
+		call b.Free;
+	[end: r]
+
+	[ToIso: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsDateData> d: (This: args);
+		if d.t is not d.t
+			call JsErr.Range: 'Invalid time value';
+		;;
+		call Split: d.t;
+		WlBuf b;
+		if y_ >= 0.0 and y_ <= 9999.0
+			call Pad: addr b y_ 4;
+		;;
+		elif y_ < 0.0
+			call b.Add: '-';
+			call Pad: addr b y_ * -1.0 6;
+		;;
+		else
+			call b.Add: '+';
+			call Pad: addr b y_ 6;
+		;;
+		call b.Add: '-';
+		call Pad: addr b mo_ + 1.0 2;
+		call b.Add: '-';
+		call Pad: addr b d_ 2;
+		call b.Add: 'T';
+		call Clock: addr b;
+		call b.Add: '.';
+		call Pad: addr b ms_ 3;
+		call b.Add: 'Z';
+		u64 r: (JsV.Str: (JsStrs.FromBuf: addr b));
+		call b.Free;
+	[end: r]
+
+	[ToJson: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		u64 tv: (JsOps.ToPrimitive: ov JsOps.HINT_NUMBER);
+		if (JsV.IsNum: tv)
+			f64 x: (JsV.AsNum: tv);
+			if x is not x or not (WlNum.IsFinite: x)
+				return JsV.NULL;
+			;;
+		;;
+		u64 m: (JsObjs.GetV: ov (JsObjs.KeyZ: 'toISOString'));
+		if not (JsOps.IsCallable: m)
+			call JsErr.Type: 'toISOString is not a function';
+		;;
+	[end: (JsVm.Call0: m ov)]
+
+	[ToPrim: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if not (JsV.IsObj: t)
+			call JsErr.Type: 'Date.prototype[Symbol.toPrimitive] called on a non-object';
+		;;
+		u64 hint: (Js.Arg: args argc 0);
+		if not (JsV.IsStr: hint)
+			call JsErr.Type: 'Invalid hint';
+		;;
+		ptr<JsStr> hs: (JsV.AsStr: hint);
+		bln string_first: false;
+		if (JsStrs.EqZ: hs 'string') or (JsStrs.EqZ: hs 'default')
+			string_first is true;
+		;;
+		elif not (JsStrs.EqZ: hs 'number')
+			call JsErr.Type: 'Invalid hint';
+		;;
+		ptr<u8> first: 'valueOf';
+		ptr<u8> second: 'toString';
+		if string_first
+			first is 'toString';
+			second is 'valueOf';
+		;;
+		u64 m: (JsObjs.GetV: t (JsObjs.KeyZ: first));
+		if (JsOps.IsCallable: m)
+			u64 r: (JsVm.Call0: m t);
+			if not (JsV.IsObj: r) return r;
+		;;
+		m is (JsObjs.GetV: t (JsObjs.KeyZ: second));
+		if (JsOps.IsCallable: m)
+			u64 r2: (JsVm.Call0: m t);
+			if not (JsV.IsObj: r2) return r2;
+		;;
+		call JsErr.Type: 'Cannot convert object to primitive value';
+	[end: JsV.UNDEF]
+
+	# ---- reading dates ----
+
+	ptr<u8> pz: 0;
+	u32 pn: 0;
+	u32 pi: 0;
+
+	[PDigits: u32 count: 0; ptr<f64> out_v: 0;]
+		if pi + count > pn return false;
+		f64 v: 0.0;
+		while u32 i: 0; i < count; i++;
+			u32 c: pz:(pi + i);
+			if c < '0' or c > '9' return false;
+			v is v * 10.0 + ((c - '0') as f64);
+		;;
+		pi is pi + count;
+		out_v:0 is v;
+	[end: true]
+
+	[Parse: ptr<JsStr> text: 0;]
+		call JsStrs.Flat: text;
+		pz is text.data;
+		pn is text.bytes;
+		pi is 0;
+		f64 t: (ParseIso);
+		if t is t return t;
+		return (ParseLoose);
+	[end: (Nan)]
+
+	# the format toISOString writes: a date alone is UTC, a date and time without a zone is local
+	[ParseIso]
+		f64 y: 0.0;
+		f64 mo: 1.0;
+		f64 d: 1.0;
+		f64 h: 0.0;
+		f64 mi: 0.0;
+		f64 s: 0.0;
+		f64 ms: 0.0;
+		if pi < pn and (pz:pi is '+' or pz:pi is '-')
+			bln neg: pz:pi is '-';
+			pi++;
+			if not (PDigits: 6 addr y) return (Nan);
+			if neg
+				if y is 0.0 return (Nan);
+				y is y * -1.0;
+			;;
+		;;
+		elif not (PDigits: 4 addr y)
+			return (Nan);
+		;;
+		if pi < pn and pz:pi is '-'
+			pi++;
+			if not (PDigits: 2 addr mo) return (Nan);
+			if pi < pn and pz:pi is '-'
+				pi++;
+				if not (PDigits: 2 addr d) return (Nan);
+			;;
+		;;
+		bln has_time: false;
+		f64 zone: 0.0;
+		bln has_zone: false;
+		if pi < pn and pz:pi is 'T'
+			has_time is true;
+			pi++;
+			if not (PDigits: 2 addr h) return (Nan);
+			if pi >= pn or pz:pi is not ':' return (Nan);
+			pi++;
+			if not (PDigits: 2 addr mi) return (Nan);
+			if pi < pn and pz:pi is ':'
+				pi++;
+				if not (PDigits: 2 addr s) return (Nan);
+				if pi < pn and pz:pi is '.'
+					pi++;
+					f64 scale: 100.0;
+					u32 start: pi;
+					while pi < pn and pz:pi >= '0' and pz:pi <= '9'
+						ms is ms + ((pz:pi - '0') as f64) * scale;
+						scale is scale / 10.0;
+						pi++;
+					;;
+					if pi is start return (Nan);
+					ms is (Float.Floor: ms);
+				;;
+			;;
+			if pi < pn and pz:pi is 'Z'
+				has_zone is true;
+				pi++;
+			;;
+			elif pi < pn and (pz:pi is '+' or pz:pi is '-')
+				f64 sign: 1.0;
+				if pz:pi is '-'
+					sign is -1.0;
+				;;
+				pi++;
+				f64 zh: 0.0;
+				f64 zm: 0.0;
+				if not (PDigits: 2 addr zh) return (Nan);
+				if pi >= pn or pz:pi is not ':' return (Nan);
+				pi++;
+				if not (PDigits: 2 addr zm) return (Nan);
+				zone is sign * (zh * 60.0 + zm);
+				has_zone is true;
+			;;
+		;;
+		if pi is not pn return (Nan);
+		if mo < 1.0 or mo > 12.0 or d < 1.0 or d > 31.0 or h > 24.0 or mi > 59.0 or s > 59.0
+			return (Nan);
+		;;
+		if h is 24.0 and (mi is not 0.0 or s is not 0.0 or ms is not 0.0)
+			return (Nan);
+		;;
+		f64 t: (Make: y mo - 1.0 d h mi s ms);
+		if has_zone
+			t is t - zone * 60000.0;
+		;;
+		elif has_time
+			t is (ToUtc: t);
+		;;
+	[end: (Clip: t)]
+
+	# What toString and toUTCString write, and what people write: "Tue Mar 01 2022 10:00:00 GMT+0100",
+	# "Mar 1, 2022", "1 March 2022 10:00 UTC", "3/1/2022 10:00 PM".
+	[ParseLoose]
+		pi is 0;
+		f64 year: (Nan);
+		f64 month: (Nan);
+		f64 day: (Nan);
+		f64 hour: 0.0;
+		f64 minute: 0.0;
+		f64 second: 0.0;
+		bln zoned: false;
+		f64 zone: 0.0;
+		while pi < pn
+			u32 c: pz:pi;
+			if c >= '0' and c <= '9'
+				f64 v: (PNumber);
+				if pi < pn and pz:pi is ':'
+					hour is v;
+					pi++;
+					minute is (PNumber);
+					if pi < pn and pz:pi is ':'
+						pi++;
+						second is (PNumber);
+					;;
+				;;
+				elif pi < pn and pz:pi is '/'
+					# month/day/year
+					month is v - 1.0;
+					pi++;
+					day is (PNumber);
+					if pi < pn and pz:pi is '/'
+						pi++;
+						year is (PNumber);
+					;;
+				;;
+				elif day is not day and v <= 31.0
+					day is v;
+				;;
+				elif year is not year
+					year is v;
+				;;
+				else
+					return (Nan);
+				;;
+			;;
+			elif (c is '+' or c is '-') and hour is hour and pi > 0 and zoned
+				f64 zsign: 1.0;
+				if c is '-'
+					zsign is -1.0;
+				;;
+				pi++;
+				f64 zv: (PNumber);
+				zone is zsign * ((Float.Floor: zv / 100.0) * 60.0 + zv % 100.0);
+			;;
+			elif (WlText.IsAlpha: c)
+				u32 start: pi;
+				while pi < pn and (WlText.IsAlpha: pz:pi)
+					pi++;
+				;;
+				u32 n: pi - start;
+				ptr<u8> w: pz + start;
+				if n >= 3
+					int m: (MonthIndex: w);
+					if m >= 0
+						month is m as f64;
+					;;
+					elif (WlText.EqNoCaseZ: w n 'GMT') or (WlText.EqNoCaseZ: w n 'UTC') or (WlText.EqNoCaseZ: w n 'UT')
+						zoned is true;
+					;;
+				;;
+				elif n is 1 and (WlText.Lower: w:0) is 'z'
+					zoned is true;
+				;;
+				elif n is 2 and (WlText.EqNoCaseZ: w n 'PM')
+					if hour < 12.0
+						hour is hour + 12.0;
+					;;
+				;;
+				elif n is 2 and (WlText.EqNoCaseZ: w n 'AM')
+					if hour is 12.0
+						hour is 0.0;
+					;;
+				;;
+				# anything else, like a day's name, says nothing
+			;;
+			elif c is '('
+				# a zone's name, in brackets
+				while pi < pn and pz:pi is not ')'
+					pi++;
+				;;
+				pi++;
+			;;
+			else
+				pi++;
+			;;
+		;;
+		if month is not month or day is not day
+			return (Nan);
+		;;
+		if year is not year
+			year is 2001.0;
+		;;
+		elif year < 50.0
+			year is year + 2000.0;
+		;;
+		elif year < 100.0
+			year is year + 1900.0;
+		;;
+		f64 t: (Make: year month day hour minute second 0.0);
+		if zoned
+			t is t - zone * 60000.0;
+		;;
+		else
+			t is (ToUtc: t);
+		;;
+	[end: (Clip: t)]
+
+	[PNumber]
+		f64 v: 0.0;
+		while pi < pn and pz:pi >= '0' and pz:pi <= '9'
+			v is v * 10.0 + ((pz:pi - '0') as f64);
+			pi++;
+		;;
+	[end: v]
+
+	[MonthIndex: ptr<u8> w: 0;]
+		ptr<u8> names: 'janfebmaraprmayjunjulaugsepoctnovdec';
+		u32 a: (WlText.Lower: w:0);
+		u32 b: (WlText.Lower: w:1);
+		u32 c: (WlText.Lower: w:2);
+		while int i: 0; i < 12; i++;
+			if names:(i * 3) is a and names:(i * 3 + 1) is b and names:(i * 3 + 2) is c
+				return i;
+			;;
+		;;
+	[end: -1]
+}

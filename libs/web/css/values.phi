@@ -1,0 +1,752 @@
+# What a CSS value is once parsed: an 8-byte CssVal, the same whether it's on a declaration or in a
+# computed style. Whatever doesn't fit in 8 bytes (text, a list of values, a calc() expression) is a
+# CssCx, reference counted and named by a 32-bit number kept in the value, so the value is the same
+# size on 32 and 64-bit.
+#
+# Lists are flat: `box-shadow: 1px 2px red, inset 0 0 3em blue` is one LIST whose items are
+# LEN LEN COLOR SEP(,) KW LEN LEN LEN COLOR. A function is a FUNC item whose bits say how many
+# items after it are inside it.
+
+use memory.mem;
+use core.text;
+use core.buf;
+use core.atoms;
+use css.tables;
+
+struct.CssVal
+{
+	u32 bits;       # the number as f32 bits, an integer, an rgba color, or a CssCx number
+	u16 code;       # a keyword or function's CssK number; a separator's character
+	u8 kind;        # CssV.KW ...
+	u8 unit;        # CssU.PX ... for lengths, angles, times
+
+	[Num]
+		ptr<f32> p: (addr bits) as ptr<f32>;
+		f64 v: p:0;
+	[end: v]
+
+	[SetNum: f64 v: 0.0;]
+		if v > 3.0e38
+			v is 3.0e38;
+		;;
+		elif v < -3.0e38
+			v is -3.0e38;
+		;;
+		ptr<f32> p: (addr bits) as ptr<f32>;
+		p:0 is v;
+	[end]
+}
+
+struct.CssCx
+{
+	u32 refs;
+	u32 len;            # text's bytes, or items' count
+	u32 next_free;
+	ptr<u8> text;       # zero-terminated
+	ptr<CssVal> items;
+}
+
+phi.CssV:Library
+{
+	const u32 NONE: 0;
+	const u32 KW: 1;        # code is the keyword
+	const u32 LEN: 2;       # f32 and a unit
+	const u32 PCT: 3;
+	const u32 NUM: 4;
+	const u32 INT: 5;       # int in bits
+	const u32 COLOR: 6;     # 0xRRGGBBAA in bits
+	const u32 ANGLE: 7;
+	const u32 TIME: 8;
+	const u32 FLEX: 9;      # fr
+	const u32 RES: 10;
+	const u32 FUNC: 11;     # in a list: code is the function, bits how many items are inside
+	const u32 SEP: 12;      # in a list: code is ',' or '/'
+	const u32 WIDE: 13;     # inherit, initial, unset, revert: code says which
+	# from here on, bits is a CssCx number
+	const u32 STR: 14;
+	const u32 URL: 15;
+	const u32 IDENT: 16;
+	const u32 RAW: 17;      # text holding var(): parsed when it's computed
+	const u32 LIST: 18;
+	const u32 CALC: 19;     # items are the expression, in prefix order (css/calc.phi)
+
+	const u32 FIRST_CX: 14;
+
+	[Retain: ptr<CssVal> v: 0;]
+		if v.kind >= FIRST_CX
+			call CssCxs.Retain: v.bits;
+		;;
+	[end]
+
+	[Release: ptr<CssVal> v: 0;]
+		if v.kind >= FIRST_CX
+			call CssCxs.Release: v.bits;
+			v.kind is 0;
+		;;
+	[end]
+
+	# the same value, bit for bit
+	[Same: ptr<CssVal> a: 0; ptr<CssVal> b: 0;]
+	[end: a.bits is b.bits and a.code is b.code and a.kind is b.kind and a.unit is b.unit]
+
+	[SetKw: ptr<CssVal> v: 0; u32 kw: 0;]
+		v.kind is KW as u8;
+		v.code is kw as u16;
+		v.bits is 0;
+		v.unit is 0;
+	[end]
+
+	[SetLen: ptr<CssVal> v: 0; f64 x: 0.0; u32 unit: 0;]
+		v.kind is LEN as u8;
+		v.code is 0;
+		v.unit is unit as u8;
+		call v.SetNum: x;
+	[end]
+
+	[SetNumber: ptr<CssVal> v: 0; u32 kind: 0; f64 x: 0.0;]
+		v.kind is kind as u8;
+		v.code is 0;
+		v.unit is 0;
+		call v.SetNum: x;
+	[end]
+
+	[SetInt: ptr<CssVal> v: 0; int x: 0;]
+		v.kind is INT as u8;
+		v.code is 0;
+		v.unit is 0;
+		v.bits is x as u32;
+	[end]
+
+	[SetColor: ptr<CssVal> v: 0; u32 rgba: 0;]
+		v.kind is COLOR as u8;
+		v.code is 0;
+		v.unit is 0;
+		v.bits is rgba;
+	[end]
+
+	# text of this kind (STR, URL, IDENT, RAW): a new CssCx that v holds one reference to
+	[SetText: ptr<CssVal> v: 0; u32 kind: 0; ptr<u8> text: 0; u32 n: 0;]
+		v.kind is kind as u8;
+		v.code is 0;
+		v.unit is 0;
+		v.bits is (CssCxs.NewText: text n);
+	[end]
+
+	[Cx: ptr<CssVal> v: 0;]
+	[end: (CssCxs.At: v.bits)]
+
+	[Text: ptr<CssVal> v: 0;]
+		ptr<CssCx> c: (CssCxs.At: v.bits);
+	[end: c.text]
+
+	[TextLen: ptr<CssVal> v: 0;]
+		ptr<CssCx> c: (CssCxs.At: v.bits);
+	[end: c.len]
+
+	# the items of a LIST, with their count in item_count; any other value is a list of one, itself
+	u32 item_count: 0;
+
+	[Items: ptr<CssVal> v: 0;]
+		if v.kind is LIST as u8
+			ptr<CssCx> c: (CssCxs.At: v.bits);
+			item_count is c.len;
+			return c.items;
+		;;
+		item_count is 1;
+	[end: v]
+}
+
+# the numbered table of CssCxs
+phi.CssCxs:Library
+{
+	ptr<ptr<CssCx>> table: 0;
+	u32 cap: 0;
+	u32 used: 1;            # number 0 is no one
+	u32 free_head: 0;
+
+	[At: u32 n: 0;]
+		if n >= used
+			throw 'bad CSS value number';
+		;;
+	[end: table:n]
+
+	[Alloc]
+		u32 n: free_head;
+		ptr<CssCx> c: 0;
+		if n is not 0
+			c is table:n;
+			free_head is c.next_free;
+		;;
+		else
+			if used >= cap
+				u32 room: cap * 2;
+				if room is 0
+					room is 1024;
+				;;
+				ptr<ptr<CssCx>> grown: new ptr<CssCx>[room];
+				if grown is 0
+					throw 'out of memory for CSS values';
+				;;
+				if used > 0 and table is not 0
+					call Mem.Copy: grown table used * sizeof ptr<CssCx>;
+					free table;
+				;;
+				table is grown;
+				cap is room;
+			;;
+			c is new CssCx;
+			if c is 0
+				throw 'out of memory for a CSS value';
+			;;
+			n is used;
+			table:n is c;
+			used++;
+		;;
+		c.refs is 1;
+		c.next_free is 0;
+		c.len is 0;
+		c.text is 0;
+		c.items is 0;
+	[end: n]
+
+	[NewText: ptr<u8> text: 0; u32 n: 0;]
+		ptr<u8> copy: (WlText.Dup: text n);
+		u32 index: (Alloc);
+		ptr<CssCx> c: table:index;
+		c.text is copy;
+		c.len is n;
+	[end: index]
+
+	# a list holding copies of these values; it takes over their references
+	[NewList: ptr<CssVal> values: 0; u32 count: 0;]
+		ptr<CssVal> copy: new CssVal[count + 1];
+		if copy is 0
+			throw 'out of memory for a CSS list';
+		;;
+		call Mem.Copy: copy values count * sizeof CssVal;
+		u32 index: (Alloc);
+		ptr<CssCx> c: table:index;
+		c.items is copy;
+		c.len is count;
+	[end: index]
+
+	# how many are held by someone: for tests, to see nothing's leaking
+	[Live]
+		u32 live: 0;
+		while u32 i: 1; i < used; i++;
+			ptr<CssCx> c: table:i;
+			if c.refs > 0
+				live++;
+			;;
+		;;
+	[end: live]
+
+	[Retain: u32 n: 0;]
+		if n is 0 or n >= used return;
+		ptr<CssCx> c: table:n;
+		c.refs++;
+	[end]
+
+	[Release: u32 n: 0;]
+		if n is 0 or n >= used return;
+		ptr<CssCx> c: table:n;
+		if c.refs is 0 return;
+		c.refs--;
+		if c.refs > 0 return;
+		if c.text is not 0
+			free c.text;
+			c.text is 0;
+		;;
+		if c.items is not 0
+			# no list holds another list, so this doesn't go deep
+			while u32 i: 0; i < c.len; i++;
+				ptr<CssVal> item: c.items + i * sizeof CssVal;
+				if item.kind >= CssV.FIRST_CX
+					call Release: item.bits;
+				;;
+			;;
+			free c.items;
+			c.items is 0;
+		;;
+		c.next_free is free_head;
+		free_head is n;
+	[end]
+}
+
+# numbers as text
+phi.CssNum:Library
+{
+	# v in decimal: at most digits significant digits, without an exponent unless it's huge or
+	# tiny, and no zeros at the end
+	[Add: ptr<WlBuf> b: 0; f64 v: 0.0; int digits: 7;]
+		if v is not v
+			call b.AddZ: 'NaN';
+			return;
+		;;
+		if v < 0.0
+			call b.Add: '-';
+			v is 0.0 - v;
+		;;
+		if v is 0.0
+			call b.Add: '0';
+			return;
+		;;
+		if v > 1e300
+			call b.AddZ: 'infinity';
+			return;
+		;;
+		int e10: 0;
+		if v >= 1e15 or v < 1e-6
+			# scientific form
+			f64 m: v;
+			while m >= 10.0
+				m is m / 10.0;
+				e10++;
+			;;
+			while m < 1.0
+				m is m * 10.0;
+				e10--;
+			;;
+			call AddFixed: b m digits;
+			call b.Add: 'e';
+			if e10 > 0
+				call b.Add: '+';
+			;;
+			call b.AddInt: e10;
+			return;
+		;;
+		call AddFixed: b v digits;
+	[end]
+
+	# v of 1e-6 up to 1e15, in plain digits
+	[AddFixed: ptr<WlBuf> b: 0; f64 v: 0.0; int digits: 7;]
+		# how many digits before the point
+		int before: 0;
+		f64 scale: 1.0;
+		while v >= scale
+			scale is scale * 10.0;
+			before++;
+		;;
+		# how many places after the point keep digits significant digits
+		int places: digits - before;
+		if before is 0
+			f64 w: v;
+			while w < 0.1
+				w is w * 10.0;
+				places++;
+			;;
+		;;
+		if places < 0
+			places is 0;
+		;;
+		f64 mul: 1.0;
+		while int i: 0; i < places; i++;
+			mul is mul * 10.0;
+		;;
+		f64 scaled: v * mul + 0.5;
+		u64 whole: scaled as u64;
+		# its digits, last first
+		u8 text[32];
+		int count: 0;
+		while whole > 0 or count <= places
+			if count >= 32 break;
+			u32 d: (whole % 10) as u32;
+			text:count is (48 + d) as u8;
+			whole is whole / 10;
+			count++;
+		;;
+		# drop zeros at the end of the fraction
+		int drop: 0;
+		while drop < places and text:drop is 48
+			drop++;
+		;;
+		int k: count - 1;
+		while k >= drop
+			if k + 1 is places and places > drop
+				if k + 1 is count
+					call b.Add: '0';
+				;;
+				call b.Add: '.';
+			;;
+			call b.Add: text:k;
+			k--;
+		;;
+	[end]
+}
+
+# the property table, built from CssTab's text the first time anything needs it
+struct.CssPropInfo
+{
+	ptr<WlAtom> name;
+	ptr<u8> grammar;        # a longhand's grammar, or a shorthand's list of longhands
+	ptr<u8> initial;
+	ptr<u8> compiled;       # a ptr<CssGNode>, once it has been needed
+	ptr<u16> subs;          # a shorthand's longhands
+	u32 grammar_len;
+	u32 initial_len;
+	u16 sub_count;
+	u8 flags;
+	u8 group;
+	u8 slot;
+	u8 sh_kind;
+	CssVal init;            # the initial value as a declaration would hold it
+	bln init_done;
+}
+
+phi.CssProps:Library
+{
+	const u32 F_INHERITED: 1;
+	const u32 F_EARLY: 2;
+	const u32 F_SHORTHAND: 4;
+
+	const u32 SH_BOX4: 1;
+	const u32 SH_ANY: 2;
+	const u32 SH_PAIR: 3;
+	const u32 SH_SLASH: 4;
+	const u32 SH_BORDER: 5;
+	const u32 SH_RADIUS: 6;
+	const u32 SH_BACKGROUND: 7;
+	const u32 SH_FONT: 8;
+	const u32 SH_FLEX: 9;
+	const u32 SH_LAYERS: 10;
+	const u32 SH_GRIDTEMPLATE: 11;
+	const u32 SH_GRID: 12;
+	const u32 SH_ALL: 13;
+	const u32 SH_ANY2: 14;
+	const u32 SH_CUSTOM: 15;
+
+	const u32 MACRO_MAX: 64;
+
+	bln started: false;
+	ptr<CssPropInfo> info: 0;
+	ptr<u32> color_of: 0;       # by keyword: 0xRRGGBBAA, or 0 if it's not a color's name
+	ptr<u8> unit_of: 0;         # by keyword: its CssU, or 0
+	ptr<ptr<WlAtom>> kw_atoms: 0;
+	ptr<ptr<WlAtom>> unit_atoms: 0;
+	ptr<ptr<WlAtom>> type_atoms: 0;
+	u32 type_count: 0;
+
+	# the grammars other grammars refer to by name
+	ptr<ptr<WlAtom>> macro_names: 0;
+	ptr<ptr<u8>> macro_text: 0;
+	ptr<u32> macro_len: 0;
+	ptr<ptr<u8>> macro_node: 0;
+	u32 macro_count: 0;
+
+	[Start]
+		if started return;
+		started is true;
+		call WlAtomsReady;
+		call Words;
+		call Units;
+		call Types;
+		call Colors;
+		call Table;
+		call Macros;
+	[end]
+
+	[WlAtomsReady]
+		info is new CssPropInfo[CssP.COUNT + 1];
+		color_of is new u32[CssK.COUNT + 1];
+		unit_of is new u8[CssK.COUNT + 1];
+		kw_atoms is new ptr<WlAtom>[CssK.COUNT + 1];
+		unit_atoms is new ptr<WlAtom>[CssU.COUNT + 1];
+		type_atoms is new ptr<WlAtom>[64];
+		macro_names is new ptr<WlAtom>[MACRO_MAX];
+		macro_text is new ptr<u8>[MACRO_MAX];
+		macro_len is new u32[MACRO_MAX];
+		macro_node is new ptr<u8>[MACRO_MAX];
+		if info is 0 or color_of is 0 or unit_of is 0 or kw_atoms is 0 or unit_atoms is 0 or type_atoms is 0 or macro_names is 0 or macro_text is 0 or macro_len is 0 or macro_node is 0
+			started is false;
+			throw 'out of memory for the CSS tables';
+		;;
+	[end]
+
+	[Words]
+		ptr<u8> p: (CssTab.Words);
+		u32 id: 1;
+		u32 pos: 0;
+		while p:pos is not 0
+			u32 from: pos;
+			while p:pos is not 0 and p:pos is not 10
+				pos++;
+			;;
+			ptr<WlAtom> a: (WlAtoms.Get: p + from pos - from);
+			a.prop is (a.prop & 0xFF000FFF) | (id << 12);
+			kw_atoms:id is a;
+			id++;
+			if p:pos is 10
+				pos++;
+			;;
+		;;
+	[end]
+
+	[Units]
+		ptr<u8> p: (CssTab.Units);
+		u32 id: 1;
+		u32 pos: 0;
+		while p:pos is not 0
+			u32 from: pos;
+			while p:pos is not 32
+				pos++;
+			;;
+			ptr<WlAtom> a: (WlAtoms.Get: p + from pos - from);
+			unit_atoms:id is a;
+			unit_of:((a.prop >> 12) & 0xFFF) is id as u8;
+			id++;
+			pos++;
+		;;
+	[end]
+
+	[Types]
+		ptr<u8> p: (CssTab.Types);
+		u32 id: 1;
+		u32 pos: 0;
+		while p:pos is not 0
+			u32 from: pos;
+			while p:pos is not 32
+				pos++;
+			;;
+			type_atoms:id is (WlAtoms.Get: p + from pos - from);
+			id++;
+			pos++;
+		;;
+		type_count is id;
+	[end]
+
+	[Colors]
+		ptr<u8> p: (CssTab.Colors);
+		u32 pos: 0;
+		while p:pos is not 0
+			u32 from: pos;
+			while p:pos is not 32
+				pos++;
+			;;
+			ptr<WlAtom> a: (WlAtoms.Get: p + from pos - from);
+			pos++;
+			u32 rgb: 0;
+			while u32 k: 0; k < 6; k++;
+				rgb is rgb * 16 + (WlText.HexValue: p:(pos + k)) as u32;
+			;;
+			pos++ 7;
+			color_of:((a.prop >> 12) & 0xFFF) is (rgb << 8) | 0xFF;
+		;;
+		color_of:(CssK.TRANSPARENT) is 0;
+	[end]
+
+	# name|flags|group|initial|grammar
+	# name|S|kind|longhand longhand ...
+	# name|A|target
+	[Table]
+		ptr<u8> p: (CssTab.Props);
+		u32 pos: 0;
+		u32 id: 0;
+		ptr<u8> slots: new u8[CssP.GROUPS + 1];
+		if slots is 0
+			throw 'out of memory for the CSS tables';
+		;;
+		while p:pos is not 0
+			u32 from: pos;
+			while p:pos is not 124
+				pos++;
+			;;
+			ptr<WlAtom> name: (WlAtoms.Get: p + from pos - from);
+			pos++;
+			ptr<u8> flags: p + pos;
+			while p:pos is not 124
+				pos++;
+			;;
+			pos++;
+			if flags:0 is 83
+				ptr<CssPropInfo> sp: addr info:id;
+				sp.name is name;
+				sp.flags is F_SHORTHAND as u8;
+				u32 kind_from: pos;
+				while p:pos is not 124
+					pos++;
+				;;
+				sp.sh_kind is (ShKind: p + kind_from pos - kind_from) as u8;
+				pos++;
+				sp.grammar is p + pos;
+				u32 list_from: pos;
+				while p:pos is not 0 and p:pos is not 10
+					pos++;
+				;;
+				sp.grammar_len is pos - list_from;
+				name.prop is (name.prop & 0xFFFFF000) | (id + 1);
+				id++;
+			;;
+			elif flags:0 is 65
+				# an alias, whose target is earlier in the table
+				u32 alias_from: pos;
+				while p:pos is not 0 and p:pos is not 10
+					pos++;
+				;;
+				ptr<WlAtom> target: (WlAtoms.Get: p + alias_from pos - alias_from);
+				name.prop is (name.prop & 0xFFFFF000) | (target.prop & 0xFFF);
+			;;
+			else
+				ptr<CssPropInfo> lp: addr info:id;
+				lp.name is name;
+				u32 fl: 0;
+				if flags:0 is 105
+					fl is F_INHERITED;
+				;;
+				if flags:0 is 102 or flags:1 is 102
+					fl is fl | F_EARLY;
+				;;
+				lp.flags is fl as u8;
+				u32 group: 0;
+				while p:pos is not 124
+					group is group * 10 + (p:pos - 48);
+					pos++;
+				;;
+				pos++;
+				lp.group is group as u8;
+				lp.slot is slots:group;
+				slots:group is slots:group + 1;
+				lp.initial is p + pos;
+				u32 init_from: pos;
+				while p:pos is not 124
+					pos++;
+				;;
+				lp.initial_len is pos - init_from;
+				pos++;
+				lp.grammar is p + pos;
+				u32 gram_from: pos;
+				while p:pos is not 0 and p:pos is not 10
+					pos++;
+				;;
+				lp.grammar_len is pos - gram_from;
+				name.prop is (name.prop & 0xFFFFF000) | (id + 1);
+				id++;
+			;;
+			if p:pos is 10
+				pos++;
+			;;
+		;;
+		group_slots is slots;
+		# the longhands of each shorthand, now every name has its number
+		while u32 k: CssP.LONGHANDS; k < CssP.COUNT; k++;
+			call SubList: addr info:k;
+		;;
+	[end]
+
+	ptr<u8> group_slots: 0;
+
+	[SubList: ptr<CssPropInfo> sp: 0;]
+		ptr<u8> list: sp.grammar;
+		u32 n: sp.grammar_len;
+		u32 words: 0;
+		bln inside: false;
+		while u32 i: 0; i < n; i++;
+			if list:i is 32
+				inside is false;
+			;;
+			elif inside is false
+				inside is true;
+				words++;
+			;;
+		;;
+		if words is 0 return;
+		sp.subs is new u16[words];
+		if sp.subs is 0
+			throw 'out of memory for the CSS tables';
+		;;
+		u32 pos: 0;
+		while pos < n
+			u32 from: pos;
+			while pos < n and list:pos is not 32
+				pos++;
+			;;
+			ptr<WlAtom> a: (WlAtoms.Get: list + from pos - from);
+			sp.subs:(sp.sub_count) is ((a.prop & 0xFFF) - 1) as u16;
+			sp.sub_count++;
+			pos++;
+		;;
+	[end]
+
+	[ShKind: ptr<u8> p: 0; u32 n: 0;]
+		if (WlText.EqZ: p n 'box4') return SH_BOX4;
+		if (WlText.EqZ: p n 'any') return SH_ANY;
+		if (WlText.EqZ: p n 'any2') return SH_ANY2;
+		if (WlText.EqZ: p n 'pair') return SH_PAIR;
+		if (WlText.EqZ: p n 'slash') return SH_SLASH;
+		if (WlText.EqZ: p n 'border') return SH_BORDER;
+		if (WlText.EqZ: p n 'radius') return SH_RADIUS;
+		if (WlText.EqZ: p n 'background') return SH_BACKGROUND;
+		if (WlText.EqZ: p n 'font') return SH_FONT;
+		if (WlText.EqZ: p n 'flex') return SH_FLEX;
+		if (WlText.EqZ: p n 'layers') return SH_LAYERS;
+		if (WlText.EqZ: p n 'gridtemplate') return SH_GRIDTEMPLATE;
+		if (WlText.EqZ: p n 'grid') return SH_GRID;
+		if (WlText.EqZ: p n 'all') return SH_ALL;
+	[end: SH_CUSTOM]
+
+	[Macros]
+		ptr<u8> p: (CssTab.Macros);
+		u32 pos: 0;
+		while p:pos is not 0
+			u32 from: pos;
+			while p:pos is not 124
+				pos++;
+			;;
+			macro_names:macro_count is (WlAtoms.Get: p + from pos - from);
+			pos++;
+			macro_text:macro_count is p + pos;
+			u32 body: pos;
+			while p:pos is not 0 and p:pos is not 10
+				pos++;
+			;;
+			macro_len:macro_count is pos - body;
+			macro_count++;
+			if p:pos is 10
+				pos++;
+			;;
+		;;
+	[end]
+
+	# the property's number from its name (any case, -webkit- prefix or not), or -1 if it has none
+	[Find: ptr<u8> text: 0; u32 n: 0;]
+		call Start;
+		ptr<WlAtom> a: (WlAtoms.GetLower: text n);
+		u32 id: a.prop & 0xFFF;
+		if id is not 0 return (id - 1) as int;
+		if n > 8 and (WlText.EqNoCase: text 8 '-webkit-' 8)
+			a is (WlAtoms.GetLower: text + 8 n - 8);
+			id is a.prop & 0xFFF;
+			if id is not 0 return (id - 1) as int;
+		;;
+	[end: -1]
+
+	[KwOfAtom: ptr<WlAtom> a: 0;]
+	[end: (a.prop >> 12) & 0xFFF]
+
+	# a keyword's number from its text, or 0
+	[KwOf: ptr<u8> text: 0; u32 n: 0;]
+		call Start;
+		ptr<WlAtom> a: (WlAtoms.GetLower: text n);
+	[end: (a.prop >> 12) & 0xFFF]
+
+	[KwName: u32 kw: 0;]
+		ptr<WlAtom> a: kw_atoms:kw;
+	[end: a.text]
+
+	[Name: u32 prop: 0;]
+		ptr<WlAtom> a: info:prop.name;
+	[end: a.text]
+
+	[IsInherited: u32 prop: 0;]
+	[end: (info:prop.flags & F_INHERITED) is not 0]
+
+	[IsShorthand: u32 prop: 0;]
+	[end: (info:prop.flags & F_SHORTHAND) is not 0]
+
+	# 0 if it's not a unit
+	[UnitOfKw: u32 kw: 0;]
+	[end: unit_of:kw as u32]
+
+	[UnitName: u32 unit: 0;]
+		ptr<WlAtom> a: unit_atoms:unit;
+	[end: a.text]
+}

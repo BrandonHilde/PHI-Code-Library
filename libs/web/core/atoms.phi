@@ -1,0 +1,110 @@
+# Interned names: tag names, attribute names, CSS properties, class names. There's one WlAtom
+# for each distinct text, so two names are the same when their pointers are, and an atom is
+# never freed. Subsystems hang what they know about a name on it: the HTML parser its tag's
+# number, CSS its property's number.
+#
+#   ptr<WlAtom> div: (WlAtoms.GetZ: 'div');
+#   ptr<WlAtom> same: (WlAtoms.Get: text length);
+#   if div is same ...
+
+use memory.mem;
+use core.text;
+
+struct.WlAtom
+{
+	ptr<u8> text;           # zero-terminated
+	u32 len;
+	u32 hash;
+	ptr<WlAtom> chain;      # the next atom in its bucket
+	u32 tag;                # HtmlTag number, for an HTML element's name; 0 otherwise
+	u32 prop;               # CSS property number; 0 otherwise
+	u64 js;                 # the JS engine's string for it, once it has asked; 0 before
+}
+
+phi.WlAtoms:Library
+{
+	ptr<ptr<WlAtom>> buckets: 0;
+	u32 capacity: 0;
+	u32 count: 0;
+
+	[Get: ptr<u8> text: 0; u32 n: 0;]
+		if buckets is 0
+			call Grow;
+		;;
+		u32 h: (WlText.Hash: text n);
+		u32 place: h & (capacity - 1);
+		ptr<WlAtom> a: buckets:place;
+		while a is not 0
+			if a.hash is h and (WlText.Eq: a.text a.len text n)
+				return a;
+			;;
+			a is a.chain;
+		;;
+		if (count + 1) * 4 > capacity * 3
+			call Grow;
+			place is h & (capacity - 1);
+		;;
+		ptr<WlAtom> made: new WlAtom;
+		if made is 0
+			throw 'out of memory for a name';
+		;;
+		made.text is (WlText.Dup: text n);
+		made.len is n;
+		made.hash is h;
+		made.chain is buckets:place;
+		buckets:place is made;
+		count++;
+	[end: made]
+
+	[GetZ: ptr<u8> text: 0;]
+	[end: (Get: text (WlText.LenZ: text))]
+
+	# the same, with ASCII capitals as lowercase (HTML's names, CSS's keywords)
+	[GetLower: ptr<u8> text: 0; u32 n: 0;]
+		# most names are already lowercase and short: no copy for those
+		bln upper: false;
+		while u32 i: 0; i < n; i++;
+			if text:i >= 65 and text:i <= 90
+				upper is true;
+				break;
+			;;
+		;;
+		if upper is false return (Get: text n);
+		ptr<u8> low: new u8[n + 1];
+		if low is 0
+			throw 'out of memory for a name';
+		;;
+		while u32 j: 0; j < n; j++;
+			low:j is (WlText.Lower: text:j) as u8;
+		;;
+		ptr<WlAtom> got: (Get: low n);
+		free low;
+	[end: got]
+
+	# twice the buckets, each atom moved to its new one
+	[Grow]
+		u32 room: capacity * 2;
+		if room is 0
+			room is 1024;
+		;;
+		ptr<ptr<WlAtom>> grown: new ptr<WlAtom>[room];
+		if grown is 0
+			throw 'out of memory for the table of names';
+		;;
+		while u32 i: 0; i < capacity; i++;
+			ptr<WlAtom> a: buckets:i;
+			while a is not 0
+				ptr<WlAtom> next_one: a.chain;
+				u32 place: a.hash & (room - 1);
+				a.chain is grown:place;
+				grown:place is a;
+				a is next_one;
+			;;
+		;;
+		if buckets is not 0
+			free buckets;
+		;;
+		buckets is grown;
+		capacity is room;
+	[end]
+}

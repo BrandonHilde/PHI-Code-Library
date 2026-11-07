@@ -1,0 +1,1796 @@
+# Stylesheets: rules, at-rules, media queries and @supports. A sheet owns its rules in an arena; the
+# tokens it was parsed from are gone by the time ParseSheet returns.
+
+use memory.mem;
+use core.text;
+use core.buf;
+use core.atoms;
+use core.arena;
+use core.stack;
+use css.tables;
+use css.lexer;
+use css.values;
+use css.calc;
+use css.vp;
+use css.decls;
+use css.selector;
+
+# ---- what's in a sheet
+
+struct.CssRule
+{
+	ptr<CssRule> next;
+	ptr<CssSelList> sel;        # a style rule
+	ptr<u8> sel_text;           # the selector, as written
+	ptr<CssDecls> decls;        # a style rule, @page
+	ptr<CssRule> first_child;   # @media, @supports, @layer { }
+	ptr<CssMediaList> media;    # @media, @import
+	ptr<WlAtom> layer;          # the whole name of the layer it's in, a.b; 0 if none
+	ptr<CssImport> import;
+	ptr<CssFontFace> face;
+	ptr<CssKeyframes> frames;
+	u8 kind;                    # CssSheetP.R_*
+	u8 supported;               # @supports: what it came to
+}
+
+struct.CssImport
+{
+	ptr<u8> url;                # resolved against the sheet's address, zero-terminated
+	ptr<CssSheet> sheet;        # what the host gave back
+	ptr<CssMediaList> media;
+	ptr<WlAtom> layer;
+	u8 asked;
+	u8 supported;
+}
+
+struct.CssFontSrc
+{
+	ptr<CssFontSrc> next;
+	ptr<u8> url;                # zero-terminated; or a local() font's name when is_local
+	ptr<u8> format;             # format("..."), or 0
+	bln is_local;
+}
+
+struct.CssFontFace
+{
+	ptr<u8> family;             # zero-terminated
+	ptr<CssFontSrc> src;        # in order of preference
+	f32 weight_low;             # 400 if it doesn't say
+	f32 weight_high;
+	f32 stretch_low;            # in percent: 100 if it doesn't say
+	f32 stretch_high;
+	u16 style;                  # CssK.NORMAL, ITALIC or OBLIQUE
+	u16 display;                # CssK.AUTO, BLOCK, SWAP, FALLBACK or OPTIONAL
+	ptr<u32> ranges;            # unicode-range: from, to, from, to ...; 0 for all of Unicode
+	u32 range_count;            # pairs
+}
+
+struct.CssKeyframe
+{
+	ptr<CssKeyframe> next;
+	ptr<f32> offsets;           # 0 to 1
+	u32 offset_count;
+	ptr<CssDecls> decls;
+}
+
+struct.CssKeyframes
+{
+	ptr<WlAtom> name;
+	ptr<CssKeyframe> first;
+	u32 count;
+}
+
+struct.CssSheet
+{
+	WlArena arena;
+	ptr<CssRule> first;
+	ptr<u8> base_url;           # zero-terminated, in the arena; 0 if none
+	ptr<CssDecls> all_decls;    # every block in it, to free them
+	u32 rule_count;
+}
+
+# ---- media queries
+
+struct.CssMqNode
+{
+	ptr<CssMqNode> first;       # AND, OR, NOT: children
+	ptr<CssMqNode> next;
+	f64 a;                      # a feature's values
+	f64 b;
+	u16 feature;                # a CssK
+	u16 word;                   # a keyword value
+	u8 type;                    # CssMq.N_*
+	u8 op_a;                    # CssMq.OP_*: value a op feature
+	u8 op_b;                    # feature op value b
+	u8 unit_a;                  # what a value's in: 0 a plain number
+	u8 unit_b;
+}
+
+struct.CssMediaQuery
+{
+	ptr<CssMediaQuery> next;
+	ptr<CssMqNode> cond;
+	u16 type;                   # a CssK: 0 means all
+	u8 negated;
+	u8 bad;                     # it couldn't be parsed: not all
+}
+
+struct.CssMediaList
+{
+	ptr<CssMediaQuery> first;
+	ptr<u8> text;               # as written
+	u8 last;                    # what it came to the last time it was asked
+}
+
+# what @media is asked about; a CssEngine has one
+struct.CssMediaEnv
+{
+	f64 width;                  # the viewport, in CSS pixels
+	f64 height;
+	f64 device_width;
+	f64 device_height;
+	f64 dppx;                   # device pixels per CSS pixel
+	bln print;                  # print media, rather than screen
+	bln dark;                   # prefers-color-scheme: dark
+	bln reduced_motion;
+	bln no_hover;               # a touch screen: hover: none
+	bln coarse;                 # pointer: coarse
+	bln no_scripting;
+	bln high_contrast;
+	bln forced_colors;
+}
+
+phi.CssMq:Library
+{
+	const u32 N_AND: 1;
+	const u32 N_OR: 2;
+	const u32 N_NOT: 3;
+	const u32 N_FEATURE: 4;
+	const u32 N_UNKNOWN: 5;
+
+	const u32 OP_NONE: 0;
+	const u32 OP_LE: 1;
+	const u32 OP_LT: 2;
+	const u32 OP_GE: 3;
+	const u32 OP_GT: 4;
+	const u32 OP_EQ: 5;
+
+	ptr<CssTok> t: 0;
+	u32 pos: 0;
+	u32 stop: 0;
+	u32 depth: 0;
+	ptr<WlArena> arena: 0;
+
+	[ParseList: ptr<CssToks> ts: 0; u32 from: 0; u32 to: 0; ptr<WlArena> into_arena: 0;]
+		t is ts.t;
+		arena is into_arena;
+		ptr<WlArena> a: arena;
+		ptr<CssMediaList> list: (a.Alloc: sizeof CssMediaList) as ptr<CssMediaList>;
+		while from < to and t:from.type is CssLex.WS
+			from++;
+		;;
+		while to > from and t:(to - 1).type is CssLex.WS
+			to--;
+		;;
+		if to > from
+			list.text is (a.Text: ts.src + t:from.start t:(to - 1).stop - t:from.start);
+		;;
+		ptr<CssMediaQuery> last: 0;
+		u32 i: from;
+		while i < to
+			u32 comma: i;
+			while comma < to and t:comma.type is not CssLex.COMMA
+				comma is (CssSyntax.After: t comma);
+			;;
+			if comma > to
+				comma is to;
+			;;
+			ptr<CssMediaQuery> q: (a.Alloc: sizeof CssMediaQuery) as ptr<CssMediaQuery>;
+			depth is 0;
+			if call OneQuery: q i comma throws err
+				q.bad is 1;
+			;;
+			if last is 0
+				list.first is q;
+			;;
+			else
+				last.next is q;
+			;;
+			last is q;
+			i is comma + 1;
+		;;
+	[end: list]
+
+	[Skip]
+		while pos < stop and t:pos.type is CssLex.WS
+			pos++;
+		;;
+	[end]
+
+	[OneQuery: ptr<CssMediaQuery> q: 0; u32 from: 0; u32 to: 0;]
+		pos is from;
+		stop is to;
+		call Skip;
+		if pos >= stop
+			q.bad is 1;
+			return;
+		;;
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is CssLex.IDENT
+			u32 kw: (CssVp.Kw: tk);
+			if kw is CssK.NOT and (NextIsParen)
+				# a condition starting with not
+			;;
+			else
+				if kw is CssK.NOT or kw is CssK.ONLY
+					q.negated is (kw is CssK.NOT) as u8;
+					pos++;
+					call Skip;
+					if pos >= stop or t:pos.type is not CssLex.IDENT
+						q.bad is 1;
+						return;
+					;;
+					kw is (CssVp.Kw: addr t:pos);
+				;;
+				# not, only, and, or, layer aren't media types
+				if kw is CssK.AND or kw is CssK.OR or kw is CssK.NOT or kw is CssK.ONLY or kw is CssK.LAYER
+					q.bad is 1;
+					return;
+				;;
+				q.type is kw as u16;
+				if kw is 0
+					# a media type nobody has heard of matches nothing
+					q.type is 0xFFFF;
+				;;
+				pos++;
+				call Skip;
+				if pos >= stop return;
+				if t:pos.type is not CssLex.IDENT or (CssVp.Kw: addr t:pos) is not CssK.AND
+					q.bad is 1;
+					return;
+				;;
+				pos++;
+				call Skip;
+				q.cond is (Condition: false);
+				call Skip;
+				if pos < stop or q.cond is 0
+					q.bad is 1;
+				;;
+				return;
+			;;
+		;;
+		q.cond is (Condition: true);
+		call Skip;
+		if pos < stop or q.cond is 0
+			q.bad is 1;
+		;;
+	[end]
+
+	[NextIsParen]
+		u32 p: pos + 1;
+		while p < stop and t:p.type is CssLex.WS
+			p++;
+		;;
+	[end: p < stop and t:p.type is CssLex.LPAREN]
+
+	[Node: u32 type: 0;]
+		ptr<WlArena> a: arena;
+		ptr<CssMqNode> n: (a.Alloc: sizeof CssMqNode) as ptr<CssMqNode>;
+		n.type is type as u8;
+	[end: n]
+
+	# not x | x [ and x ]* | x [ or x ]*
+	[Condition: bln or_allowed: true;]
+		call WlStack.Check;
+		depth++;
+		if depth > 64
+			throw 'media query too deep';
+		;;
+		call Skip;
+		if pos >= stop return 0;
+		if t:pos.type is CssLex.IDENT and (CssVp.Kw: addr t:pos) is CssK.NOT
+			pos++;
+			call Skip;
+			ptr<CssMqNode> not_node: (Node: N_NOT);
+			not_node.first is (InParens);
+			depth--;
+			if not_node.first is 0 return 0;
+			return not_node;
+		;;
+		ptr<CssMqNode> first: (InParens);
+		if first is 0 return 0;
+		call Skip;
+		if pos >= stop or t:pos.type is not CssLex.IDENT
+			depth--;
+			return first;
+		;;
+		u32 word: (CssVp.Kw: addr t:pos);
+		if word is not CssK.AND and (word is not CssK.OR or or_allowed is false) return 0;
+		ptr<CssMqNode> group: 0;
+		if word is CssK.AND
+			group is (Node: N_AND);
+		;;
+		else
+			group is (Node: N_OR);
+		;;
+		group.first is first;
+		ptr<CssMqNode> last: first;
+		while pos < stop and t:pos.type is CssLex.IDENT and (CssVp.Kw: addr t:pos) is word
+			pos++;
+			call Skip;
+			ptr<CssMqNode> more: (InParens);
+			if more is 0 return 0;
+			last.next is more;
+			last is more;
+			call Skip;
+		;;
+		depth--;
+	[end: group]
+
+	# ( condition ), ( feature ), or something else in parentheses that's kept but unknown
+	[InParens]
+		if pos >= stop return 0;
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is CssLex.FUNCTION
+			pos is tk.match + 1;
+			return (Node: N_UNKNOWN);
+		;;
+		if tk.type is not CssLex.LPAREN return 0;
+		u32 close: tk.match;
+		u32 saved_stop: stop;
+		pos++;
+		stop is close;
+		call Skip;
+		ptr<CssMqNode> inner: 0;
+		# a condition inside, or a feature
+		bln nested: pos < stop and (t:pos.type is CssLex.LPAREN or t:pos.type is CssLex.FUNCTION or (t:pos.type is CssLex.IDENT and (CssVp.Kw: addr t:pos) is CssK.NOT and (NextIsParen)));
+		if nested
+			inner is (Condition: true);
+			call Skip;
+			if pos is not stop
+				inner is 0;
+			;;
+		;;
+		else
+			inner is (Feature);
+		;;
+		if inner is 0
+			inner is (Node: N_UNKNOWN);
+		;;
+		stop is saved_stop;
+		pos is close + 1;
+		if pos > stop
+			pos is stop;
+		;;
+	[end: inner]
+
+	[RangeType: u32 kw: 0;]
+		when kw
+			is CssK.WIDTH CssK.HEIGHT CssK.ASPECT_RATIO CssK.RESOLUTION CssK.COLOR CssK.COLOR_INDEX CssK.MONOCHROME CssK.DEVICE_WIDTH CssK.DEVICE_HEIGHT CssK.DEVICE_ASPECT_RATIO
+				return true;
+			;;
+		;;
+	[end: false]
+
+	# the feature a min- or max- form is about
+	[Unprefixed: u32 kw: 0;]
+		when kw
+			is CssK.MIN_WIDTH CssK.MAX_WIDTH
+				return CssK.WIDTH;
+			;;
+			is CssK.MIN_HEIGHT CssK.MAX_HEIGHT
+				return CssK.HEIGHT;
+			;;
+			is CssK.MIN_ASPECT_RATIO CssK.MAX_ASPECT_RATIO
+				return CssK.ASPECT_RATIO;
+			;;
+			is CssK.MIN_RESOLUTION CssK.MAX_RESOLUTION
+				return CssK.RESOLUTION;
+			;;
+			is CssK.MIN_COLOR CssK.MAX_COLOR
+				return CssK.COLOR;
+			;;
+			is CssK.MIN_COLOR_INDEX CssK.MAX_COLOR_INDEX
+				return CssK.COLOR_INDEX;
+			;;
+			is CssK.MIN_MONOCHROME CssK.MAX_MONOCHROME
+				return CssK.MONOCHROME;
+			;;
+			is CssK.MIN_DEVICE_WIDTH CssK.MAX_DEVICE_WIDTH
+				return CssK.DEVICE_WIDTH;
+			;;
+			is CssK.MIN_DEVICE_HEIGHT CssK.MAX_DEVICE_HEIGHT
+				return CssK.DEVICE_HEIGHT;
+			;;
+			is CssK.MIN_DEVICE_ASPECT_RATIO CssK.MAX_DEVICE_ASPECT_RATIO
+				return CssK.DEVICE_ASPECT_RATIO;
+			;;
+		;;
+	[end: 0]
+
+	[IsMaxForm: u32 kw: 0;]
+		when kw
+			is CssK.MAX_WIDTH CssK.MAX_HEIGHT CssK.MAX_ASPECT_RATIO CssK.MAX_RESOLUTION CssK.MAX_COLOR CssK.MAX_COLOR_INDEX CssK.MAX_MONOCHROME CssK.MAX_DEVICE_WIDTH CssK.MAX_DEVICE_HEIGHT CssK.MAX_DEVICE_ASPECT_RATIO
+				return true;
+			;;
+		;;
+	[end: false]
+
+	# name | name : value | value op name | name op value | value op name op value
+	[Feature]
+		ptr<CssMqNode> n: (Node: N_FEATURE);
+		if pos >= stop return 0;
+		if t:pos.type is CssLex.IDENT
+			u32 kw: (CssVp.Kw: addr t:pos);
+			u32 saved: pos;
+			pos++;
+			call Skip;
+			if pos >= stop
+				if kw is 0 return (Node: N_UNKNOWN);
+				n.feature is kw as u16;
+				return n;
+			;;
+			if t:pos.type is CssLex.COLON
+				pos++;
+				call Skip;
+				u32 base: (Unprefixed: kw);
+				if base is not 0
+					n.feature is base as u16;
+					if (IsMaxForm: kw)
+						n.op_b is OP_LE as u8;
+					;;
+					else
+						n.op_b is OP_GE as u8;
+					;;
+				;;
+				else
+					n.feature is kw as u16;
+					n.op_b is OP_EQ as u8;
+				;;
+				if kw is 0 or pos >= stop return (Node: N_UNKNOWN);
+				if (Value: n false) is false return (Node: N_UNKNOWN);
+				if pos is not stop return (Node: N_UNKNOWN);
+				return n;
+			;;
+			u32 op: (Op);
+			if op is 0 or kw is 0 or (RangeType: kw) is false return (Node: N_UNKNOWN);
+			n.feature is kw as u16;
+			n.op_b is op as u8;
+			if (Value: n false) is false or pos is not stop return (Node: N_UNKNOWN);
+			return n;
+		;;
+		# value op name [ op value ]
+		if (Value: n true) is false return (Node: N_UNKNOWN);
+		u32 op1: (Op);
+		if op1 is 0 return (Node: N_UNKNOWN);
+		n.op_a is op1 as u8;
+		if pos >= stop or t:pos.type is not CssLex.IDENT return (Node: N_UNKNOWN);
+		u32 name: (CssVp.Kw: addr t:pos);
+		if name is 0 or (RangeType: name) is false return (Node: N_UNKNOWN);
+		n.feature is name as u16;
+		pos++;
+		call Skip;
+		if pos < stop
+			u32 op2: (Op);
+			if op2 is 0 return (Node: N_UNKNOWN);
+			# both must point the same way
+			if ((op1 is OP_LE or op1 is OP_LT) and (op2 is OP_LE or op2 is OP_LT)) is false and ((op1 is OP_GE or op1 is OP_GT) and (op2 is OP_GE or op2 is OP_GT)) is false return (Node: N_UNKNOWN);
+			n.op_b is op2 as u8;
+			if (Value: n false) is false or pos is not stop return (Node: N_UNKNOWN);
+		;;
+	[end: n]
+
+	# <= < >= > = at pos, moving past it; 0 if it isn't one
+	[Op]
+		if pos >= stop or t:pos.type is not CssLex.DELIM return 0;
+		u32 c: t:pos.num as u32;
+		u32 op: 0;
+		if c is 61
+			op is OP_EQ;
+			pos++;
+			call Skip;
+			return op;
+		;;
+		if c is not 60 and c is not 62 return 0;
+		bln eq: pos + 1 < stop and t:(pos + 1).type is CssLex.DELIM and t:(pos + 1).num is 61.0;
+		if c is 60
+			op is OP_LT;
+			if eq
+				op is OP_LE;
+			;;
+		;;
+		else
+			op is OP_GT;
+			if eq
+				op is OP_GE;
+			;;
+		;;
+		pos++;
+		if eq
+			pos++;
+		;;
+		call Skip;
+	[end: op]
+
+	# a value: into a if first, else b
+	[Value: ptr<CssMqNode> n: 0; bln first: false;]
+		if pos >= stop return false;
+		ptr<CssTok> tk: addr t:pos;
+		f64 v: 0.0;
+		u32 unit: 0;
+		if tk.type is CssLex.NUMBER
+			v is tk.num;
+			pos++;
+			call Skip;
+			# number / number is a ratio
+			if pos < stop and t:pos.type is CssLex.DELIM and t:pos.num is 47.0
+				pos++;
+				call Skip;
+				if pos >= stop or t:pos.type is not CssLex.NUMBER return false;
+				if t:pos.num is 0.0
+					v is 3.0e38;
+				;;
+				else
+					v is v / t:pos.num;
+				;;
+				pos++;
+				call Skip;
+			;;
+		;;
+		elif tk.type is CssLex.DIMENSION
+			unit is (CssProps.UnitOfKw: (CssVp.Kw: tk));
+			if unit is 0 return false;
+			v is tk.num;
+			pos++;
+			call Skip;
+		;;
+		elif tk.type is CssLex.IDENT
+			n.word is (CssVp.Kw: tk) as u16;
+			if n.word is 0 return false;
+			pos++;
+			call Skip;
+			return true;
+		;;
+		elif tk.type is CssLex.FUNCTION and (CssCalc.IsMathFunc: (CssVp.Kw: tk))
+			u32 close: tk.match;
+			if (CssCalc.Parse: t pos CssCalc.M_NUM | CssCalc.M_LEN | CssCalc.M_RES) is false return false;
+			if CssCalc.result.kind >= CssV.FIRST_CX as u8
+				call CssV.Release: addr CssCalc.result;
+				return false;
+			;;
+			v is (CssCalc.result.Num);
+			unit is CssCalc.result.unit;
+			pos is close + 1;
+			if pos > stop
+				pos is stop;
+			;;
+			call Skip;
+		;;
+		else
+			return false;
+		;;
+		if first
+			n.a is v;
+			n.unit_a is unit as u8;
+		;;
+		else
+			n.b is v;
+			n.unit_b is unit as u8;
+		;;
+	[end: true]
+
+	# ---- evaluating
+
+	ptr<CssMediaEnv> env: 0;
+
+	[Matches: ptr<CssMediaList> list: 0; ptr<CssMediaEnv> e: 0;]
+		if list is 0 or list.first is 0 return true;
+		env is e;
+		ptr<CssMediaQuery> q: list.first;
+		bln any: false;
+		while q is not 0 and any is false
+			any is (One: q);
+			q is q.next;
+		;;
+	[end: any]
+
+	[One: ptr<CssMediaQuery> q: 0;]
+		if q.bad is not 0 return false;
+		bln ok: true;
+		u32 type: q.type;
+		if type is not 0
+			if type is CssK.ALL
+				ok is true;
+			;;
+			elif type is CssK.SCREEN
+				ok is (env.print is false);
+			;;
+			elif type is CssK.PRINT
+				ok is env.print;
+			;;
+			else
+				ok is false;
+			;;
+		;;
+		if ok and q.cond is not 0
+			# unknown counts as false at the top: and `not` over it stays unknown
+			ok is ((Eval: q.cond) is 1);
+		;;
+		if q.negated is not 0
+			if q.cond is not 0 and (Eval: q.cond) is -1 return false;
+			ok is (ok is false);
+		;;
+	[end: ok]
+
+	# 1 true, 0 false, -1 unknown
+	[Eval: ptr<CssMqNode> n: 0;]
+		call WlStack.Check;
+		u32 type: n.type;
+		if type is N_FEATURE return (EvalFeature: n);
+		if type is N_UNKNOWN return -1;
+		if type is N_NOT
+			int v: (Eval: n.first);
+			if v is -1 return -1;
+			return 1 - v;
+		;;
+		ptr<CssMqNode> kid: n.first;
+		int result: 1;
+		if type is N_OR
+			result is 0;
+		;;
+		while kid is not 0
+			int v: (Eval: kid);
+			if type is N_AND
+				if v is 0 return 0;
+				if v is -1
+					result is -1;
+				;;
+			;;
+			else
+				if v is 1 return 1;
+				if v is -1
+					result is -1;
+				;;
+			;;
+			kid is kid.next;
+		;;
+	[end: result]
+
+	# a value's size in the feature's unit
+	[Scale: f64 v: 0.0; u32 unit: 0;]
+		if unit is 0 return v;
+		f64 canon: (CssCalc.ToCanon: unit);
+		if canon is not 0.0 return v * canon;
+		when unit
+			is CssU.EM CssU.REM CssU.IC
+				return v * 16.0;
+			;;
+			is CssU.EX CssU.CH CssU.CAP
+				return v * 8.0;
+			;;
+			is CssU.VW CssU.SVW CssU.LVW CssU.DVW CssU.VI CssU.SVI CssU.LVI CssU.DVI
+				return v * env.width / 100.0;
+			;;
+			is CssU.VH CssU.SVH CssU.LVH CssU.DVH CssU.VB CssU.SVB CssU.LVB CssU.DVB
+				return v * env.height / 100.0;
+			;;
+		;;
+	[end: v]
+
+	[Compare: f64 a: 0.0; u32 op: 0; f64 b: 0.0;]
+		when op
+			is OP_LE
+				return a <= b;
+			;;
+			is OP_LT
+				return a < b;
+			;;
+			is OP_GE
+				return a >= b;
+			;;
+			is OP_GT
+				return a > b;
+			;;
+			is OP_EQ
+				return a is b;
+			;;
+		;;
+	[end: true]
+
+	[EvalFeature: ptr<CssMqNode> n: 0;]
+		u32 f: n.feature;
+		f64 have: 0.0;
+		bln ranged: true;
+		bln wants_length: false;
+		when f
+			is CssK.WIDTH
+				have is env.width;
+				wants_length is true;
+			;;
+			is CssK.HEIGHT
+				have is env.height;
+				wants_length is true;
+			;;
+			is CssK.DEVICE_WIDTH
+				have is env.device_width;
+				wants_length is true;
+			;;
+			is CssK.DEVICE_HEIGHT
+				have is env.device_height;
+				wants_length is true;
+			;;
+			is CssK.ASPECT_RATIO
+				if env.height > 0.0
+					have is env.width / env.height;
+				;;
+			;;
+			is CssK.DEVICE_ASPECT_RATIO
+				if env.device_height > 0.0
+					have is env.device_width / env.device_height;
+				;;
+			;;
+			is CssK.RESOLUTION
+				have is env.dppx;
+			;;
+			is CssK.COLOR
+				have is 8.0;
+			;;
+			is CssK.COLOR_INDEX CssK.MONOCHROME
+				have is 0.0;
+			;;
+			is CssK.GRID
+				have is 0.0;
+			;;
+			else
+				ranged is false;
+			;;
+		;;
+		if ranged
+			if n.word is not 0 return -1;
+			# a length feature wants a length; plain zero will do
+			if wants_length
+				if n.op_b is not 0 and n.unit_b is 0 and n.b is not 0.0 return -1;
+				if n.op_a is not 0 and n.unit_a is 0 and n.a is not 0.0 return -1;
+			;;
+			elif f is CssK.RESOLUTION
+				if n.op_b is not 0 and n.unit_b is 0 return -1;
+			;;
+			elif n.unit_b is not 0 or n.unit_a is not 0
+				return -1;
+			;;
+			if n.op_a is 0 and n.op_b is 0
+				if have is not 0.0 return 1;
+				return 0;
+			;;
+			bln ok: true;
+			if n.op_a is not 0
+				ok is (Compare: (Scale: n.a n.unit_a) n.op_a have);
+			;;
+			if ok and n.op_b is not 0
+				ok is (Compare: have n.op_b (Scale: n.b n.unit_b));
+			;;
+			if ok return 1;
+			return 0;
+		;;
+		# what has one of a few values: the word it has now, and whether that word is "off"
+		u32 now: 0;
+		bln off: false;
+		when f
+			is CssK.ORIENTATION
+				now is CssK.LANDSCAPE;
+				if env.height >= env.width
+					now is CssK.PORTRAIT;
+				;;
+			;;
+			is CssK.PREFERS_COLOR_SCHEME
+				now is CssK.LIGHT;
+				if env.dark
+					now is CssK.DARK;
+				;;
+			;;
+			is CssK.PREFERS_REDUCED_MOTION
+				now is CssK.NO_PREFERENCE;
+				off is true;
+				if env.reduced_motion
+					now is CssK.REDUCE;
+					off is false;
+				;;
+			;;
+			is CssK.PREFERS_REDUCED_TRANSPARENCY CssK.PREFERS_REDUCED_DATA
+				now is CssK.NO_PREFERENCE;
+				off is true;
+			;;
+			is CssK.PREFERS_CONTRAST
+				now is CssK.NO_PREFERENCE;
+				off is true;
+				if env.high_contrast
+					now is CssK.MORE;
+					off is false;
+				;;
+			;;
+			is CssK.FORCED_COLORS
+				now is CssK.NONE;
+				off is true;
+				if env.forced_colors
+					now is CssK.ACTIVE;
+					off is false;
+				;;
+			;;
+			is CssK.INVERTED_COLORS
+				now is CssK.NONE;
+				off is true;
+			;;
+			is CssK.HOVER CssK.ANY_HOVER
+				now is CssK.HOVER;
+				if env.no_hover
+					now is CssK.NONE;
+					off is true;
+				;;
+			;;
+			is CssK.POINTER CssK.ANY_POINTER
+				now is CssK.FINE;
+				if env.coarse
+					now is CssK.COARSE;
+				;;
+			;;
+			is CssK.SCRIPTING
+				now is CssK.ENABLED;
+				if env.no_scripting
+					now is CssK.NONE;
+					off is true;
+				;;
+			;;
+			is CssK.SCAN
+				now is CssK.PROGRESSIVE;
+			;;
+			is CssK.UPDATE
+				now is CssK.FAST;
+				if env.print
+					now is CssK.NONE;
+					off is true;
+				;;
+			;;
+			is CssK.OVERFLOW_BLOCK
+				now is CssK.SCROLL;
+				if env.print
+					now is CssK.PAGED;
+				;;
+			;;
+			is CssK.OVERFLOW_INLINE
+				now is CssK.SCROLL;
+				if env.print
+					now is CssK.NONE;
+					off is true;
+				;;
+			;;
+			is CssK.COLOR_GAMUT
+				now is CssK.SRGB;
+			;;
+			is CssK.DISPLAY_MODE
+				now is CssK.BROWSER;
+			;;
+			else
+				return -1;
+			;;
+		;;
+		if n.op_b is 0
+			if off return 0;
+			return 1;
+		;;
+		if n.op_b is not OP_EQ as u8 or n.word is 0 return -1;
+		if n.word is now as u16 return 1;
+		# a word it can't have is unknown; these are the ones with other words it could have had
+		if f is CssK.COLOR_GAMUT
+			if n.word is CssK.P3 as u16 or n.word is CssK.REC2020 as u16 return 0;
+			return -1;
+		;;
+	[end: (KnownWord: f n.word)]
+
+	# 0 if the word is one this feature can have, -1 if it's nonsense
+	[KnownWord: u32 f: 0; u32 w: 0;]
+		when f
+			is CssK.ORIENTATION
+				if w is CssK.LANDSCAPE or w is CssK.PORTRAIT return 0;
+			;;
+			is CssK.PREFERS_COLOR_SCHEME
+				if w is CssK.LIGHT or w is CssK.DARK return 0;
+			;;
+			is CssK.PREFERS_REDUCED_MOTION CssK.PREFERS_REDUCED_TRANSPARENCY CssK.PREFERS_REDUCED_DATA
+				if w is CssK.NO_PREFERENCE or w is CssK.REDUCE return 0;
+			;;
+			is CssK.PREFERS_CONTRAST
+				if w is CssK.NO_PREFERENCE or w is CssK.MORE or w is CssK.LESS or w is CssK.CUSTOM return 0;
+			;;
+			is CssK.FORCED_COLORS
+				if w is CssK.NONE or w is CssK.ACTIVE return 0;
+			;;
+			is CssK.INVERTED_COLORS
+				if w is CssK.NONE or w is CssK.INVERTED return 0;
+			;;
+			is CssK.HOVER CssK.ANY_HOVER
+				if w is CssK.HOVER or w is CssK.NONE return 0;
+			;;
+			is CssK.POINTER CssK.ANY_POINTER
+				if w is CssK.NONE or w is CssK.COARSE or w is CssK.FINE return 0;
+			;;
+			is CssK.SCRIPTING
+				if w is CssK.NONE or w is CssK.ENABLED or w is CssK.INITIAL_ONLY return 0;
+			;;
+			is CssK.SCAN
+				if w is CssK.PROGRESSIVE or w is CssK.INTERLACE return 0;
+			;;
+			is CssK.UPDATE
+				if w is CssK.NONE or w is CssK.SLOW or w is CssK.FAST return 0;
+			;;
+			is CssK.OVERFLOW_BLOCK
+				if w is CssK.NONE or w is CssK.SCROLL or w is CssK.PAGED or w is CssK.OPTIONAL_PAGED return 0;
+			;;
+			is CssK.OVERFLOW_INLINE
+				if w is CssK.NONE or w is CssK.SCROLL return 0;
+			;;
+			is CssK.DISPLAY_MODE
+				if w is CssK.BROWSER or w is CssK.STANDALONE or w is CssK.MINIMAL_UI or w is CssK.FULLSCREEN return 0;
+			;;
+		;;
+	[end: -1]
+}
+
+# @supports
+phi.CssSupports:Library
+{
+	ptr<CssToks> ts: 0;
+	ptr<CssTok> t: 0;
+	u32 pos: 0;
+	u32 stop: 0;
+	u32 depth: 0;
+
+	# the condition in tokens from..to: true only if it's well-formed and comes out true
+	[Eval: ptr<CssToks> toks: 0; u32 from: 0; u32 to: 0;]
+		ts is toks;
+		t is toks.t;
+		pos is from;
+		stop is to;
+		depth is 0;
+		bln ok: false;
+		if call ok is Condition throws err
+			return false;
+		;;
+		call Skip;
+		if pos is not stop return false;
+	[end: ok]
+
+	[Skip]
+		while pos < stop and t:pos.type is CssLex.WS
+			pos++;
+		;;
+	[end]
+
+	bln bad: false;
+
+	[Condition]
+		call WlStack.Check;
+		depth++;
+		if depth > 64
+			throw 'supports too deep';
+		;;
+		call Skip;
+		if pos >= stop
+			throw 'supports: nothing here';
+		;;
+		bln result: false;
+		if t:pos.type is CssLex.IDENT and (CssVp.Kw: addr t:pos) is CssK.NOT
+			pos++;
+			call Skip;
+			result is (InParens) is false;
+			depth--;
+			return result;
+		;;
+		result is (InParens);
+		call Skip;
+		if pos < stop and t:pos.type is CssLex.IDENT
+			u32 word: (CssVp.Kw: addr t:pos);
+			if word is not CssK.AND and word is not CssK.OR
+				throw 'supports: not and or or';
+			;;
+			while pos < stop and t:pos.type is CssLex.IDENT
+				if (CssVp.Kw: addr t:pos) is not word
+					throw 'supports: mixed and and or';
+				;;
+				pos++;
+				if pos >= stop or t:pos.type is not CssLex.WS
+					throw 'supports: no space after the word';
+				;;
+				call Skip;
+				bln more: (InParens);
+				if word is CssK.AND
+					result is result and more;
+				;;
+				else
+					result is result or more;
+				;;
+				call Skip;
+			;;
+		;;
+		depth--;
+	[end: result]
+
+	[InParens]
+		if pos >= stop
+			throw 'supports: nothing here';
+		;;
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is CssLex.FUNCTION
+			u32 close: tk.match;
+			u32 kw: (CssVp.Kw: tk);
+			bln said: false;
+			if kw is CssK.SELECTOR
+				WlArena temp;
+				ptr<CssTok> saved_t: CssSel.t;
+				said is ((CssSel.ParseList: ts pos + 1 close addr temp) is not 0);
+				call temp.Free;
+			;;
+			pos is close + 1;
+			return said;
+		;;
+		if tk.type is not CssLex.LPAREN
+			throw 'supports: not in parentheses';
+		;;
+		u32 close: tk.match;
+		u32 saved_stop: stop;
+		u32 inner: pos + 1;
+		while inner < close and t:inner.type is CssLex.WS
+			inner++;
+		;;
+		bln result: false;
+		if inner < close and t:inner.type is CssLex.IDENT and (CssVp.Kw: addr t:inner) is not CssK.NOT
+			# a declaration
+			result is (Declaration: inner close);
+		;;
+		elif inner < close and (t:inner.type is CssLex.LPAREN or t:inner.type is CssLex.FUNCTION or t:inner.type is CssLex.IDENT)
+			pos is inner;
+			stop is close;
+			if call result is Condition throws err
+				result is false;
+			;;
+			call Skip;
+			if pos is not close
+				result is false;
+			;;
+		;;
+		stop is saved_stop;
+		pos is close + 1;
+	[end: result]
+
+	[Declaration: u32 from: 0; u32 to: 0;]
+		u32 saved_pos: pos;
+		u32 saved_stop: stop;
+		ptr<CssToks> saved_ts: ts;
+		ptr<CssTok> saved_t: t;
+		CssDecls temp;
+		bln ok: false;
+		if (CssSyntax.Decl: t from to)
+			# !important isn't part of what's being asked, but it is allowed
+			ok is (CssDeclP.One: addr temp ts t:from.text t:from.len CssSyntax.value_from CssSyntax.value_to CssSyntax.important true);
+		;;
+		call temp.FreeItems;
+		ts is saved_ts;
+		t is saved_t;
+		pos is saved_pos;
+		stop is saved_stop;
+	[end: ok]
+}
+
+# ---- parsing a sheet
+
+phi.CssSheetP:Library
+{
+	const u32 R_STYLE: 1;
+	const u32 R_MEDIA: 2;
+	const u32 R_SUPPORTS: 3;
+	const u32 R_IMPORT: 4;
+	const u32 R_FONT_FACE: 5;
+	const u32 R_KEYFRAMES: 6;
+	const u32 R_PAGE: 7;
+	const u32 R_NAMESPACE: 8;
+	const u32 R_LAYER: 9;       # @layer { }: children
+	const u32 R_LAYER_NAME: 10; # @layer a; : declares the order
+
+	const u32 MAX_NEST: 32;
+
+	ptr<CssSheet> sheet: 0;
+	ptr<CssToks> ts: 0;
+	ptr<CssTok> t: 0;
+	u32 anon_layers: 0;
+
+	[Parse: ptr<u8> bytes: 0; u32 len: 0; ptr<u8> base_url: 0;]
+		call CssProps.Start;
+		ptr<CssSheet> s: new CssSheet;
+		if s is 0
+			throw 'out of memory for a stylesheet';
+		;;
+		if base_url is not 0
+			s.base_url is (s.arena.Text: base_url (WlText.LenZ: base_url));
+		;;
+		ptr<CssToks> toks: (CssLex.Run: bytes len);
+		sheet is s;
+		ts is toks;
+		t is toks.t;
+		ptr<u8> saved_base: CssVp.base_url;
+		CssVp.base_url is s.base_url;
+		if call s.first is Rules: 0 toks.n true 0 0 throws err
+			# what was read before it went wrong stands
+			s.first is partial;
+		;;
+		CssVp.base_url is saved_base;
+		call CssLex.Free: toks;
+	[end: s]
+
+	ptr<CssRule> partial: 0;
+
+	[Free: ptr<CssSheet> s: 0;]
+		if s is 0 return;
+		ptr<CssDecls> d: s.all_decls;
+		while d is not 0
+			ptr<CssDecls> next_one: d.next_in_sheet;
+			call d.FreeItems;
+			free d;
+			d is next_one;
+		;;
+		call s.arena.Free;
+		free s;
+	[end]
+
+	[NewRule: u32 kind: 0;]
+		ptr<CssRule> r: (sheet.arena.Alloc: sizeof CssRule) as ptr<CssRule>;
+		r.kind is kind as u8;
+		sheet.rule_count++;
+	[end: r]
+
+	[NewDecls]
+		ptr<CssDecls> d: new CssDecls;
+		if d is 0
+			throw 'out of memory for CSS declarations';
+		;;
+		d.next_in_sheet is sheet.all_decls;
+		sheet.all_decls is d;
+	[end: d]
+
+	# the rules in tokens from..to
+	[Rules: u32 from: 0; u32 to: 0; bln top: false; u32 depth: 0; ptr<WlAtom> layer: 0;]
+		call WlStack.Check;
+		ptr<CssRule> first: 0;
+		ptr<CssRule> last: 0;
+		bln imports_ok: top;
+		u32 i: from;
+		while i < to
+			u32 type: t:i.type;
+			if type is CssLex.WS
+				i++;
+				continue;
+			;;
+			if top and (type is CssLex.CDO or type is CssLex.CDC)
+				i++;
+				continue;
+			;;
+			ptr<CssRule> made: 0;
+			if type is CssLex.AT
+				u32 after: (CssSyntax.AtRule: t i to);
+				made is (AtRule: i imports_ok depth layer);
+				# only @charset, @layer and @import come before more @imports
+				if made is not 0 and made.kind is not R_IMPORT as u8 and made.kind is not R_LAYER_NAME as u8
+					imports_ok is false;
+				;;
+				i is after;
+			;;
+			else
+				u32 after: (CssSyntax.Qualified: t i to);
+				if CssSyntax.has_block
+					made is (StyleRule: layer);
+					imports_ok is false;
+				;;
+				i is after;
+			;;
+			while made is not 0
+				if last is 0
+					first is made;
+					if top
+						partial is first;
+					;;
+				;;
+				else
+					last.next is made;
+				;;
+				last is made;
+				made is made.next;
+			;;
+		;;
+	[end: first]
+
+	[StyleRule: ptr<WlAtom> layer: 0;]
+		u32 pf: CssSyntax.prelude_from;
+		u32 pt: CssSyntax.prelude_to;
+		u32 bf: CssSyntax.block_from;
+		u32 bt: CssSyntax.block_to;
+		while pf < pt and t:pf.type is CssLex.WS
+			pf++;
+		;;
+		while pt > pf and t:(pt - 1).type is CssLex.WS
+			pt--;
+		;;
+		if pf >= pt return 0;
+		ptr<CssSelList> sel: (CssSel.ParseList: ts pf pt addr sheet.arena);
+		if sel is 0 return 0;
+		ptr<CssRule> r: (NewRule: R_STYLE);
+		r.sel is sel;
+		r.sel_text is (sheet.arena.Text: ts.src + t:pf.start t:(pt - 1).stop - t:pf.start);
+		r.decls is (NewDecls);
+		r.layer is layer;
+		call CssDeclP.List: r.decls ts bf bt;
+	[end: r]
+
+	[AtRule: u32 i: 0; bln imports_ok: false; u32 depth: 0; ptr<WlAtom> layer: 0;]
+		u32 kw: (CssVp.Kw: addr t:i);
+		u32 pf: CssSyntax.prelude_from;
+		u32 pt: CssSyntax.prelude_to;
+		u32 bf: CssSyntax.block_from;
+		u32 bt: CssSyntax.block_to;
+		bln block: CssSyntax.has_block;
+		while pf < pt and t:pf.type is CssLex.WS
+			pf++;
+		;;
+		while pt > pf and t:(pt - 1).type is CssLex.WS
+			pt--;
+		;;
+		when kw
+			is CssK.MEDIA
+				if block is false or depth >= MAX_NEST return 0;
+				ptr<CssRule> r: (NewRule: R_MEDIA);
+				r.media is (CssMq.ParseList: ts pf pt addr sheet.arena);
+				r.first_child is (Rules: bf bt false depth + 1 layer);
+				return r;
+			;;
+			is CssK.SUPPORTS
+				if block is false or depth >= MAX_NEST or pf >= pt return 0;
+				ptr<CssRule> r: (NewRule: R_SUPPORTS);
+				r.supported is (CssSupports.Eval: ts pf pt) as u8;
+				r.first_child is (Rules: bf bt false depth + 1 layer);
+				return r;
+			;;
+			is CssK.IMPORT
+				if block or imports_ok is false return 0;
+				return (Import: pf pt layer);
+			;;
+			is CssK.FONT_FACE
+				if block is false or pf < pt return 0;
+				ptr<CssRule> r: (NewRule: R_FONT_FACE);
+				r.face is (FontFace: bf bt);
+				r.layer is layer;
+				if r.face is 0 return 0;
+				return r;
+			;;
+			is CssK.KEYFRAMES CssK._WEBKIT_KEYFRAMES
+				if block is false return 0;
+				return (Keyframes: pf pt bf bt);
+			;;
+			is CssK.PAGE
+				if block is false return 0;
+				ptr<CssRule> r: (NewRule: R_PAGE);
+				r.decls is (NewDecls);
+				call CssDeclP.List: r.decls ts bf bt;
+				return r;
+			;;
+			is CssK.NAMESPACE
+				if block return 0;
+				return (NewRule: R_NAMESPACE);
+			;;
+			is CssK.LAYER
+				if depth >= MAX_NEST return 0;
+				return (Layer: pf pt bf bt block depth layer);
+			;;
+		;;
+	[end: 0 as ptr<CssRule>]
+
+	# url-or-string [ layer | layer(name) ]? [ supports(...) ]? media-list?
+	[Import: u32 pf: 0; u32 pt: 0; ptr<WlAtom> layer: 0;]
+		if pf >= pt return 0;
+		ptr<CssTok> tk: addr t:pf;
+		ptr<u8> text: 0;
+		u32 n: 0;
+		u32 p: pf + 1;
+		if tk.type is CssLex.STRING or tk.type is CssLex.URL
+			text is tk.text;
+			n is tk.len;
+		;;
+		elif tk.type is CssLex.FUNCTION and (CssVp.Kw: tk) is CssK.URL
+			u32 q: pf + 1;
+			while q < tk.match and t:q.type is CssLex.WS
+				q++;
+			;;
+			if q >= tk.match or t:q.type is not CssLex.STRING return 0;
+			text is t:q.text;
+			n is t:q.len;
+			p is tk.match + 1;
+		;;
+		else
+			return 0;
+		;;
+		ptr<CssImport> im: (sheet.arena.Alloc: sizeof CssImport) as ptr<CssImport>;
+		WlBuf joined;
+		if sheet.base_url is not 0
+			call CssUrl.Join: sheet.base_url text n addr joined;
+		;;
+		else
+			call joined.AddN: text n;
+		;;
+		im.url is (sheet.arena.Text: joined.data joined.len);
+		call joined.Free;
+		im.supported is 1;
+		im.layer is layer;
+		while p < pt and t:p.type is CssLex.WS
+			p++;
+		;;
+		if p < pt and t:p.type is CssLex.IDENT and (CssVp.Kw: addr t:p) is CssK.LAYER
+			im.layer is (LayerJoin: layer (AnonLayer));
+			p++;
+		;;
+		elif p < pt and t:p.type is CssLex.FUNCTION and (CssVp.Kw: addr t:p) is CssK.LAYER
+			ptr<WlAtom> name: (LayerName: p + 1 t:p.match);
+			if name is 0 return 0;
+			im.layer is (LayerJoin: layer name);
+			p is t:p.match + 1;
+		;;
+		while p < pt and t:p.type is CssLex.WS
+			p++;
+		;;
+		if p < pt and t:p.type is CssLex.FUNCTION and (CssVp.Kw: addr t:p) is CssK.SUPPORTS
+			u32 close: t:p.match;
+			# supports(cond), or supports(decl) with the declaration not in parentheses of its own
+			bln said: (CssSupports.Declaration: (FirstReal: p + 1 close) close);
+			if said is false
+				said is (CssSupports.Eval: ts p + 1 close);
+			;;
+			im.supported is said as u8;
+			p is close + 1;
+		;;
+		im.media is (CssMq.ParseList: ts p pt addr sheet.arena);
+		ptr<CssRule> r: (NewRule: R_IMPORT);
+		r.import is im;
+		r.media is im.media;
+		r.layer is im.layer;
+	[end: r]
+
+	[FirstReal: u32 from: 0; u32 to: 0;]
+		while from < to and t:from.type is CssLex.WS
+			from++;
+		;;
+	[end: from]
+
+	[AnonLayer]
+		WlBuf name;
+		call name.AddZ: ' anon';
+		anon_layers++;
+		call name.AddInt: anon_layers as int;
+		ptr<WlAtom> a: (WlAtoms.Get: name.data name.len);
+		call name.Free;
+	[end: a]
+
+	[LayerJoin: ptr<WlAtom> outer: 0; ptr<WlAtom> inner: 0;]
+		if outer is 0 return inner;
+		if inner is 0 return outer;
+		WlBuf name;
+		call name.AddN: outer.text outer.len;
+		call name.Add: 46;
+		call name.AddN: inner.text inner.len;
+		ptr<WlAtom> a: (WlAtoms.Get: name.data name.len);
+		call name.Free;
+	[end: a]
+
+	# a.b.c in tokens from..to, as one atom; 0 if it isn't one
+	[LayerName: u32 from: 0; u32 to: 0;]
+		while from < to and t:from.type is CssLex.WS
+			from++;
+		;;
+		while to > from and t:(to - 1).type is CssLex.WS
+			to--;
+		;;
+		if from >= to return 0;
+		WlBuf name;
+		bln want_ident: true;
+		u32 i: from;
+		bln ok: true;
+		while i < to and ok
+			ptr<CssTok> tk: addr t:i;
+			if want_ident
+				if tk.type is not CssLex.IDENT
+					ok is false;
+				;;
+				else
+					call name.AddN: tk.text tk.len;
+				;;
+			;;
+			elif tk.type is CssLex.DELIM and tk.num is 46.0
+				call name.Add: 46;
+			;;
+			else
+				ok is false;
+			;;
+			want_ident is (want_ident is false);
+			i++;
+		;;
+		if want_ident
+			ok is false;
+		;;
+		ptr<WlAtom> a: 0;
+		if ok
+			a is (WlAtoms.Get: name.data name.len);
+		;;
+		call name.Free;
+	[end: a]
+
+	# @layer a, b; or @layer [name] { rules }
+	[Layer: u32 pf: 0; u32 pt: 0; u32 bf: 0; u32 bt: 0; bln block: false; u32 depth: 0; ptr<WlAtom> layer: 0;]
+		if block
+			ptr<WlAtom> name: 0;
+			if pf < pt
+				name is (LayerName: pf pt);
+				if name is 0 return 0;
+			;;
+			else
+				name is (AnonLayer);
+			;;
+			ptr<CssRule> r: (NewRule: R_LAYER);
+			r.layer is (LayerJoin: layer name);
+			r.first_child is (Rules: bf bt false depth + 1 r.layer);
+			return r;
+		;;
+		if pf >= pt return 0;
+		# one rule per name, chained: Rules links through next
+		ptr<CssRule> first: 0;
+		ptr<CssRule> last: 0;
+		u32 i: pf;
+		while i <= pt
+			u32 comma: i;
+			while comma < pt and t:comma.type is not CssLex.COMMA
+				comma++;
+			;;
+			ptr<WlAtom> name: (LayerName: i comma);
+			if name is 0 return 0;
+			ptr<CssRule> r: (NewRule: R_LAYER_NAME);
+			r.layer is (LayerJoin: layer name);
+			if last is 0
+				first is r;
+			;;
+			else
+				last.next is r;
+			;;
+			last is r;
+			i is comma + 1;
+		;;
+	[end: first]
+
+	# @keyframes name { selector { declarations } ... }
+	[Keyframes: u32 pf: 0; u32 pt: 0; u32 bf: 0; u32 bt: 0;]
+		if pf >= pt or pf + 1 is not pt return 0;
+		ptr<CssTok> tk: addr t:pf;
+		if tk.type is not CssLex.IDENT and tk.type is not CssLex.STRING return 0;
+		ptr<CssKeyframes> set: (sheet.arena.Alloc: sizeof CssKeyframes) as ptr<CssKeyframes>;
+		set.name is (WlAtoms.Get: tk.text tk.len);
+		ptr<CssKeyframe> last: 0;
+		u32 i: bf;
+		while i < bt
+			if t:i.type is CssLex.WS or t:i.type is CssLex.SEMICOLON
+				i++;
+				continue;
+			;;
+			if t:i.type is CssLex.AT
+				i is (CssSyntax.AtRule: t i bt);
+				continue;
+			;;
+			u32 after: (CssSyntax.Qualified: t i bt);
+			if CssSyntax.has_block
+				u32 kf: CssSyntax.prelude_from;
+				u32 kt: CssSyntax.prelude_to;
+				u32 df: CssSyntax.block_from;
+				u32 dt: CssSyntax.block_to;
+				ptr<CssKeyframe> frame: (Keyframe: kf kt);
+				if frame is not 0
+					frame.decls is (NewDecls);
+					call CssDeclP.List: frame.decls ts df dt;
+					if last is 0
+						set.first is frame;
+					;;
+					else
+						last.next is frame;
+					;;
+					last is frame;
+					set.count++;
+				;;
+			;;
+			i is after;
+		;;
+		ptr<CssRule> r: (NewRule: R_KEYFRAMES);
+		r.frames is set;
+	[end: r]
+
+	# from, to, or a percentage, comma-separated
+	[Keyframe: u32 from: 0; u32 to: 0;]
+		u32 count: 1;
+		while u32 i: from; i < to; i++;
+			if t:i.type is CssLex.COMMA
+				count++;
+			;;
+		;;
+		ptr<CssKeyframe> frame: (sheet.arena.Alloc: sizeof CssKeyframe) as ptr<CssKeyframe>;
+		frame.offsets is (sheet.arena.Alloc: count * sizeof f32) as ptr<f32>;
+		u32 i2: from;
+		while i2 < to
+			u32 type: t:i2.type;
+			if type is CssLex.WS or type is CssLex.COMMA
+				i2++;
+				continue;
+			;;
+			f64 v: 0.0;
+			if type is CssLex.PERCENTAGE
+				v is t:i2.num / 100.0;
+				if v < 0.0 or v > 1.0 return 0;
+			;;
+			elif type is CssLex.IDENT
+				u32 kw: (CssVp.Kw: addr t:i2);
+				if kw is CssK.TO
+					v is 1.0;
+				;;
+				elif kw is not CssK.FROM
+					return 0;
+				;;
+			;;
+			else
+				return 0;
+			;;
+			if frame.offset_count >= count return 0;
+			frame.offsets:(frame.offset_count) is v;
+			frame.offset_count++;
+			i2++;
+		;;
+		if frame.offset_count is 0 return 0;
+	[end: frame]
+
+	# a @font-face's descriptors, in structured form; 0 if it has no family or no source
+	[FontFace: u32 bf: 0; u32 bt: 0;]
+		ptr<CssFontFace> face: (sheet.arena.Alloc: sizeof CssFontFace) as ptr<CssFontFace>;
+		face.weight_low is 400.0;
+		face.weight_high is 400.0;
+		face.stretch_low is 100.0;
+		face.stretch_high is 100.0;
+		face.style is CssK.NORMAL as u16;
+		face.display is CssK.AUTO as u16;
+		u32 i: bf;
+		while i < bt
+			if t:i.type is CssLex.WS or t:i.type is CssLex.SEMICOLON
+				i++;
+				continue;
+			;;
+			if t:i.type is CssLex.AT
+				i is (CssSyntax.AtRule: t i bt);
+				continue;
+			;;
+			u32 last: i;
+			while last < bt and t:last.type is not CssLex.SEMICOLON
+				last is (CssSyntax.After: t last);
+			;;
+			if last > bt
+				last is bt;
+			;;
+			if (CssSyntax.Decl: t i last)
+				call FaceDescriptor: face addr t:i CssSyntax.value_from CssSyntax.value_to;
+			;;
+			i is last;
+			if i < bt
+				i++;
+			;;
+		;;
+		if face.family is 0 or face.src is 0 return 0;
+	[end: face]
+
+	[FaceDescriptor: ptr<CssFontFace> face: 0; ptr<CssTok> name: 0; u32 from: 0; u32 to: 0;]
+		while from < to and t:from.type is CssLex.WS
+			from++;
+		;;
+		while to > from and t:(to - 1).type is CssLex.WS
+			to--;
+		;;
+		if from >= to return;
+		u32 kw: (CssVp.Kw: name);
+		ptr<CssTok> first: addr t:from;
+		if kw is CssK.FONT_FAMILY
+			u32 mark: CssVp.vn;
+			CssVp.t is t;
+			CssVp.pos is from;
+			CssVp.stop is to;
+			if (CssVp.Family) and CssVp.pos is to
+				ptr<CssVal> v: addr CssVp.vals:mark;
+				face.family is (sheet.arena.Text: (CssV.Text: v) (CssV.TextLen: v));
+			;;
+			call CssVp.Cut: mark;
+			return;
+		;;
+		if kw is CssK.SRC
+			call FaceSources: face from to;
+			return;
+		;;
+		if kw is CssK.FONT_WEIGHT
+			f64 low: (FaceNumber: first 400.0);
+			if low is 0.0 return;
+			face.weight_low is low;
+			face.weight_high is low;
+			u32 q: from + 1;
+			while q < to and t:q.type is CssLex.WS
+				q++;
+			;;
+			if q < to
+				face.weight_high is (FaceNumber: addr t:q low);
+			;;
+			return;
+		;;
+		if kw is CssK.FONT_STRETCH
+			if first.type is CssLex.PERCENTAGE
+				face.stretch_low is first.num;
+				face.stretch_high is first.num;
+				u32 q: from + 1;
+				while q < to and t:q.type is CssLex.WS
+					q++;
+				;;
+				if q < to and t:q.type is CssLex.PERCENTAGE
+					face.stretch_high is t:q.num;
+				;;
+			;;
+			return;
+		;;
+		if kw is CssK.FONT_STYLE
+			if first.type is CssLex.IDENT
+				u32 st: (CssVp.Kw: first);
+				if st is CssK.NORMAL or st is CssK.ITALIC or st is CssK.OBLIQUE
+					face.style is st as u16;
+				;;
+			;;
+			return;
+		;;
+		if kw is CssK.FONT_DISPLAY
+			if first.type is CssLex.IDENT
+				u32 d: (CssVp.Kw: first);
+				if d is CssK.AUTO or d is CssK.BLOCK or d is CssK.SWAP or d is CssK.FALLBACK or d is CssK.OPTIONAL
+					face.display is d as u16;
+				;;
+			;;
+			return;
+		;;
+		if kw is CssK.UNICODE_RANGE
+			call FaceRanges: face from to;
+		;;
+	[end]
+
+	[FaceNumber: ptr<CssTok> tk: 0; f64 otherwise: 0.0;]
+		if tk.type is CssLex.NUMBER return tk.num;
+		if tk.type is CssLex.IDENT
+			u32 kw: (CssVp.Kw: tk);
+			if kw is CssK.NORMAL return 400.0;
+			if kw is CssK.BOLD return 700.0;
+			return 0.0;
+		;;
+	[end: otherwise]
+
+	# url(...) format(...), local(...), ...
+	[FaceSources: ptr<CssFontFace> face: 0; u32 from: 0; u32 to: 0;]
+		ptr<CssFontSrc> last: 0;
+		u32 i: from;
+		while i < to
+			u32 type: t:i.type;
+			if type is CssLex.WS or type is CssLex.COMMA
+				i++;
+				continue;
+			;;
+			ptr<CssFontSrc> src: (sheet.arena.Alloc: sizeof CssFontSrc) as ptr<CssFontSrc>;
+			ptr<CssTok> tk: addr t:i;
+			if type is CssLex.URL
+				call SrcUrl: src tk.text tk.len;
+				i++;
+			;;
+			elif type is CssLex.FUNCTION
+				u32 kw: (CssVp.Kw: tk);
+				u32 close: tk.match;
+				if kw is CssK.URL
+					u32 q: i + 1;
+					while q < close and t:q.type is CssLex.WS
+						q++;
+					;;
+					if q >= close or t:q.type is not CssLex.STRING return;
+					call SrcUrl: src t:q.text t:q.len;
+				;;
+				elif kw is CssK.LOCAL
+					u32 q: i + 1;
+					while q < close and t:q.type is CssLex.WS
+						q++;
+					;;
+					if q >= close return;
+					src.is_local is true;
+					if t:q.type is CssLex.STRING
+						src.url is (sheet.arena.Text: t:q.text t:q.len);
+					;;
+					else
+						u32 e: close;
+						while e > q and t:(e - 1).type is CssLex.WS
+							e--;
+						;;
+						src.url is (sheet.arena.Text: ts.src + t:q.start t:(e - 1).stop - t:q.start);
+					;;
+				;;
+				else
+					return;
+				;;
+				i is close + 1;
+			;;
+			else
+				return;
+			;;
+			# format("woff2") and tech(...), up to the comma
+			while i < to and t:i.type is not CssLex.COMMA
+				if t:i.type is CssLex.FUNCTION
+					if (CssVp.Kw: addr t:i) is CssK.FORMAT
+						u32 q: i + 1;
+						while q < t:i.match and t:q.type is CssLex.WS
+							q++;
+						;;
+						if q < t:i.match and (t:q.type is CssLex.STRING or t:q.type is CssLex.IDENT)
+							src.format is (sheet.arena.Text: t:q.text t:q.len);
+						;;
+					;;
+				;;
+				i is (CssSyntax.After: t i);
+			;;
+			if last is 0
+				face.src is src;
+			;;
+			else
+				last.next is src;
+			;;
+			last is src;
+		;;
+	[end]
+
+	[SrcUrl: ptr<CssFontSrc> src: 0; ptr<u8> text: 0; u32 n: 0;]
+		if sheet.base_url is 0
+			src.url is (sheet.arena.Text: text n);
+			return;
+		;;
+		WlBuf joined;
+		call CssUrl.Join: sheet.base_url text n addr joined;
+		src.url is (sheet.arena.Text: joined.data joined.len);
+		call joined.Free;
+	[end]
+
+	# unicode-range wants the token css-syntax no longer has, so its text is tokenized again
+	[FaceRanges: ptr<CssFontFace> face: 0; u32 from: 0; u32 to: 0;]
+		bln saved: CssLex.unicode_ranges;
+		CssLex.unicode_ranges is true;
+		ptr<CssToks> toks: (CssLex.Run: ts.src + t:from.start t:(to - 1).stop - t:from.start);
+		CssLex.unicode_ranges is saved;
+		u32 count: 0;
+		while u32 i: 0; i < toks.n; i++;
+			if toks.t:i.type is CssLex.URANGE
+				count++;
+			;;
+		;;
+		if count > 0
+			face.ranges is (sheet.arena.Alloc: count * 8) as ptr<u32>;
+			u32 at_n: 0;
+			while u32 i: 0; i < toks.n; i++;
+				if toks.t:i.type is CssLex.URANGE
+					face.ranges:(at_n * 2) is toks.t:i.num as u32;
+					face.ranges:(at_n * 2 + 1) is toks.t:i.match;
+					at_n++;
+				;;
+			;;
+			face.range_count is at_n;
+		;;
+		call CssLex.Free: toks;
+	[end]
+}

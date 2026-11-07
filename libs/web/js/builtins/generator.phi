@@ -1,0 +1,131 @@
+# Generator objects, %IteratorPrototype% and the function kinds' prototypes.
+
+phi.JsIteratorBuiltins:Library
+{
+	[Init]
+		ptr<JsProtoSet> P: JsRt.P;
+		ptr<JsObj> ip: (JsObjs.NewObject);
+		P.iterator is ip;
+		call Js.DefineSymbolNative: ip JsRt.S.iterator '[Symbol.iterator]' addr ReturnThis 0;
+		ptr<JsObj> aip: (JsObjs.NewObject);
+		P.async_iterator is aip;
+		call Js.DefineSymbolNative: aip JsRt.S.asyncIterator '[Symbol.asyncIterator]' addr ReturnThis 0;
+		# %GeneratorFunction.prototype% and %GeneratorPrototype%
+		ptr<JsObj> gf: (JsObjs.NewWithProto: P.function);
+		P.generator_function is gf;
+		ptr<JsObj> gp: (JsObjs.NewWithProto: ip);
+		P.generator is gp;
+		call JsObjs.DefineValue: gf JsRt.A.prototype as ptr<u8> (JsV.Obj: gp) JsObjs.C;
+		call JsObjs.DefineValue: gp JsRt.A.constructor as ptr<u8> (JsV.Obj: gf) JsObjs.C;
+		call Js.DefineNativeSafe: gp 'next' addr GenNext 1;
+		call Js.DefineNativeSafe: gp 'return' addr GenReturn 1;
+		call Js.DefineNativeSafe: gp 'throw' addr GenThrow 1;
+		call JsObjs.DefineValue: gp JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'Generator') JsObjs.C;
+		call JsObjs.DefineValue: gf JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'GeneratorFunction') JsObjs.C;
+		call MakeCtor: gf 'GeneratorFunction' addr GeneratorFunctionCtor;
+		# %AsyncFunction.prototype%
+		ptr<JsObj> af: (JsObjs.NewWithProto: P.function);
+		P.async_function is af;
+		call JsObjs.DefineValue: af JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'AsyncFunction') JsObjs.C;
+		call MakeCtor: af 'AsyncFunction' addr AsyncFunctionCtor;
+		# %AsyncGeneratorFunction.prototype% and %AsyncGeneratorPrototype%
+		ptr<JsObj> agf: (JsObjs.NewWithProto: P.function);
+		P.async_generator_function is agf;
+		ptr<JsObj> agp: (JsObjs.NewWithProto: aip);
+		P.async_generator is agp;
+		call JsObjs.DefineValue: agf JsRt.A.prototype as ptr<u8> (JsV.Obj: agp) JsObjs.C;
+		call JsObjs.DefineValue: agp JsRt.A.constructor as ptr<u8> (JsV.Obj: agf) JsObjs.C;
+		call JsObjs.DefineValue: agf JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'AsyncGeneratorFunction') JsObjs.C;
+		call JsObjs.DefineValue: agp JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'AsyncGenerator') JsObjs.C;
+		call MakeCtor: agf 'AsyncGeneratorFunction' addr AsyncGeneratorFunctionCtor;
+	[end]
+
+	# the hidden constructors, reached only through a function's prototype chain
+	[MakeCtor: ptr<JsObj> proto: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> fn: 0;]
+		ptr<JsNativeFn> c: (JsObjs.NewNative: fn name 1 false);
+		c.o.flags is c.o.flags | JsObjs.F_CTOR as u16;
+		ptr<JsObj> co: c as ptr<JsObj>;
+		call JsObjs.Materialize: co;
+		call JsObjs.AddProp: co JsRt.A.prototype as ptr<u8> (JsV.Obj: proto) 0;
+		call JsObjs.DefineValue: proto JsRt.A.constructor as ptr<u8> (JsV.Obj: co) JsObjs.C;
+	[end]
+
+	[GeneratorFunctionCtor: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		u64 f: (JsFunctionBuiltins.MakeFunction: args argc 'function*');
+		call JsFunctionBuiltins.FixProto: f nt JsRt.P.generator_function;
+	[end: f]
+
+	[AsyncFunctionCtor: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		u64 f: (JsFunctionBuiltins.MakeFunction: args argc 'async function');
+		call JsFunctionBuiltins.FixProto: f nt JsRt.P.async_function;
+	[end: f]
+
+	[AsyncGeneratorFunctionCtor: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		u64 f: (JsFunctionBuiltins.MakeFunction: args argc 'async function*');
+		call JsFunctionBuiltins.FixProto: f nt JsRt.P.async_generator_function;
+	[end: f]
+
+	[ReturnThis: ptr<u64> args: 0; int argc: 0;]
+	[end: args:(-1)]
+
+	[ThisGen: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.kind is JsGc.K_GENERATOR and o.data is not 0
+				ptr<JsGen> g: o.data as ptr<JsGen>;
+				if not g.is_async_gen
+					if g.state is JsVm.GS_RUNNING
+						call JsErr.Type: 'Generator is already running';
+					;;
+					return g;
+				;;
+			;;
+		;;
+		call JsErr.Type: 'next method called on something that is not a generator';
+	[end: 0 as ptr<JsGen>]
+
+	# runs it; [value, done] as an object, or the delegate's object as it stands
+	[Step: ptr<JsGen> g: 0; u32 mode: 0; u64 value: 0;]
+		u64 r: (JsVm.ResumeGen: g mode value);
+		if g.state is JsVm.GS_DONE
+			return (JsBuiltins.IterResult: r true);
+		;;
+		if g.raw_yield
+			g.raw_yield is false;
+			return r;
+		;;
+	[end: (JsBuiltins.IterResult: r false)]
+
+	[GenNext: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsGen> g: (ThisGen: args);
+		if g.state is JsVm.GS_DONE
+			return (JsBuiltins.IterResult: JsV.UNDEF true);
+		;;
+	[end: (Step: g JsVm.RM_NEXT (Js.Arg: args argc 0))]
+
+	[GenReturn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsGen> g: (ThisGen: args);
+		u64 v: (Js.Arg: args argc 0);
+		if g.state is JsVm.GS_START
+			g.state is JsVm.GS_DONE;
+		;;
+		if g.state is JsVm.GS_DONE
+			return (JsBuiltins.IterResult: v true);
+		;;
+	[end: (Step: g JsVm.RM_RETURN v)]
+
+	[GenThrow: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsGen> g: (ThisGen: args);
+		u64 v: (Js.Arg: args argc 0);
+		if g.state is JsVm.GS_START
+			g.state is JsVm.GS_DONE;
+		;;
+		if g.state is JsVm.GS_DONE
+			call JsErr.Throw: v;
+		;;
+	[end: (Step: g JsVm.RM_THROW v)]
+}

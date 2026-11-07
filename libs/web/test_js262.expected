@@ -1,0 +1,11 @@
+runner checks itself
+R PASS tests/js/test262self/pass.js
+R FAIL tests/js/test262self/fail.js threw: Expected SameValue(??2??, ??3??) to be true
+R PASS tests/js/test262self/negative_parse.js
+R FAIL tests/js/test262self/negative_wrong.js expected a SyntaxError at parse, and it parsed
+R PASS tests/js/test262self/negative_runtime.js
+R PASS tests/js/test262self/async_ok.js
+R FAIL tests/js/test262self/async_bad.js async: Test262Error: Test262Error: Expected SameValue(1, 2) to be true
+R PASS tests/js/test262self/strict_only.js
+R FAIL tests/js/test262self/loop_forever.js threw: InternalError: script interrupted
+done

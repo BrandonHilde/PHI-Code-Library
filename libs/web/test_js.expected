@@ -1,0 +1,21 @@
+pass api_example
+pass async_order
+pass builtins_gc
+pass classes
+pass closures_loops
+pass destructuring
+pass errors
+pass gc_survival
+pass generators
+pass getset
+pass hostile
+pass labels_asi
+pass numbers
+pass promise
+pass prop_order
+pass strings
+pass tagged_templates
+pass tdz
+pass this_binding
+pass try_finally
+20 passed, 0 failed

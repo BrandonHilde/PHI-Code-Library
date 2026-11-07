@@ -1,0 +1,39 @@
+1/false 11/false 30/true undefined/true
+cleanup
+9/true undefined/true
+in finally/false
+after
+9/true undefined/true
+override/true
+caught x/false on/false undefined/true
+e
+undefined/true
+4/true undefined/true
+TypeError
+out
+undefined/true
+inner got a
+i1 i2
+inner finally
+r ret
+o
+inner got undefined
+inner finally
+early/true
+1,2,a,b
+TypeError 1
+nat closed
+nat closed
+0 1
+nat closed
+nat closed
+nat closed
+this 2 3
+params
+called
+body
+true object false
+[object Generator] [object Generator]
+TypeError
+a0,b0,c0,a1,b1,b2
+15

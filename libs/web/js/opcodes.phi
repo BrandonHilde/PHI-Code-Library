@@ -1,0 +1,381 @@
+# The bytecode. Each instruction is a u32: the opcode in its low 8 bits and an operand, A, in the
+# rest; a few have a second word. The opcode numbers are in order of how often they run, because
+# the VM's dispatch is a chain of compares (see JsVm.Run): the commonest come first.
+
+struct.JsTry
+{
+	u32 start;             # instruction indexes: the range it covers
+	u32 stop;
+	u32 handler;
+}
+
+struct.JsCode
+{
+	ptr<JsCell> gc_next;
+	u8 kind;
+	u8 mark;
+	u16 gc_flags;
+	u32 size;
+	ptr<u32> ins;
+	ptr<u64> consts;
+	ptr<JsTry> tries;
+	ptr<u32> lines;        # pairs: instruction index, line
+	ptr<u32> calls;        # pairs: a call's instruction, the constant naming what it calls
+	ptr<JsStr> name;
+	ptr<JsSource> src;
+	u32 ins_len;
+	u32 nconsts;
+	u32 ntries;
+	u32 nlines;
+	u32 ncalls;
+	u32 flags;             # JsCodes.F_...
+	u32 nparams;
+	u32 nlocals;           # stack slots from the frame's base, parameters included
+	u32 max_stack;         # how far the expression stack goes above them
+	u32 src_start;
+	u32 src_stop;
+	u32 mapped_skip;
+	u32 mapped_scope;      # how many of the parameters are in the scope, for arguments
+	int length;            # the function's 'length'
+}
+
+phi.JsCodes:Library
+{
+	const u32 F_STRICT: 1;
+	const u32 F_ARROW: 2;
+	const u32 F_ASYNC: 4;
+	const u32 F_GENERATOR: 8;
+	const u32 F_CLASS_CTOR: 16;
+	const u32 F_DERIVED: 32;
+	const u32 F_CONSTRUCTOR: 64;
+	const u32 F_HAS_PROTO: 128;
+	const u32 F_NEEDS_ARGS: 256;   # uses arguments or a rest parameter: everything passed is kept
+	const u32 F_METHOD: 512;
+
+	[FreeParts: ptr<JsCode> c: 0;]
+		if c.ins is not 0
+			free c.ins;
+		;;
+		if c.consts is not 0
+			free c.consts;
+		;;
+		if c.tries is not 0
+			free c.tries;
+		;;
+		if c.lines is not 0
+			free c.lines;
+		;;
+		if c.calls is not 0
+			free c.calls;
+		;;
+	[end]
+
+	# the line of the instruction before pc
+	[LineAt: ptr<JsCode> c: 0; ptr<u32> pc: 0;]
+		if c.nlines is 0 or pc is 0 return 0 as u32;
+		u32 at_ins: ((pc as u64) - (c.ins as u64)) as u32 / 4;
+		ptr<u32> t: c.lines;
+		u32 line: t:1;
+		u32 i: 0;
+		while i < c.nlines
+			if t:(i * 2) >= at_ins break;
+			line is t:(i * 2 + 1);
+			i++;
+		;;
+	[end: line]
+}
+
+phi.JsOp:Library
+{
+	# the hot ones, run inline by the first when in JsVm.Run
+	const u32 GETLOC: 0;
+	const u32 SETLOC: 1;
+	const u32 JF: 2;
+	const u32 LT: 3;
+	const u32 INT: 4;
+	const u32 ADD: 5;
+	const u32 LOOP: 6;
+	const u32 INCLOC: 7;
+	const u32 GETFIELD: 8;
+	const u32 CALL: 9;
+	const u32 RET: 10;
+	const u32 GETELEM: 11;
+	const u32 JMP: 12;
+	const u32 CONST: 13;
+	const u32 SUB: 14;
+	const u32 UNDEF: 15;
+	# the second when in Run
+	const u32 POP: 16;
+	const u32 SETFIELD: 17;
+	const u32 SETELEM: 18;
+	const u32 METHOD: 19;
+	const u32 DUP: 20;
+	const u32 JT: 21;
+	const u32 SEQ: 22;
+	const u32 SNE: 23;
+	const u32 GETVAR: 24;
+	const u32 SETVAR: 25;
+	const u32 THIS: 26;
+	const u32 MUL: 27;
+	const u32 LE: 28;
+	const u32 GT: 29;
+	const u32 BAND: 30;
+	const u32 BOR: 31;
+	const u32 LENGTH: 32;
+	const u32 GETGLOBAL: 33;
+	const u32 SETGLOBAL: 34;
+	const u32 TRUE: 35;
+	const u32 FALSE: 36;
+	const u32 NULL: 37;
+	const u32 GE: 38;
+	const u32 NOT: 39;
+	const u32 BXOR: 40;
+	const u32 SHL: 41;
+	const u32 SAR: 42;
+	const u32 SHR: 43;
+	const u32 DIV: 44;
+	const u32 MOD: 45;
+	const u32 NEW: 46;
+	const u32 CLOSURE: 47;
+	const u32 NEWOBJ: 48;
+	const u32 INITFIELD: 49;
+	const u32 GETLOC_C: 50;
+	const u32 GETVAR_C: 51;
+	const u32 FOROF_NEXT: 52;
+	const u32 PUSH_SCOPE: 53;
+	const u32 POP_SCOPE: 54;
+	const u32 NEWARR: 55;
+	const u32 APPEND: 56;
+	const u32 NEG: 57;
+	const u32 INC: 58;
+	const u32 DEC: 59;
+	const u32 TONUM: 60;
+	const u32 EQ: 61;
+	const u32 NE: 62;
+	const u32 JF_KEEP: 63;
+	const u32 JT_KEEP: 64;
+	const u32 SWAP: 65;
+	const u32 ROT3: 66;
+	const u32 DUP2: 67;
+	const u32 TYPEOF: 68;
+	# from here on, in JsVm.Slow
+	const u32 SLOW: 69;
+	const u32 SETLOC_C: 69;
+	const u32 HOLELOC: 70;
+	const u32 SETVAR_C: 71;
+	const u32 TYPEOF_GLOBAL: 72;
+	const u32 SETGLOBAL_S: 73;
+	const u32 INITLEX: 74;
+	const u32 COPY_SCOPE: 75;
+	const u32 SAVE_SCOPE: 76;
+	const u32 RESTORE_SCOPE: 77;
+	const u32 APPEND_HOLE: 78;
+	const u32 APPEND_SPREAD: 79;
+	const u32 INITELEM: 80;
+	const u32 INITPROTO: 81;
+	const u32 COPYPROPS: 82;
+	const u32 COPYREST: 83;
+	const u32 DEF_METHOD: 84;
+	const u32 DEF_ACCESSOR: 85;
+	const u32 SETNAME: 86;
+	const u32 TOKEY: 87;
+	const u32 PLUS: 88;
+	const u32 BITNOT: 89;
+	const u32 EXP: 90;
+	const u32 IN: 91;
+	const u32 INSTANCEOF: 92;
+	const u32 DELFIELD: 93;
+	const u32 DELELEM: 94;
+	const u32 DELGLOBAL: 95;
+	const u32 ROT4: 96;
+	const u32 TOSTR: 97;
+	const u32 STRCAT: 98;
+	const u32 REGEX: 99;
+	const u32 CALL_SPREAD: 100;
+	const u32 NEW_SPREAD: 101;
+	const u32 SUPER_CALL: 102;
+	const u32 SUPER_SPREAD: 103;
+	const u32 DEFAULT_SUPER: 104;
+	const u32 GETSUPER: 105;
+	const u32 SETSUPER: 106;
+	const u32 CALLEE: 107;
+	const u32 NEWTARGET: 108;
+	const u32 THROW: 109;
+	const u32 THROW_CONST: 110;
+	const u32 THROW_INIT: 111;     # if what's on the stack isn't the hole: super() twice
+	const u32 INVALID_ASSIGN: 112;
+	const u32 JNOTUNDEF: 113;
+	const u32 JNOTNIL: 114;
+	const u32 JNIL_POP: 115;
+	const u32 GETITER: 116;
+	const u32 ITER_CLOSE: 117;
+	const u32 ITER_CLOSE_SILENT: 118;
+	const u32 GETITER_ASYNC: 119;
+	const u32 CALLNEXT: 120;
+	const u32 ITER_CHECK: 121;
+	const u32 ITER_REST: 122;
+	const u32 FORIN_START: 123;
+	const u32 FORIN_NEXT: 124;
+	const u32 COERCIBLE: 125;
+	const u32 INITIAL_YIELD: 126;
+	const u32 YIELD: 127;
+	const u32 RESUME: 128;
+	const u32 YIELD_DELEGATE: 129;
+	const u32 DELEGATE_STEP: 130;
+	const u32 AWAIT: 131;
+	const u32 ASYNC_ENTER: 132;
+	const u32 ASYNC_RET: 133;
+	const u32 ASYNC_THROW: 134;
+	const u32 GEN_RET: 135;
+	const u32 CLASS: 136;
+	const u32 SET_FIELDS: 137;
+	const u32 SET_HOME: 138;
+	const u32 RUN_FIELDS: 139;
+	const u32 RUN_FIELDS_SELF: 140;
+	const u32 NEW_PRIVATE: 141;
+	const u32 GET_PRIVATE: 142;
+	const u32 SET_PRIVATE: 143;
+	const u32 DEF_PRIVATE: 144;
+	const u32 DEF_PRIVATE_METHOD: 145;
+	const u32 DEF_PRIVATE_ACC: 146;
+	const u32 HAS_PRIVATE: 147;
+	const u32 DEFFIELD: 148;
+	const u32 ARGUMENTS: 149;
+	const u32 REST: 150;
+	const u32 COERCE_THIS: 151;
+	const u32 DECL_GLOBALS: 152;
+	const u32 DEFGLOBAL_FN: 153;
+	const u32 DERIVED_RET: 154;
+	const u32 GET_METHOD_ELEM: 155;
+	const u32 ASYNC_GEN_YIELD: 156;
+	const u32 HOME: 157;
+	const u32 ANNEX_GLOBAL: 158;
+	const u32 ASYNC_DELEGATE_DONE: 159;
+	const u32 AWAIT_CHECK: 161;
+	const u32 STRICT_EVAL: 162;
+	const u32 OP_COUNT: 163;
+
+	# how much each changes the stack's depth (what depends on A is worked out by the compiler)
+	ptr<u8> effects: 0;
+
+	[Set: u32 op: 0; int delta: 0;]
+		effects:op is (delta + 64) as u8;
+	[end]
+
+	[Start]
+		if effects is not 0 return;
+		effects is new u8[OP_COUNT + 1];
+		if effects is 0
+			throw 'out of memory';
+		;;
+		while u32 i: 0; i < OP_COUNT; i++;
+			effects:i is 64;
+		;;
+		# pushes one
+		call Set: GETLOC 1;
+		call Set: GETLOC_C 1;
+		call Set: GETVAR 1;
+		call Set: GETVAR_C 1;
+		call Set: GETGLOBAL 1;
+		call Set: TYPEOF_GLOBAL 1;
+		call Set: INT 1;
+		call Set: CONST 1;
+		call Set: UNDEF 1;
+		call Set: TRUE 1;
+		call Set: FALSE 1;
+		call Set: NULL 1;
+		call Set: THIS 1;
+		call Set: DUP 1;
+		call Set: METHOD 1;
+		call Set: NEWOBJ 1;
+		call Set: NEWARR 1;
+		call Set: CLOSURE 1;
+		call Set: REGEX 1;
+		call Set: CALLEE 1;
+		call Set: NEWTARGET 1;
+		call Set: HOME 1;
+		call Set: CALLNEXT 1;
+		call Set: ITER_REST 1;
+		call Set: FOROF_NEXT 1;
+		call Set: FORIN_NEXT 1;
+		call Set: CLASS 1;
+		call Set: NEW_PRIVATE 1;
+		call Set: ARGUMENTS 1;
+		call Set: REST 1;
+		call Set: DELGLOBAL 1;
+		call Set: DUP2 2;
+		# pops one
+		call Set: SETLOC (-1);
+		call Set: SETLOC_C (-1);
+		call Set: SETVAR (-1);
+		call Set: SETVAR_C (-1);
+		call Set: SETGLOBAL (-1);
+		call Set: SETGLOBAL_S (-1);
+		call Set: INITLEX (-1);
+		call Set: JF (-1);
+		call Set: JT (-1);
+		call Set: POP (-1);
+		call Set: RET (-1);
+		call Set: GEN_RET (-1);
+		call Set: ASYNC_RET (-1);
+		call Set: ASYNC_THROW (-1);
+		call Set: THROW (-1);
+		call Set: THROW_INIT (-1);
+		call Set: LT (-1);
+		call Set: LE (-1);
+		call Set: GT (-1);
+		call Set: GE (-1);
+		call Set: ADD (-1);
+		call Set: SUB (-1);
+		call Set: MUL (-1);
+		call Set: DIV (-1);
+		call Set: MOD (-1);
+		call Set: EXP (-1);
+		call Set: BAND (-1);
+		call Set: BOR (-1);
+		call Set: BXOR (-1);
+		call Set: SHL (-1);
+		call Set: SAR (-1);
+		call Set: SHR (-1);
+		call Set: SEQ (-1);
+		call Set: SNE (-1);
+		call Set: EQ (-1);
+		call Set: NE (-1);
+		call Set: IN (-1);
+		call Set: INSTANCEOF (-1);
+		call Set: GETELEM (-1);
+		call Set: SETFIELD (-1);
+		call Set: INITFIELD (-1);
+		call Set: APPEND (-1);
+		call Set: APPEND_SPREAD (-1);
+		call Set: INITPROTO (-1);
+		call Set: COPYPROPS (-1);
+		call Set: DELELEM (-1);
+		call Set: STRCAT (-1);
+		call Set: GETSUPER (-1);
+		call Set: GETITER (-1);
+		call Set: GETITER_ASYNC (-1);
+		call Set: FORIN_START (-1);
+		call Set: SET_FIELDS (-1);
+		call Set: RUN_FIELDS (-1);
+		call Set: GET_PRIVATE (-1);
+		call Set: HAS_PRIVATE (-1);
+		call Set: DEFGLOBAL_FN (-1);
+		call Set: ANNEX_GLOBAL (-1);
+		# pops two
+		call Set: SETELEM (-2);
+		call Set: INITELEM (-2);
+		call Set: DEF_METHOD (-2);
+		call Set: DEF_ACCESSOR (-2);
+		call Set: SETSUPER (-2);
+		call Set: CALL_SPREAD (-2);
+		call Set: NEW_SPREAD (-2);
+		call Set: SUPER_SPREAD (-2);
+		call Set: SET_PRIVATE (-2);
+		call Set: DEF_PRIVATE (-2);
+		call Set: DEF_PRIVATE_METHOD (-2);
+		call Set: DEF_PRIVATE_ACC (-2);
+		call Set: DEFFIELD (-2);
+		# one in, a method and its object out, for GET_METHOD_ELEM two in two out: no change
+	[end]
+}

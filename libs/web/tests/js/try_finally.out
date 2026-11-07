@@ -1,0 +1,47 @@
+f1
+try
+finally
+f3
+catch x
+swallowed
+body 0
+f 0
+f 1
+f 2
+end
+inner 0 0
+outer 0 0
+inner 1 0
+outer 1 0
+done
+1
+a
+b 1
+c
+middle
+2
+broke out
+cont
+after
+deep finally
+outer finally
+deep
+3
+2
+outer inner
+no binding
+0,0,0,1,1,10
+bottom
+lbl finally
+past
+number
+string
+object
+undefined
+object
+in
+closed
+true
+ret
+from return
+from body

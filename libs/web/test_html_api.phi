@@ -1,0 +1,621 @@
+# The parts of the HTML layer the outside suites can't see: the serializer's output, the API,
+# chunked input, document.write re-entered from on_script, pausing, errors, quirks mode. Every line
+# of the expected output was checked against the spec by reading it. What's printed is ASCII: other
+# bytes are written \xNN.
+use weblib;
+use html.parser;
+
+phi.TestHtmlApi:Program
+{
+	call Weblib.Start: 900000;
+	call Serializer;
+	call Fragments;
+	call Chunks;
+	call Decoding;
+	call Scripts;
+	call Quirks;
+	call Names;
+	call Errors;
+	log 'done\n';
+	exit 0;
+
+	# ---- helpers
+
+	[Show: ptr<u8> text: 0; u32 count: 0;]
+		WlBuf b;
+		while u32 i: 0; i < count; i++;
+			u32 c: text:i;
+			if c >= 32 and c < 127
+				call b.Add: c as u8;
+			;;
+			elif c is 10
+				call b.AddN: '\\n' 2;
+			;;
+			else
+				call b.AddN: '\\x' 2;
+				call b.Add: (Hex: c >> 4);
+				call b.Add: (Hex: c & 15);
+			;;
+		;;
+		if b.data is not 0
+			log b.data;
+		;;
+		call b.Free;
+	[end]
+
+	[Hex: u32 v: 0;]
+		if v < 10 return (48 + v) as u8;
+	[end: (87 + v) as u8]
+
+	[ShowDoc: ptr<u8> label: 0; ptr<DomDocument> d: 0; bln scripting: false;]
+		WlBuf o;
+		call Html.Serialize: d.root o scripting;
+		log label ': ';
+		call Show: o.data o.len;
+		log '\n';
+		call o.Free;
+	[end]
+
+	# parse, print what's in the document
+	[Doc: ptr<u8> markup: 0; bln scripting: false;]
+		ptr<DomDocument> d: (Html.Parse: markup (WlText.LenZ: markup) scripting);
+		WlBuf o;
+		call Html.Serialize: (Dom.Body: d) o scripting;
+		call Show: o.data o.len;
+		log '\n';
+		call o.Free;
+		call Dom.FreeDocument: d;
+	[end]
+
+	# ---- the serializer
+
+	[Serializer]
+		log '-- serializer\n';
+		# escaping, in text and in an attribute (U+00A0 is written as &nbsp; in both)
+		call Doc: '<p title="a&amp;b&nbsp;&quot;&lt;&gt;\'">x &amp; y &lt; z &gt; &nbsp;"\'</p>';
+		# void elements have no end tag and no children
+		call Doc: '<br><img src=x><hr><input><wbr><area><embed><basefont><bgsound><keygen><param><source><track><col><frame>x';
+		call Doc: '<table><col><tr><td>x</table>';
+		# their text goes out literally
+		call Doc: '<body><style>a<b&c</style><script>a<b&c</script><xmp>a<b&c</xmp><iframe>a<b&c</iframe><noembed>a<b&c</noembed><noframes>a<b&c</noframes>';
+		call Doc: '<plaintext>a<b&c';
+		# noscript: literal only with scripting on
+		call Doc: '<body><noscript><p>a&b</p></noscript>' false;
+		call Doc: '<body><noscript><p>a&b</p></noscript>' true;
+		# comments and processing instructions as they are
+		call Doc: '<body><!-- a&b --><?target some data?>';
+		# no newline is added back at the start of pre, textarea or listing
+		call Doc: '<pre>\n\nx</pre><textarea>\n\nx</textarea><listing>\n\nx</listing>';
+		# templates: what's in the contents
+		call Doc: '<body><template><p>a<template><b>c</b></template></p></template>x';
+		# foreign content: names as adjusted, attribute names with their prefixes
+		call Doc: '<svg viewbox="0 0 1 1" xlink:href=a xml:lang=b xmlns=c xmlns:xlink=d><foreignobject><p>x</p></foreignobject><clippath></clippath></svg>';
+		call Doc: '<math definitionurl=a><mi>x</mi></math>';
+		# the doctype, with only its name
+		ptr<DomDocument> d: (Html.Parse: '<!doctype html public "a" "b"><title>t</title>' 47);
+		call ShowDoc: 'document' d;
+		# with the node itself
+		WlBuf o;
+		ptr<DomNode> title: (Dom.ChildNamed: (Dom.Head: d) 'title');
+		call Html.SerializeOuter: title o;
+		call o.Add: '|';
+		call Html.SerializeOuter: title.first_child o;
+		call o.Add: '|';
+		call Html.SerializeOuter: d.root.first_child o;
+		log 'outer: ';
+		call Show: o.data o.len;
+		log '\n';
+		call o.Free;
+		call Dom.FreeDocument: d;
+		# a void element has nothing in it, and outer is only its start tag
+		d is (Html.Parse: '<br>' 4);
+		ptr<DomNode> br: (Dom.ChildNamed: (Dom.Body: d) 'br');
+		WlBuf v;
+		call Html.Serialize: br v;
+		log 'void inner [' v.len '] ';
+		call Html.SerializeOuter: br v;
+		call Show: v.data v.len;
+		log '\n';
+		call v.Free;
+		call Dom.FreeDocument: d;
+		# a very long text, past what a str holds
+		WlBuf big;
+		call big.AddZ: '<p>';
+		while int i: 0; i < 100000; i++;
+			call big.AddZ: 'x&amp;';
+		;;
+		d is (Html.Parse: big.data big.len);
+		WlBuf out_text;
+		call Html.Serialize: (Dom.Body: d) out_text;
+		log 'long text ' out_text.len '\n';
+		call out_text.Free;
+		call big.Free;
+		call Dom.FreeDocument: d;
+	[end]
+
+	# ---- fragments
+
+	[Frag: ptr<u8> context_name: 0; DomNs ns: DomNs.HTML; ptr<u8> markup: 0; bln scripting: false;]
+		ptr<DomDocument> d: (Dom.NewDocument);
+		ptr<DomNode> ctx: (Dom.CreateElement: d (WlAtoms.GetZ: context_name) ns);
+		ptr<DomNode> f: (Html.ParseFragment: ctx markup (WlText.LenZ: markup) scripting);
+		WlBuf o;
+		call Html.Serialize: f o scripting;
+		log context_name ' type ' f.type as int ' doc ' (f.doc is d) ' ctx-kids ' (ctx.first_child is 0) ': ';
+		call Show: o.data o.len;
+		log '\n';
+		call o.Free;
+		call Dom.FreeDocument: d;
+	[end]
+
+	[Fragments]
+		log '-- fragments\n';
+		call Frag: 'div' DomNs.HTML '<p>a<p>b<script>c</script>';
+		call Frag: 'td' DomNs.HTML '<td>a</td>b';
+		call Frag: 'tr' DomNs.HTML '<td>a</td>b';
+		call Frag: 'table' DomNs.HTML 'a<tr><td>b</table>c';
+		call Frag: 'select' DomNs.HTML '<option>a<select><input><option>b';
+		call Frag: 'template' DomNs.HTML '<tr><td>a</td></tr>';
+		call Frag: 'textarea' DomNs.HTML '<b>a</textarea></b>';
+		call Frag: 'title' DomNs.HTML '<b>a&amp;</title>';
+		call Frag: 'style' DomNs.HTML '<b>a&amp;</style>';
+		call Frag: 'script' DomNs.HTML '<b>a&amp;</script>';
+		call Frag: 'plaintext' DomNs.HTML '<b>a&amp;</plaintext>';
+		call Frag: 'noscript' DomNs.HTML '<b>a</b>' true;
+		call Frag: 'noscript' DomNs.HTML '<b>a</b>' false;
+		call Frag: 'html' DomNs.HTML '<head><title>a</title></head><body>b';
+		call Frag: 'head' DomNs.HTML '<title>a</title><p>b';
+		call Frag: 'frameset' DomNs.HTML '<frame><p>a';
+		call Frag: 'svg' DomNs.SVG '<circle/><title>a</title><div>b';
+		call Frag: 'title' DomNs.SVG '<div>a</div><![CDATA[b]]>';
+		call Frag: 'mi' DomNs.MATHML '<mglyph/><div>a</div>';
+		call Frag: 'annotation-xml' DomNs.MATHML '<svg></svg><div>a</div>';
+		# no context: nothing
+		log 'no context ' ((Html.ParseFragment: 0 'x' 1) is 0) '\n';
+		# nearest form: a form in the fragment is ignored if the context is in a form
+		ptr<DomDocument> d: (Dom.NewDocument);
+		ptr<DomNode> form: (Dom.CreateElementZ: d 'form');
+		ptr<DomNode> inner: (Dom.CreateElementZ: d 'div');
+		call Dom.Append: form inner;
+		ptr<DomNode> f: (Html.ParseFragment: inner '<form><p>a' 10);
+		WlBuf o;
+		call Html.Serialize: f o;
+		log 'in a form: ';
+		call Show: o.data o.len;
+		log '\n';
+		call o.Free;
+		# a script in a fragment isn't for running
+		f is (Html.ParseFragment: inner '<script>a</script>' 18);
+		log 'already started ' ((f.first_child.flags & HtmlConst.F_ALREADY_STARTED) is not 0) '\n';
+		call Dom.FreeDocument: d;
+	[end]
+
+	# ---- chunks
+
+	[InChunks: ptr<u8> markup: 0; u32 chunk: 0;]
+		u32 total: (WlText.LenZ: markup);
+		ptr<HtmlParser> p: (HtmlParser.New: 0);
+		u32 at_byte: 0;
+		while at_byte < total
+			u32 n: chunk;
+			if n > total - at_byte
+				n is total - at_byte;
+			;;
+			call p.Feed: markup + at_byte n;
+			at_byte is at_byte + n;
+		;;
+		call p.Finish;
+		ptr<DomDocument> d: p.doc;
+		WlBuf o;
+		call Html.Serialize: d.root o;
+		call Show: o.data o.len;
+		log '\n';
+		call o.Free;
+		call p.Free;
+		call Dom.FreeDocument: d;
+	[end]
+
+	[Chunks]
+		log '-- chunks\n';
+		# every way of cutting these has to give the same document
+		ptr<u8> m: '<!DOCTYPE html PUBLIC "a" "b"><div id=a class="b c" data-x=\'&amp;&not;x\'>t&amp;&notin;&#x41;&#65;<!-- c --><![CDATA[d]]><?p i?></div><svg><![CDATA[e]]></svg><script><!--<script></script>--></script><title>a&amp;</title>';
+		call InChunks: m 100000;
+		call InChunks: m 1;
+		call InChunks: m 2;
+		call InChunks: m 3;
+		call InChunks: m 7;
+		# a tag split across two Feeds
+		ptr<HtmlParser> p: (HtmlParser.New: 0);
+		call p.Feed: '<di' 3;
+		call p.Feed: 'v cla' 5;
+		log 'no element yet: ' ((Dom.Body: p.doc) is 0) '\n';
+		call p.Feed: 'ss=x>y</di' 10;
+		call p.Feed: 'v>z' 3;
+		call p.Finish;
+		call p.Feed: 'ignored' 7;
+		call ShowDoc: 'split tag' p.doc;
+		call Dom.FreeDocument: p.doc;
+		call p.Free;
+	[end]
+
+	[Bytes: ptr<u8> label: 0; ptr<u8> bytes: 0; u32 count: 0;]
+		# whole, and a byte at a time: the same
+		ptr<HtmlParser> a: (HtmlParser.New: 0);
+		call a.Feed: bytes count;
+		call a.Finish;
+		ptr<HtmlParser> b: (HtmlParser.New: 0);
+		while u32 i: 0; i < count; i++;
+			call b.Feed: bytes + i 1;
+		;;
+		call b.Finish;
+		WlBuf x;
+		WlBuf y;
+		call Dom.TextContent: (Dom.Body: a.doc) x;
+		call Dom.TextContent: (Dom.Body: b.doc) y;
+		log label ' same ' (WlText.Eq: x.data x.len y.data y.len) ': ';
+		call Show: x.data x.len;
+		log '\n';
+		call x.Free;
+		call y.Free;
+		call Dom.FreeDocument: a.doc;
+		call Dom.FreeDocument: b.doc;
+		call a.Free;
+		call b.Free;
+	[end]
+
+	# markup in which # stands for a NUL
+	[WithNuls: ptr<u8> markup: 0;]
+		u32 n: (WlText.LenZ: markup);
+		ptr<u8> buffer: new u8[n + 1];
+		while u32 i: 0; i < n; i++;
+			buffer:i is markup:i;
+			if buffer:i is '#'
+				buffer:i is 0;
+			;;
+		;;
+		ptr<DomDocument> d: (Html.Parse: buffer n);
+		WlBuf o;
+		call Html.Serialize: d.root o;
+		log 'nul: ';
+		call Show: o.data o.len;
+		log '\n';
+		call o.Free;
+		call Dom.FreeDocument: d;
+		free buffer;
+	[end]
+
+	[Decoding]
+		log '-- decoding\n';
+		# a BOM goes; only the first
+		call Bytes: 'bom' '\xEF\xBB\xBFa\xEF\xBB\xBFb' 8;
+		# newlines: CR and CRLF to LF
+		call Bytes: 'crlf' 'a\rb\r\nc\n\rd\r' 10;
+		# a reference can still make a CR
+		call Bytes: 'cr ref' 'a&#13;b&#x0d;\nc' 15;
+		# good UTF-8 of each length
+		call Bytes: 'utf8' 'a\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80' 10;
+		# bad UTF-8: a stray byte, an overlong, a surrogate, cut short, past the end of Unicode.
+		# One U+FFFD for each maximal part, as the Encoding standard says.
+		call Bytes: 'stray' 'a\xFFb\x80c' 5;
+		call Bytes: 'overlong' 'a\xC0\x80b\xE0\x80\x80c' 9;
+		call Bytes: 'surrogate' 'a\xED\xA0\x80b' 5;
+		call Bytes: 'cut' 'a\xE2\x82b\xF0\x9F\x98c' 8;
+		call Bytes: 'past' 'a\xF4\x90\x80\x80b' 6;
+		call Bytes: 'at the end' 'a\xE2\x82' 3;
+		# NUL: dropped in a body's data, replaced where the state says
+		call WithNuls: '<p>a#b';
+		# in a tag's name, an attribute's name and value, a comment, a doctype: U+FFFD
+		call WithNuls: '<a#b c#d=e#f g="h#i" j=\'k#l\'><!--m#n--><!o#p>';
+		call WithNuls: '<!doctype a#b public "c#d" "e#f"><body>';
+		# in RCDATA and RAWTEXT and script: U+FFFD too, and in foreign content
+		call WithNuls: '<title>a#b</title><style>c#d</style><script>e#f</script><body><svg>g#h<![CDATA[i#j]]></svg>';
+		# in a table or a frameset: dropped, and it doesn't start a body by itself in a frameset
+		call WithNuls: '<table>a#b<tr>#</table>';
+		call WithNuls: '<frameset>#<frame>';
+		# numeric references, with the spec's table
+		call Doc: '&#128;&#x80;&#150;&#0;&#x110000;&#xD800;&#xDFFF;&#xFFFE;&#x1F600;&#x1;&#65;';
+		# named, with and without the semicolon, and the attribute exception
+		call Doc: '&amp &ampx &notin; &notit; &NotEqualTilde; &unknown; &';
+		call Doc: '<a href="?a=1&amp=2&ampx=3&amp;x&notin;">';
+	[end]
+
+	# ---- document.write and on_script
+
+	int calls: 0;
+	int script_kind: 0;
+
+	[OnScript: ptr<HtmlParser> p: 0; ptr<DomNode> script: 0;]
+		calls++;
+		WlBuf text;
+		call Dom.TextContent: script text;
+		ptr<u8> t: text.data;
+		when script_kind
+			is 1
+				# what the script writes lands before what's still to come
+				call p.Write: t (WlText.LenZ: t);
+			;;
+			is 2
+				# a tag split across two writes
+				if calls is 1
+					call p.Write: '<di' 3;
+					call p.Write: 'v id=' 5;
+					call p.Write: 'x>[' 3;
+				;;
+			;;
+			is 3
+				call p.Feed: 'FED' 3;
+				call p.Write: 'WROTE' 5;
+			;;
+			is 4
+				call p.Pause;
+				pause_count++;
+			;;
+			is 5
+				call p.Write: 'W' 1;
+				call p.Finish;
+				call p.Write: 'X' 1;
+			;;
+			is 6
+				if calls < 200
+					# each script writes the next: until the nesting limit, and then it waits
+					call p.Write: '<script>s</script>' 18;
+				;;
+			;;
+			is 7
+				throw 'the script threw';
+			;;
+			is 8
+				# WPT's adoption-agency-reparenting-cycle and -inner-loop-cycle: the furthest block
+				# moved to the body, and the common ancestor moved inside it
+				found_fb is (Dom.FindById: p.doc.root (WlAtoms.GetZ: 'fb'));
+				found_ca is (Dom.FindById: p.doc.root (WlAtoms.GetZ: 'ca'));
+				call Dom.Append: (Dom.Body: p.doc) found_fb;
+				call Dom.Append: found_fb found_ca;
+			;;
+			is 9
+				# and -template-cycle: the common ancestor in a template's contents in it
+				found_fb is (Dom.FindById: p.doc.root (WlAtoms.GetZ: 'fb'));
+				found_ca is (Dom.FindById: p.doc.root (WlAtoms.GetZ: 'ca'));
+				ptr<DomNode> tmpl: (Dom.CreateElementZ: p.doc 'template');
+				ptr<DomNode> contents: (Dom.CreateFragment: p.doc);
+				tmpl.content is contents;
+				contents.content is tmpl;
+				call Dom.Append: (Dom.Body: p.doc) found_fb;
+				call Dom.Append: found_fb tmpl;
+				call Dom.Append: contents found_ca;
+			;;
+			is 10
+				# WPT's foster-parenting-into-document-with-element-child: the table moved to be the
+				# document element of another document
+				other_doc is (Dom.NewDocument);
+				ptr<DomNode> table: (Dom.ChildNamed: (Dom.Body: p.doc) 'table');
+				call Dom.Append: other_doc.root table;
+			;;
+		;;
+		call text.Free;
+	[end]
+
+	int pause_count: 0;
+	ptr<DomNode> found_fb: 0;
+	ptr<DomNode> found_ca: 0;
+	ptr<DomDocument> other_doc: 0;
+
+	[Cycle: ptr<u8> label: 0; int kind: 0; ptr<u8> markup: 0;]
+		calls is 0;
+		script_kind is kind;
+		ptr<HtmlParser> p: (HtmlParser.New: 0);
+		p.on_script is addr OnScript;
+		p.scripting is true;
+		call p.Feed: markup (WlText.LenZ: markup);
+		call p.Finish;
+		WlBuf o;
+		call Html.Serialize: (Dom.Body: p.doc) o;
+		log label ' failed ' p.failed ' body [';
+		call Show: o.data o.len;
+		log '] fb in tree ' (Dom.Contains: p.doc.root found_fb) ' ca in tree ' (Dom.Contains: p.doc.root found_ca) ' fb parent ' (found_fb.parent is not 0) '\n';
+		call o.Free;
+		call Dom.FreeDocument: p.doc;
+		call p.Free;
+	[end]
+
+	[OtherDocument]
+		calls is 0;
+		script_kind is 10;
+		ptr<HtmlParser> p: (HtmlParser.New: 0);
+		p.on_script is addr OnScript;
+		p.scripting is true;
+		ptr<u8> m: '<table><tr><script>s</script><b id=fostered>x</b>';
+		call p.Feed: m (WlText.LenZ: m);
+		call p.Finish;
+		call ShowDoc: 'this document' p.doc;
+		call ShowDoc: 'the other' other_doc;
+		call Dom.FreeDocument: p.doc;
+		call Dom.FreeDocument: other_doc;
+		call p.Free;
+	[end]
+
+	[Run: ptr<u8> label: 0; int kind: 0; ptr<u8> markup: 0;]
+		calls is 0;
+		script_kind is kind;
+		ptr<HtmlParser> p: (HtmlParser.New: 0);
+		p.on_script is addr OnScript;
+		p.scripting is true;
+		call p.Feed: markup (WlText.LenZ: markup);
+		call p.Finish;
+		log label ' calls ' calls ' failed ' p.failed ' ';
+		call ShowDoc: 'doc' p.doc true;
+		call Dom.FreeDocument: p.doc;
+		call p.Free;
+	[end]
+
+	[Scripts]
+		log '-- scripts\n';
+		call Run: 'no writing' 0 '<script>a</script>b';
+		# the script's text is what it writes
+		call Run: 'write' 1 'a<script>b</script>c';
+		call Run: 'write markup' 1 'a<script><b>x</b></script>d';
+		call Run: 'split' 2 '<script>s</script>y]</div>z';
+		call Run: 'feed in script' 3 '<script>s</script>tail';
+		call Run: 'finish in script' 5 '<script>s</script>tail';
+		call Run: 'nesting' 6 '<script>s</script>end';
+		call Run: 'throw' 7 'a<script>s</script>never';
+		# in SVG: what the script writes waits for it to end, but still comes first
+		call Run: 'svg' 1 '<svg><script>w</script>t</svg>';
+		call Run: 'svg self-closed' 0 '<svg><script/>t</svg>';
+		# which SVG scripts run, as in WPT's unclosed-svg-script
+		call Run: 'svg with an end tag' 0 '<svg><script>a</script></svg>';
+		call Run: 'svg without' 0 '<svg><script>a</svg>';
+		call Run: 'svg, bogus end tag inside' 0 '<svg><script>a</g></script></svg>';
+		call Run: 'svg, ended by breakout' 0 '<svg><script>a<s></script></svg></s>';
+		# moves by a script that would make a cycle: the adoption agency drops the move
+		call Cycle: 'cycle' 8 '<div id=ca><b><p id=fb><script>s</script></b></div>';
+		call Cycle: 'cycle, inner loop' 8 '<div id=ca><b><i><p id=fb><script>s</script></b></div>';
+		call Cycle: 'cycle, template' 9 '<div id=ca><b><p id=fb><script>s</script></b></div>';
+		call OtherDocument;
+		# at the end of the file a script doesn't run
+		call Run: 'unclosed' 0 '<script>never';
+		# pausing: nothing is parsed from the moment it's called until Resume
+		script_kind is 4;
+		calls is 0;
+		ptr<HtmlParser> p: (HtmlParser.New: 0);
+		p.on_script is addr OnScript;
+		call p.Feed: 'a<script>s</script>b<i' 22;
+		call ShowDoc: 'paused' p.doc;
+		call p.Feed: '>c' 2;
+		call p.Write: 'w' 1;
+		call p.Finish;
+		call ShowDoc: 'still paused' p.doc;
+		call p.Resume;
+		call ShowDoc: 'resumed' p.doc;
+		log 'finished ' p.finished ' pauses ' pause_count '\n';
+		call Dom.FreeDocument: p.doc;
+		call p.Free;
+		# a parser given a document of the browser's
+		ptr<DomDocument> mine: (Dom.NewDocument);
+		ptr<HtmlParser> q: (HtmlParser.New: mine);
+		log 'own doc ' (q.doc is mine) '\n';
+		call q.Feed: 'x' 1;
+		call q.Finish;
+		call q.Free;
+		call ShowDoc: 'own' mine;
+		call Dom.FreeDocument: mine;
+		# changes are told about
+		mine is (Dom.NewDocument);
+		mine.on_change is addr OnChange;
+		ptr<HtmlParser> r: (HtmlParser.New: mine);
+		call r.Feed: '<p>a</p>' 8;
+		call r.Finish;
+		call r.Free;
+		log 'changes seen ' (changes > 0) ' version moved ' (mine.version > 0) '\n';
+		call Dom.FreeDocument: mine;
+	[end]
+
+	int changes: 0;
+
+	[OnChange: ptr<DomNode> node: 0; int what: 0;]
+		changes++;
+	[end]
+
+	# ---- quirks mode
+
+	[Mode: ptr<u8> markup: 0;]
+		ptr<DomDocument> d: (Html.Parse: markup (WlText.LenZ: markup));
+		log d.quirks as int ' ' d.limited_quirks as int ' ';
+		call Show: markup (WlText.LenZ: markup);
+		log '\n';
+		call Dom.FreeDocument: d;
+	[end]
+
+	[Quirks]
+		log '-- quirks (full, limited)\n';
+		call Mode: '<p>no doctype';
+		call Mode: '<!doctype html>';
+		call Mode: '<!DOCTYPE HTML>';
+		call Mode: '<!doctype htm>';
+		call Mode: '<!doctype>';
+		call Mode: '<!doctype html system "about:legacy-compat">';
+		call Mode: '<!doctype html public "-//W3C//DTD HTML 4.01//EN">';
+		call Mode: '<!doctype html public "-//W3C//DTD HTML 4.01 Transitional//EN">';
+		call Mode: '<!doctype html public "-//W3C//DTD HTML 4.01 Transitional//EN" "x">';
+		call Mode: '<!doctype html public "-//W3C//DTD HTML 4.01 Frameset//EN">';
+		call Mode: '<!doctype html public "-//w3c//dtd html 4.01 frameset//en" "">';
+		call Mode: '<!doctype html public "-//W3C//DTD HTML 4.01 Frameset//EN" "x">';
+		call Mode: '<!doctype html public "-//W3C//DTD XHTML 1.0 Transitional//EN" "x">';
+		call Mode: '<!doctype html public "-//W3C//DTD XHTML 1.0 Frameset//EN">';
+		call Mode: '<!doctype html public "-//W3C//DTD XHTML 1.0 Strict//EN">';
+		call Mode: '<!doctype html public "HTML">';
+		call Mode: '<!doctype html public "html" "x">';
+		call Mode: '<!doctype html public "-//W3O//DTD W3 HTML Strict 3.0//EN//">';
+		call Mode: '<!doctype html public "-/W3C/DTD HTML 4.0 Transitional/EN">';
+		call Mode: '<!doctype html public "-//IETF//DTD HTML//extra">';
+		call Mode: '<!doctype html public "-//O\'Reilly and Associates//DTD HTML 2.0//">';
+		call Mode: '<!doctype html system "http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd">';
+		call Mode: '<!doctype html system "HTTP://WWW.IBM.COM/DATA/DTD/V11/IBMXHTML1-TRANSITIONAL.DTD">';
+		call Mode: '<!doctype html x>';
+		call Mode: '<!doctype html public>';
+		# and what it changes: a table closes a <p> only out of quirks mode
+		call Doc: '<p><table>';
+		call Doc: '<!doctype html><p><table>';
+		# a fragment follows its context's document
+		ptr<DomDocument> d: (Html.Parse: '<p>' 3);
+		ptr<DomNode> f: (Html.ParseFragment: (Dom.Body: d) '<p><table>' 10);
+		WlBuf o;
+		call Html.Serialize: f o;
+		log 'quirky fragment: ';
+		call Show: o.data o.len;
+		log ' quirks stays ' d.quirks '\n';
+		call o.Free;
+		call Dom.FreeDocument: d;
+	[end]
+
+	# ---- names
+
+	[Names]
+		log '-- names\n';
+		ptr<WlAtom> div_name: (WlAtoms.GetZ: 'div');
+		ptr<WlAtom> other_name: (WlAtoms.GetZ: 'not-a-tag-name');
+		log 'div ' (div_name.tag is HtmlTag.DIV) ' unknown ' other_name.tag '\n';
+		ptr<DomDocument> d: (Html.Parse: '<DIV CLASS=a ID=b><svg><clipPath/></svg></DIV>' 46);
+		ptr<DomNode> div: (Dom.ChildNamed: (Dom.Body: d) 'div');
+		log 'tag ' div.tag.text ' number ' (div.tag.tag is HtmlTag.DIV) ' id ' (div.id_atom is (WlAtoms.GetZ: 'b')) ' class ' (Dom.HasClass: div (WlAtoms.GetZ: 'a')) '\n';
+		ptr<DomNode> svg: (Dom.FirstElementChild: div);
+		log 'svg ns ' (svg.ns is DomNs.SVG) ' child ' svg.first_child.tag.text '\n';
+		call Dom.FreeDocument: d;
+	[end]
+
+	# ---- things that must not take the browser down
+
+	[Errors]
+		log '-- errors\n';
+		# nothing at all
+		ptr<DomDocument> d: (Html.Parse: 0 0);
+		call ShowDoc: 'empty' d;
+		call Dom.FreeDocument: d;
+		# a duplicate attribute keeps the first; many attributes stay linear (and work)
+		call Doc: '<p a=1 a=2 b=3 A=4>';
+		WlBuf big;
+		call big.AddZ: '<p';
+		while int i: 0; i < 100; i++;
+			call big.AddZ: ' a';
+			call big.AddInt: i % 50;
+			call big.AddZ: '=';
+			call big.AddInt: i;
+		;;
+		call big.AddZ: '>';
+		d is (Html.Parse: big.data big.len);
+		ptr<DomNode> p: (Dom.ChildNamed: (Dom.Body: d) 'p');
+		int count: 0;
+		ptr<DomAttr> a: p.attrs;
+		while a is not 0
+			count++;
+			a is a.next;
+		;;
+		log 'attributes ' count ' first a7 ' (Dom.AttrValue: p 'a7') ' a49 ' (Dom.AttrValue: p 'a49') '\n';
+		call big.Free;
+		call Dom.FreeDocument: d;
+		# a serialize of nothing
+		WlBuf o;
+		log 'serialize nothing ' (Html.Serialize: 0 o) ' ' o.len '\n';
+		call o.Free;
+	[end]
+}

@@ -1,0 +1,48 @@
+# Benchmarks, with `now()` for timing. phi test only checks it runs, on tiny sizes: the numbers mean nothing
+# in an .expected file.
+#
+#   test_js_bench           a smoke test
+#   test_js_bench run       the real sizes: prints how fast each is
+
+use js.js;
+
+phi.TestJsBench:Program
+{
+	call Js.Start: 900000;
+	ptr<JsRuntime> rt: (Js.New);
+	rt.console_hook is addr Print;
+	call Js.DefineNative: JsRt.r.global 'now' addr Now 0;
+	ptr<u8> arg: (OS.Arguments);
+	f64 scale: 0.0001;
+	if arg is not 0 and arg:0 is 'r'
+		scale is 1.0;
+		quiet is false;
+	;;
+	call Js.Define: JsRt.r.global 'SCALE' (JsV.Num: scale) JsObjs.WC;
+	ptr<u8> src: new u8[100000];
+	int n: (OS.ReadFile: 'tests/js/bench/bench.jsx' src 100000);
+	if n < 0
+		log 'no benchmarks\n';
+		exit 1;
+	;;
+	call Js.Eval: src n as u32 'bench';
+	if Js.failed
+		WlBuf b;
+		call Js.TextOf: (Js.GetProp: Js.exception 'stack') addr b;
+		log 'FAILED: ' b.data '\n';
+		exit 1;
+	;;
+	log 'done\n';
+	exit 0;
+
+	bln quiet: true;
+
+	[Print: ptr<u8> t: 0; u32 n: 0;]
+		if not quiet
+			log t '\n';
+		;;
+	[end]
+
+	[Now: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Int: (OS.GetTicks))]
+}

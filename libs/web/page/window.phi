@@ -1,0 +1,683 @@
+# window, and what hangs from it: timers, console, location, navigator, storage, fetch, XMLHttpRequest.
+
+
+phi.PageWindow:Library
+{
+	[Install: ptr<Page> p: 0; ptr<JsObj> keep: 0;]
+		ptr<JsObj> g: JsRt.r.global;
+		u64 gv: (JsV.Obj: g);
+		# the window is a target too: its prototype gets EventTarget's methods
+		g.proto is PageEvents.target_proto;
+		p.rt.console_hook is addr ConsoleLine;
+		call JsObjs.DefineZ: g 'window' gv JsObjs.E | JsObjs.C;
+		call JsObjs.DefineZ: g 'self' gv JsObjs.E | JsObjs.C;
+		call JsObjs.DefineZ: g 'top' gv JsObjs.E | JsObjs.C;
+		call JsObjs.DefineZ: g 'parent' gv JsObjs.E | JsObjs.C;
+		call JsObjs.DefineZ: g 'frames' gv JsObjs.E | JsObjs.C;
+		call JsObjs.DefineZ: g 'name' (JsV.Str: JsRt.blank) JsObjs.WEC;
+		call Sync: p;
+		ptr<JsNativeFn> st: (Js.DefineNative: g 'setTimeout' addr SetTimer 1);
+		st.magic is 0;
+		ptr<JsNativeFn> si: (Js.DefineNative: g 'setInterval' addr SetTimer 1);
+		si.magic is 1;
+		call Js.DefineNative: g 'clearTimeout' addr ClearTimer 1;
+		call Js.DefineNative: g 'clearInterval' addr ClearTimer 1;
+		call Js.DefineNative: g 'requestAnimationFrame' addr RequestFrame 1;
+		call Js.DefineNative: g 'cancelAnimationFrame' addr ClearTimer 1;
+		call Js.DefineNative: g 'queueMicrotask' addr QueueMicrotask 1;
+		call Js.DefineNative: g 'getComputedStyle' addr GetComputedStyle 1;
+		call Js.DefineNative: g 'matchMedia' addr MatchMedia 1;
+		call Js.DefineNative: g 'alert' addr Alert 0;
+		call Js.DefineNative: g 'confirm' addr FalseFn 0;
+		call Js.DefineNative: g 'prompt' addr NullFn 0;
+		call Js.DefineNative: g 'scrollTo' addr PageBind.Nothing 0;
+		call Js.DefineNative: g 'scrollBy' addr PageBind.Nothing 0;
+		call Js.DefineNative: g 'scroll' addr PageBind.Nothing 0;
+		call Js.DefineNative: g 'focus' addr PageBind.Nothing 0;
+		call Js.DefineNative: g 'blur' addr PageBind.Nothing 0;
+		call Js.DefineNative: g 'atob' addr Atob 1;
+		call Js.DefineNative: g 'btoa' addr Btoa 1;
+		call InstallConsole;
+		call InstallLocation: p;
+		call InstallNavigator;
+		call InstallPerformance;
+		call InstallStorage;
+		call PageNet.Install: keep;
+	[end]
+
+	[Sync: ptr<Page> p: 0;]
+		ptr<JsObj> g: JsRt.r.global;
+		call JsObjs.DefineZ: g 'innerWidth' (JsV.Num: p.width) JsObjs.WEC;
+		call JsObjs.DefineZ: g 'innerHeight' (JsV.Num: p.height) JsObjs.WEC;
+		call JsObjs.DefineZ: g 'outerWidth' (JsV.Num: p.width) JsObjs.WEC;
+		call JsObjs.DefineZ: g 'outerHeight' (JsV.Num: p.height) JsObjs.WEC;
+		call JsObjs.DefineZ: g 'devicePixelRatio' (JsV.Int: 1) JsObjs.WEC;
+		call JsObjs.DefineZ: g 'scrollX' JsV.INT_BASE JsObjs.WEC;
+		call JsObjs.DefineZ: g 'scrollY' JsV.INT_BASE JsObjs.WEC;
+		call JsObjs.DefineZ: g 'pageXOffset' JsV.INT_BASE JsObjs.WEC;
+		call JsObjs.DefineZ: g 'pageYOffset' JsV.INT_BASE JsObjs.WEC;
+		ptr<JsObj> screen: (JsObjs.NewObject);
+		call Js.Define: screen 'width' (JsV.Num: p.width) JsObjs.WEC;
+		call Js.Define: screen 'height' (JsV.Num: p.height) JsObjs.WEC;
+		call Js.Define: screen 'availWidth' (JsV.Num: p.width) JsObjs.WEC;
+		call Js.Define: screen 'availHeight' (JsV.Num: p.height) JsObjs.WEC;
+		call JsObjs.DefineZ: g 'screen' (JsV.Obj: screen) JsObjs.WEC;
+	[end]
+
+	[FalseFn: ptr<u64> args: 0; int argc: 0;]
+	[end: JsV.FALSE]
+
+	[NullFn: ptr<u64> args: 0; int argc: 0;]
+	[end: JsV.NULL]
+
+	# ---- console ----
+
+	[ConsoleLine: ptr<u8> text: 0; u32 n: 0;]
+		call Page.Log: Page.current text n 0;
+	[end]
+
+	[InstallConsole]
+		ptr<JsProp> found: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: 'console') as ptr<u8>);
+		if found is 0 return;
+		ptr<JsObj> c: (JsV.AsObj: found.value);
+		ptr<JsNativeFn> w: (Js.DefineNative: c 'warn' addr ConsoleLevel 0);
+		w.magic is 1;
+		ptr<JsNativeFn> e: (Js.DefineNative: c 'error' addr ConsoleLevel 0);
+		e.magic is 2;
+		call Js.DefineNative: c 'trace' addr ConsoleLevel 0;
+		call Js.DefineNative: c 'group' addr ConsoleLevel 0;
+		call Js.DefineNative: c 'groupCollapsed' addr ConsoleLevel 0;
+		call Js.DefineNative: c 'dir' addr ConsoleLevel 0;
+		call Js.DefineNative: c 'groupEnd' addr PageBind.Nothing 0;
+		call Js.DefineNative: c 'assert' addr PageBind.Nothing 0;
+		call Js.DefineNative: c 'time' addr PageBind.Nothing 0;
+		call Js.DefineNative: c 'timeEnd' addr PageBind.Nothing 0;
+		call Js.DefineNative: c 'table' addr ConsoleLevel 0;
+		call Js.DefineNative: c 'clear' addr PageBind.Nothing 0;
+	[end]
+
+	[ConsoleLevel: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		WlBuf b;
+		while int i: 0; i < argc; i++;
+			if i > 0
+				call b.Add: 32;
+			;;
+			if (JsV.IsSym: args:i)
+				call b.AddZ: 'Symbol()';
+			;;
+			else
+				call Js.TextOf: args:i addr b;
+			;;
+		;;
+		call Page.Log: Page.current b.data b.len self.magic as int;
+		call b.Free;
+	[end: JsV.UNDEF]
+
+	# ---- timers ----
+
+	[SetTimer: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u64 fn: (Js.Arg: args argc 0);
+		f64 delay: 0.0;
+		if argc > 1
+			delay is (JsOps.ToNumber: args:1);
+		;;
+		if not (JsOps.IsCallable: fn)
+			# text is code, the old way
+			ptr<JsProp> fp: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: 'Function') as ptr<u8>);
+			if fp is 0
+				return JsV.INT_BASE;
+			;;
+			call Js.Push: (JsV.Str: (JsOps.ToStr: fn));
+			fn is (Js.Construct: fp.value 1);
+		;;
+		u64 extra: JsV.UNDEF;
+		if argc > 2
+			ptr<JsObj> a: (JsObjs.NewArray: (argc - 2) as u32);
+			while int i: 2; i < argc; i++;
+				call JsObjs.ArrayPush: a args:i;
+			;;
+			extra is (JsV.Obj: a);
+		;;
+	[end: (JsV.Int: (Page.AddTimer: Page.current fn extra delay self.magic is 1 false))]
+
+	[ClearTimer: ptr<u64> args: 0; int argc: 0;]
+		f64 id: (JsOps.ToNumber: (Js.Arg: args argc 0));
+		if id is id and id > 0.0 and id < 2000000000.0
+			call Page.ClearTimer: Page.current id as int;
+		;;
+	[end: JsV.UNDEF]
+
+	[RequestFrame: ptr<u64> args: 0; int argc: 0;]
+		u64 fn: (Js.Arg: args argc 0);
+		if not (JsOps.IsCallable: fn)
+			call JsErr.Type: 'requestAnimationFrame needs a function';
+		;;
+		int id: (Page.AddTimer: Page.current fn JsV.UNDEF 0.0 false true);
+		call Page.Invalidate: Page.current;
+	[end: (JsV.Int: id)]
+
+	[QueueMicrotask: ptr<u64> args: 0; int argc: 0;]
+		u64 fn: (Js.Arg: args argc 0);
+		if not (JsOps.IsCallable: fn)
+			call JsErr.Type: 'queueMicrotask needs a function';
+		;;
+		call JsPromises.EnqueueCall: fn JsV.UNDEF;
+	[end: JsV.UNDEF]
+
+	# ---- style and media ----
+
+	[GetComputedStyle: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (PageBind.NodeOf: (Js.Arg: args argc 0));
+		if n is 0 or n.type is not DomType.ELEMENT
+			call JsErr.Type: 'getComputedStyle needs an Element';
+		;;
+	[end: (PageBind.NewComputed: n)]
+
+	[MatchMedia: ptr<u64> args: 0; int argc: 0;]
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		bln yes: (Css.MatchMedia: Page.current.css b.data b.len);
+		ptr<JsObj> m: (JsObjs.NewWithProto: PageEvents.target_proto);
+		call Js.Define: m 'media' (Js.NewString: b.data b.len) JsObjs.E;
+		call Js.Define: m 'matches' (JsV.Bool: yes) JsObjs.E;
+		call Js.DefineNative: m 'addListener' addr PageBind.Nothing 1;
+		call Js.DefineNative: m 'removeListener' addr PageBind.Nothing 1;
+		call b.Free;
+	[end: (JsV.Obj: m)]
+
+	[Alert: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		WlBuf b;
+		if argc > 0
+			call Js.TextOf: args:0 addr b;
+		;;
+		if p.host.alert is not 0
+			if b.data is 0
+				call b.AddZ: '';
+			;;
+			call p.host.alert: p b.data;
+		;;
+		else
+			call Page.Log: p b.data b.len 1;
+		;;
+		call b.Free;
+	[end: JsV.UNDEF]
+
+	# ---- base64 ----
+
+	[B64Value: u32 c: 0;]
+		if c >= 'A' and c <= 'Z' return (c - 'A') as int;
+		if c >= 'a' and c <= 'z' return (c - 'a' + 26) as int;
+		if c >= '0' and c <= '9' return (c - '0' + 52) as int;
+		if c is '+' return 62;
+		if c is '/' return 63;
+	[end: -1]
+
+	[Btoa: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsOps.ToStr: (Js.Arg: args argc 0));
+		ptr<u8> table: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+		WlBuf b;
+		u32 n: s.len;
+		u32 i: 0;
+		while i < n
+			u32 u0: (JsStrs.UnitAt: s i);
+			u32 u1: 0;
+			u32 u2: 0;
+			if i + 1 < n
+				u1 is (JsStrs.UnitAt: s i + 1);
+			;;
+			if i + 2 < n
+				u2 is (JsStrs.UnitAt: s i + 2);
+			;;
+			if u0 > 255 or u1 > 255 or u2 > 255
+				call b.Free;
+				call PageBind.DomError: 'InvalidCharacterError' 'The string has characters outside Latin1';
+			;;
+			call b.Add: table:(u0 >> 2);
+			call b.Add: table:(((u0 & 3) << 4) | (u1 >> 4));
+			if i + 1 < n
+				call b.Add: table:(((u1 & 15) << 2) | (u2 >> 6));
+			;;
+			else
+				call b.Add: '=';
+			;;
+			if i + 2 < n
+				call b.Add: table:(u2 & 63);
+			;;
+			else
+				call b.Add: '=';
+			;;
+			i++ 3;
+		;;
+		u64 r: (Js.NewString: b.data b.len);
+		call b.Free;
+	[end: r]
+
+	[Atob: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsStrs.Flat: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		WlBuf b;
+		u32 bits: 0;
+		int have: 0;
+		while u32 i: 0; i < s.bytes; i++;
+			u32 c: s.data:i;
+			if (WlText.IsSpace: c) or c is '='
+				continue;
+			;;
+			int v: (B64Value: c);
+			if v < 0
+				call b.Free;
+				call PageBind.DomError: 'InvalidCharacterError' 'The string is not correctly encoded';
+			;;
+			bits is (bits << 6) | v as u32;
+			have++ 6;
+			if have >= 8
+				have-- 8;
+				call b.AddCode: (bits >> have as u32) & 255;
+			;;
+		;;
+		u64 r: (Js.NewString: b.data b.len);
+		call b.Free;
+	[end: r]
+
+	# ---- location ----
+
+	[InstallLocation: ptr<Page> p: 0;]
+		ptr<JsObj> proto: (JsObjs.NewObject);
+		call Js.DefineGetter: proto 'href' addr LocationGet addr LocationSet;
+		call LocationPart: proto 'protocol' 1;
+		call LocationPart: proto 'host' 2;
+		call LocationPart: proto 'hostname' 3;
+		call LocationPart: proto 'port' 4;
+		call LocationPart: proto 'pathname' 5;
+		call LocationPart: proto 'search' 6;
+		call LocationPart: proto 'hash' 7;
+		call LocationPart: proto 'origin' 8;
+		call Js.DefineNative: proto 'toString' addr LocationGet 0;
+		call Js.DefineNative: proto 'assign' addr LocationSet 1;
+		call Js.DefineNative: proto 'replace' addr LocationSet 1;
+		call Js.DefineNative: proto 'reload' addr PageBind.Nothing 0;
+		ptr<JsObj> loc: (JsObjs.NewWithProto: proto);
+		p.window_location is (JsV.Obj: loc);
+		call JsObjs.DefineZ: JsRt.r.global 'location' (JsV.Obj: loc) JsObjs.E | JsObjs.C;
+		ptr<JsObj> doc: (JsV.AsObj: (PageBind.Wrap: p.doc.root));
+		call JsObjs.DefineZ: doc 'location' (JsV.Obj: loc) JsObjs.E | JsObjs.C;
+		ptr<JsObj> h: (JsObjs.NewObject);
+		call Js.Define: h 'length' (JsV.Int: 1) JsObjs.E;
+		call Js.Define: h 'state' JsV.NULL JsObjs.WEC;
+		call Js.DefineNative: h 'back' addr PageBind.Nothing 0;
+		call Js.DefineNative: h 'forward' addr PageBind.Nothing 0;
+		call Js.DefineNative: h 'go' addr PageBind.Nothing 0;
+		call Js.DefineNative: h 'pushState' addr PageBind.Nothing 3;
+		call Js.DefineNative: h 'replaceState' addr PageBind.Nothing 3;
+		call JsObjs.DefineZ: JsRt.r.global 'history' (JsV.Obj: h) JsObjs.E | JsObjs.C;
+	[end]
+
+	[LocationPart: ptr<JsObj> proto: 0; ptr<u8> name: 0; u32 which: 0;]
+		call PageBind.Getter: proto name addr LocationPartGet 0 which;
+	[end]
+
+	[LocationGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		if p.url is 0
+			return (Js.NewStringZ: 'about:blank');
+		;;
+	[end: (Js.NewStringZ: p.url)]
+
+	[LocationSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		WlBuf full;
+		call Page.Resolve: p b.data b.len addr full;
+		if p.host.navigate is not 0
+			call p.host.navigate: p full.data;
+		;;
+		call b.Free;
+		call full.Free;
+	[end: JsV.UNDEF]
+
+	# scheme://host:port/path?query#hash, read off the URL when asked
+	[LocationPartGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u32 which: self.magic;
+		ptr<Page> p: Page.current;
+		ptr<u8> url: p.url;
+		if url is 0
+			return (JsV.Str: JsRt.blank);
+		;;
+		u32 n: (WlText.LenZ: url);
+		u32 i: 0;
+		while i < n and url:i is not ':'
+			i++;
+		;;
+		u32 scheme_end: i + 1;
+		if scheme_end > n
+			scheme_end is 0;
+		;;
+		u32 host_start: scheme_end;
+		if host_start + 1 < n and url:host_start is '/' and url:(host_start + 1) is '/'
+			host_start++ 2;
+		;;
+		u32 host_end: host_start;
+		while host_end < n and url:host_end is not '/' and url:host_end is not '?' and url:host_end is not '#'
+			host_end++;
+		;;
+		u32 path_end: host_end;
+		while path_end < n and url:path_end is not '?' and url:path_end is not '#'
+			path_end++;
+		;;
+		u32 query_end: path_end;
+		while query_end < n and url:query_end is not '#'
+			query_end++;
+		;;
+		u32 colon: host_start;
+		while colon < host_end and url:colon is not ':'
+			colon++;
+		;;
+		when which
+			is 1
+				return (Js.NewString: url scheme_end);
+			;;
+			is 2
+				return (Js.NewString: url + host_start host_end - host_start);
+			;;
+			is 3
+				return (Js.NewString: url + host_start colon - host_start);
+			;;
+			is 4
+				if colon + 1 < host_end
+					return (Js.NewString: url + colon + 1 host_end - colon - 1);
+				;;
+				return (JsV.Str: JsRt.blank);
+			;;
+			is 5
+				if path_end is host_end
+					return (Js.NewStringZ: '/');
+				;;
+				return (Js.NewString: url + host_end path_end - host_end);
+			;;
+			is 6
+				return (Js.NewString: url + path_end query_end - path_end);
+			;;
+			is 7
+				return (Js.NewString: url + query_end n - query_end);
+			;;
+			is 8
+				return (Js.NewString: url host_end);
+			;;
+		;;
+	[end: (JsV.Str: JsRt.blank)]
+
+	# ---- navigator and performance ----
+
+	[InstallNavigator]
+		ptr<JsObj> n: (JsObjs.NewObject);
+		call Js.Define: n 'userAgent' (Js.NewStringZ: 'Mozilla/5.0 (PHI; weblib) AppleWebKit/537.36 (KHTML, like Gecko)') JsObjs.E;
+		call Js.Define: n 'appName' (Js.NewStringZ: 'Netscape') JsObjs.E;
+		call Js.Define: n 'appVersion' (Js.NewStringZ: '5.0 (PHI; weblib)') JsObjs.E;
+		call Js.Define: n 'platform' (Js.NewStringZ: 'PHI') JsObjs.E;
+		call Js.Define: n 'vendor' (JsV.Str: JsRt.blank) JsObjs.E;
+		call Js.Define: n 'language' (Js.NewStringZ: 'en-US') JsObjs.E;
+		ptr<JsObj> langs: (JsObjs.NewArray: 1);
+		call JsObjs.ArrayPush: langs (Js.NewStringZ: 'en-US');
+		call Js.Define: n 'languages' (JsV.Obj: langs) JsObjs.E;
+		call Js.Define: n 'onLine' JsV.TRUE JsObjs.E;
+		call Js.Define: n 'cookieEnabled' JsV.TRUE JsObjs.E;
+		call Js.Define: n 'hardwareConcurrency' (JsV.Int: 1) JsObjs.E;
+		call Js.Define: n 'maxTouchPoints' JsV.INT_BASE JsObjs.E;
+		call JsObjs.DefineZ: JsRt.r.global 'navigator' (JsV.Obj: n) JsObjs.E | JsObjs.C;
+	[end]
+
+	[InstallPerformance]
+		ptr<JsObj> o: (JsObjs.NewObject);
+		call Js.DefineNative: o 'now' addr PerfNow 0;
+		call Js.DefineNative: o 'mark' addr PageBind.Nothing 1;
+		call Js.DefineNative: o 'measure' addr PageBind.Nothing 1;
+		call Js.Define: o 'timeOrigin' JsV.INT_BASE JsObjs.E;
+		call JsObjs.DefineZ: JsRt.r.global 'performance' (JsV.Obj: o) JsObjs.E | JsObjs.C;
+	[end]
+
+	[PerfNow: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+	[end: (JsV.Num: p.now - p.started_at)]
+
+	# ---- storage: lasts as long as the page does; a browser that wants it kept can save it from here ----
+
+	[InstallStorage]
+		ptr<JsObj> proto: (JsObjs.NewObject);
+		call Js.DefineNative: proto 'getItem' addr StorageGet 1;
+		call Js.DefineNative: proto 'setItem' addr StorageSet 2;
+		call Js.DefineNative: proto 'removeItem' addr StorageRemove 1;
+		call Js.DefineNative: proto 'clear' addr StorageClear 0;
+		call Js.DefineNative: proto 'key' addr StorageKey 1;
+		call Js.DefineGetter: proto 'length' addr StorageLength 0;
+		ptr<JsObj> l: (JsObjs.NewWithProto: proto);
+		ptr<JsObj> s: (JsObjs.NewWithProto: proto);
+		call JsObjs.DefineZ: JsRt.r.global 'localStorage' (JsV.Obj: l) JsObjs.E | JsObjs.C;
+		call JsObjs.DefineZ: JsRt.r.global 'sessionStorage' (JsV.Obj: s) JsObjs.E | JsObjs.C;
+	[end]
+
+	[ThisStore: ptr<u64> args: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+	[end: o]
+
+	[StorageGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStore: args);
+		u64 k: (JsObjs.KeyOf: (JsV.Str: (JsOps.ToStr: (Js.Arg: args argc 0))));
+		JsDesc d;
+		if not (JsObjs.GetOwn: o k addr d)
+			return JsV.NULL;
+		;;
+	[end: d.value]
+
+	[StorageSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStore: args);
+		u64 k: (JsObjs.KeyOf: (JsV.Str: (JsOps.ToStr: (Js.Arg: args argc 0))));
+		call JsObjs.CreateData: o k (JsV.Str: (JsOps.ToStr: (Js.Arg: args argc 1)));
+	[end: JsV.UNDEF]
+
+	[StorageRemove: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStore: args);
+		call JsObjs.Delete: o (JsObjs.KeyOf: (JsV.Str: (JsOps.ToStr: (Js.Arg: args argc 0))));
+	[end: JsV.UNDEF]
+
+	[StorageClear: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStore: args);
+		ptr<JsObj> keys: (JsObjs.OwnKeys: o);
+		while u32 i: 0; i < keys.length; i++;
+			call JsObjs.Delete: o (JsObjs.KeyOf: keys.elems:i);
+		;;
+	[end: JsV.UNDEF]
+
+	[StorageKey: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStore: args);
+		ptr<JsObj> keys: (JsObjs.OwnKeys: o);
+		f64 i: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		if i < 0.0 or i >= (keys.length as f64)
+			return JsV.NULL;
+		;;
+	[end: keys.elems:(i as u32)]
+
+	[StorageLength: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisStore: args);
+		ptr<JsObj> keys: (JsObjs.OwnKeys: o);
+	[end: (JsV.Uint: keys.length)]
+}
+
+# fetch and XMLHttpRequest. Both ask PageHost.load, and hear back through Page.Delivered.
+phi.PageNet:Library
+{
+	ptr<JsObj> response_proto: 0;
+	ptr<JsObj> xhr_proto: 0;
+
+	[Install: ptr<JsObj> keep: 0;]
+		ptr<JsObj> g: JsRt.r.global;
+		call Js.DefineNative: g 'fetch' addr Fetch 1;
+		response_proto is (JsObjs.NewObject);
+		call JsObjs.ArrayPush: keep (JsV.Obj: response_proto);
+		call Js.DefineNative: response_proto 'text' addr ResponseText 0;
+		call Js.DefineNative: response_proto 'json' addr ResponseJson 0;
+		call Js.DefineNative: response_proto 'arrayBuffer' addr ResponseBuffer 0;
+		xhr_proto is (JsObjs.NewWithProto: PageEvents.target_proto);
+		call JsObjs.ArrayPush: keep (JsV.Obj: xhr_proto);
+		call Js.DefineClass: 'XMLHttpRequest' addr XhrCtor 0 xhr_proto;
+		call Js.DefineNative: xhr_proto 'open' addr XhrOpen 2;
+		call Js.DefineNative: xhr_proto 'send' addr XhrSend 0;
+		call Js.DefineNative: xhr_proto 'abort' addr PageBind.Nothing 0;
+		call Js.DefineNative: xhr_proto 'setRequestHeader' addr PageBind.Nothing 2;
+		call Js.DefineNative: xhr_proto 'getResponseHeader' addr NullHeader 1;
+		call Js.DefineNative: xhr_proto 'getAllResponseHeaders' addr BlankHeaders 0;
+		call Js.DefineNative: xhr_proto 'overrideMimeType' addr PageBind.Nothing 1;
+		call Js.Define: xhr_proto 'UNSENT' JsV.INT_BASE JsObjs.E;
+		call Js.Define: xhr_proto 'OPENED' (JsV.Int: 1) JsObjs.E;
+		call Js.Define: xhr_proto 'HEADERS_RECEIVED' (JsV.Int: 2) JsObjs.E;
+		call Js.Define: xhr_proto 'LOADING' (JsV.Int: 3) JsObjs.E;
+		call Js.Define: xhr_proto 'DONE' (JsV.Int: 4) JsObjs.E;
+	[end]
+
+	[NullHeader: ptr<u64> args: 0; int argc: 0;]
+	[end: JsV.NULL]
+
+	[BlankHeaders: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Str: JsRt.blank)]
+
+	# a promise, and its two functions dest the array on `holder`
+	[NewPromise: ptr<JsObj> holder: 0;]
+		ptr<JsProp> pc: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: 'Promise') as ptr<u8>);
+		ptr<JsNativeFn> ex: (JsObjs.NewNative: addr Executor '' 2 false);
+		ex.data is (JsV.Obj: holder);
+		call Js.Push: (JsV.Obj: ex as ptr<JsObj>);
+	[end: (Js.Construct: pc.value 1)]
+
+	[Executor: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<JsObj> holder: (JsV.AsObj: self.data);
+		call JsObjs.ArrayPush: holder (Js.Arg: args argc 0);
+		call JsObjs.ArrayPush: holder (Js.Arg: args argc 1);
+	[end: JsV.UNDEF]
+
+	[Fetch: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		WlBuf url;
+		u64 arg: (Js.Arg: args argc 0);
+		if (JsV.IsObj: arg)
+			u64 from_obj: (JsObjs.GetV: arg (JsObjs.KeyZ: 'url'));
+			if from_obj is not JsV.UNDEF
+				arg is from_obj;
+			;;
+		;;
+		call Js.TextOf: arg addr url;
+		ptr<JsObj> holder: (JsObjs.NewArray: 2);
+		u64 promise: (NewPromise: holder);
+		u32 id: (Page.Request: p url.data url.len PageLoad.FETCH 0 holder.elems:0 holder.elems:1);
+		call url.Free;
+		if id is 0
+			call JsVm.Call1: holder.elems:1 JsV.UNDEF (JsV.Obj: (JsErr.Make: JsRt.P.type_error 'Too many requests at once'));
+		;;
+	[end: promise]
+
+	[Answer: ptr<Page> p: 0; ptr<PageRequest> r: 0; int status: 0; ptr<u8> bytes: 0; u32 n: 0;]
+		u64 a: r.a;
+		u64 b: r.b;
+		ptr<u8> url: r.url;
+		if (JsOps.IsCallable: b)
+			# fetch: a Response, or a rejection if nothing came at all
+			if status is 0
+				ptr<JsObj> err: (JsErr.Make: JsRt.P.type_error 'Failed to fetch');
+				call Js.Push: (JsV.Obj: err);
+				call Js.Call: b JsV.UNDEF 1;
+				return;
+			;;
+			ptr<JsObj> resp: (JsObjs.NewWithProto: response_proto);
+			call Js.Define: resp 'ok' (JsV.Bool: status >= 200 and status < 300) JsObjs.E;
+			call Js.Define: resp 'status' (JsV.Int: status) JsObjs.E;
+			call Js.Define: resp 'statusText' (JsV.Str: JsRt.blank) JsObjs.E;
+			call Js.Define: resp 'url' (Js.NewStringZ: url) JsObjs.E;
+			call JsObjs.DefineValue: resp (JsStrs.InternZ: '%body') as ptr<u8> (Js.NewString: bytes n) JsObjs.W;
+			call Js.Push: (JsV.Obj: resp);
+			call Js.Call: a JsV.UNDEF 1;
+			return;
+		;;
+		# XMLHttpRequest
+		ptr<JsObj> x: (JsV.AsObj: a);
+		call Js.Define: x 'status' (JsV.Int: status) JsObjs.WEC;
+		call Js.Define: x 'statusText' (JsV.Str: JsRt.blank) JsObjs.WEC;
+		u64 text: (Js.NewString: bytes n);
+		call Js.Define: x 'responseText' text JsObjs.WEC;
+		call Js.Define: x 'response' text JsObjs.WEC;
+		call Js.Define: x 'responseURL' (Js.NewStringZ: url) JsObjs.WEC;
+		call Js.Define: x 'readyState' (JsV.Int: 4) JsObjs.WEC;
+		call PageEvents.FireOn: a 'readystatechange' false;
+		if status is 0
+			call PageEvents.FireOn: a 'error' false;
+		;;
+		else
+			call PageEvents.FireOn: a 'load' false;
+		;;
+		call PageEvents.FireOn: a 'loadend' false;
+	[end]
+
+	[Body: ptr<u64> args: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		ptr<JsProp> found: (JsObjs.Find: o (JsStrs.InternZ: '%body') as ptr<u8>);
+		if found is 0
+			call JsErr.Type: 'this is not a Response';
+		;;
+	[end: found.value]
+
+	# Promise.resolve(value)
+	[Resolved: u64 v: 0;]
+		ptr<JsProp> pc: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: 'Promise') as ptr<u8>);
+		u64 r: (JsObjs.GetV: pc.value (JsObjs.KeyZ: 'resolve'));
+	[end: (JsVm.Call1: r pc.value v)]
+
+	[ResponseText: ptr<u64> args: 0; int argc: 0;]
+	[end: (Resolved: (Body: args))]
+
+	[ResponseJson: ptr<u64> args: 0; int argc: 0;]
+		u64 text: (Body: args);
+		ptr<JsProp> j: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: 'JSON') as ptr<u8>);
+		u64 parse: (JsObjs.GetV: j.value (JsObjs.KeyZ: 'parse'));
+	[end: (Resolved: (JsVm.Call1: parse j.value text))]
+
+	[ResponseBuffer: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsStrs.Flat: (JsV.AsStr: (Body: args)));
+		ptr<JsObj> b: (JsTyped.NewBuffer: s.bytes as f64 JsRt.P.arraybuffer);
+		u64 bv: (JsV.Obj: b);
+		if s.bytes > 0
+			call Mem.Copy: (JsTyped.BytesOf: bv) s.data s.bytes;
+		;;
+	[end: (Resolved: bv)]
+
+	[XhrCtor: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'Constructor XMLHttpRequest requires new';
+		;;
+		ptr<JsObj> o: (JsObjs.NewWithProto: (JsOps.ProtoFromCtor: nt xhr_proto));
+		call Js.Define: o 'readyState' JsV.INT_BASE JsObjs.WEC;
+		call Js.Define: o 'status' JsV.INT_BASE JsObjs.WEC;
+		call Js.Define: o 'responseText' (JsV.Str: JsRt.blank) JsObjs.WEC;
+		call Js.Define: o 'response' (JsV.Str: JsRt.blank) JsObjs.WEC;
+		call Js.Define: o 'responseType' (JsV.Str: JsRt.blank) JsObjs.WEC;
+	[end: (JsV.Obj: o)]
+
+	[XhrOpen: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		call JsObjs.DefineValue: o (JsStrs.InternZ: '%url') as ptr<u8> (JsV.Str: (JsOps.ToStr: (Js.Arg: args argc 1))) JsObjs.W;
+		call Js.Define: o 'readyState' (JsV.Int: 1) JsObjs.WEC;
+		call PageEvents.FireOn: (JsV.Obj: o) 'readystatechange' false;
+	[end: JsV.UNDEF]
+
+	[XhrSend: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		ptr<JsProp> u: (JsObjs.Find: o (JsStrs.InternZ: '%url') as ptr<u8>);
+		if u is 0
+			call PageBind.DomError: 'InvalidStateError' 'open() has not been called';
+		;;
+		ptr<JsStr> url: (JsStrs.Flat: (JsV.AsStr: u.value));
+		call Page.Request: Page.current url.data url.bytes PageLoad.FETCH 0 (JsV.Obj: o) JsV.UNDEF;
+	[end: JsV.UNDEF]
+}

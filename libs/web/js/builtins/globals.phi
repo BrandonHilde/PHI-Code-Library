@@ -1,0 +1,548 @@
+# parseInt, parseFloat, the URI functions, escape and unescape; what's left of Object and Number.
+
+phi.JsGlobals:Library
+{
+	[Init]
+		ptr<JsObj> g: JsRt.r.global;
+		ptr<JsNativeFn> pi: (Js.DefineNative: g 'parseInt' addr ParseInt 2);
+		ptr<JsNativeFn> pf: (Js.DefineNative: g 'parseFloat' addr ParseFloat 1);
+		ptr<JsNativeFn> eu: (Js.DefineNative: g 'encodeURI' addr EncodeUri 1);
+		eu.magic is 0;
+		ptr<JsNativeFn> ec: (Js.DefineNative: g 'encodeURIComponent' addr EncodeUri 1);
+		ec.magic is 1;
+		ptr<JsNativeFn> du: (Js.DefineNative: g 'decodeURI' addr DecodeUri 1);
+		du.magic is 0;
+		ptr<JsNativeFn> dc: (Js.DefineNative: g 'decodeURIComponent' addr DecodeUri 1);
+		dc.magic is 1;
+		call Js.DefineNative: g 'escape' addr Escape 1;
+		call Js.DefineNative: g 'unescape' addr Unescape 1;
+		# Number's own, and the same two functions
+		ptr<JsProp> np: (JsObjs.Find: JsRt.P.number JsRt.A.constructor as ptr<u8>);
+		ptr<JsObj> no: (JsV.AsObj: np.value);
+		call JsObjs.DefineZ: no 'parseInt' (JsV.Obj: pi as ptr<JsObj>) JsObjs.WC;
+		call JsObjs.DefineZ: no 'parseFloat' (JsV.Obj: pf as ptr<JsObj>) JsObjs.WC;
+		call Js.DefineNative: no 'isFinite' addr NumIsFinite 1;
+		call Js.DefineNative: no 'isNaN' addr NumIsNaN 1;
+		call Js.DefineNative: no 'isInteger' addr NumIsInteger 1;
+		call Js.DefineNative: no 'isSafeInteger' addr NumIsSafeInteger 1;
+		# Object's
+		ptr<JsProp> op: (JsObjs.Find: JsRt.P.object JsRt.A.constructor as ptr<u8>);
+		ptr<JsObj> oc: (JsV.AsObj: op.value);
+		call Js.DefineNative: oc 'values' addr ObjValues 1;
+		call Js.DefineNative: oc 'entries' addr ObjEntries 1;
+		call Js.DefineNative: oc 'assign' addr ObjAssign 2;
+		call Js.DefineNativeSafe: oc 'fromEntries' addr ObjFromEntries 1;
+		call Js.DefineNative: oc 'getOwnPropertyDescriptors' addr ObjDescriptors 1;
+		call Js.DefineNative: oc 'isSealed' addr ObjIsSealed 1;
+		call Js.DefineNative: oc 'hasOwn' addr ObjHasOwn 2;
+		ptr<JsNativeFn> dg: (Js.DefineNative: JsRt.P.object '__defineGetter__' addr LegacyDefine 2);
+		dg.magic is 0;
+		ptr<JsNativeFn> ds: (Js.DefineNative: JsRt.P.object '__defineSetter__' addr LegacyDefine 2);
+		ds.magic is 1;
+		ptr<JsNativeFn> lg: (Js.DefineNative: JsRt.P.object '__lookupGetter__' addr LegacyLookup 1);
+		lg.magic is 0;
+		ptr<JsNativeFn> ls: (Js.DefineNative: JsRt.P.object '__lookupSetter__' addr LegacyLookup 1);
+		ls.magic is 1;
+	[end]
+
+	# ---- numbers from text ----
+
+	[ParseInt: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsOps.ToStr: (Js.Arg: args argc 0));
+		f64 rv: (JsOps.ToInt32: (Js.Arg: args argc 1)) as f64;
+		call JsOps.Trim: s true false;
+		ptr<u8> p: s.data + JsOps.trim_start;
+		u32 n: JsOps.trim_len;
+		u32 i: 0;
+		bln neg: false;
+		if i < n and (p:i is '+' or p:i is '-')
+			neg is (p:i is '-');
+			i++;
+		;;
+		int radix: rv as int;
+		bln strip: true;
+		if radix is not 0
+			if radix < 2 or radix > 36
+				return JsV.NAN;
+			;;
+			if radix is not 16
+				strip is false;
+			;;
+		;;
+		else
+			radix is 10;
+		;;
+		if strip and i + 1 < n and p:i is '0' and (p:(i + 1) is 'x' or p:(i + 1) is 'X')
+			i++ 2;
+			radix is 16;
+		;;
+		u32 first: i;
+		while i < n and (WlNum.DigitValue: p:i) < radix
+			i++;
+		;;
+		if i is first
+			return JsV.NAN;
+		;;
+		f64 x: (WlNum.ParseRadix: p + first i - first radix);
+		if neg
+			x is x * -1.0;
+		;;
+	[end: (JsV.Num: x)]
+
+	[ParseFloat: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsOps.ToStr: (Js.Arg: args argc 0));
+		call JsOps.Trim: s true false;
+		ptr<u8> p: s.data + JsOps.trim_start;
+		u32 n: JsOps.trim_len;
+		u32 i: 0;
+		bln neg: false;
+		if i < n and (p:i is '+' or p:i is '-')
+			neg is (p:i is '-');
+			i++;
+		;;
+		if n - i >= 8 and (WlText.EqZ: p + i 8 'Infinity')
+			f64 inf: (WlNum.FromBits: 0x7FF0000000000000);
+			if neg
+				inf is inf * -1.0;
+			;;
+			return (JsV.Num: inf);
+		;;
+		u32 first: i;
+		bln digits: false;
+		while i < n and p:i >= '0' and p:i <= '9'
+			i++;
+			digits is true;
+		;;
+		if i < n and p:i is '.'
+			i++;
+			while i < n and p:i >= '0' and p:i <= '9'
+				i++;
+				digits is true;
+			;;
+		;;
+		if not digits
+			return JsV.NAN;
+		;;
+		if i < n and (p:i is 'e' or p:i is 'E')
+			u32 ex: i + 1;
+			if ex < n and (p:ex is '+' or p:ex is '-')
+				ex++;
+			;;
+			if ex < n and p:ex >= '0' and p:ex <= '9'
+				while ex < n and p:ex >= '0' and p:ex <= '9'
+					ex++;
+				;;
+				i is ex;
+			;;
+		;;
+		f64 x: (WlNum.Parse: p + first i - first);
+		if neg
+			x is x * -1.0;
+		;;
+	[end: (JsV.Num: x)]
+
+	# ---- URIs ----
+
+	# whether a byte goes through encodeURI (or, with component, encodeURIComponent) as it is
+	[UriSafe: u32 c: 0; bln component: false;]
+		if (WlText.IsAlnum: c) return true;
+		when c
+			is '-' '_' '.' '!' '~' '*' 39 '(' ')'
+				return true;
+			;;
+			is ';' '/' '?' ':' '@' '&' '=' '+' '$' ',' '#'
+				return not component;
+			;;
+		;;
+	[end: false]
+
+	[AddPercent: ptr<WlBuf> b: 0; u32 c: 0;]
+		call b.Add: '%';
+		call b.Add: (UpperHex: c >> 4) as u8;
+		call b.Add: (UpperHex: c & 15) as u8;
+	[end]
+
+	[UpperHex: u32 d: 0;]
+		if d < 10 return 48 + d;
+	[end: 55 + d]
+
+	[EncodeUri: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		bln component: self.magic is 1;
+		ptr<JsStr> s: (JsStrs.Flat: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		WlBuf b;
+		ptr<u8> p: s.data;
+		u32 n: s.bytes;
+		while u32 i: 0; i < n; i++;
+			u32 c: p:i;
+			if c < 128
+				if (UriSafe: c component)
+					call b.Add: c as u8;
+				;;
+				else
+					call AddPercent: addr b c;
+				;;
+			;;
+			else
+				# a lone surrogate can't be encoded
+				if c is 0xED and i + 1 < n and p:(i + 1) >= 0xA0
+					call b.Free;
+					call JsErr.Uri: 'URI malformed';
+				;;
+				call AddPercent: addr b c;
+			;;
+		;;
+		u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: r]
+
+	[DecodeReserved: u32 c: 0;]
+		when c
+			is ';' '/' '?' ':' '@' '&' '=' '+' '$' ',' '#'
+				return true;
+			;;
+		;;
+	[end: false]
+
+	[HexAt: ptr<u8> p: 0; u32 n: 0; u32 i: 0;]
+		if i + 2 >= n or p:i is not '%' return -1;
+		int a: (WlText.HexValue: p:(i + 1));
+		int b: (WlText.HexValue: p:(i + 2));
+		if a < 0 or b < 0 return -1;
+	[end: a * 16 + b]
+
+	[DecodeUri: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		bln component: self.magic is 1;
+		ptr<JsStr> s: (JsStrs.Flat: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		WlBuf b;
+		ptr<u8> p: s.data;
+		u32 n: s.bytes;
+		u32 i: 0;
+		while i < n
+			u32 c: p:i;
+			if c is not '%'
+				call b.Add: c as u8;
+				i++;
+				continue;
+			;;
+			int first: (HexAt: p n i);
+			if first < 0
+				call b.Free;
+				call JsErr.Uri: 'URI malformed';
+			;;
+			if first < 128
+				if not component and (DecodeReserved: first as u32)
+					call b.AddN: p + i 3;
+				;;
+				else
+					call b.Add: first as u8;
+				;;
+				i++ 3;
+				continue;
+			;;
+			# a whole UTF-8 sequence, each byte escaped, and it has to be a valid one
+			u32 more: 0;
+			if first >= 0xC2 and first <= 0xDF
+				more is 1;
+			;;
+			elif first >= 0xE0 and first <= 0xEF
+				more is 2;
+			;;
+			elif first >= 0xF0 and first <= 0xF4
+				more is 3;
+			;;
+			else
+				call b.Free;
+				call JsErr.Uri: 'URI malformed';
+			;;
+			u8 seq[4];
+			seq:0 is first as u8;
+			while u32 m: 1; m <= more; m++;
+				int nextb: (HexAt: p n i + m * 3);
+				if nextb < 0 or (nextb & 0xC0) is not 0x80
+					call b.Free;
+					call JsErr.Uri: 'URI malformed';
+				;;
+				seq:m is nextb as u8;
+			;;
+			u32 cp: (WlText.Decode: addr seq:0 more + 1);
+			if cp is 0xFFFD and WlText.width is 1
+				call b.Free;
+				call JsErr.Uri: 'URI malformed';
+			;;
+			call b.AddN: addr seq:0 more + 1;
+			i++ (more + 1) * 3;
+		;;
+		u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: r]
+
+	[Escape: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsOps.ToStr: (Js.Arg: args argc 0));
+		WlBuf b;
+		while u32 i: 0; i < s.len; i++;
+			u32 u: (JsStrs.UnitAt: s i);
+			if u < 128 and ((WlText.IsAlnum: u) or u is '@' or u is '*' or u is '_' or u is '+' or u is '-' or u is '.' or u is '/')
+				call b.Add: u as u8;
+			;;
+			elif u < 256
+				call AddPercent: addr b u;
+			;;
+			else
+				call b.AddZ: '%u';
+				call b.Add: (UpperHex: u >> 12) as u8;
+				call b.Add: (UpperHex: (u >> 8) & 15) as u8;
+				call b.Add: (UpperHex: (u >> 4) & 15) as u8;
+				call b.Add: (UpperHex: u & 15) as u8;
+			;;
+		;;
+		u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: r]
+
+	[Unescape: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsOps.ToStr: (Js.Arg: args argc 0));
+		WlBuf b;
+		u32 n: s.len;
+		u32 i: 0;
+		while i < n
+			u32 u: (JsStrs.UnitAt: s i);
+			if u is '%'
+				if i + 5 < n and (JsStrs.UnitAt: s i + 1) is 'u'
+					int h: (HexUnits: s i + 2 4);
+					if h >= 0
+						call JsStrs.BufAddUnit: addr b h as u32;
+						i++ 6;
+						continue;
+					;;
+				;;
+				if i + 2 < n
+					int l: (HexUnits: s i + 1 2);
+					if l >= 0
+						call JsStrs.BufAddUnit: addr b l as u32;
+						i++ 3;
+						continue;
+					;;
+				;;
+			;;
+			call JsStrs.BufAddUnit: addr b u;
+			i++;
+		;;
+		u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: r]
+
+	[HexUnits: ptr<JsStr> s: 0; u32 from: 0; u32 count: 0;]
+		int v: 0;
+		while u32 i: 0; i < count; i++;
+			u32 u: (JsStrs.UnitAt: s from + i);
+			if u > 127 return -1;
+			int d: (WlText.HexValue: u);
+			if d < 0 return -1;
+			v is v * 16 + d;
+		;;
+	[end: v]
+
+	# ---- Number ----
+
+	[NumIsFinite: ptr<u64> args: 0; int argc: 0;]
+		u64 v: (Js.Arg: args argc 0);
+		if not (JsV.IsNum: v)
+			return JsV.FALSE;
+		;;
+		f64 x: (JsV.AsNum: v);
+	[end: (JsV.Bool: x is x and (WlNum.IsFinite: x))]
+
+	[NumIsNaN: ptr<u64> args: 0; int argc: 0;]
+		u64 v: (Js.Arg: args argc 0);
+		if not (JsV.IsNum: v)
+			return JsV.FALSE;
+		;;
+		f64 x: (JsV.AsNum: v);
+	[end: (JsV.Bool: x is not x)]
+
+	[IsWhole: u64 v: 0;]
+		if not (JsV.IsNum: v) return false;
+		f64 x: (JsV.AsNum: v);
+		if x is not x or not (WlNum.IsFinite: x) return false;
+	[end: (Float.Floor: x) is x]
+
+	[NumIsInteger: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Bool: (IsWhole: (Js.Arg: args argc 0)))]
+
+	[NumIsSafeInteger: ptr<u64> args: 0; int argc: 0;]
+		u64 v: (Js.Arg: args argc 0);
+		if not (IsWhole: v)
+			return JsV.FALSE;
+		;;
+		f64 ax: (Float.Abs: (JsV.AsNum: v));
+	[end: (JsV.Bool: ax <= 9007199254740991.0)]
+
+	# ---- Object ----
+
+	[ObjValues: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: (Js.Arg: args argc 0));
+		u64 ov: (JsV.Obj: o);
+		ptr<JsObj> all: (JsObjs.OwnKeys: o);
+		ptr<JsObj> made: (JsObjs.NewArray: all.length);
+		JsDesc d;
+		while u32 i: 0; i < all.length; i++;
+			u64 kv: all.elems:i;
+			if (JsV.IsStr: kv)
+				u64 k: (JsObjs.KeyOf: kv);
+				if (JsObjs.GetOwn: o k addr d) and (d.flags & JsObjs.E) is not 0
+					call JsObjs.ArrayPush: made (JsObjs.Get: o k ov);
+				;;
+			;;
+		;;
+	[end: (JsV.Obj: made)]
+
+	[ObjEntries: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: (Js.Arg: args argc 0));
+		u64 ov: (JsV.Obj: o);
+		ptr<JsObj> all: (JsObjs.OwnKeys: o);
+		ptr<JsObj> made: (JsObjs.NewArray: all.length);
+		JsDesc d;
+		while u32 i: 0; i < all.length; i++;
+			u64 kv: all.elems:i;
+			if (JsV.IsStr: kv)
+				u64 k: (JsObjs.KeyOf: kv);
+				if (JsObjs.GetOwn: o k addr d) and (d.flags & JsObjs.E) is not 0
+					ptr<JsObj> pair: (JsObjs.NewArray: 2);
+					call JsObjs.ArrayPush: pair kv;
+					call JsObjs.ArrayPush: pair (JsObjs.Get: o k ov);
+					call JsObjs.ArrayPush: made (JsV.Obj: pair);
+				;;
+			;;
+		;;
+	[end: (JsV.Obj: made)]
+
+	[ObjAssign: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> to: (JsOps.ToObject: (Js.Arg: args argc 0));
+		u64 tv: (JsV.Obj: to);
+		while int a: 1; a < argc; a++;
+			u64 src: args:a;
+			if src is not JsV.UNDEF and src is not JsV.NULL
+				ptr<JsObj> from: (JsOps.ToObject: src);
+				u64 fv: (JsV.Obj: from);
+				ptr<JsObj> keys: (JsObjs.OwnKeys: from);
+				JsDesc d;
+				while u32 i: 0; i < keys.length; i++;
+					u64 k: (JsObjs.KeyOf: keys.elems:i);
+					if (JsObjs.GetOwn: from k addr d) and (d.flags & JsObjs.E) is not 0
+						if not (JsObjs.Set: to k (JsObjs.Get: from k fv) tv)
+							call JsErr.Type: 'Cannot assign to read only property';
+						;;
+					;;
+				;;
+			;;
+		;;
+	[end: tv]
+
+	[ObjFromEntries: ptr<u64> args: 0; int argc: 0;]
+		u64 iterable: (Js.Arg: args argc 0);
+		if iterable is JsV.UNDEF or iterable is JsV.NULL
+			call JsErr.Type: 'Object.fromEntries: the argument is not iterable';
+		;;
+		ptr<JsObj> o: (JsObjs.NewObject);
+		call Js.Push: (JsV.Obj: o);
+		call JsIter.Each: iterable addr FromEntry o as ptr<u8>;
+	[end: (JsV.Obj: o)]
+
+	[FromEntry: u64 item: 0; ptr<u8> state: 0;]
+		if not (JsV.IsObj: item)
+			call JsErr.Type: 'Iterator value is not an entry object';
+		;;
+		ptr<JsObj> pair: (JsV.AsObj: item);
+		u64 k: (JsObjs.GetIndex: pair 0 item);
+		ptr<u64> held: JsVm.sp;
+		call Js.Push: k;
+		u64 v: (JsObjs.GetIndex: pair 1 item);
+		call JsObjs.CreateData: state as ptr<JsObj> (JsObjs.KeyOf: held:0) v;
+		JsVm.sp is held;
+	[end]
+
+	[ObjDescriptors: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: (Js.Arg: args argc 0));
+		ptr<JsObj> keys: (JsObjs.OwnKeys: o);
+		ptr<JsObj> made: (JsObjs.NewObject);
+		JsDesc d;
+		while u32 i: 0; i < keys.length; i++;
+			u64 k: (JsObjs.KeyOf: keys.elems:i);
+			if (JsObjs.GetOwn: o k addr d)
+				call JsObjs.CreateData: made k (JsObjectBuiltins.FromDesc: addr d);
+			;;
+		;;
+	[end: (JsV.Obj: made)]
+
+	[ObjIsSealed: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: t)
+			return JsV.TRUE;
+		;;
+		ptr<JsObj> o: (JsV.AsObj: t);
+		if (JsObjs.IsExtensible: o)
+			return JsV.FALSE;
+		;;
+		ptr<JsObj> keys: (JsObjs.OwnKeys: o);
+		JsDesc d;
+		while u32 i: 0; i < keys.length; i++;
+			if (JsObjs.GetOwn: o (JsObjs.KeyOf: keys.elems:i) addr d)
+				if (d.flags & JsObjs.C) is not 0
+					return JsV.FALSE;
+				;;
+			;;
+		;;
+	[end: JsV.TRUE]
+
+	[ObjHasOwn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: (Js.Arg: args argc 0));
+		u64 k: (JsObjs.KeyOf: (Js.Arg: args argc 1));
+		JsDesc d;
+	[end: (JsV.Bool: (JsObjs.GetOwn: o k addr d))]
+
+	[LegacyDefine: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 f: (Js.Arg: args argc 1);
+		if not (JsOps.IsCallable: f)
+			call JsErr.Type: 'Object.prototype.__defineGetter__: Expecting function';
+		;;
+		JsDesc d;
+		d.flags is JsObjs.E | JsObjs.C | JsObjs.ACC | JsObjs.H_E | JsObjs.H_C;
+		d.getter is JsV.UNDEF;
+		d.setter is JsV.UNDEF;
+		d.value is JsV.UNDEF;
+		if self.magic is 0
+			d.getter is f;
+			d.flags is d.flags | JsObjs.H_GET;
+		;;
+		else
+			d.setter is f;
+			d.flags is d.flags | JsObjs.H_SET;
+		;;
+		if not (JsObjs.DefineOwn: o (JsObjs.KeyOf: (Js.Arg: args argc 0)) addr d)
+			call JsErr.Type: 'Cannot redefine property';
+		;;
+	[end: JsV.UNDEF]
+
+	[LegacyLookup: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 k: (JsObjs.KeyOf: (Js.Arg: args argc 0));
+		JsDesc d;
+		while o is not 0
+			if (JsObjs.GetOwn: o k addr d)
+				if (d.flags & JsObjs.ACC) is 0
+					return JsV.UNDEF;
+				;;
+				if self.magic is 0
+					return d.getter;
+				;;
+				return d.setter;
+			;;
+			o is (JsObjs.ProtoOf: o);
+		;;
+	[end: JsV.UNDEF]
+}

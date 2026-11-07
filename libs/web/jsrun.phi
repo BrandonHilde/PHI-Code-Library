@@ -1,0 +1,66 @@
+# A development tool: runs a .js file through the engine, with console.log to the terminal.
+#
+#   phi build jsrun.phi --target windows64
+#   build/jsrun/jsrun.exe file.js
+#   build/jsrun/jsrun.exe --stress file.js      # collecting at every safepoint
+
+use js.js;
+
+phi.JsRun:Program
+{
+	call Js.Start: 900000;
+	ptr<u8> arg: (OS.Arguments);
+	bln stress: false;
+	if arg is not 0 and arg:0 is '-' and arg:2 is 's'
+		stress is true;
+		arg is (Text2.After: arg);
+	;;
+	ptr<JsRuntime> rt: (Js.New);
+	rt.console_hook is addr Print;
+	if stress
+		call Js.SetStress: true;
+	;;
+	int size: (OS.FileSize: arg);
+	if size < 0
+		log 'no such file: ' arg '\n';
+		exit 1;
+	;;
+	ptr<u8> src: new u8[size + 1];
+	int got: (OS.ReadFile: arg src size);
+	call Js.Eval: src got as u32 arg;
+	if not Js.failed
+		call Js.RunJobs;
+	;;
+	if Js.failed
+		WlBuf b;
+		call b.AddZ: 'UNCAUGHT ';
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		if call Js.TextOf: Js.exception addr b throws err
+			call Js.TryCatchAll: addr t err;
+			call b.AddZ: '(unprintable)';
+		;;
+		log b.data '\n';
+		call b.Free;
+		exit 1;
+	;;
+	exit 0;
+
+	[Print: ptr<u8> text: 0; u32 n: 0;]
+		log text '\n';
+	[end]
+}
+
+phi.Text2:Library
+{
+	# what follows the first word and its spaces
+	[After: ptr<u8> text: 0;]
+		ptr<u8> p: text;
+		while p:0 is not 0 and p:0 is not 32
+			p is p + 1;
+		;;
+		while p:0 is 32
+			p is p + 1;
+		;;
+	[end: p]
+}

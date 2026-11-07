@@ -1,0 +1,5 @@
+unicodeCharsProblematic.test #0: lone surrogate: Invalid Unicode character U+DFFF
+unicodeCharsProblematic.test #1: lone surrogate: Invalid Unicode character U+D800
+unicodeCharsProblematic.test #2: lone surrogate: Invalid Unicode character U+DFFF with valid preceding character
+unicodeCharsProblematic.test #3: lone surrogate: Invalid Unicode character U+D800 with valid following character
+xmlViolation.test: no 'tests' list (keys xmlViolationTests)

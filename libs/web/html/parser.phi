@@ -1,0 +1,3555 @@
+# The HTML tree builder, and the parser object a browser drives: the WHATWG algorithm's insertion
+# modes, stack of open elements, active formatting elements, adoption agency, foster parenting,
+# templates, foreign content and the fragment case. Nothing here recurses on the tree.
+#
+#   ptr<HtmlParser> p: (HtmlParser.New: doc);   # or HtmlParser.New: 0 to make a document
+#   p.on_script is addr RunScript;              # called at each </script>
+#   p.scripting is true;                        # how <noscript> parses
+#   call p.Feed: bytes length;                  # as much as has arrived, any number of times
+#   call p.Write: bytes length;                 # document.write: re-entrant from on_script
+#   call p.Finish;                              # the end of the input
+#   call p.Free;                                # the parser, not the document
+#
+# Also: p.Pause and p.Resume, for a script that must be fetched before parsing goes on (Feed and
+# Write only keep their input meanwhile); p.failed and p.error, if something went wrong (out of
+# memory, or an error out of on_script): what was built stays good, and the rest is ignored.
+#
+# Hostile documents. The stack of open elements answers every "in scope" question from fields of
+# its top entry instead of walking it, so deep nesting isn't quadratic. Two limits go beyond the
+# spec, and a document only meets them if it's built to:
+#   MAX_FORMATTING  how long the list of active formatting elements can get: past it, the oldest
+#                   entry is forgotten
+#   clone_budget    how many elements reconstruction may make, in proportion to the input: reopening
+#                   a long list for every paragraph makes output quadratic in input, so past the
+#                   budget the list is emptied instead.
+#
+# Parse errors aren't reported: the tree is the same whether or not anybody hears of them.
+
+use memory.mem;
+use core.text;
+use core.atoms;
+use core.buf;
+use core.stack;
+use dom.dom;
+use html.tags;
+use html.names;
+use html.tokenizer;
+use html.serialize;
+
+phi.HtmlMode:Library
+{
+	const u32 INITIAL: 0;
+	const u32 BEFORE_HTML: 1;
+	const u32 BEFORE_HEAD: 2;
+	const u32 IN_HEAD: 3;
+	const u32 IN_HEAD_NOSCRIPT: 4;
+	const u32 AFTER_HEAD: 5;
+	const u32 IN_BODY: 6;
+	const u32 TEXT: 7;
+	const u32 IN_TABLE: 8;
+	const u32 IN_TABLE_TEXT: 9;
+	const u32 IN_CAPTION: 10;
+	const u32 IN_COLUMN_GROUP: 11;
+	const u32 IN_TABLE_BODY: 12;
+	const u32 IN_ROW: 13;
+	const u32 IN_CELL: 14;
+	const u32 IN_TEMPLATE: 15;
+	const u32 AFTER_BODY: 16;
+	const u32 IN_FRAMESET: 17;
+	const u32 AFTER_FRAMESET: 18;
+	const u32 AFTER_AFTER_BODY: 19;
+	const u32 AFTER_AFTER_FRAMESET: 20;
+}
+
+# One entry on the stack of open elements. The stop_ fields say where the nearest element of a
+# kind is, at or below this entry: so the top entry answers for the whole stack.
+struct.HtmlOpen
+{
+	ptr<DomNode> node;
+	ptr<WlAtom> name;       # as the token had it: lowercase, before any SVG adjusting
+	u32 code;               # HtmlTags.CodeOf
+	u32 bucket;             # which list of same-named entries it's on
+	u32 prev_same;          # the next entry down on that list, plus one; 0 at its end
+	u32 stop_scope;
+	u32 stop_list;
+	u32 stop_button;
+	u32 stop_table;
+	u32 stop_special;
+	u32 stop_html;          # the nearest HTML element
+	u32 stop_reset;         # the nearest element that decides the insertion mode
+	u32 stop_li;            # the nearest element that ends the search for li, dd and dt
+}
+
+# the attributes as the token had them, kept for making more elements for that token
+struct.HtmlSaved
+{
+	u32 refs;
+	u32 count;
+	u32 hash;
+	u32 vals_len;
+	ptr<HtmlTokAttr> items;
+	ptr<u8> vals;
+}
+
+# an entry on the list of active formatting elements; node is 0 for a marker
+struct.HtmlFmt
+{
+	ptr<DomNode> node;
+	ptr<WlAtom> name;
+	u32 code;
+	ptr<HtmlSaved> saved;
+}
+
+phi.HtmlConst:Library
+{
+	const u32 MAX_FORMATTING: 1024;
+	const u32 HASH_BUCKETS: 256;
+	const u32 MAX_INPUT: 2000000000;
+	const u32 MAX_WRITE_NESTING: 64;
+
+	# flags from Dom.FIRST_PARSER_FLAG up
+	const u32 F_ALREADY_STARTED: 0x100;     # a <script> the parser says must not run
+	const u32 F_IN_STACK: 0x200;
+	const u32 F_IN_FORMATTING: 0x400;
+	const u32 F_HTML_IP: 0x800;             # an annotation-xml that's an HTML integration point
+}
+
+struct.HtmlParser
+{
+	# ---- for the browser
+	ptr<DomDocument> doc;
+	method<ptr<HtmlParser> ptr<DomNode>> on_script;
+	bln scripting;
+	bln failed;             # something went wrong (out of memory, usually); error says what
+	str error: [160];
+	ptr<u8> host_data;
+
+	# ---- input
+	HtmlTokenizer tok;
+	HtmlDecoder decoder;
+	HtmlDecoder write_decoder;
+	WlBuf write_buf;
+	WlBuf tail;             # what Feed got while a script ran, until it's over
+	bln ins_defined;        # the insertion point, as how far it is from the end of the input
+	u32 ins_from_end;
+	u32 script_depth;
+	bln pause_svg;          # an SVG script is running: what it writes waits
+	bln paused;             # the browser called Pause
+	u32 paused_written;     # what Write has put in since then, which comes before the rest
+	bln finish_pending;
+	bln finished;
+	bln running;
+	bln owns_doc;
+
+	# ---- tree construction
+	u32 mode;
+	u32 original_mode;
+	bln foster;
+	bln frameset_ok;
+	bln quirks;
+	bln skip_lf;
+	bln scripts_ran;
+	bln saw_selectedcontent;
+	u32 clone_budget;
+
+	ptr<HtmlOpen> open;
+	u32 open_n;
+	u32 open_cap;
+	ptr<u32> heads;         # by bucket: the topmost entry on that list, plus one
+	ptr<u32> fl;            # HtmlTags.flags
+
+	ptr<HtmlFmt> fmt;
+	u32 fmt_n;
+	u32 fmt_cap;
+
+	ptr<u8> tmodes;         # stack of template insertion modes
+	u32 tmodes_n;
+	u32 tmodes_cap;
+
+	ptr<DomNode> head_ptr;
+	ptr<DomNode> form_ptr;
+	WlBuf pending;          # pending table character tokens
+
+	# where to insert, as the last FindPlace found it
+	ptr<DomNode> place_parent;
+	ptr<DomNode> place_ref;
+
+	# the fragment case
+	ptr<DomNode> context;
+	u32 ctx_code;           # the context's code; 0 if there's none
+	DomNs ctx_ns;
+	bln ctx_ip;             # the context is an annotation-xml integration point
+	ptr<DomNode> frag_html; # the root the algorithm makes, which the stack starts with
+	ptr<DomNode> fragment;  # what goes in it goes here
+
+	# ---- making and ending
+
+	[Setup: ptr<DomDocument> d: 0;]
+		call Dom.Start;
+		call HtmlTags.Start;
+		if d is 0
+			d is (Dom.NewDocument);
+			owns_doc is true;
+		;;
+		doc is d;
+		fl is HtmlTags.flags;
+		frameset_ok is true;
+		open_cap is 64;
+		open is new HtmlOpen[64];
+		fmt_cap is 16;
+		fmt is new HtmlFmt[16];
+		heads is new u32[HtmlTag.ATOM_COUNT + HtmlConst.HASH_BUCKETS];
+		if open is 0 or fmt is 0 or heads is 0
+			throw 'out of memory for a parser';
+		;;
+		tok.owner is self as ptr<u8>;
+		tok.sink is addr HtmlSink.Token;
+		tok.cdata_allowed is addr HtmlSink.CdataAllowed;
+		write_decoder.bom_done is true;
+		clone_budget is 100000;
+	[end]
+
+	# gives the parser's memory back, the object itself too, so p is no good after this; the document
+	# isn't touched
+	[Free]
+		call tok.Free;
+		call write_buf.Free;
+		call tail.Free;
+		call pending.Free;
+		if open is not 0
+			free open;
+		;;
+		open is 0;
+		if heads is not 0
+			free heads;
+		;;
+		heads is 0;
+		if fmt is not 0
+			while u32 i: 0; i < fmt_n; i++;
+				call SavedRelease: fmt:i.saved;
+			;;
+			free fmt;
+		;;
+		fmt is 0;
+		if tmodes is not 0
+			free tmodes;
+		;;
+		tmodes is 0;
+		ptr<HtmlParser> me: self;
+		free me;
+	[end]
+
+	# ---- input, for the browser
+
+	[Fail: ptr<u8> message: 0;]
+		failed is true;
+		error is message;
+		tok.stop is true;
+	[end]
+
+	# bytes as they arrive. Nothing here lets an error out: failed and error say.
+	[Feed: ptr<u8> bytes: 0; u32 count: 0;]
+		if failed or finished or finish_pending return;
+		if call FeedInner: bytes count throws err
+			call Fail: err.text;
+		;;
+	[end]
+
+	[FeedInner: ptr<u8> bytes: 0; u32 count: 0;]
+		call CheckSize: count;
+		call GrowBudget: count;
+		if script_depth > 0 or running
+			call decoder.Run: bytes count tail;
+			return;
+		;;
+		call decoder.Run: bytes count tok.ib;
+		call Pump;
+	[end]
+
+	[CheckSize: u32 count: 0;]
+		if count >= HtmlConst.MAX_INPUT or tok.ib.len >= HtmlConst.MAX_INPUT - count
+			throw 'the input is too large';
+		;;
+	[end]
+
+	[GrowBudget: u32 count: 0;]
+		if clone_budget < 2000000000 - count
+			clone_budget is clone_budget + count;
+		;;
+	[end]
+
+	# document.write: at the insertion point, and parsed at once unless a script is holding things
+	[Write: ptr<u8> bytes: 0; u32 count: 0;]
+		if failed or finished return;
+		if call WriteInner: bytes count throws err
+			call Fail: err.text;
+		;;
+	[end]
+
+	[WriteInner: ptr<u8> bytes: 0; u32 count: 0;]
+		call CheckSize: count;
+		call GrowBudget: count;
+		call write_buf.Clear;
+		call write_decoder.Run: bytes count write_buf;
+		call write_decoder.Finish: write_buf;
+		u32 add: write_buf.len;
+		if add > 0
+			# With no script running there's no insertion point, and it goes after all there is,
+			# unless parsing is paused for a script: that script's writing comes before what's next.
+			u32 place: tok.ib.len;
+			if ins_defined
+				place is tok.ib.len - ins_from_end;
+			;;
+			elif paused
+				place is tok.pos + paused_written;
+				paused_written is paused_written + add;
+			;;
+			call tok.ib.Reserve: add;
+			u32 after: tok.ib.len - place;
+			if after > 0
+				call Mem.Move: tok.ib.data + place + add tok.ib.data + place after;
+			;;
+			call Mem.Copy: tok.ib.data + place write_buf.data add;
+			tok.ib.len is tok.ib.len + add;
+			tok.ib.data:(tok.ib.len) is 0;
+		;;
+		if paused or pause_svg return;
+		# so deep that it's only trying to use up the stack: the text waits for the scripts to end
+		if script_depth >= HtmlConst.MAX_WRITE_NESTING return;
+		# as far as the insertion point, and no further: the rest waits for the script to end
+		call WlStack.Check;
+		bln was_eof: tok.at_eof;
+		tok.at_eof is false;
+		if ins_defined
+			tok.lim is tok.ib.len - ins_from_end;
+		;;
+		else
+			tok.lim is tok.ib.len;
+		;;
+		bln was_running: running;
+		running is true;
+		call tok.Run;
+		running is was_running;
+		tok.at_eof is was_eof;
+	[end]
+
+	# the end of the input
+	[Finish]
+		if failed or finished return;
+		if call FinishInner throws err
+			call Fail: err.text;
+		;;
+	[end]
+
+	[FinishInner]
+		finish_pending is true;
+		if script_depth > 0 or running
+			call decoder.Finish: tail;
+			return;
+		;;
+		call decoder.Finish: tok.ib;
+		call Pump;
+	[end]
+
+	# Stops parsing where it is (a browser's on_script calls this for a script it must fetch), until
+	# Resume. Feed and Write only keep their input meanwhile.
+	[Pause]
+		paused is true;
+		tok.stop is true;
+	[end]
+
+	[Resume]
+		if paused is false return;
+		paused is false;
+		paused_written is 0;
+		if failed
+			return;
+		;;
+		tok.stop is false;
+		if script_depth > 0 or running return;
+		if call Pump throws err
+			call Fail: err.text;
+		;;
+	[end]
+
+	# run the tokenizer over everything there is
+	[Pump]
+		if paused or failed return;
+		tok.lim is tok.ib.len;
+		tok.at_eof is finish_pending;
+		running is true;
+		call tok.Run;
+		running is false;
+		if tok.eof_sent
+			finished is true;
+		;;
+		# what's been read can go
+		u32 done_bytes: tok.pos;
+		if done_bytes is tok.ib.len
+			call tok.ib.Clear;
+			tok.pos is 0;
+			tok.lim is 0;
+		;;
+		elif done_bytes > 65536 and done_bytes > tok.ib.len / 2
+			u32 left: tok.ib.len - done_bytes;
+			call Mem.Move: tok.ib.data tok.ib.data + done_bytes left;
+			tok.ib.len is left;
+			tok.ib.data:left is 0;
+			tok.pos is 0;
+			tok.lim is left;
+		;;
+	[end]
+
+	# ---- scripts
+
+	# script has ended its element: let the browser run it, with the insertion point just here
+	[RunScript: ptr<DomNode> script: 0; bln svg: false;]
+		if context is not 0
+			script.flags is script.flags | HtmlConst.F_ALREADY_STARTED;
+			return;
+		;;
+		if on_script is 0 return;
+		if (script.flags & HtmlConst.F_ALREADY_STARTED) is not 0 return;
+		scripts_ran is true;
+		bln had_point: ins_defined;
+		u32 old_from_end: ins_from_end;
+		ins_defined is true;
+		ins_from_end is tok.ib.len - tok.pos;
+		script_depth++;
+		bln was_pause_svg: pause_svg;
+		if svg
+			pause_svg is true;
+		;;
+		call on_script: self script;
+		pause_svg is was_pause_svg;
+		script_depth--;
+		# what's after the insertion point hasn't moved relative to the end of the input
+		ins_defined is had_point;
+		ins_from_end is old_from_end;
+		if had_point
+			tok.lim is tok.ib.len - old_from_end;
+		;;
+		else
+			tok.lim is tok.ib.len;
+		;;
+		if script_depth is 0
+			# what Feed got meanwhile goes on the end
+			if tail.len > 0
+				call tok.ib.AddN: tail.data tail.len;
+				call tail.Clear;
+				tok.lim is tok.ib.len;
+			;;
+			tok.at_eof is finish_pending;
+		;;
+	[end]
+
+	# ---- the stack of open elements
+
+	[Bucket: u32 code: 0; ptr<WlAtom> low: 0;]
+		if code is not 0 and code < HtmlTag.ATOM_COUNT return code;
+	[end: HtmlTag.ATOM_COUNT + (low.hash & (HtmlConst.HASH_BUCKETS - 1))]
+
+	# entry i's derived fields, from the entry under it and its own code
+	[Chain: u32 i: 0;]
+		ptr<HtmlOpen> e: open + i * sizeof HtmlOpen;
+		u32 code: e.code;
+		u32 f: fl:code;
+		u32 b: e.bucket;
+		e.prev_same is heads:b;
+		heads:b is i + 1;
+		if i is 0
+			e.stop_scope is 0;
+			e.stop_list is 0;
+			e.stop_button is 0;
+			e.stop_table is 0;
+			e.stop_special is 0;
+			e.stop_html is 0;
+			e.stop_reset is 0;
+			e.stop_li is 0;
+			return;
+		;;
+		ptr<HtmlOpen> u: open + (i - 1) * sizeof HtmlOpen;
+		if f is 0 and code < HtmlTag.ATOM_COUNT
+			# an ordinary HTML element, which is most of them
+			e.stop_scope is u.stop_scope;
+			e.stop_list is u.stop_list;
+			e.stop_button is u.stop_button;
+			e.stop_table is u.stop_table;
+			e.stop_special is u.stop_special;
+			e.stop_html is i;
+			e.stop_reset is u.stop_reset;
+			e.stop_li is u.stop_li;
+			return;
+		;;
+		if (f & HtmlTag.F_SCOPE) is not 0
+			e.stop_scope is i;
+			e.stop_list is i;
+			e.stop_button is i;
+		;;
+		else
+			e.stop_scope is u.stop_scope;
+			if (f & HtmlTag.F_LIST) is not 0
+				e.stop_list is i;
+			;;
+			else
+				e.stop_list is u.stop_list;
+			;;
+			if (f & HtmlTag.F_BUTTON) is not 0
+				e.stop_button is i;
+			;;
+			else
+				e.stop_button is u.stop_button;
+			;;
+		;;
+		if (f & HtmlTag.F_TABLE) is not 0
+			e.stop_table is i;
+		;;
+		else
+			e.stop_table is u.stop_table;
+		;;
+		if (f & HtmlTag.F_SPECIAL) is not 0
+			e.stop_special is i;
+		;;
+		else
+			e.stop_special is u.stop_special;
+		;;
+		if code < HtmlTag.ATOM_COUNT
+			e.stop_html is i;
+		;;
+		else
+			e.stop_html is u.stop_html;
+		;;
+		if (f & HtmlTag.F_RESET) is not 0
+			e.stop_reset is i;
+		;;
+		else
+			e.stop_reset is u.stop_reset;
+		;;
+		if (f & HtmlTag.F_LI_STOP) is not 0
+			e.stop_li is i;
+		;;
+		else
+			e.stop_li is u.stop_li;
+		;;
+	[end]
+
+	# take entries from i up off their lists, top first: the reverse of how they went on
+	[Unchain: u32 i: 0;]
+		u32 k: open_n;
+		while k > i
+			k--;
+			ptr<HtmlOpen> e: open + k * sizeof HtmlOpen;
+			heads:(e.bucket) is e.prev_same;
+		;;
+	[end]
+
+	[Rechain: u32 i: 0;]
+		while i < open_n
+			call Chain: i;
+			i++;
+		;;
+	[end]
+
+	[Push: ptr<DomNode> node: 0; ptr<WlAtom> low: 0;]
+		if open_n is open_cap
+			u32 room: open_cap * 2;
+			ptr<HtmlOpen> grown: new HtmlOpen[room];
+			if grown is 0
+				throw 'out of memory for the stack of open elements';
+			;;
+			call Mem.Copy: grown open open_n * sizeof HtmlOpen;
+			free open;
+			open is grown;
+			open_cap is room;
+		;;
+		ptr<HtmlOpen> e: open + open_n * sizeof HtmlOpen;
+		e.node is node;
+		e.name is low;
+		e.code is (HtmlTags.CodeOf: node.ns low);
+		e.bucket is (Bucket: e.code low);
+		if e.code is HtmlTag.SELECTEDCONTENT
+			saw_selectedcontent is true;
+		;;
+		node.flags is node.flags | HtmlConst.F_IN_STACK;
+		open_n++;
+		call Chain: open_n - 1;
+	[end]
+
+	[Pop]
+		if open_n is 0 return;
+		open_n--;
+		ptr<HtmlOpen> e: open + open_n * sizeof HtmlOpen;
+		heads:(e.bucket) is e.prev_same;
+		e.node.flags is e.node.flags & ~HtmlConst.F_IN_STACK;
+		if e.code is HtmlTag.OPTION and saw_selectedcontent
+			call OptionPopped: e.node;
+		;;
+	[end]
+
+	# remove the entry at i, wherever it is
+	[RemoveAt: u32 i: 0;]
+		call Unchain: i;
+		ptr<HtmlOpen> e: open + i * sizeof HtmlOpen;
+		e.node.flags is e.node.flags & ~HtmlConst.F_IN_STACK;
+		if i + 1 < open_n
+			call Mem.Move: e as ptr<u8> (e as ptr<u8>) + sizeof HtmlOpen (open_n - i - 1) * sizeof HtmlOpen;
+		;;
+		open_n--;
+		call Rechain: i;
+	[end]
+
+	# where an element is on the stack (it's known to be there, and its name is one the parser
+	# has a number for): found along its name's list
+	[IndexOf: ptr<DomNode> node: 0;]
+		u32 h: heads:(node.tag.tag);
+		while h is not 0
+			if open:(h - 1).node is node return h - 1;
+			h is open:(h - 1).prev_same;
+		;;
+		throw 'an element that should be on the stack is not';
+	[end: 0]
+
+	[RemoveNode: ptr<DomNode> node: 0;]
+		call RemoveAt: (IndexOf: node);
+	[end]
+
+	[TopCode]
+		if open_n is 0 return 0;
+	[end: open:(open_n - 1).code]
+
+	[TopNode]
+	[end: open:(open_n - 1).node]
+
+	# the topmost entry with this code, plus one; 0 if there isn't one
+	[TopOf: u32 code: 0;]
+	[end: heads:code]
+
+	[HasInScope: u32 code: 0;]
+		u32 h: heads:code;
+		if h is 0 return false;
+	[end: h - 1 >= open:(open_n - 1).stop_scope]
+
+	[HasInListScope: u32 code: 0;]
+		u32 h: heads:code;
+		if h is 0 return false;
+	[end: h - 1 >= open:(open_n - 1).stop_list]
+
+	[HasInButtonScope: u32 code: 0;]
+		u32 h: heads:code;
+		if h is 0 return false;
+	[end: h - 1 >= open:(open_n - 1).stop_button]
+
+	[HasInTableScope: u32 code: 0;]
+		u32 h: heads:code;
+		if h is 0 return false;
+	[end: h - 1 >= open:(open_n - 1).stop_table]
+
+	[HasHeadingInScope]
+	[end: (HasInScope: HtmlTag.H1) or (HasInScope: HtmlTag.H2) or (HasInScope: HtmlTag.H3) or (HasInScope: HtmlTag.H4) or (HasInScope: HtmlTag.H5) or (HasInScope: HtmlTag.H6)]
+
+	[PopUntil: u32 code: 0;]
+		while open_n > 0
+			u32 c: open:(open_n - 1).code;
+			call Pop;
+			if c is code return;
+		;;
+	[end]
+
+	[PopUntilHeading]
+		while open_n > 0
+			u32 c: open:(open_n - 1).code;
+			call Pop;
+			if (IsHeading: c) return;
+		;;
+	[end]
+
+	[IsHeading: u32 c: 0;]
+	[end: c is HtmlTag.H1 or c is HtmlTag.H2 or c is HtmlTag.H3 or c is HtmlTag.H4 or c is HtmlTag.H5 or c is HtmlTag.H6]
+
+	[PopUntilCell]
+		while open_n > 0
+			u32 c: open:(open_n - 1).code;
+			call Pop;
+			if c is HtmlTag.TD or c is HtmlTag.TH return;
+		;;
+	[end]
+
+	# generate implied end tags, except for this code (0: for none)
+	[ImpliedEndTags: u32 except_code: 0;]
+		while open_n > 0
+			u32 c: open:(open_n - 1).code;
+			if c is except_code or (fl:c & HtmlTag.F_IMPLIED) is 0 return;
+			call Pop;
+		;;
+	[end]
+
+	[ImpliedEndTagsThorough]
+		while open_n > 0
+			if (fl:(open:(open_n - 1).code) & HtmlTag.F_THOROUGH) is 0 return;
+			call Pop;
+		;;
+	[end]
+
+	[ClosePElement]
+		call ImpliedEndTags: HtmlTag.P;
+		call PopUntil: HtmlTag.P;
+	[end]
+
+	[CloseP]
+		if heads:(HtmlTag.P) is not 0 and (HasInButtonScope: HtmlTag.P)
+			call ClosePElement;
+		;;
+	[end]
+
+	[InTemplateContents]
+	[end: heads:(HtmlTag.TEMPLATE) is not 0 or ctx_code is HtmlTag.TEMPLATE]
+
+	# ---- active formatting elements
+
+	[FmtRoom]
+		if fmt_n is fmt_cap
+			u32 room: fmt_cap * 2;
+			ptr<HtmlFmt> grown: new HtmlFmt[room];
+			if grown is 0
+				throw 'out of memory for formatting elements';
+			;;
+			call Mem.Copy: grown fmt fmt_n * sizeof HtmlFmt;
+			free fmt;
+			fmt is grown;
+			fmt_cap is room;
+		;;
+	[end]
+
+	[FmtInsertAt: u32 i: 0;]
+		call FmtRoom;
+		ptr<HtmlFmt> e: fmt + i * sizeof HtmlFmt;
+		if i < fmt_n
+			call Mem.Move: (e as ptr<u8>) + sizeof HtmlFmt e as ptr<u8> (fmt_n - i) * sizeof HtmlFmt;
+		;;
+		e.node is 0;
+		e.name is 0;
+		e.code is 0;
+		e.saved is 0;
+		fmt_n++;
+	[end]
+
+	[FmtRemoveAt: u32 i: 0;]
+		ptr<HtmlFmt> e: fmt + i * sizeof HtmlFmt;
+		if e.node is not 0
+			e.node.flags is e.node.flags & ~HtmlConst.F_IN_FORMATTING;
+		;;
+		call SavedRelease: e.saved;
+		if i + 1 < fmt_n
+			call Mem.Move: e as ptr<u8> (e as ptr<u8>) + sizeof HtmlFmt (fmt_n - i - 1) * sizeof HtmlFmt;
+		;;
+		fmt_n--;
+	[end]
+
+	[AddMarker]
+		call FmtInsertAt: fmt_n;
+	[end]
+
+	[ClearToMarker]
+		while fmt_n > 0
+			bln marker: fmt:(fmt_n - 1).node is 0;
+			call FmtRemoveAt: fmt_n - 1;
+			if marker return;
+		;;
+	[end]
+
+	# the attributes of the token now in tok, kept
+	[SaveToken]
+		if tok.attr_count is 0 return 0 as ptr<HtmlSaved>;
+		ptr<HtmlSaved> s: new HtmlSaved;
+		if s is 0
+			throw 'out of memory for formatting elements';
+		;;
+		s.refs is 1;
+		s.count is tok.attr_count;
+		s.vals_len is tok.vals.len;
+		s.items is new HtmlTokAttr[tok.attr_count];
+		s.vals is new u8[tok.vals.len + 1];
+		if s.items is 0 or s.vals is 0
+			throw 'out of memory for formatting elements';
+		;;
+		call Mem.Copy: s.items tok.attrs tok.attr_count * sizeof HtmlTokAttr;
+		if tok.vals.len > 0
+			call Mem.Copy: s.vals tok.vals.data tok.vals.len;
+		;;
+		# the same whatever order they came in
+		u32 h: 0;
+		while u32 i: 0; i < s.count; i++;
+			h is h + (s.items:i.name.hash ^ (WlText.Hash: s.vals + s.items:i.off s.items:i.len));
+		;;
+		s.hash is h;
+	[end: s]
+
+	[SavedRelease: ptr<HtmlSaved> s: 0;]
+		if s is 0 return;
+		s.refs--;
+		if s.refs is 0
+			free s.items;
+			free s.vals;
+			free s;
+		;;
+	[end]
+
+	# two tokens' attributes pair off exactly; hashes have already matched
+	[SavedSame: ptr<HtmlSaved> a: 0; ptr<HtmlSaved> b: 0;]
+		if a is b return true;
+		if a is 0 or b is 0 return false;
+		if a.count is not b.count or a.hash is not b.hash return false;
+		# Nearly always they're in the same order. If not, this takes the hashes' word that they're
+		# the same set, rather than compare quadratically on hostile input: the worst a crafted
+		# collision can do is drop an old entry from the list.
+		while u32 i: 0; i < a.count; i++;
+			ptr<HtmlTokAttr> x: a.items + i * sizeof HtmlTokAttr;
+			ptr<HtmlTokAttr> y: b.items + i * sizeof HtmlTokAttr;
+			if x.name is y.name
+				if (WlText.Eq: a.vals + x.off x.len b.vals + y.off y.len) is false return false;
+			;;
+		;;
+	[end: true]
+
+	# push node as a formatting element: the Noah's Ark clause, and the limit on the list
+	[PushFormatting: ptr<DomNode> node: 0; ptr<WlAtom> low: 0; u32 code: 0;]
+		ptr<HtmlSaved> saved: (SaveToken);
+		u32 same: 0;
+		u32 i: fmt_n;
+		while i > 0
+			i--;
+			ptr<HtmlFmt> e: fmt + i * sizeof HtmlFmt;
+			if e.node is 0 break;
+			if e.code is code and (SavedSame: e.saved saved)
+				same++;
+				if same is 3
+					call FmtRemoveAt: i;
+					break;
+				;;
+			;;
+		;;
+		if fmt_n >= HtmlConst.MAX_FORMATTING
+			call FmtRemoveAt: 0;
+		;;
+		call FmtInsertAt: fmt_n;
+		ptr<HtmlFmt> made: fmt + (fmt_n - 1) * sizeof HtmlFmt;
+		made.node is node;
+		made.name is low;
+		made.code is code;
+		made.saved is saved;
+		node.flags is node.flags | HtmlConst.F_IN_FORMATTING;
+	[end]
+
+	[FmtIndexOf: ptr<DomNode> node: 0;]
+		u32 i: fmt_n;
+		while i > 0
+			i--;
+			if fmt:i.node is node return i;
+		;;
+		throw 'a formatting element should be on the list';
+	[end: 0]
+
+	# the last element with this code after the last marker; -1 if none
+	[FmtFindCode: u32 code: 0;]
+		u32 i: fmt_n;
+		while i > 0
+			i--;
+			ptr<HtmlFmt> e: fmt + i * sizeof HtmlFmt;
+			if e.node is 0 return -1;
+			if e.code is code return i as int;
+		;;
+	[end: -1]
+
+	[Reconstruct]
+		if fmt_n is 0 return;
+		ptr<DomNode> last_node: fmt:(fmt_n - 1).node;
+		if last_node is 0 or (last_node.flags & HtmlConst.F_IN_STACK) is not 0 return;
+		# rewind to the first one that needs making
+		u32 i: fmt_n - 1;
+		while i > 0
+			ptr<DomNode> before: fmt:(i - 1).node;
+			if before is 0 or (before.flags & HtmlConst.F_IN_STACK) is not 0 break;
+			i--;
+		;;
+		while i < fmt_n
+			if clone_budget is 0
+				# the document is making elements out of nothing: stop reopening these
+				while fmt_n > i
+					call FmtRemoveAt: fmt_n - 1;
+				;;
+				return;
+			;;
+			clone_budget--;
+			ptr<HtmlFmt> e: fmt + i * sizeof HtmlFmt;
+			ptr<DomNode> made: (MakeElementSaved: e.name e.saved);
+			call InsertNew: made;
+			call Push: made e.name;
+			e.node.flags is e.node.flags & ~HtmlConst.F_IN_FORMATTING;
+			e.node is made;
+			made.flags is made.flags | HtmlConst.F_IN_FORMATTING;
+			i++;
+		;;
+	[end]
+
+	# ---- making elements
+
+	[AddAttr: ptr<DomNode> node: 0; ptr<DomAttr> last: 0; ptr<WlAtom> attr_name: 0; ptr<WlAtom> prefix: 0; ptr<u8> value: 0; u32 count: 0;]
+		ptr<DomAttr> a: new DomAttr;
+		if a is 0
+			throw 'out of memory for an attribute';
+		;;
+		a.name is attr_name;
+		a.prefix is prefix;
+		a.value is (WlText.Dup: value count);
+		a.value_len is count;
+		if last is 0
+			node.attrs is a;
+		;;
+		else
+			last.next is a;
+		;;
+		if prefix is 0
+			if attr_name is Dom.A_ID
+				call Dom.RefreshId: node;
+			;;
+			elif attr_name is Dom.A_CLASS
+				call Dom.RefreshClasses: node;
+			;;
+		;;
+	[end: a]
+
+	# An element from a name and attributes as a token holds them; foreign elements get the
+	# adjusting of attribute names that their namespace calls for.
+	[MakeElement: ptr<WlAtom> element_name: 0; DomNs ns: DomNs.HTML; ptr<HtmlTokAttr> items: 0; u32 count: 0; ptr<u8> values: 0;]
+		ptr<DomNode> n: (Dom.CreateElement: doc element_name ns);
+		bln html_el: ns is DomNs.HTML;
+		bln svg: ns is DomNs.SVG;
+		ptr<DomAttr> last: 0;
+		while u32 i: 0; i < count; i++;
+			ptr<HtmlTokAttr> t: items + i * sizeof HtmlTokAttr;
+			ptr<WlAtom> an: t.name;
+			ptr<WlAtom> prefix: 0;
+			if html_el is false
+				u32 num: an.tag;
+				if num >= HtmlTag.ADJUST_FIRST
+					if num <= HtmlTag.ADJUST_LAST
+						if svg and (HtmlTags.adjust_kind:num & 2) is not 0
+							an is HtmlTags.atoms:num;
+						;;
+					;;
+					elif num <= HtmlTag.FOREIGN_ATTR_LAST
+						prefix is HtmlTags.prefixes:num;
+						an is HtmlTags.atoms:num;
+					;;
+					elif num is HtmlTag.DEFINITIONURL
+						if svg is false
+							an is HtmlTags.atoms:num;
+						;;
+					;;
+				;;
+			;;
+			last is (AddAttr: n last an prefix values + t.off t.len);
+		;;
+		if html_el
+			if element_name.tag is HtmlTag.TEMPLATE
+				ptr<DomNode> contents: (Dom.CreateFragment: doc);
+				n.content is contents;
+				contents.content is n;
+			;;
+		;;
+	[end: n]
+
+	[MakeElementSaved: ptr<WlAtom> element_name: 0; ptr<HtmlSaved> s: 0;]
+		if s is 0 return (MakeElement: element_name DomNs.HTML 0 0 0);
+	[end: (MakeElement: element_name DomNs.HTML s.items s.count s.vals)]
+
+	# an element for the token in tok
+	[MakeFromToken: DomNs ns: DomNs.HTML; ptr<WlAtom> element_name: 0;]
+		ptr<DomNode> n: (MakeElement: element_name ns tok.attrs tok.attr_count tok.vals.data);
+		if ns is DomNs.MATHML and tok.code is HtmlTag.ANNOTATION_XML
+			if (EncodingIsIp: n)
+				n.flags is n.flags | HtmlConst.F_HTML_IP;
+			;;
+		;;
+	[end: n]
+
+	[EncodingIsIp: ptr<DomNode> n: 0;]
+		ptr<DomAttr> a: (Dom.Attr: n HtmlTags.A_ENCODING);
+		if a is 0 or a.prefix is not 0 return false;
+		if (WlText.EqNoCaseZ: a.value a.value_len 'text/html') return true;
+	[end: (WlText.EqNoCaseZ: a.value a.value_len 'application/xhtml+xml')]
+
+	# ---- inserting
+
+	# the appropriate place for inserting a node, in place_parent and place_ref
+	[FindPlace: ptr<DomNode> override: 0;]
+		ptr<DomNode> target: override;
+		if target is 0
+			target is open:(open_n - 1).node;
+		;;
+		ptr<DomNode> ref: 0;
+		if foster and target.ns is DomNs.HTML
+			u32 t: target.tag.tag;
+			if t is HtmlTag.TABLE or t is HtmlTag.TBODY or t is HtmlTag.TFOOT or t is HtmlTag.THEAD or t is HtmlTag.TR
+				u32 table_at: heads:(HtmlTag.TABLE);
+				u32 template_at: heads:(HtmlTag.TEMPLATE);
+				if table_at is 0 and template_at is 0
+					target is open:0.node;
+				;;
+				elif template_at > table_at
+					target is open:(template_at - 1).node;
+				;;
+				else
+					ptr<DomNode> table: open:(table_at - 1).node;
+					if table.parent is not 0
+						target is table.parent;
+						ref is table;
+					;;
+					else
+						target is open:(table_at - 2).node;
+					;;
+				;;
+			;;
+		;;
+		if target.content is not 0 and target.type is DomType.ELEMENT
+			# a template's contents
+			target is target.content;
+			ref is 0;
+		;;
+		elif target is frag_html
+			target is fragment;
+			ref is 0;
+		;;
+		place_parent is target;
+		place_ref is ref;
+	[end]
+
+	# node, which has no parent, into parent before ref, without Dom's check that it isn't going
+	# inside itself: that walks up the tree, and this is called for every node
+	[Link: ptr<DomNode> parent: 0; ptr<DomNode> ref: 0; ptr<DomNode> node: 0;]
+		node.parent is parent;
+		node.next is ref;
+		if ref is 0
+			ptr<DomNode> last: parent.last_child;
+			node.prev is last;
+			if last is not 0
+				last.next is node;
+			;;
+			else
+				parent.first_child is node;
+			;;
+			parent.last_child is node;
+		;;
+		else
+			ptr<DomNode> before: ref.prev;
+			node.prev is before;
+			if before is not 0
+				before.next is node;
+			;;
+			else
+				parent.first_child is node;
+			;;
+			ref.prev is node;
+		;;
+		call Dom.Changed: parent DomChange.CHILDREN;
+	[end]
+
+	[DocumentHasElement: ptr<DomNode> parent: 0;]
+		if parent.type is not DomType.DOCUMENT return false;
+	[end: (Dom.FirstElementChild: parent) is not 0]
+
+	# a new element at the appropriate place, unless what the place says has stopped being true
+	# (a script moved things) or the document already has its element
+	[InsertNew: ptr<DomNode> node: 0;]
+		call FindPlace;
+		call InsertAtPlace: node;
+	[end]
+
+	[InsertAtPlace: ptr<DomNode> node: 0;]
+		ptr<DomNode> parent: place_parent;
+		ptr<DomNode> ref: place_ref;
+		if ref is not 0 and ref.parent is not parent return;
+		if (DocumentHasElement: parent) return;
+		call Link: parent ref node;
+	[end]
+
+	# an HTML element for the token in tok, on the stack
+	[InsertHtml]
+		ptr<DomNode> n: (MakeFromToken: DomNs.HTML tok.name);
+		call InsertNew: n;
+		call Push: n tok.name;
+	[end: n]
+
+	# an HTML element for a start tag the document didn't write
+	[InsertNamed: u32 code: 0;]
+		ptr<WlAtom> atom: HtmlTags.atoms:code;
+		ptr<DomNode> n: (MakeElement: atom DomNs.HTML 0 0 0);
+		call InsertNew: n;
+		call Push: n atom;
+	[end: n]
+
+	[InsertForeignFromToken: DomNs ns: DomNs.HTML; ptr<WlAtom> element_name: 0;]
+		ptr<DomNode> n: (MakeFromToken: ns element_name);
+		call InsertNew: n;
+		call Push: n tok.name;
+	[end: n]
+
+	[InsertChars: ptr<u8> text: 0; u32 count: 0;]
+		if count is 0 return;
+		call FindPlace;
+		ptr<DomNode> parent: place_parent;
+		ptr<DomNode> ref: place_ref;
+		if parent.type is DomType.DOCUMENT return;
+		if ref is not 0 and ref.parent is not parent return;
+		ptr<DomNode> before: parent.last_child;
+		if ref is not 0
+			before is ref.prev;
+		;;
+		if before is not 0 and before.type is DomType.TEXT
+			call Dom.AddText: before text count;
+			return;
+		;;
+		ptr<DomNode> made: (Dom.NewNode: doc DomType.TEXT);
+		call Dom.AddText: made text count;
+		call Link: parent ref made;
+	[end]
+
+	# a comment or processing instruction from tok, into parent (0: at the appropriate place)
+	[InsertMisc: ptr<DomNode> parent: 0;]
+		ptr<DomNode> ref: 0;
+		if parent is 0
+			call FindPlace;
+			parent is place_parent;
+			ref is place_ref;
+			if ref is not 0 and ref.parent is not parent return;
+		;;
+		ptr<DomNode> n: 0;
+		if tok.kind is HtmlT.PI
+			n is (Dom.NewNode: doc DomType.PI);
+			n.tag is tok.pi_target;
+		;;
+		else
+			n is (Dom.NewNode: doc DomType.COMMENT);
+		;;
+		call Dom.AddText: n tok.chars tok.chars_len;
+		call Link: parent ref n;
+	[end]
+
+	# for a place that isn't the current node: the root of the stack, in the fragment case, stands
+	# for the fragment
+	[InsertMiscAtRoot]
+		ptr<DomNode> root: open:0.node;
+		if root is frag_html
+			root is fragment;
+		;;
+		call InsertMisc: root;
+	[end]
+
+	# ---- the dispatcher
+
+	[Token]
+		if skip_lf
+			skip_lf is false;
+			if tok.kind is HtmlT.CHARS and tok.chars:0 is 10
+				tok.chars is tok.chars + 1;
+				tok.chars_len--;
+				if tok.chars_len is 0 return;
+			;;
+		;;
+		bln again: true;
+		while again
+			if (UseForeignRules)
+				again is (Foreign);
+			;;
+			else
+				again is (RunMode);
+			;;
+		;;
+		if tok.kind is HtmlT.EOF
+			call StopParsing;
+		;;
+	[end]
+
+	[UseForeignRules]
+		if open_n is 0 return false;
+		u32 code: open:(open_n - 1).code;
+		ptr<DomNode> node: open:(open_n - 1).node;
+		bln ip: false;
+		if context is not 0 and open_n is 1
+			code is ctx_code;
+			ip is ctx_ip;
+		;;
+		elif code is HtmlTag.K_MATH_ANNOTATION_XML
+			ip is ((node.flags & HtmlConst.F_HTML_IP) is not 0);
+		;;
+		if code < HtmlTag.ATOM_COUNT return false;
+		u32 k: tok.kind;
+		if k is HtmlT.EOF return false;
+		bln is_chars: k is HtmlT.CHARS or k is HtmlT.NUL;
+		bln is_start: k is HtmlT.START;
+		u32 f: fl:code;
+		if (f & HtmlTag.F_MATH_TEXT) is not 0
+			if is_chars return false;
+			if is_start and tok.code is not HtmlTag.MGLYPH and tok.code is not HtmlTag.MALIGNMARK return false;
+		;;
+		if code is HtmlTag.K_MATH_ANNOTATION_XML and is_start and tok.code is HtmlTag.SVG return false;
+		if ip or (f & HtmlTag.F_HTML_IP) is not 0
+			if is_start or is_chars return false;
+		;;
+	[end: true]
+
+	[RunMode]
+		u32 m: mode;
+		if m is HtmlMode.IN_BODY return (ModeInBody);
+		if m is HtmlMode.TEXT return (ModeText);
+		if m is HtmlMode.IN_TABLE return (ModeInTable);
+		if m is HtmlMode.IN_ROW return (ModeInRow);
+		if m is HtmlMode.IN_CELL return (ModeInCell);
+		if m is HtmlMode.IN_TABLE_BODY return (ModeInTableBody);
+		if m is HtmlMode.IN_TABLE_TEXT return (ModeInTableText);
+		when m
+			is HtmlMode.INITIAL
+				return (ModeInitial);
+			;;
+			is HtmlMode.BEFORE_HTML
+				return (ModeBeforeHtml);
+			;;
+			is HtmlMode.BEFORE_HEAD
+				return (ModeBeforeHead);
+			;;
+			is HtmlMode.IN_HEAD
+				return (ModeInHead);
+			;;
+			is HtmlMode.IN_HEAD_NOSCRIPT
+				return (ModeInHeadNoscript);
+			;;
+			is HtmlMode.AFTER_HEAD
+				return (ModeAfterHead);
+			;;
+			is HtmlMode.IN_CAPTION
+				return (ModeInCaption);
+			;;
+			is HtmlMode.IN_COLUMN_GROUP
+				return (ModeInColumnGroup);
+			;;
+			is HtmlMode.IN_TEMPLATE
+				return (ModeInTemplate);
+			;;
+			is HtmlMode.AFTER_BODY
+				return (ModeAfterBody);
+			;;
+			is HtmlMode.IN_FRAMESET
+				return (ModeInFrameset);
+			;;
+			is HtmlMode.AFTER_FRAMESET
+				return (ModeAfterFrameset);
+			;;
+			is HtmlMode.AFTER_AFTER_BODY
+				return (ModeAfterAfterBody);
+			;;
+			else
+				return (ModeAfterAfterFrameset);
+			;;
+		;;
+	[end: false]
+
+	# how many of the characters at the start of the token are whitespace
+	[LeadingSpaces]
+		ptr<u8> p: tok.chars;
+		u32 total: tok.chars_len;
+		u32 i: 0;
+		while i < total
+			u32 c: p:i;
+			if c is 32 or c is 10 or c is 9 or c is 12 or c is 13
+				i++;
+				continue;
+			;;
+			break;
+		;;
+	[end: i]
+
+	# drop the whitespace at the start of the token; true if nothing's left
+	[DropSpaces]
+		if tok.kind is not HtmlT.CHARS return false;
+		u32 n: (LeadingSpaces);
+		tok.chars is tok.chars + n;
+		tok.chars_len is tok.chars_len - n;
+	[end: tok.chars_len is 0]
+
+	# insert the whitespace at the start of the token; true if nothing's left
+	[InsertSpaces]
+		if tok.kind is not HtmlT.CHARS return false;
+		u32 n: (LeadingSpaces);
+		call InsertChars: tok.chars n;
+		tok.chars is tok.chars + n;
+		tok.chars_len is tok.chars_len - n;
+	[end: tok.chars_len is 0]
+
+	# only the whitespace in the token goes in: where the rest is ignored
+	[InsertOnlySpaces: bln by_body_rules: false;]
+		if tok.kind is not HtmlT.CHARS return;
+		ptr<u8> p: tok.chars;
+		u32 total: tok.chars_len;
+		u32 i: 0;
+		while i < total
+			u32 start: i;
+			while i < total and (WlText.IsSpace: p:i)
+				i++;
+			;;
+			if i > start
+				if by_body_rules
+					call Reconstruct;
+				;;
+				call InsertChars: p + start i - start;
+			;;
+			while i < total and (WlText.IsSpace: p:i) is false
+				i++;
+			;;
+		;;
+	[end]
+
+	# ---- the insertion modes. Each says whether the token should be processed again.
+
+	[ModeInitial]
+		u32 k: tok.kind;
+		if (DropSpaces) return false;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: doc.root;
+			return false;
+		;;
+		if k is HtmlT.DOCTYPE
+			call Doctype;
+			mode is HtmlMode.BEFORE_HTML;
+			return false;
+		;;
+		call SetQuirks: true false;
+		mode is HtmlMode.BEFORE_HTML;
+	[end: true]
+
+	[SetQuirks: bln full: false; bln limited: false;]
+		quirks is full;
+		if context is 0
+			doc.quirks is full;
+			doc.limited_quirks is limited;
+		;;
+	[end]
+
+	[Doctype]
+		ptr<WlAtom> atom: HtmlTags.A_EMPTY;
+		if tok.dt_has_name
+			atom is (WlAtoms.Get: tok.dt_name.data tok.dt_name.len);
+		;;
+		ptr<DomNode> n: (Dom.CreateDoctype: doc atom tok.dt_public.data tok.dt_public.len tok.dt_system.data tok.dt_system.len);
+		bln free_to_add: true;
+		ptr<DomNode> c: doc.root.first_child;
+		while c is not 0
+			if c.type is DomType.DOCTYPE or c.type is DomType.ELEMENT
+				free_to_add is false;
+				break;
+			;;
+			c is c.next;
+		;;
+		if free_to_add
+			call Link: doc.root 0 n;
+		;;
+		call HtmlQuirks.Check: self;
+	[end]
+
+	[ModeBeforeHtml]
+		u32 k: tok.kind;
+		if k is HtmlT.DOCTYPE return false;
+		if (DropSpaces) return false;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: doc.root;
+			return false;
+		;;
+		if k is HtmlT.START and tok.code is HtmlTag.HTML
+			ptr<DomNode> root: (MakeFromToken: DomNs.HTML tok.name);
+			call LinkRoot: root;
+			call Push: root tok.name;
+			mode is HtmlMode.BEFORE_HEAD;
+			return false;
+		;;
+		if k is HtmlT.END_TAG
+			u32 c: tok.code;
+			if c is not HtmlTag.HEAD and c is not HtmlTag.BODY and c is not HtmlTag.HTML and c is not HtmlTag.BR return false;
+		;;
+		ptr<WlAtom> atom: HtmlTags.atoms:(HtmlTag.HTML);
+		ptr<DomNode> made: (MakeElement: atom DomNs.HTML 0 0 0);
+		call LinkRoot: made;
+		call Push: made atom;
+		mode is HtmlMode.BEFORE_HEAD;
+	[end: true]
+
+	[LinkRoot: ptr<DomNode> root: 0;]
+		if (DocumentHasElement: doc.root) return;
+		call Link: doc.root 0 root;
+	[end]
+
+	[ModeBeforeHead]
+		u32 k: tok.kind;
+		if (DropSpaces) return false;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: 0;
+			return false;
+		;;
+		if k is HtmlT.DOCTYPE return false;
+		if k is HtmlT.START
+			if tok.code is HtmlTag.HTML return (ModeInBody);
+			if tok.code is HtmlTag.HEAD
+				head_ptr is (InsertHtml);
+				mode is HtmlMode.IN_HEAD;
+				return false;
+			;;
+		;;
+		elif k is HtmlT.END_TAG
+			u32 c: tok.code;
+			if c is not HtmlTag.HEAD and c is not HtmlTag.BODY and c is not HtmlTag.HTML and c is not HtmlTag.BR return false;
+		;;
+		head_ptr is (InsertNamed: HtmlTag.HEAD);
+		mode is HtmlMode.IN_HEAD;
+	[end: true]
+
+	# a void element from the token: it goes in and straight off the stack
+	[InsertVoid]
+		call InsertHtml;
+		call Pop;
+	[end]
+
+	[GenericText: u32 tokenizer_state: 0;]
+		call InsertHtml;
+		call tok.SetTextState: tokenizer_state;
+		original_mode is mode;
+		mode is HtmlMode.TEXT;
+	[end]
+
+	[StartScript]
+		ptr<DomNode> n: (MakeFromToken: DomNs.HTML tok.name);
+		if context is not 0
+			n.flags is n.flags | HtmlConst.F_ALREADY_STARTED;
+		;;
+		call InsertNew: n;
+		call Push: n tok.name;
+		call tok.SetTextState: HtmlS.SCRIPT_DATA;
+		original_mode is mode;
+		mode is HtmlMode.TEXT;
+	[end]
+
+	[StartTemplate]
+		call AddMarker;
+		frameset_ok is false;
+		mode is HtmlMode.IN_TEMPLATE;
+		call PushTemplateMode: HtmlMode.IN_TEMPLATE;
+		ptr<DomNode> n: (MakeFromToken: DomNs.HTML tok.name);
+		call FindPlace;
+		ptr<DomNode> parent: place_parent;
+		ptr<DomNode> ref: place_ref;
+		call Push: n tok.name;
+		place_parent is parent;
+		place_ref is ref;
+		call InsertAtPlace: n;
+	[end]
+
+	[EndTemplate]
+		if heads:(HtmlTag.TEMPLATE) is 0 return;
+		call ImpliedEndTagsThorough;
+		call PopUntil: HtmlTag.TEMPLATE;
+		call ClearToMarker;
+		call PopTemplateMode;
+		call ResetMode;
+	[end]
+
+	[PushTemplateMode: u32 m: 0;]
+		if tmodes_n is tmodes_cap
+			u32 room: tmodes_cap * 2;
+			if room < 16
+				room is 16;
+			;;
+			ptr<u8> grown: new u8[room];
+			if grown is 0
+				throw 'out of memory for template modes';
+			;;
+			if tmodes_n > 0
+				call Mem.Copy: grown tmodes tmodes_n;
+			;;
+			if tmodes is not 0
+				free tmodes;
+			;;
+			tmodes is grown;
+			tmodes_cap is room;
+		;;
+		tmodes:tmodes_n is m as u8;
+		tmodes_n++;
+	[end]
+
+	[PopTemplateMode]
+		if tmodes_n > 0
+			tmodes_n--;
+		;;
+	[end]
+
+	[SwitchTemplateMode: u32 m: 0;]
+		call PopTemplateMode;
+		call PushTemplateMode: m;
+		mode is m;
+	[end]
+
+	# a start tag "in head" handles; false if it isn't one
+	[InHeadStart]
+		u32 c: tok.code;
+		when c
+			is HtmlTag.BASE HtmlTag.BASEFONT HtmlTag.BGSOUND HtmlTag.LINK HtmlTag.META
+				call InsertVoid;
+			;;
+			is HtmlTag.TITLE
+				call GenericText: HtmlS.RCDATA;
+			;;
+			is HtmlTag.NOFRAMES HtmlTag.STYLE
+				call GenericText: HtmlS.RAWTEXT;
+			;;
+			is HtmlTag.NOSCRIPT
+				if scripting
+					call GenericText: HtmlS.RAWTEXT;
+				;;
+				else
+					call InsertHtml;
+					mode is HtmlMode.IN_HEAD_NOSCRIPT;
+				;;
+			;;
+			is HtmlTag.SCRIPT
+				call StartScript;
+			;;
+			is HtmlTag.TEMPLATE
+				call StartTemplate;
+			;;
+			else
+				return false;
+			;;
+		;;
+	[end: true]
+
+	[ModeInHead]
+		u32 k: tok.kind;
+		if (InsertSpaces) return false;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: 0;
+			return false;
+		;;
+		if k is HtmlT.DOCTYPE return false;
+		u32 c: tok.code;
+		if k is HtmlT.START
+			if c is HtmlTag.HTML return (ModeInBody);
+			if c is HtmlTag.HEAD return false;
+			if (InHeadStart) return false;
+		;;
+		elif k is HtmlT.END_TAG
+			if c is HtmlTag.HEAD
+				call Pop;
+				mode is HtmlMode.AFTER_HEAD;
+				return false;
+			;;
+			if c is HtmlTag.TEMPLATE
+				call EndTemplate;
+				return false;
+			;;
+			if c is not HtmlTag.BODY and c is not HtmlTag.HTML and c is not HtmlTag.BR return false;
+		;;
+		call Pop;
+		mode is HtmlMode.AFTER_HEAD;
+	[end: true]
+
+	[ModeInHeadNoscript]
+		u32 k: tok.kind;
+		if k is HtmlT.DOCTYPE return false;
+		u32 c: tok.code;
+		if k is HtmlT.START
+			if c is HtmlTag.HTML return (ModeInBody);
+			if c is HtmlTag.HEAD or c is HtmlTag.NOSCRIPT return false;
+			if c is HtmlTag.BASEFONT or c is HtmlTag.BGSOUND or c is HtmlTag.LINK or c is HtmlTag.META or c is HtmlTag.NOFRAMES or c is HtmlTag.STYLE
+				call InHeadStart;
+				return false;
+			;;
+		;;
+		elif k is HtmlT.END_TAG
+			if c is HtmlTag.NOSCRIPT
+				call Pop;
+				mode is HtmlMode.IN_HEAD;
+				return false;
+			;;
+			if c is not HtmlTag.BR return false;
+		;;
+		elif k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: 0;
+			return false;
+		;;
+		elif k is HtmlT.CHARS
+			if (InsertSpaces) return false;
+		;;
+		call Pop;
+		mode is HtmlMode.IN_HEAD;
+	[end: true]
+
+	[ModeAfterHead]
+		u32 k: tok.kind;
+		if (InsertSpaces) return false;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: 0;
+			return false;
+		;;
+		if k is HtmlT.DOCTYPE return false;
+		u32 c: tok.code;
+		if k is HtmlT.START
+			when c
+				is HtmlTag.HTML
+					return (ModeInBody);
+				;;
+				is HtmlTag.BODY
+					call InsertHtml;
+					frameset_ok is false;
+					mode is HtmlMode.IN_BODY;
+					return false;
+				;;
+				is HtmlTag.FRAMESET
+					call InsertHtml;
+					mode is HtmlMode.IN_FRAMESET;
+					return false;
+				;;
+				is HtmlTag.BASE HtmlTag.BASEFONT HtmlTag.BGSOUND HtmlTag.LINK HtmlTag.META HtmlTag.NOFRAMES HtmlTag.SCRIPT HtmlTag.STYLE HtmlTag.TEMPLATE HtmlTag.TITLE
+					# the head comes back to take it, then goes again
+					ptr<DomNode> h: head_ptr;
+					call Push: h HtmlTags.atoms:(HtmlTag.HEAD);
+					call InHeadStart;
+					call RemoveNode: h;
+					return false;
+				;;
+				is HtmlTag.HEAD
+					return false;
+				;;
+			;;
+		;;
+		elif k is HtmlT.END_TAG
+			if c is HtmlTag.TEMPLATE
+				call EndTemplate;
+				return false;
+			;;
+			if c is not HtmlTag.BODY and c is not HtmlTag.HTML and c is not HtmlTag.BR return false;
+		;;
+		call InsertNamed: HtmlTag.BODY;
+		frameset_ok is true;
+		mode is HtmlMode.IN_BODY;
+	[end: true]
+
+	# ---- in body
+
+	[ModeInBody]
+		u32 k: tok.kind;
+		if k is HtmlT.CHARS
+			call BodyChars;
+			return false;
+		;;
+		if k is HtmlT.START return (StartInBody);
+		if k is HtmlT.END_TAG return (EndInBody);
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: 0;
+			return false;
+		;;
+		if k is HtmlT.EOF
+			if tmodes_n > 0 return (ModeInTemplate);
+		;;
+	[end: false]
+
+	[BodyChars]
+		ptr<u8> p: tok.chars;
+		u32 total: tok.chars_len;
+		if fmt_n > 0
+			call Reconstruct;
+		;;
+		call InsertChars: p total;
+		if frameset_ok
+			while u32 i: 0; i < total; i++;
+				if (WlText.IsSpace: p:i) is false
+					frameset_ok is false;
+					break;
+				;;
+			;;
+		;;
+	[end]
+
+	# attributes the element doesn't have yet, from the token; by a hash table when there are many
+	# on both sides, since a document can write as many as it likes on each of many <html> tags
+	[MergeAttrs: ptr<DomNode> node: 0;]
+		u32 n: tok.attr_count;
+		if n is 0 return;
+		ptr<DomAttr> last: 0;
+		u32 have: 0;
+		ptr<DomAttr> a: node.attrs;
+		while a is not 0
+			last is a;
+			have++;
+			a is a.next;
+		;;
+		ptr<ptr<DomAttr>> table: 0;
+		u32 mask: 0;
+		if have > 16 and n > 16
+			u32 room: 64;
+			while room < have * 2
+				room is room * 2;
+			;;
+			table is new ptr<DomAttr>[room];
+			if table is 0
+				throw 'out of memory for attributes';
+			;;
+			mask is room - 1;
+			a is node.attrs;
+			while a is not 0
+				if a.prefix is 0
+					u32 slot: a.name.hash & mask;
+					while table:slot is not 0
+						slot is (slot + 1) & mask;
+					;;
+					table:slot is a;
+				;;
+				a is a.next;
+			;;
+		;;
+		while u32 i: 0; i < n; i++;
+			ptr<HtmlTokAttr> t: tok.attrs + i * sizeof HtmlTokAttr;
+			bln there: false;
+			if table is not 0
+				u32 look: t.name.hash & mask;
+				while table:look is not 0
+					if table:look.name is t.name
+						there is true;
+						break;
+					;;
+					look is (look + 1) & mask;
+				;;
+			;;
+			else
+				there is (HasPlainAttr: node t.name);
+			;;
+			if there is false
+				last is (AddAttr: node last t.name 0 tok.vals.data + t.off t.len);
+				node.flags is node.flags | Dom.DIRTY_STYLE;
+				call Dom.Changed: node DomChange.ATTR;
+			;;
+		;;
+		if table is not 0
+			free table;
+		;;
+	[end]
+
+	[HasPlainAttr: ptr<DomNode> node: 0; ptr<WlAtom> attr_name: 0;]
+		ptr<DomAttr> a: node.attrs;
+		while a is not 0
+			if a.name is attr_name and a.prefix is 0 return true;
+			a is a.next;
+		;;
+	[end: false]
+
+	[StartInBody]
+		u32 c: tok.code;
+		if c is 0 or (fl:c & HtmlTag.F_BODY_START) is 0
+			# any other start tag: most of them
+			if fmt_n > 0
+				call Reconstruct;
+			;;
+			call InsertHtml;
+			return false;
+		;;
+		if c is HtmlTag.DIV or c is HtmlTag.P or c is HtmlTag.UL
+			call CloseP;
+			call InsertHtml;
+			return false;
+		;;
+		if c is HtmlTag.A
+			call StartAnchor;
+			return false;
+		;;
+		if c is HtmlTag.LI
+			call StartListItem;
+			return false;
+		;;
+		if (fl:c & HtmlTag.F_FORMAT) is not 0
+			if c is HtmlTag.NOBR
+				call Reconstruct;
+				if (HasInScope: HtmlTag.NOBR)
+					call Adoption;
+					call Reconstruct;
+				;;
+			;;
+			else
+				call Reconstruct;
+			;;
+			ptr<DomNode> f: (InsertHtml);
+			call PushFormatting: f tok.name c;
+			return false;
+		;;
+		when c
+			is HtmlTag.HTML
+				if heads:(HtmlTag.TEMPLATE) is 0
+					call MergeAttrs: open:0.node;
+				;;
+			;;
+			is HtmlTag.BASE HtmlTag.BASEFONT HtmlTag.BGSOUND HtmlTag.LINK HtmlTag.META HtmlTag.NOFRAMES HtmlTag.SCRIPT HtmlTag.STYLE HtmlTag.TEMPLATE HtmlTag.TITLE
+				call InHeadStart;
+			;;
+			is HtmlTag.BODY
+				if open_n > 1 and open:1.code is HtmlTag.BODY and heads:(HtmlTag.TEMPLATE) is 0
+					frameset_ok is false;
+					call MergeAttrs: open:1.node;
+				;;
+			;;
+			is HtmlTag.FRAMESET
+				call StartFrameset;
+			;;
+			is HtmlTag.ADDRESS HtmlTag.ARTICLE HtmlTag.ASIDE HtmlTag.BLOCKQUOTE HtmlTag.CENTER HtmlTag.DETAILS HtmlTag.DIALOG HtmlTag.DIR HtmlTag.DL HtmlTag.FIELDSET HtmlTag.FIGCAPTION HtmlTag.FIGURE HtmlTag.FOOTER HtmlTag.HEADER HtmlTag.HGROUP HtmlTag.MAIN HtmlTag.MENU HtmlTag.NAV HtmlTag.OL HtmlTag.SEARCH HtmlTag.SECTION HtmlTag.SUMMARY
+				call CloseP;
+				call InsertHtml;
+			;;
+			is HtmlTag.H1 HtmlTag.H2 HtmlTag.H3 HtmlTag.H4 HtmlTag.H5 HtmlTag.H6
+				call CloseP;
+				if (IsHeading: (TopCode))
+					call Pop;
+				;;
+				call InsertHtml;
+			;;
+			is HtmlTag.PRE HtmlTag.LISTING
+				call CloseP;
+				call InsertHtml;
+				skip_lf is true;
+				frameset_ok is false;
+			;;
+			is HtmlTag.FORM
+				if form_ptr is 0 or (InTemplateContents)
+					call CloseP;
+					ptr<DomNode> form_el: (InsertHtml);
+					if (InTemplateContents) is false
+						form_ptr is form_el;
+					;;
+				;;
+			;;
+			is HtmlTag.DD HtmlTag.DT
+				call StartDefinition;
+			;;
+			is HtmlTag.PLAINTEXT
+				call CloseP;
+				call InsertHtml;
+				tok.state is HtmlS.PLAINTEXT;
+			;;
+			is HtmlTag.BUTTON
+				if (HasInScope: HtmlTag.BUTTON)
+					call ImpliedEndTags: 0;
+					call PopUntil: HtmlTag.BUTTON;
+				;;
+				call Reconstruct;
+				call InsertHtml;
+				frameset_ok is false;
+			;;
+			is HtmlTag.APPLET HtmlTag.MARQUEE HtmlTag.OBJECT
+				call Reconstruct;
+				call InsertHtml;
+				call AddMarker;
+				frameset_ok is false;
+			;;
+			is HtmlTag.TABLE
+				if quirks is false
+					call CloseP;
+				;;
+				call InsertHtml;
+				frameset_ok is false;
+				mode is HtmlMode.IN_TABLE;
+			;;
+			is HtmlTag.AREA HtmlTag.BR HtmlTag.EMBED HtmlTag.IMG HtmlTag.KEYGEN HtmlTag.WBR
+				call Reconstruct;
+				call InsertVoid;
+				frameset_ok is false;
+			;;
+			is HtmlTag.INPUT
+				if ctx_code is HtmlTag.SELECT
+					return false;
+				;;
+				if (HasInScope: HtmlTag.SELECT)
+					call PopUntil: HtmlTag.SELECT;
+				;;
+				call Reconstruct;
+				call InsertVoid;
+				if (InputIsHidden) is false
+					frameset_ok is false;
+				;;
+			;;
+			is HtmlTag.PARAM HtmlTag.SOURCE HtmlTag.TRACK
+				call InsertVoid;
+			;;
+			is HtmlTag.HR
+				call CloseP;
+				if (HasInScope: HtmlTag.SELECT)
+					call ImpliedEndTags: 0;
+				;;
+				call InsertVoid;
+				frameset_ok is false;
+			;;
+			is HtmlTag.IMAGE
+				# Don't ask.
+				tok.name is HtmlTags.atoms:(HtmlTag.IMG);
+				tok.code is HtmlTag.IMG;
+				return true;
+			;;
+			is HtmlTag.TEXTAREA
+				call InsertHtml;
+				skip_lf is true;
+				call tok.SetTextState: HtmlS.RCDATA;
+				original_mode is mode;
+				frameset_ok is false;
+				mode is HtmlMode.TEXT;
+			;;
+			is HtmlTag.XMP
+				call CloseP;
+				call Reconstruct;
+				frameset_ok is false;
+				call GenericText: HtmlS.RAWTEXT;
+			;;
+			is HtmlTag.IFRAME
+				frameset_ok is false;
+				call GenericText: HtmlS.RAWTEXT;
+			;;
+			is HtmlTag.NOEMBED
+				call GenericText: HtmlS.RAWTEXT;
+			;;
+			is HtmlTag.NOSCRIPT
+				if scripting
+					call GenericText: HtmlS.RAWTEXT;
+				;;
+				else
+					call Reconstruct;
+					call InsertHtml;
+				;;
+			;;
+			is HtmlTag.SELECT
+				if ctx_code is HtmlTag.SELECT
+					return false;
+				;;
+				if (HasInScope: HtmlTag.SELECT)
+					call PopUntil: HtmlTag.SELECT;
+				;;
+				else
+					call Reconstruct;
+					call InsertHtml;
+					frameset_ok is false;
+				;;
+			;;
+			is HtmlTag.OPTION
+				if (HasInScope: HtmlTag.SELECT)
+					call ImpliedEndTags: HtmlTag.OPTGROUP;
+				;;
+				elif (TopCode) is HtmlTag.OPTION
+					call Pop;
+				;;
+				call Reconstruct;
+				call InsertHtml;
+			;;
+			is HtmlTag.OPTGROUP
+				if (HasInScope: HtmlTag.SELECT)
+					call ImpliedEndTags: 0;
+				;;
+				elif (TopCode) is HtmlTag.OPTION
+					call Pop;
+				;;
+				call Reconstruct;
+				call InsertHtml;
+			;;
+			is HtmlTag.RB HtmlTag.RTC
+				if (HasInScope: HtmlTag.RUBY)
+					call ImpliedEndTags: 0;
+				;;
+				call InsertHtml;
+			;;
+			is HtmlTag.RP HtmlTag.RT
+				if (HasInScope: HtmlTag.RUBY)
+					call ImpliedEndTags: HtmlTag.RTC;
+				;;
+				call InsertHtml;
+			;;
+			is HtmlTag.MATH
+				call Reconstruct;
+				call InsertForeignFromToken: DomNs.MATHML tok.name;
+				if tok.self_closing
+					call Pop;
+				;;
+			;;
+			is HtmlTag.SVG
+				call Reconstruct;
+				call InsertForeignFromToken: DomNs.SVG tok.name;
+				if tok.self_closing
+					call Pop;
+				;;
+			;;
+			is HtmlTag.CAPTION HtmlTag.COL HtmlTag.COLGROUP HtmlTag.FRAME HtmlTag.HEAD HtmlTag.TBODY HtmlTag.TD HtmlTag.TFOOT HtmlTag.TH HtmlTag.THEAD HtmlTag.TR
+				return false;
+			;;
+			else
+				call Reconstruct;
+				call InsertHtml;
+			;;
+		;;
+	[end: false]
+
+	[InputIsHidden]
+		while u32 i: 0; i < tok.attr_count; i++;
+			ptr<HtmlTokAttr> t: tok.attrs + i * sizeof HtmlTokAttr;
+			if t.name is HtmlTags.A_TYPE
+				return (WlText.EqNoCaseZ: tok.vals.data + t.off t.len 'hidden');
+			;;
+		;;
+	[end: false]
+
+	[StartAnchor]
+		int found: (FmtFindCode: HtmlTag.A);
+		if found >= 0
+			ptr<DomNode> old: fmt:found.node;
+			call Adoption;
+			# the adoption agency may not have taken it away, if it wasn't in table scope
+			if (old.flags & HtmlConst.F_IN_FORMATTING) is not 0
+				call FmtRemoveAt: (FmtIndexOf: old);
+			;;
+			if (old.flags & HtmlConst.F_IN_STACK) is not 0
+				call RemoveNode: old;
+			;;
+		;;
+		call Reconstruct;
+		ptr<DomNode> f: (InsertHtml);
+		call PushFormatting: f tok.name HtmlTag.A;
+	[end]
+
+	[StartListItem]
+		frameset_ok is false;
+		u32 h: heads:(HtmlTag.LI);
+		if h is not 0 and h - 1 >= open:(open_n - 1).stop_li
+			call ImpliedEndTags: HtmlTag.LI;
+			call PopUntil: HtmlTag.LI;
+		;;
+		call CloseP;
+		call InsertHtml;
+	[end]
+
+	[StartDefinition]
+		frameset_ok is false;
+		u32 dd: heads:(HtmlTag.DD);
+		u32 dt: heads:(HtmlTag.DT);
+		u32 stop: open:(open_n - 1).stop_li;
+		if dd > dt
+			if dd - 1 >= stop
+				call ImpliedEndTags: HtmlTag.DD;
+				call PopUntil: HtmlTag.DD;
+			;;
+		;;
+		elif dt is not 0
+			if dt - 1 >= stop
+				call ImpliedEndTags: HtmlTag.DT;
+				call PopUntil: HtmlTag.DT;
+			;;
+		;;
+		call CloseP;
+		call InsertHtml;
+	[end]
+
+	[StartFrameset]
+		if open_n < 2 or open:1.code is not HtmlTag.BODY return;
+		if frameset_ok is false return;
+		ptr<DomNode> body: open:1.node;
+		if body.parent is not 0
+			call Dom.Remove: body;
+		;;
+		while open_n > 1
+			call Pop;
+		;;
+		call InsertHtml;
+		mode is HtmlMode.IN_FRAMESET;
+	[end]
+
+	[EndInBody]
+		u32 c: tok.code;
+		if c is 0 or (fl:c & HtmlTag.F_BODY_END) is 0
+			call AnyOtherEnd;
+			return false;
+		;;
+		if (fl:c & HtmlTag.F_FORMAT) is not 0
+			call Adoption;
+			return false;
+		;;
+		when c
+			is HtmlTag.TEMPLATE
+				call EndTemplate;
+			;;
+			is HtmlTag.BODY
+				if (HasInScope: HtmlTag.BODY)
+					mode is HtmlMode.AFTER_BODY;
+				;;
+			;;
+			is HtmlTag.HTML
+				if (HasInScope: HtmlTag.BODY)
+					mode is HtmlMode.AFTER_BODY;
+					return true;
+				;;
+			;;
+			is HtmlTag.ADDRESS HtmlTag.ARTICLE HtmlTag.ASIDE HtmlTag.BLOCKQUOTE HtmlTag.BUTTON HtmlTag.CENTER HtmlTag.DETAILS HtmlTag.DIALOG HtmlTag.DIR HtmlTag.DIV HtmlTag.DL HtmlTag.FIELDSET HtmlTag.FIGCAPTION HtmlTag.FIGURE HtmlTag.FOOTER HtmlTag.HEADER HtmlTag.HGROUP HtmlTag.LISTING HtmlTag.MAIN HtmlTag.MENU HtmlTag.NAV HtmlTag.OL HtmlTag.PRE HtmlTag.SEARCH HtmlTag.SECTION HtmlTag.SELECT HtmlTag.SUMMARY HtmlTag.UL
+				if (HasInScope: c)
+					call ImpliedEndTags: 0;
+					call PopUntil: c;
+				;;
+			;;
+			is HtmlTag.FORM
+				call EndForm;
+			;;
+			is HtmlTag.P
+				if (HasInButtonScope: HtmlTag.P) is false
+					call InsertNamed: HtmlTag.P;
+				;;
+				call ClosePElement;
+			;;
+			is HtmlTag.LI
+				if (HasInListScope: HtmlTag.LI)
+					call ImpliedEndTags: HtmlTag.LI;
+					call PopUntil: HtmlTag.LI;
+				;;
+			;;
+			is HtmlTag.DD HtmlTag.DT
+				if (HasInScope: c)
+					call ImpliedEndTags: c;
+					call PopUntil: c;
+				;;
+			;;
+			is HtmlTag.H1 HtmlTag.H2 HtmlTag.H3 HtmlTag.H4 HtmlTag.H5 HtmlTag.H6
+				if (HasHeadingInScope)
+					call ImpliedEndTags: 0;
+					call PopUntilHeading;
+				;;
+			;;
+			is HtmlTag.APPLET HtmlTag.MARQUEE HtmlTag.OBJECT
+				if (HasInScope: c)
+					call ImpliedEndTags: 0;
+					call PopUntil: c;
+					call ClearToMarker;
+				;;
+			;;
+			is HtmlTag.BR
+				# as if it were a start tag with no attributes
+				call Reconstruct;
+				call InsertNamed: HtmlTag.BR;
+				call Pop;
+				frameset_ok is false;
+			;;
+			else
+				call AnyOtherEnd;
+			;;
+		;;
+	[end: false]
+
+	[EndForm]
+		if (InTemplateContents) is false
+			ptr<DomNode> node: form_ptr;
+			form_ptr is 0;
+			if node is 0 return;
+			if (node.flags & HtmlConst.F_IN_STACK) is 0 return;
+			u32 at_index: (IndexOf: node);
+			if at_index < open:(open_n - 1).stop_scope return;
+			call ImpliedEndTags: 0;
+			call RemoveNode: node;
+			return;
+		;;
+		if (HasInScope: HtmlTag.FORM) is false return;
+		call ImpliedEndTags: 0;
+		call PopUntil: HtmlTag.FORM;
+	[end]
+
+	# the entry for any other end tag: the nearest element of this name, if nothing special is
+	# in the way. It's the name's own list, so an end tag that matches nothing costs nothing.
+	[AnyOtherEnd]
+		ptr<WlAtom> wanted: tok.name;
+		u32 limit: open:(open_n - 1).stop_special;
+		u32 h: heads:(Bucket: tok.code wanted);
+		while h is not 0 and h - 1 >= limit
+			ptr<HtmlOpen> e: open + (h - 1) * sizeof HtmlOpen;
+			if e.name is wanted and e.code < HtmlTag.ATOM_COUNT
+				call ImpliedEndTags: tok.code;
+				while open_n >= h
+					call Pop;
+				;;
+				return;
+			;;
+			h is e.prev_same;
+		;;
+	[end]
+
+	# ---- the adoption agency algorithm
+
+	[Adoption]
+		u32 subject: tok.code;
+		ptr<HtmlOpen> top: open + (open_n - 1) * sizeof HtmlOpen;
+		if top.code is subject and (top.node.flags & HtmlConst.F_IN_FORMATTING) is 0
+			call Pop;
+			return;
+		;;
+		u32 outer: 0;
+		while outer < 8
+			outer++;
+			int found: (FmtFindCode: subject);
+			if found < 0
+				call AnyOtherEnd;
+				return;
+			;;
+			ptr<DomNode> formatting: fmt:found.node;
+			if (formatting.flags & HtmlConst.F_IN_STACK) is 0
+				call FmtRemoveAt: found as u32;
+				return;
+			;;
+			u32 f_index: (IndexOf: formatting);
+			if f_index < open:(open_n - 1).stop_scope return;
+			# the furthest block: the nearest special element above it
+			u32 fb_index: open_n;
+			if open:(open_n - 1).stop_special > f_index
+				u32 scan: f_index + 1;
+				while scan < open_n
+					if (fl:(open:scan.code) & HtmlTag.F_SPECIAL) is not 0
+						fb_index is scan;
+						break;
+					;;
+					scan++;
+				;;
+			;;
+			if fb_index >= open_n
+				while open_n > f_index
+					call Pop;
+				;;
+				call FmtRemoveAt: found as u32;
+				return;
+			;;
+			call AdoptOnce: formatting f_index fb_index found as u32;
+		;;
+	[end]
+
+	[AdoptOnce: ptr<DomNode> formatting: 0; u32 f_index: 0; u32 fb_index: 0; u32 fmt_index: 0;]
+		ptr<DomNode> furthest: open:fb_index.node;
+		ptr<DomNode> common: open:(f_index - 1).node;
+		u32 bookmark: fmt_index;
+		ptr<DomNode> last_node: furthest;
+		call FindPlace: common;
+		if place_ref is not 0 and place_ref.parent is not place_parent
+			last_node is 0;
+		;;
+		bln moved_mark: false;
+		u32 inner: 0;
+		u32 i: fb_index;
+		u32 dead: 0;
+		while true
+			inner++;
+			i--;
+			if i is f_index break;
+			ptr<DomNode> node: open:i.node;
+			if inner > 3 and (node.flags & HtmlConst.F_IN_FORMATTING) is not 0
+				u32 gone: (FmtIndexOf: node);
+				call FmtRemoveAt: gone;
+				if gone < bookmark
+					bookmark--;
+				;;
+				if gone < fmt_index
+					fmt_index--;
+				;;
+			;;
+			if (node.flags & HtmlConst.F_IN_FORMATTING) is 0
+				# off the stack; the hole is closed below, all at once
+				node.flags is node.flags & ~HtmlConst.F_IN_STACK;
+				open:i.node is 0;
+				dead++;
+				continue;
+			;;
+			u32 at_list: (FmtIndexOf: node);
+			ptr<HtmlFmt> entry: fmt + at_list * sizeof HtmlFmt;
+			ptr<DomNode> clone: (MakeElementSaved: entry.name entry.saved);
+			clone.flags is clone.flags | HtmlConst.F_IN_FORMATTING | HtmlConst.F_IN_STACK;
+			node.flags is node.flags & ~(HtmlConst.F_IN_FORMATTING | HtmlConst.F_IN_STACK);
+			entry.node is clone;
+			open:i.node is clone;
+			if moved_mark is false
+				bookmark is at_list + 1;
+				moved_mark is true;
+			;;
+			if last_node is not 0
+				call Dom.Remove: last_node;
+				call Link: clone 0 last_node;
+			;;
+			last_node is clone;
+		;;
+		# last node goes where the common ancestor says
+		call FindPlace: common;
+		ptr<DomNode> target: place_parent;
+		ptr<DomNode> ref: place_ref;
+		bln ref_good: ref is 0 or ref.parent is target;
+		if last_node is not 0 and last_node.parent is not 0 and ref_good
+			call Dom.Remove: last_node;
+		;;
+		if last_node is not 0 and last_node.parent is 0 and ref_good
+			if (DocumentHasElement: target) is false and (CycleFree: last_node target)
+				call Link: target ref last_node;
+			;;
+		;;
+		# a new element for the formatting element's token takes the furthest block's children
+		ptr<HtmlFmt> old_entry: fmt + fmt_index * sizeof HtmlFmt;
+		ptr<WlAtom> low: old_entry.name;
+		u32 fcode: old_entry.code;
+		ptr<HtmlSaved> saved: old_entry.saved;
+		ptr<DomNode> made: (MakeElementSaved: low saved);
+		call MoveChildren: furthest made;
+		call Link: furthest 0 made;
+		# the list: out at the old place, in at the bookmark
+		if saved is not 0
+			saved.refs++;
+		;;
+		call FmtRemoveAt: fmt_index;
+		if fmt_index < bookmark
+			bookmark--;
+		;;
+		call FmtInsertAt: bookmark;
+		ptr<HtmlFmt> put: fmt + bookmark * sizeof HtmlFmt;
+		put.node is made;
+		put.name is low;
+		put.code is fcode;
+		put.saved is saved;
+		made.flags is made.flags | HtmlConst.F_IN_FORMATTING | HtmlConst.F_IN_STACK;
+		# the stack: closing the holes, without the formatting element, and with the new element
+		# just above the furthest block. Only what's from the formatting element up moves.
+		call Unchain: f_index;
+		formatting.flags is formatting.flags & ~HtmlConst.F_IN_STACK;
+		u32 write_at: f_index;
+		u32 r: f_index + 1;
+		while r <= fb_index
+			if open:r.node is not 0
+				if write_at is not r
+					call Mem.Copy: (open + write_at * sizeof HtmlOpen) as ptr<u8> (open + r * sizeof HtmlOpen) as ptr<u8> sizeof HtmlOpen;
+				;;
+				write_at++;
+			;;
+			r++;
+		;;
+		# the slot this leaves is the furthest block's old one, or further down: never above the
+		# entries over the furthest block, which come down by as many as left
+		ptr<HtmlOpen> slot: open + write_at * sizeof HtmlOpen;
+		slot.node is made;
+		slot.name is low;
+		slot.code is fcode;
+		slot.bucket is fcode;
+		u32 over_it: open_n - fb_index - 1;
+		if dead > 0 and over_it > 0
+			call Mem.Move: (open + (write_at + 1) * sizeof HtmlOpen) as ptr<u8> (open + (fb_index + 1) * sizeof HtmlOpen) as ptr<u8> over_it * sizeof HtmlOpen;
+		;;
+		open_n is open_n - dead;
+		call Rechain: f_index;
+	[end]
+
+	# Moving node into target must not make a cycle. Only a script can have arranged that (by
+	# moving elements on the stack), and looking means walking to the root, so without one this
+	# doesn't look. Through a template's contents to the template too.
+	[CycleFree: ptr<DomNode> node: 0; ptr<DomNode> target: 0;]
+		if scripts_ran is false return true;
+		ptr<DomNode> n: target;
+		while n is not 0
+			if n is node return false;
+			if n.parent is 0 and n.type is DomType.FRAGMENT
+				n is n.content;
+			;;
+			else
+				n is n.parent;
+			;;
+		;;
+	[end: true]
+
+	[MoveChildren: ptr<DomNode> from: 0; ptr<DomNode> to: 0;]
+		ptr<DomNode> c: from.first_child;
+		if c is 0 return;
+		while c is not 0
+			c.parent is to;
+			c is c.next;
+		;;
+		# to is new: it has no children
+		to.first_child is from.first_child;
+		to.last_child is from.last_child;
+		from.first_child is 0;
+		from.last_child is 0;
+		call Dom.Changed: from DomChange.CHILDREN;
+		call Dom.Changed: to DomChange.CHILDREN;
+	[end]
+
+	# ---- text
+
+	[ModeText]
+		u32 k: tok.kind;
+		if k is HtmlT.CHARS
+			call InsertChars: tok.chars tok.chars_len;
+			return false;
+		;;
+		if k is HtmlT.EOF
+			ptr<DomNode> top: (TopNode);
+			if (TopCode) is HtmlTag.SCRIPT
+				top.flags is top.flags | HtmlConst.F_ALREADY_STARTED;
+			;;
+			call Pop;
+			mode is original_mode;
+			return true;
+		;;
+		if k is HtmlT.END_TAG
+			ptr<DomNode> script: (TopNode);
+			bln is_script: tok.code is HtmlTag.SCRIPT;
+			call Pop;
+			mode is original_mode;
+			if is_script
+				call RunScript: script false;
+			;;
+		;;
+	[end: false]
+
+	# ---- tables
+
+	[TableLike]
+		u32 c: (TopCode);
+	[end: c is HtmlTag.TABLE or c is HtmlTag.TBODY or c is HtmlTag.TEMPLATE or c is HtmlTag.TFOOT or c is HtmlTag.THEAD or c is HtmlTag.TR]
+
+	[ClearToTable]
+		while open_n > 0
+			u32 c: open:(open_n - 1).code;
+			if c is HtmlTag.TABLE or c is HtmlTag.TEMPLATE or c is HtmlTag.HTML return;
+			call Pop;
+		;;
+	[end]
+
+	[ClearToTableBody]
+		while open_n > 0
+			u32 c: open:(open_n - 1).code;
+			if c is HtmlTag.TBODY or c is HtmlTag.TFOOT or c is HtmlTag.THEAD or c is HtmlTag.TEMPLATE or c is HtmlTag.HTML return;
+			call Pop;
+		;;
+	[end]
+
+	[ClearToRow]
+		while open_n > 0
+			u32 c: open:(open_n - 1).code;
+			if c is HtmlTag.TR or c is HtmlTag.TEMPLATE or c is HtmlTag.HTML return;
+			call Pop;
+		;;
+	[end]
+
+	[TableAnythingElse]
+		foster is true;
+		bln again: (ModeInBody);
+		foster is false;
+	[end: again]
+
+	[ModeInTable]
+		u32 k: tok.kind;
+		u32 c: tok.code;
+		if k is HtmlT.CHARS or k is HtmlT.NUL
+			if (TableLike)
+				call pending.Clear;
+				original_mode is mode;
+				mode is HtmlMode.IN_TABLE_TEXT;
+				return true;
+			;;
+			return (TableAnythingElse);
+		;;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: 0;
+			return false;
+		;;
+		if k is HtmlT.DOCTYPE return false;
+		if k is HtmlT.EOF return (ModeInBody);
+		if k is HtmlT.START
+			when c
+				is HtmlTag.CAPTION
+					call ClearToTable;
+					call AddMarker;
+					call InsertHtml;
+					mode is HtmlMode.IN_CAPTION;
+					return false;
+				;;
+				is HtmlTag.COLGROUP
+					call ClearToTable;
+					call InsertHtml;
+					mode is HtmlMode.IN_COLUMN_GROUP;
+					return false;
+				;;
+				is HtmlTag.COL
+					call ClearToTable;
+					call InsertNamed: HtmlTag.COLGROUP;
+					mode is HtmlMode.IN_COLUMN_GROUP;
+					return true;
+				;;
+				is HtmlTag.TBODY HtmlTag.TFOOT HtmlTag.THEAD
+					call ClearToTable;
+					call InsertHtml;
+					mode is HtmlMode.IN_TABLE_BODY;
+					return false;
+				;;
+				is HtmlTag.TD HtmlTag.TH HtmlTag.TR
+					call ClearToTable;
+					call InsertNamed: HtmlTag.TBODY;
+					mode is HtmlMode.IN_TABLE_BODY;
+					return true;
+				;;
+				is HtmlTag.TABLE
+					if (HasInTableScope: HtmlTag.TABLE) is false return false;
+					call PopUntil: HtmlTag.TABLE;
+					call ResetMode;
+					return true;
+				;;
+				is HtmlTag.STYLE HtmlTag.SCRIPT HtmlTag.TEMPLATE
+					call InHeadStart;
+					return false;
+				;;
+				is HtmlTag.INPUT
+					if (InputIsHidden)
+						call InsertVoid;
+						return false;
+					;;
+				;;
+				is HtmlTag.FORM
+					if form_ptr is not 0 and (InTemplateContents) is false return false;
+					ptr<DomNode> form_el: (InsertHtml);
+					if (InTemplateContents) is false
+						form_ptr is form_el;
+					;;
+					call Pop;
+					return false;
+				;;
+			;;
+		;;
+		elif k is HtmlT.END_TAG
+			when c
+				is HtmlTag.TABLE
+					if (HasInTableScope: HtmlTag.TABLE)
+						call PopUntil: HtmlTag.TABLE;
+						call ResetMode;
+					;;
+					return false;
+				;;
+				is HtmlTag.BODY HtmlTag.CAPTION HtmlTag.COL HtmlTag.COLGROUP HtmlTag.HTML HtmlTag.TBODY HtmlTag.TD HtmlTag.TFOOT HtmlTag.TH HtmlTag.THEAD HtmlTag.TR
+					return false;
+				;;
+				is HtmlTag.TEMPLATE
+					call EndTemplate;
+					return false;
+				;;
+			;;
+		;;
+	[end: (TableAnythingElse)]
+
+	[ModeInTableText]
+		u32 k: tok.kind;
+		if k is HtmlT.NUL return false;
+		if k is HtmlT.CHARS
+			call pending.AddN: tok.chars tok.chars_len;
+			return false;
+		;;
+		call FlushTableText;
+		mode is original_mode;
+	[end: true]
+
+	[FlushTableText]
+		u32 total: pending.len;
+		if total is 0 return;
+		ptr<u8> p: pending.data;
+		bln all_space: true;
+		while u32 i: 0; i < total; i++;
+			if (WlText.IsSpace: p:i) is false
+				all_space is false;
+				break;
+			;;
+		;;
+		if all_space
+			call InsertChars: p total;
+		;;
+		else
+			foster is true;
+			call Reconstruct;
+			call InsertChars: p total;
+			foster is false;
+			frameset_ok is false;
+		;;
+		call pending.Clear;
+	[end]
+
+	[ModeInCaption]
+		u32 k: tok.kind;
+		u32 c: tok.code;
+		if k is HtmlT.END_TAG and c is HtmlTag.CAPTION
+			call CloseCaption;
+			return false;
+		;;
+		bln closes: false;
+		if k is HtmlT.START
+			closes is (c is HtmlTag.CAPTION or c is HtmlTag.COL or c is HtmlTag.COLGROUP or c is HtmlTag.TBODY or c is HtmlTag.TD or c is HtmlTag.TFOOT or c is HtmlTag.TH or c is HtmlTag.THEAD or c is HtmlTag.TR);
+		;;
+		elif k is HtmlT.END_TAG
+			closes is (c is HtmlTag.TABLE);
+			if c is HtmlTag.BODY or c is HtmlTag.COL or c is HtmlTag.COLGROUP or c is HtmlTag.HTML or c is HtmlTag.TBODY or c is HtmlTag.TD or c is HtmlTag.TFOOT or c is HtmlTag.TH or c is HtmlTag.THEAD or c is HtmlTag.TR return false;
+		;;
+		if closes
+			if (HasInTableScope: HtmlTag.CAPTION) is false return false;
+			call CloseCaption;
+			return true;
+		;;
+	[end: (ModeInBody)]
+
+	[CloseCaption]
+		if (HasInTableScope: HtmlTag.CAPTION) is false return;
+		call ImpliedEndTags: 0;
+		call PopUntil: HtmlTag.CAPTION;
+		call ClearToMarker;
+		mode is HtmlMode.IN_TABLE;
+	[end]
+
+	[ModeInColumnGroup]
+		u32 k: tok.kind;
+		u32 c: tok.code;
+		if k is HtmlT.CHARS
+			# spaces go in; anything else closes the group, unless there's no group to close
+			while true
+				if (InsertSpaces) return false;
+				if (TopCode) is HtmlTag.COLGROUP
+					call Pop;
+					mode is HtmlMode.IN_TABLE;
+					return true;
+				;;
+				tok.chars is tok.chars + 1;
+				tok.chars_len--;
+				if tok.chars_len is 0 return false;
+			;;
+		;;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: 0;
+			return false;
+		;;
+		if k is HtmlT.DOCTYPE return false;
+		if k is HtmlT.EOF return (ModeInBody);
+		if k is HtmlT.START
+			if c is HtmlTag.HTML return (ModeInBody);
+			if c is HtmlTag.COL
+				call InsertVoid;
+				return false;
+			;;
+			if c is HtmlTag.TEMPLATE
+				call InHeadStart;
+				return false;
+			;;
+		;;
+		elif k is HtmlT.END_TAG
+			if c is HtmlTag.COLGROUP
+				if (TopCode) is HtmlTag.COLGROUP
+					call Pop;
+					mode is HtmlMode.IN_TABLE;
+				;;
+				return false;
+			;;
+			if c is HtmlTag.COL return false;
+			if c is HtmlTag.TEMPLATE
+				call EndTemplate;
+				return false;
+			;;
+		;;
+		if (TopCode) is not HtmlTag.COLGROUP return false;
+		call Pop;
+		mode is HtmlMode.IN_TABLE;
+	[end: true]
+
+	[ModeInTableBody]
+		u32 k: tok.kind;
+		u32 c: tok.code;
+		if k is HtmlT.START
+			if c is HtmlTag.TR
+				call ClearToTableBody;
+				call InsertHtml;
+				mode is HtmlMode.IN_ROW;
+				return false;
+			;;
+			if c is HtmlTag.TH or c is HtmlTag.TD
+				call ClearToTableBody;
+				call InsertNamed: HtmlTag.TR;
+				mode is HtmlMode.IN_ROW;
+				return true;
+			;;
+			if c is HtmlTag.CAPTION or c is HtmlTag.COL or c is HtmlTag.COLGROUP or c is HtmlTag.TBODY or c is HtmlTag.TFOOT or c is HtmlTag.THEAD
+				return (CloseTableBody);
+			;;
+		;;
+		elif k is HtmlT.END_TAG
+			if c is HtmlTag.TBODY or c is HtmlTag.TFOOT or c is HtmlTag.THEAD
+				if (HasInTableScope: c)
+					call ClearToTableBody;
+					call Pop;
+					mode is HtmlMode.IN_TABLE;
+				;;
+				return false;
+			;;
+			if c is HtmlTag.TABLE return (CloseTableBody);
+			if c is HtmlTag.BODY or c is HtmlTag.CAPTION or c is HtmlTag.COL or c is HtmlTag.COLGROUP or c is HtmlTag.HTML or c is HtmlTag.TD or c is HtmlTag.TH or c is HtmlTag.TR return false;
+		;;
+	[end: (ModeInTable)]
+
+	[CloseTableBody]
+		if (HasInTableScope: HtmlTag.TBODY) is false and (HasInTableScope: HtmlTag.THEAD) is false and (HasInTableScope: HtmlTag.TFOOT) is false return false;
+		call ClearToTableBody;
+		call Pop;
+		mode is HtmlMode.IN_TABLE;
+	[end: true]
+
+	[ModeInRow]
+		u32 k: tok.kind;
+		u32 c: tok.code;
+		if k is HtmlT.START
+			if c is HtmlTag.TH or c is HtmlTag.TD
+				call ClearToRow;
+				call InsertHtml;
+				mode is HtmlMode.IN_CELL;
+				call AddMarker;
+				return false;
+			;;
+			if c is HtmlTag.CAPTION or c is HtmlTag.COL or c is HtmlTag.COLGROUP or c is HtmlTag.TBODY or c is HtmlTag.TFOOT or c is HtmlTag.THEAD or c is HtmlTag.TR
+				return (CloseRow);
+			;;
+		;;
+		elif k is HtmlT.END_TAG
+			if c is HtmlTag.TR
+				if (HasInTableScope: HtmlTag.TR)
+					call ClearToRow;
+					call Pop;
+					mode is HtmlMode.IN_TABLE_BODY;
+				;;
+				return false;
+			;;
+			if c is HtmlTag.TABLE return (CloseRow);
+			if c is HtmlTag.TBODY or c is HtmlTag.TFOOT or c is HtmlTag.THEAD
+				if (HasInTableScope: c) is false return false;
+				return (CloseRow);
+			;;
+			if c is HtmlTag.BODY or c is HtmlTag.CAPTION or c is HtmlTag.COL or c is HtmlTag.COLGROUP or c is HtmlTag.HTML or c is HtmlTag.TD or c is HtmlTag.TH return false;
+		;;
+	[end: (ModeInTable)]
+
+	[CloseRow]
+		if (HasInTableScope: HtmlTag.TR) is false return false;
+		call ClearToRow;
+		call Pop;
+		mode is HtmlMode.IN_TABLE_BODY;
+	[end: true]
+
+	[CloseCell]
+		call ImpliedEndTags: 0;
+		call PopUntilCell;
+		call ClearToMarker;
+		mode is HtmlMode.IN_ROW;
+	[end]
+
+	[ModeInCell]
+		u32 k: tok.kind;
+		u32 c: tok.code;
+		if k is HtmlT.END_TAG
+			if c is HtmlTag.TD or c is HtmlTag.TH
+				if (HasInTableScope: c)
+					call ImpliedEndTags: 0;
+					call PopUntil: c;
+					call ClearToMarker;
+					mode is HtmlMode.IN_ROW;
+				;;
+				return false;
+			;;
+			if c is HtmlTag.BODY or c is HtmlTag.CAPTION or c is HtmlTag.COL or c is HtmlTag.COLGROUP or c is HtmlTag.HTML return false;
+			if c is HtmlTag.TABLE or c is HtmlTag.TBODY or c is HtmlTag.TFOOT or c is HtmlTag.THEAD or c is HtmlTag.TR
+				if (HasInTableScope: c) is false return false;
+				call CloseCell;
+				return true;
+			;;
+		;;
+		elif k is HtmlT.START
+			if c is HtmlTag.CAPTION or c is HtmlTag.COL or c is HtmlTag.COLGROUP or c is HtmlTag.TBODY or c is HtmlTag.TD or c is HtmlTag.TFOOT or c is HtmlTag.TH or c is HtmlTag.THEAD or c is HtmlTag.TR
+				if (HasInTableScope: HtmlTag.TD) is false and (HasInTableScope: HtmlTag.TH) is false return false;
+				call CloseCell;
+				return true;
+			;;
+		;;
+	[end: (ModeInBody)]
+
+	# ---- templates
+
+	[ModeInTemplate]
+		u32 k: tok.kind;
+		u32 c: tok.code;
+		if k is HtmlT.CHARS or k is HtmlT.NUL or k is HtmlT.COMMENT or k is HtmlT.PI or k is HtmlT.DOCTYPE
+			return (ModeInBody);
+		;;
+		if k is HtmlT.START
+			when c
+				is HtmlTag.BASE HtmlTag.BASEFONT HtmlTag.BGSOUND HtmlTag.LINK HtmlTag.META HtmlTag.NOFRAMES HtmlTag.SCRIPT HtmlTag.STYLE HtmlTag.TEMPLATE HtmlTag.TITLE
+					call InHeadStart;
+					return false;
+				;;
+				is HtmlTag.CAPTION HtmlTag.COLGROUP HtmlTag.TBODY HtmlTag.TFOOT HtmlTag.THEAD
+					call SwitchTemplateMode: HtmlMode.IN_TABLE;
+					return true;
+				;;
+				is HtmlTag.COL
+					call SwitchTemplateMode: HtmlMode.IN_COLUMN_GROUP;
+					return true;
+				;;
+				is HtmlTag.TR
+					call SwitchTemplateMode: HtmlMode.IN_TABLE_BODY;
+					return true;
+				;;
+				is HtmlTag.TD HtmlTag.TH
+					call SwitchTemplateMode: HtmlMode.IN_ROW;
+					return true;
+				;;
+				else
+					call SwitchTemplateMode: HtmlMode.IN_BODY;
+					return true;
+				;;
+			;;
+		;;
+		if k is HtmlT.END_TAG
+			if c is HtmlTag.TEMPLATE
+				call EndTemplate;
+			;;
+			return false;
+		;;
+		# the end of the file
+		if heads:(HtmlTag.TEMPLATE) is 0 return false;
+		call PopUntil: HtmlTag.TEMPLATE;
+		call ClearToMarker;
+		call PopTemplateMode;
+		call ResetMode;
+	[end: true]
+
+	# ---- after the body, and framesets
+
+	[ModeAfterBody]
+		u32 k: tok.kind;
+		if k is HtmlT.CHARS
+			# spaces as in body; anything else ends this mode
+			u32 n: (LeadingSpaces);
+			if n > 0
+				u32 whole: tok.chars_len;
+				tok.chars_len is n;
+				call BodyChars;
+				tok.chars is tok.chars + n;
+				tok.chars_len is whole - n;
+				if tok.chars_len is 0 return false;
+			;;
+		;;
+		elif k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMiscAtRoot;
+			return false;
+		;;
+		elif k is HtmlT.DOCTYPE or k is HtmlT.EOF
+			return false;
+		;;
+		elif k is HtmlT.START
+			if tok.code is HtmlTag.HTML return (ModeInBody);
+		;;
+		elif k is HtmlT.END_TAG
+			if tok.code is HtmlTag.HTML
+				if context is 0
+					mode is HtmlMode.AFTER_AFTER_BODY;
+				;;
+				return false;
+			;;
+		;;
+		mode is HtmlMode.IN_BODY;
+	[end: true]
+
+	[ModeInFrameset]
+		u32 k: tok.kind;
+		u32 c: tok.code;
+		if k is HtmlT.CHARS
+			call InsertOnlySpaces: false;
+			return false;
+		;;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: 0;
+			return false;
+		;;
+		if k is HtmlT.START
+			if c is HtmlTag.HTML return (ModeInBody);
+			if c is HtmlTag.FRAMESET
+				call InsertHtml;
+			;;
+			elif c is HtmlTag.FRAME
+				call InsertVoid;
+			;;
+			elif c is HtmlTag.NOFRAMES
+				call InHeadStart;
+			;;
+			return false;
+		;;
+		if k is HtmlT.END_TAG and c is HtmlTag.FRAMESET
+			if open_n > 1
+				call Pop;
+				if context is 0 and (TopCode) is not HtmlTag.FRAMESET
+					mode is HtmlMode.AFTER_FRAMESET;
+				;;
+			;;
+		;;
+	[end: false]
+
+	[ModeAfterFrameset]
+		u32 k: tok.kind;
+		u32 c: tok.code;
+		if k is HtmlT.CHARS
+			call InsertOnlySpaces: false;
+			return false;
+		;;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: 0;
+			return false;
+		;;
+		if k is HtmlT.START
+			if c is HtmlTag.HTML return (ModeInBody);
+			if c is HtmlTag.NOFRAMES
+				call InHeadStart;
+			;;
+			return false;
+		;;
+		if k is HtmlT.END_TAG and c is HtmlTag.HTML
+			mode is HtmlMode.AFTER_AFTER_FRAMESET;
+		;;
+	[end: false]
+
+	[ModeAfterAfterBody]
+		u32 k: tok.kind;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: doc.root;
+			return false;
+		;;
+		if k is HtmlT.DOCTYPE or k is HtmlT.EOF return false;
+		if k is HtmlT.CHARS
+			u32 n: (LeadingSpaces);
+			if n > 0
+				u32 whole: tok.chars_len;
+				tok.chars_len is n;
+				call BodyChars;
+				tok.chars is tok.chars + n;
+				tok.chars_len is whole - n;
+				if tok.chars_len is 0 return false;
+			;;
+		;;
+		elif k is HtmlT.START and tok.code is HtmlTag.HTML
+			return (ModeInBody);
+		;;
+		mode is HtmlMode.IN_BODY;
+	[end: true]
+
+	[ModeAfterAfterFrameset]
+		u32 k: tok.kind;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: doc.root;
+			return false;
+		;;
+		if k is HtmlT.CHARS
+			call InsertOnlySpaces: true;
+			return false;
+		;;
+		if k is HtmlT.START
+			if tok.code is HtmlTag.HTML return (ModeInBody);
+			if tok.code is HtmlTag.NOFRAMES
+				call InHeadStart;
+			;;
+		;;
+	[end: false]
+
+	# ---- foreign content
+
+	[FontBreaksOut]
+		while u32 i: 0; i < tok.attr_count; i++;
+			ptr<WlAtom> an: tok.attrs:i.name;
+			if an is HtmlTags.A_COLOR or an is HtmlTags.A_FACE or an is HtmlTags.A_SIZE return true;
+		;;
+	[end: false]
+
+	[Foreign]
+		u32 k: tok.kind;
+		if k is HtmlT.CHARS
+			call InsertChars: tok.chars tok.chars_len;
+			if frameset_ok
+				if (LeadingSpaces) < tok.chars_len
+					frameset_ok is false;
+				;;
+			;;
+			return false;
+		;;
+		if k is HtmlT.NUL
+			call InsertChars: '\xEF\xBF\xBD' 3;
+			return false;
+		;;
+		if k is HtmlT.COMMENT or k is HtmlT.PI
+			call InsertMisc: 0;
+			return false;
+		;;
+		if k is HtmlT.DOCTYPE return false;
+		u32 c: tok.code;
+		if k is HtmlT.START
+			bln out_of_it: ((fl:c & HtmlTag.F_BREAKOUT) is not 0);
+			if c is HtmlTag.FONT
+				out_of_it is (FontBreaksOut);
+			;;
+			if out_of_it
+				call ForeignBreakout;
+				return (RunMode);
+			;;
+			call ForeignStart;
+			return false;
+		;;
+		if k is HtmlT.END_TAG
+			if c is HtmlTag.BR or c is HtmlTag.P
+				call ForeignBreakout;
+				return (RunMode);
+			;;
+			ptr<HtmlOpen> top: open + (open_n - 1) * sizeof HtmlOpen;
+			if top.name is HtmlTags.A_SCRIPT and top.node.ns is DomNs.SVG and c is HtmlTag.SCRIPT
+				ptr<DomNode> script: top.node;
+				call Pop;
+				call RunScript: script true;
+				return false;
+			;;
+			return (ForeignEnd);
+		;;
+	[end: false]
+
+	[ForeignBreakout]
+		while open_n > 0
+			u32 code: open:(open_n - 1).code;
+			if code < HtmlTag.ATOM_COUNT return;
+			if (fl:code & (HtmlTag.F_MATH_TEXT | HtmlTag.F_HTML_IP)) is not 0 return;
+			if code is HtmlTag.K_MATH_ANNOTATION_XML and (open:(open_n - 1).node.flags & HtmlConst.F_HTML_IP) is not 0 return;
+			call Pop;
+		;;
+	[end]
+
+	# the namespace the adjusted current node has
+	[AdjustedNs]
+		if context is not 0 and open_n is 1 return ctx_ns;
+	[end: open:(open_n - 1).node.ns]
+
+	[ForeignStart]
+		DomNs ns: (AdjustedNs) as DomNs;
+		ptr<WlAtom> element_name: tok.name;
+		if ns is DomNs.SVG
+			u32 num: tok.code;
+			if num >= HtmlTag.ADJUST_FIRST and num <= HtmlTag.ADJUST_LAST
+				if (HtmlTags.adjust_kind:num & 1) is not 0
+					element_name is HtmlTags.atoms:num;
+				;;
+			;;
+		;;
+		ptr<DomNode> n: (InsertForeignFromToken: ns element_name);
+		if tok.self_closing
+			if tok.code is HtmlTag.SCRIPT and ns is DomNs.SVG
+				call Pop;
+				call RunScript: n true;
+			;;
+			else
+				call Pop;
+			;;
+		;;
+	[end]
+
+	# any other end tag: the nearest foreign element of this name, above the nearest HTML element
+	[ForeignEnd]
+		if open_n is 1 return false;
+		ptr<WlAtom> wanted: tok.name;
+		u32 bucket: HtmlTag.ATOM_COUNT + (wanted.hash & (HtmlConst.HASH_BUCKETS - 1));
+		u32 floor: open:(open_n - 1).stop_html;
+		u32 h: heads:bucket;
+		while h is not 0 and h - 1 > floor
+			ptr<HtmlOpen> e: open + (h - 1) * sizeof HtmlOpen;
+			if e.name is wanted and e.code >= HtmlTag.ATOM_COUNT
+				while open_n >= h
+					call Pop;
+				;;
+				return false;
+			;;
+			h is e.prev_same;
+		;;
+	[end: (RunMode)]
+
+	# ---- reset the insertion mode appropriately
+
+	[ResetMode]
+		u32 i: open:(open_n - 1).stop_reset;
+		while true
+			u32 code: open:i.code;
+			bln last: i is 0;
+			if last and context is not 0
+				code is ctx_code;
+			;;
+			when code
+				is HtmlTag.TD HtmlTag.TH
+					if last is false
+						mode is HtmlMode.IN_CELL;
+						return;
+					;;
+				;;
+				is HtmlTag.TR
+					mode is HtmlMode.IN_ROW;
+					return;
+				;;
+				is HtmlTag.TBODY HtmlTag.THEAD HtmlTag.TFOOT
+					mode is HtmlMode.IN_TABLE_BODY;
+					return;
+				;;
+				is HtmlTag.CAPTION
+					mode is HtmlMode.IN_CAPTION;
+					return;
+				;;
+				is HtmlTag.COLGROUP
+					mode is HtmlMode.IN_COLUMN_GROUP;
+					return;
+				;;
+				is HtmlTag.TABLE
+					mode is HtmlMode.IN_TABLE;
+					return;
+				;;
+				is HtmlTag.TEMPLATE
+					mode is tmodes:(tmodes_n - 1);
+					return;
+				;;
+				is HtmlTag.HEAD
+					if last is false
+						mode is HtmlMode.IN_HEAD;
+						return;
+					;;
+				;;
+				is HtmlTag.BODY
+					mode is HtmlMode.IN_BODY;
+					return;
+				;;
+				is HtmlTag.FRAMESET
+					mode is HtmlMode.IN_FRAMESET;
+					return;
+				;;
+				is HtmlTag.HTML
+					if head_ptr is 0
+						mode is HtmlMode.BEFORE_HEAD;
+					;;
+					else
+						mode is HtmlMode.AFTER_HEAD;
+					;;
+					return;
+				;;
+			;;
+			if last
+				mode is HtmlMode.IN_BODY;
+				return;
+			;;
+			i is open:(i - 1).stop_reset;
+		;;
+	[end]
+
+	# ---- the end
+
+	[StopParsing]
+		while open_n > 0
+			call Pop;
+		;;
+	[end]
+
+	# ---- <selectedcontent>
+
+	# An option popped off the stack updates the selectedcontent elements of its select, if it's the
+	# selected option (section 4.10.10 of the spec). Only a parser that has seen a selectedcontent
+	# comes here at all, and what it walks comes out of clone_budget, or a hostile select with
+	# many options would make this quadratic.
+	[OptionPopped: ptr<DomNode> option: 0;]
+		ptr<DomNode> select: (NearestSelect: option);
+		if select is 0 or (Dom.AttrZ: select 'multiple') is not 0 return;
+		if (SelectedOption: select) is not option return;
+		ptr<DomNode> n: select.first_child;
+		while n is not 0
+			if clone_budget is 0 return;
+			clone_budget--;
+			if n.type is DomType.ELEMENT and n.ns is DomNs.HTML
+				u32 t: n.tag.tag;
+				# one inside these is disabled
+				if t is HtmlTag.SELECT or t is HtmlTag.OPTION
+					n is (Dom.NextSkipping: n select);
+					continue;
+				;;
+				if t is HtmlTag.SELECTEDCONTENT
+					call FillSelectedContent: n option;
+					n is (Dom.NextSkipping: n select);
+					continue;
+				;;
+			;;
+			n is (Dom.Next: n select);
+		;;
+	[end]
+
+	# the select an element is in, as the spec's "nearest ancestor select"
+	[NearestSelect: ptr<DomNode> element: 0;]
+		bln optgroup_seen: false;
+		ptr<DomNode> a: element.parent;
+		while a is not 0
+			if a.type is DomType.ELEMENT and a.ns is DomNs.HTML
+				u32 t: a.tag.tag;
+				if t is HtmlTag.SELECT return a;
+				if t is HtmlTag.DATALIST or t is HtmlTag.HR or t is HtmlTag.OPTION return 0 as ptr<DomNode>;
+				if t is HtmlTag.OPTGROUP
+					if optgroup_seen return 0 as ptr<DomNode>;
+					optgroup_seen is true;
+				;;
+			;;
+			a is a.parent;
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	# which option of a select that isn't multiple is selected, as far as the parser can tell: the
+	# last with a selected attribute, or the first enabled one if it shows one line at a time
+	[SelectedOption: ptr<DomNode> select: 0;]
+		ptr<DomNode> first_enabled: 0;
+		ptr<DomNode> last_selected: 0;
+		ptr<DomNode> n: select.first_child;
+		while n is not 0
+			if clone_budget is 0 return 0 as ptr<DomNode>;
+			clone_budget--;
+			if n.type is DomType.ELEMENT and n.ns is DomNs.HTML
+				u32 t: n.tag.tag;
+				if t is HtmlTag.OPTION
+					if (Dom.AttrZ: n 'selected') is not 0
+						last_selected is n;
+					;;
+					if first_enabled is 0 and (OptionEnabled: n)
+						first_enabled is n;
+					;;
+					n is (Dom.NextSkipping: n select);
+					continue;
+				;;
+				if t is HtmlTag.SELECT or t is HtmlTag.DATALIST or t is HtmlTag.HR or (t is HtmlTag.OPTGROUP and (InOptgroup: n select))
+					n is (Dom.NextSkipping: n select);
+					continue;
+				;;
+			;;
+			n is (Dom.Next: n select);
+		;;
+		if last_selected is not 0 return last_selected;
+		if (DisplaySize: select) is not 1 return 0 as ptr<DomNode>;
+	[end: first_enabled]
+
+	[InOptgroup: ptr<DomNode> n: 0; ptr<DomNode> select: 0;]
+		ptr<DomNode> p: n.parent;
+		while p is not 0 and p is not select
+			if p.type is DomType.ELEMENT and p.ns is DomNs.HTML and p.tag.tag is HtmlTag.OPTGROUP return true;
+			p is p.parent;
+		;;
+	[end: false]
+
+	[OptionEnabled: ptr<DomNode> option: 0;]
+		if (Dom.AttrZ: option 'disabled') is not 0 return false;
+		ptr<DomNode> p: option.parent;
+		if p is not 0 and p.type is DomType.ELEMENT and p.ns is DomNs.HTML and p.tag.tag is HtmlTag.OPTGROUP
+			if (Dom.AttrZ: p 'disabled') is not 0 return false;
+		;;
+	[end: true]
+
+	# the size attribute, by the rules for non-negative integers; 1 if it isn't one
+	[DisplaySize: ptr<DomNode> select: 0;]
+		ptr<DomAttr> a: (Dom.AttrZ: select 'size');
+		if a is 0 return 1;
+		u32 i: 0;
+		while i < a.value_len and (WlText.IsSpace: a.value:i)
+			i++;
+		;;
+		if i < a.value_len and a.value:i is '+'
+			i++;
+		;;
+		u32 v: 0;
+		bln any: false;
+		while i < a.value_len and (WlText.IsDigit: a.value:i)
+			any is true;
+			if v < 100000
+				v is v * 10 + a.value:i - '0';
+			;;
+			i++;
+		;;
+		if any is false return 1;
+	[end: v]
+
+	[FillSelectedContent: ptr<DomNode> target: 0; ptr<DomNode> option: 0;]
+		while target.first_child is not 0
+			call Dom.Remove: target.first_child;
+		;;
+		# children of the option, copied, without recursion: dest follows along
+		ptr<DomNode> s: option.first_child;
+		ptr<DomNode> dest: target;
+		while s is not 0
+			if clone_budget is 0 return;
+			clone_budget--;
+			ptr<DomNode> c: (CloneNode: s);
+			call Link: dest 0 c;
+			ptr<DomNode> down: s.first_child;
+			ptr<DomNode> down_dest: c;
+			if s.type is DomType.ELEMENT and s.content is not 0
+				down is s.content.first_child;
+				down_dest is c.content;
+			;;
+			if down is not 0
+				s is down;
+				dest is down_dest;
+				continue;
+			;;
+			while true
+				if s.next is not 0
+					s is s.next;
+					break;
+				;;
+				ptr<DomNode> up: s.parent;
+				if up is 0 or up is option return;
+				if up.type is DomType.FRAGMENT
+					up is up.content;
+					dest is dest.content;
+				;;
+				dest is dest.parent;
+				s is up;
+			;;
+		;;
+	[end]
+
+	[CloneNode: ptr<DomNode> s: 0;]
+		ptr<DomNode> c: (Dom.NewNode: doc s.type);
+		c.ns is s.ns;
+		c.tag is s.tag;
+		if s.text is not 0
+			call Dom.AddText: c s.text s.text_len;
+		;;
+		ptr<DomAttr> last: 0;
+		ptr<DomAttr> a: s.attrs;
+		while a is not 0
+			last is (AddAttr: c last a.name a.prefix a.value a.value_len);
+			a is a.next;
+		;;
+		if s.type is DomType.ELEMENT and s.content is not 0
+			ptr<DomNode> contents: (Dom.CreateFragment: doc);
+			c.content is contents;
+			contents.content is c;
+		;;
+	[end: c]
+
+	# ---- the fragment case
+
+	[SetupFragment: ptr<DomNode> ctx: 0;]
+		context is ctx;
+		ctx_ns is ctx.ns;
+		ptr<WlAtom> low: (LowerName: ctx);
+		ctx_code is (HtmlTags.CodeOf: ctx.ns low);
+		if ctx.ns is DomNs.MATHML and ctx_code is HtmlTag.K_MATH_ANNOTATION_XML
+			ctx_ip is (EncodingIsIp: ctx);
+		;;
+		quirks is doc.quirks;
+		ptr<WlAtom> html_name: HtmlTags.atoms:(HtmlTag.HTML);
+		frag_html is (MakeElement: html_name DomNs.HTML 0 0 0);
+		fragment is (Dom.CreateFragment: doc);
+		call Push: frag_html html_name;
+		if ctx_code is HtmlTag.TEMPLATE
+			call PushTemplateMode: HtmlMode.IN_TEMPLATE;
+		;;
+		call ResetMode;
+		ptr<DomNode> n: ctx;
+		while n is not 0
+			if n.ns is DomNs.HTML and n.type is DomType.ELEMENT and n.tag.tag is HtmlTag.FORM
+				form_ptr is n;
+				break;
+			;;
+			n is n.parent;
+		;;
+		when ctx_code
+			is HtmlTag.TITLE HtmlTag.TEXTAREA
+				call tok.SetTextState: HtmlS.RCDATA;
+			;;
+			is HtmlTag.STYLE HtmlTag.XMP HtmlTag.IFRAME HtmlTag.NOEMBED HtmlTag.NOFRAMES
+				call tok.SetTextState: HtmlS.RAWTEXT;
+			;;
+			is HtmlTag.SCRIPT
+				call tok.SetTextState: HtmlS.SCRIPT_DATA;
+			;;
+			is HtmlTag.NOSCRIPT
+				if scripting
+					call tok.SetTextState: HtmlS.RAWTEXT;
+				;;
+			;;
+			is HtmlTag.PLAINTEXT
+				tok.state is HtmlS.PLAINTEXT;
+			;;
+		;;
+	[end]
+
+	# a foreign element's name in lowercase: what its token had
+	[LowerName: ptr<DomNode> node: 0;]
+	[end: (WlAtoms.GetLower: node.tag.text node.tag.len)]
+}
+
+# what the tokenizer calls, which has to be plain methods
+phi.HtmlSink:Library
+{
+	[Token: ptr<HtmlTokenizer> t: 0;]
+		ptr<HtmlParser> p: t.owner as ptr<HtmlParser>;
+		call p.Token;
+	[end]
+
+	[CdataAllowed: ptr<HtmlTokenizer> t: 0;]
+		ptr<HtmlParser> p: t.owner as ptr<HtmlParser>;
+		if p.open_n is 0 return 0;
+		if p.context is not 0 and p.open_n is 1
+			if p.ctx_ns is DomNs.HTML return 0;
+			return 1;
+		;;
+		if p.open:(p.open_n - 1).node.ns is DomNs.HTML return 0;
+	[end: 1]
+}
+
+# The quirks mode a DOCTYPE asks for
+phi.HtmlQuirks:Library
+{
+	# public identifiers that start like these mean quirks, compared in lowercase
+	ptr<u8> PUBLIC_QUIRKS: '+//silmaril//dtd html pro v0r11 19970101//|-//as//dtd html 3.0 aswedit + extensions//|-//advasoft ltd//dtd html 3.0 aswedit + extensions//|-//ietf//dtd html 2.0 level 1//|-//ietf//dtd html 2.0 level 2//|-//ietf//dtd html 2.0 strict level 1//|-//ietf//dtd html 2.0 strict level 2//|-//ietf//dtd html 2.0 strict//|-//ietf//dtd html 2.0//|-//ietf//dtd html 2.1e//|-//ietf//dtd html 3.0//|-//ietf//dtd html 3.2 final//|-//ietf//dtd html 3.2//|-//ietf//dtd html 3//|-//ietf//dtd html level 0//|-//ietf//dtd html level 1//|-//ietf//dtd html level 2//|-//ietf//dtd html level 3//|-//ietf//dtd html strict level 0//|-//ietf//dtd html strict level 1//|-//ietf//dtd html strict level 2//|-//ietf//dtd html strict level 3//|-//ietf//dtd html strict//|-//ietf//dtd html//|-//metrius//dtd metrius presentational//|-//microsoft//dtd internet explorer 2.0 html strict//|-//microsoft//dtd internet explorer 2.0 html//|-//microsoft//dtd internet explorer 2.0 tables//|-//microsoft//dtd internet explorer 3.0 html strict//|-//microsoft//dtd internet explorer 3.0 html//|-//microsoft//dtd internet explorer 3.0 tables//|-//netscape comm. corp.//dtd html//|-//netscape comm. corp.//dtd strict html//|-//o\'reilly and associates//dtd html 2.0//|-//o\'reilly and associates//dtd html extended 1.0//|-//o\'reilly and associates//dtd html extended relaxed 1.0//|-//sq//dtd html 2.0 hotmetal + extensions//|-//softquad software//dtd hotmetal pro 6.0::19990601::extensions to html 4.0//|-//softquad//dtd hotmetal pro 4.0::19971010::extensions to html 4.0//|-//spyglass//dtd html 2.0 extended//|-//sun microsystems corp.//dtd hotjava html//|-//sun microsystems corp.//dtd hotjava strict html//|-//w3c//dtd html 3 1995-03-24//|-//w3c//dtd html 3.2 draft//|-//w3c//dtd html 3.2 final//|-//w3c//dtd html 3.2//|-//w3c//dtd html 3.2s draft//|-//w3c//dtd html 4.0 frameset//|-//w3c//dtd html 4.0 transitional//|-//w3c//dtd html experimental 19960712//|-//w3c//dtd html experimental 970421//|-//w3c//dtd w3 html//|-//w3o//dtd w3 html 3.0//|-//webtechs//dtd mozilla html 2.0//|-//webtechs//dtd mozilla html//';
+
+	[StartsWithNoCase: WlBuf text; ptr<u8> prefix: 0; u32 prefix_len: 0;]
+		if text.len < prefix_len return false;
+		while u32 i: 0; i < prefix_len; i++;
+			if (WlText.Lower: text.data:i) is not prefix:i return false;
+		;;
+	[end: true]
+
+	[IsNoCase: WlBuf text; ptr<u8> word: 0;]
+		if text.len is 0
+			return word:0 is 0;
+		;;
+	[end: (WlText.EqNoCaseZ: text.data text.len word)]
+
+	[InPublicList: WlBuf id;]
+		ptr<u8> p: PUBLIC_QUIRKS;
+		while p:0 is not 0
+			u32 n: 0;
+			while p:n is not 0 and p:n is not '|'
+				n++;
+			;;
+			if (StartsWithNoCase: id p n) return true;
+			p is p + n;
+			if p:0 is '|'
+				p is p + 1;
+			;;
+		;;
+	[end: false]
+
+	[Check: ptr<HtmlParser> p: 0;]
+		ptr<HtmlTokenizer> t: addr p.tok;
+		bln system_gone: t.dt_has_system is false or t.dt_system.len is 0;
+		bln system_there: t.dt_has_system and t.dt_system.len > 0;
+		if t.dt_quirks or t.dt_has_name is false or (WlText.EqZ: t.dt_name.data t.dt_name.len 'html') is false
+			call p.SetQuirks: true false;
+			return;
+		;;
+		if t.dt_has_public
+			if (IsNoCase: t.dt_public '-//w3o//dtd w3 html strict 3.0//en//') or (IsNoCase: t.dt_public '-/w3c/dtd html 4.0 transitional/en') or (IsNoCase: t.dt_public 'html')
+				call p.SetQuirks: true false;
+				return;
+			;;
+			if (InPublicList: t.dt_public)
+				call p.SetQuirks: true false;
+				return;
+			;;
+			if system_gone
+				if (StartsWithNoCase: t.dt_public '-//w3c//dtd html 4.01 frameset//' 32) or (StartsWithNoCase: t.dt_public '-//w3c//dtd html 4.01 transitional//' 36)
+					call p.SetQuirks: true false;
+					return;
+				;;
+			;;
+		;;
+		if t.dt_has_system
+			if (IsNoCase: t.dt_system 'http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd')
+				call p.SetQuirks: true false;
+				return;
+			;;
+		;;
+		if t.dt_has_public
+			if (StartsWithNoCase: t.dt_public '-//w3c//dtd xhtml 1.0 frameset//' 32) or (StartsWithNoCase: t.dt_public '-//w3c//dtd xhtml 1.0 transitional//' 36)
+				call p.SetQuirks: false true;
+				return;
+			;;
+			if system_there
+				if (StartsWithNoCase: t.dt_public '-//w3c//dtd html 4.01 frameset//' 32) or (StartsWithNoCase: t.dt_public '-//w3c//dtd html 4.01 transitional//' 36)
+					call p.SetQuirks: false true;
+				;;
+			;;
+		;;
+	[end]
+}
+
+# (HtmlParser.New: doc), as the struct of the same name's methods are called on a value
+phi.HtmlParser:Library
+{
+	# A parser for a document, or for a new one if doc is 0. Returns 0 only out of memory.
+	[New: ptr<DomDocument> doc: 0;]
+		ptr<HtmlParser> p: new HtmlParser;
+		if p is 0 return 0 as ptr<HtmlParser>;
+		if call p.Setup: doc throws err
+			free p;
+			return 0 as ptr<HtmlParser>;
+		;;
+	[end: p]
+}
+
+# The ways in
+phi.Html:Library
+{
+	# a whole document at once. Whatever went wrong part way, what was built is returned; 0 only
+	# when there's no memory even to begin.
+	[Parse: ptr<u8> bytes: 0; u32 count: 0; bln scripting: false;]
+		ptr<HtmlParser> p: (HtmlParser.New: 0);
+		if p is 0 return 0 as ptr<DomDocument>;
+		p.scripting is scripting;
+		call p.Feed: bytes count;
+		call p.Finish;
+		ptr<DomDocument> doc: p.doc;
+		call p.Free;
+	[end: doc]
+
+	# The spec's fragment serialization of what's in node, added to output; false if it couldn't
+	# finish (out of memory). scripting is whether a <noscript>'s text is written as it stands.
+	[Serialize: ptr<DomNode> node: 0; WlBuf output; bln scripting: false;]
+		if node is 0 return false;
+		if call HtmlSerializer.Children: node output scripting throws err
+			return false;
+		;;
+	[end: true]
+
+	# the same, with node itself
+	[SerializeOuter: ptr<DomNode> node: 0; WlBuf output; bln scripting: false;]
+		if node is 0 return false;
+		if call HtmlSerializer.Outer: node output scripting throws err
+			return false;
+		;;
+	[end: true]
+
+	# innerHTML: the markup as if it were inside context. Returns a FRAGMENT of context's document,
+	# 0 only out of memory.
+	[ParseFragment: ptr<DomNode> context: 0; ptr<u8> bytes: 0; u32 count: 0; bln scripting: false;]
+		if context is 0 return 0 as ptr<DomNode>;
+		ptr<HtmlParser> p: (HtmlParser.New: context.doc);
+		if p is 0 return 0 as ptr<DomNode>;
+		p.scripting is scripting;
+		ptr<DomNode> result: 0;
+		if call p.SetupFragment: context throws err
+			call p.Fail: err.text;
+		;;
+		result is p.fragment;
+		if p.failed is false
+			call p.Feed: bytes count;
+			call p.Finish;
+		;;
+		call p.Free;
+	[end: result]
+}

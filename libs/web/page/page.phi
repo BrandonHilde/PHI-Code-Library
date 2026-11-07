@@ -1,0 +1,849 @@
+# A document with its scripts and styles: what a browser's tab holds, and the whole of what it needs from this
+# library. Everything from outside goes through PageHost, a struct of methods the browser fills in, so the
+# library opens no files and no sockets.
+#
+#   PageHost host;
+#   host.load is addr MyLoad;                    # fetch a URL, then call Page.Delivered
+#   ptr<Page> page: (Page.New: addr host 1024.0 768.0);
+#   call Page.Load: page html_bytes length 'https://example.com/';
+#   while running
+#       call Page.Tick: page now_ms;             # timers and promise jobs
+#       call Page.UpdateStyle: page;             # node.style for every element that changed
+#       # lay out and paint page.doc
+#       call Page.Frame: page now_ms;            # requestAnimationFrame
+#   ;;
+#   call Page.Free: page;
+
+use core.buf;
+use core.text;
+use dom.dom;
+use html.parser;
+use css.css;
+use js.js;
+use page.bind;
+use page.events;
+use page.window;
+
+# what's asked of PageHost.load
+enum.PageLoad
+{
+	DOCUMENT
+	SCRIPT
+	STYLE
+	FETCH
+	IMAGE
+}
+
+struct.PageHost
+{
+	# Page, absolute URL, what it's for, the request's number. The answer is Page.Delivered with that number,
+	# from inside this call or at any time after it.
+	method<ptr<Page> ptr<u8> PageLoad u32> load;
+	# console.logger and the like, and scripts' uncaught errors: text, length, level (0 log, 1 warning, 2 error)
+	method<ptr<Page> ptr<u8> u32 int> logger;
+	# something changed that may show: a good time to run the frame
+	method<ptr<Page>> invalidate;
+	# the page asked to go somewhere: location.href = ..., a link followed
+	method<ptr<Page> ptr<u8>> navigate;
+	# where layout put a node: fills in x, y, width, height. Without it, layout queries answer 0.
+	method<ptr<Page> ptr<DomNode> ptr<f64>> box;
+	# window.alert
+	method<ptr<Page> ptr<u8>> alert;
+	ptr<u8> user;           # the browser's own
+}
+
+struct.PageTimer
+{
+	int id;
+	f64 due;
+	f64 interval;           # 0 for one that fires once
+	u64 fn;
+	u64 args;               # a JS array, or undefined
+	bln frame;              # requestAnimationFrame
+}
+
+struct.PageRequest
+{
+	u32 id;
+	PageLoad kind;
+	bln done;
+	ptr<DomNode> node;      # the script or link it's for
+	u64 a;                  # resolve, or the XMLHttpRequest
+	u64 b;                  # reject
+	ptr<u8> url;
+	# an answer that came while JS was running, which waits until it's finished
+	bln waiting;
+	int answer_status;
+	ptr<u8> answer;
+	u32 answer_len;
+}
+
+struct.PageSheet
+{
+	ptr<DomNode> node;      # the <style> or <link>
+	ptr<CssSheet> sheet;
+	u32 text_hash;
+	u32 text_len;
+	bln seen;
+}
+
+struct.Page
+{
+	PageHost host;
+	ptr<DomDocument> doc;
+	ptr<HtmlParser> parser;
+	ptr<CssEngine> css;
+	ptr<JsRuntime> rt;
+	ptr<u8> url;
+
+	f64 width;
+	f64 height;
+	f64 now;
+	f64 started_at;
+	bln started_clock;
+
+	PageTimer timers[atmost 2048];
+	int next_timer;
+
+	PageRequest requests[atmost 1024];
+	u32 next_request;
+	int blocking;           # requests the parser is waiting for
+	int nest;               # how deep in running JS we are: microtasks and answers wait for 0
+	bln parse_done;
+	bln load_fired;
+
+	ptr<DomNode> defer_list[atmost 256];
+	ptr<DomNode> current_script;
+	ptr<DomNode> focused;
+
+	PageSheet sheets[atmost 512];
+	u32 sheets_version;
+	bln sheets_scanned;
+
+	# everything the page's objects need kept alive that isn't reachable some other way, in one JS array
+	u64 keep;
+	u64 window_location;
+	u64 storage;
+}
+
+phi.Page:Library
+{
+	ptr<Page> current: 0;
+
+	# ---- starting and stopping ----
+
+	[New: ptr<PageHost> host: 0; f64 width: 1024.0; f64 height: 768.0;]
+		ptr<Page> p: new Page;
+		if p is 0
+			return 0 as ptr<Page>;
+		;;
+		if host is not 0
+			p.host.load is host.load;
+			p.host.logger is host.logger;
+			p.host.invalidate is host.invalidate;
+			p.host.navigate is host.navigate;
+			p.host.box is host.box;
+			p.host.alert is host.alert;
+			p.host.user is host.user;
+		;;
+		p.width is width;
+		p.height is height;
+		p.next_timer is 1;
+		p.next_request is 1;
+		p.doc is (Dom.NewDocument);
+		p.parser is (HtmlParser.New: p.doc);
+		p.parser.scripting is true;
+		p.parser.host_data is p as ptr<u8>;
+		p.parser.on_script is addr OnScript;
+		p.css is (Css.NewEngine: p.doc);
+		call p.css.SetViewport: width height;
+		p.rt is (Js.New);
+		p.keep is JsV.UNDEF;
+		p.window_location is JsV.UNDEF;
+		p.storage is JsV.UNDEF;
+		current is p;
+		call PageBind.Install: p;
+		call Js.AddRootFn: addr MarkAll;
+	[end: p]
+
+	[Use: ptr<Page> p: 0;]
+		if current is not p
+			current is p;
+			call Js.Use: p.rt;
+		;;
+	[end]
+
+	[Free: ptr<Page> p: 0;]
+		call Use: p;
+		call Js.Free: p.rt;
+		current is 0;
+		while each s in p.sheets
+			if s.sheet is not 0
+				call Css.FreeSheet: s.sheet;
+			;;
+		;;
+		call p.css.Free;
+		call p.parser.Free;
+		call Dom.FreeDocument: p.doc;
+		while each r in p.requests
+			if r.url is not 0
+				free r.url;
+			;;
+			if r.answer is not 0
+				free r.answer;
+			;;
+		;;
+		if p.url is not 0
+			free p.url;
+		;;
+		free p;
+	[end]
+
+	# every JS value the page holds outside JS objects
+	[MarkAll]
+		ptr<Page> p: current;
+		call Js.Mark: p.keep;
+		call Js.Mark: p.window_location;
+		call Js.Mark: p.storage;
+		ptr<DomNode> n: p.doc.all;
+		while n is not 0
+			if n.js_wrapper is not 0
+				call Js.Mark: n.js_wrapper;
+			;;
+			n is n.all_next;
+		;;
+		while each t in p.timers
+			call Js.Mark: t.fn;
+			call Js.Mark: t.args;
+		;;
+		while each r in p.requests
+			if not r.done
+				call Js.Mark: r.a;
+				call Js.Mark: r.b;
+			;;
+		;;
+	[end]
+
+	# ---- loading ----
+
+	# The document's bytes, all at once. Use Feed and Finish to give them as they arrive.
+	[Load: ptr<Page> p: 0; ptr<u8> bytes: 0; u32 n: 0; ptr<u8> url: 0;]
+		call Start: p url;
+		call Feed: p bytes n;
+		call Finish: p;
+	[end]
+
+	[Start: ptr<Page> p: 0; ptr<u8> url: 0;]
+		call Use: p;
+		if p.url is not 0
+			free p.url;
+		;;
+		u32 len: (WlText.LenZ: url);
+		p.url is (WlText.Dup: url len);
+		p.doc.url is (WlText.Dup: url len);
+	[end]
+
+	[Feed: ptr<Page> p: 0; ptr<u8> bytes: 0; u32 n: 0;]
+		call Use: p;
+		call p.parser.Feed: bytes n;
+		call Settle: p;
+	[end]
+
+	[Finish: ptr<Page> p: 0;]
+		call Use: p;
+		call p.parser.Finish;
+		call Settle: p;
+	[end]
+
+	# the document's URL against the page's
+	[Resolve: ptr<Page> p: 0; ptr<u8> rel: 0; u32 n: 0; ptr<WlBuf> dest: 0;]
+		call CssUrl.Join: p.url rel n dest;
+	[end]
+
+	# A script and everything it calls, which reports what it throws and never lets it out
+	[RunSource: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; ptr<u8> name: 0;]
+		p.nest++;
+		call Js.Eval: text n name;
+		if Js.failed
+			call ReportException: p;
+		;;
+		p.nest--;
+		call RunJobs: p;
+	[end]
+
+	# Promise jobs, then answers that came while JS was running, when nothing's on the stack. JS code runs to
+	# completion, so none of this happens in the middle of it: a host that answers at once looks like one that didn't.
+	[RunJobs: ptr<Page> p: 0;]
+		if p.nest > 0 return;
+		p.nest++;
+		call Js.RunJobs;
+		if Js.failed
+			call ReportException: p;
+		;;
+		p.nest--;
+		while u32 i: 0; i < p.requests.len; i++;
+			if p.requests:i.waiting
+				p.requests:i.waiting is false;
+				ptr<PageRequest> r: addr p.requests:i;
+				ptr<u8> kept: r.answer;
+				r.answer is 0;
+				call DeliverNow: p r r.answer_status kept r.answer_len;
+				if kept is not 0
+					free kept;
+				;;
+			;;
+		;;
+	[end]
+
+	# an event sent from here, with JS on the stack as far as RunJobs is concerned
+	[Fire: ptr<Page> p: 0; u64 target: 0; ptr<u8> type: 0; bln bubbles: false;]
+		p.nest++;
+		call PageEvents.FireOn: target type bubbles;
+		p.nest--;
+	[end]
+
+	[FireNode: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<u8> type: 0;]
+		p.nest++;
+		call PageEvents.FireSimple: n type;
+		p.nest--;
+	[end]
+
+	[ReportException: ptr<Page> p: 0;]
+		WlBuf b;
+		call b.AddZ: 'Uncaught ';
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		if call Js.TextOf: Js.exception addr b throws err
+			call Js.TryCatchAll: addr t err;
+			call b.AddZ: '(an error that could not be shown)';
+		;;
+		call Log: p b.data b.len 2;
+		call b.Free;
+		Js.failed is false;
+	[end]
+
+	[Log: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		if p.host.logger is not 0
+			call p.host.logger: p text n level;
+		;;
+	[end]
+
+	[IsScriptType: ptr<DomNode> s: 0;]
+		ptr<u8> t: (Dom.AttrValue: s 'type');
+		if t is 0 or t:0 is 0 return true;
+		if (Same: t 'text/javascript') or (Same: t 'application/javascript') return true;
+	[end: (Same: t 'text/ecmascript') or (Same: t 'application/ecmascript')]
+
+	[Same: ptr<u8> a: 0; ptr<u8> b: 0;]
+	[end: (WlText.EqNoCaseZ: a (WlText.LenZ: a) b)]
+
+	# the parser reached a </script>
+	[OnScript: ptr<HtmlParser> parser: 0; ptr<DomNode> s: 0;]
+		ptr<Page> p: parser.host_data as ptr<Page>;
+		call Run: p s true;
+	[end]
+
+	[Run: ptr<Page> p: 0; ptr<DomNode> s: 0; bln from_parser: false;]
+		if not (IsScriptType: s) return;
+		# what it may ask of the styles should include the sheets found so far
+		call ScanSheets: p;
+		ptr<u8> src: (Dom.AttrValue: s 'src');
+		if src is not 0
+			if from_parser and (Dom.AttrValue: s 'defer') is not 0 and (Dom.AttrValue: s 'async') is 0
+				if p.defer_list.len < p.defer_list.max
+					p.defer_list++ s;
+				;;
+				return;
+			;;
+			u32 id: (Request: p src (WlText.LenZ: src) PageLoad.SCRIPT s JsV.UNDEF JsV.UNDEF);
+			# if it hasn't come yet, parsing waits for it (an async one doesn't hold anything up)
+			if from_parser and (Dom.AttrValue: s 'async') is 0 and not (RequestDone: p id)
+				p.blocking++;
+				call p.parser.Pause;
+			;;
+			return;
+		;;
+		WlBuf text;
+		call Dom.TextContent: s text;
+		if text.len > 0
+			p.current_script is s;
+			call RunSource: p text.data text.len 'inline script';
+			p.current_script is 0;
+		;;
+		call text.Free;
+	[end]
+
+	# ---- requests ----
+
+	[Request: ptr<Page> p: 0; ptr<u8> url: 0; u32 n: 0; PageLoad kind: PageLoad.FETCH; ptr<DomNode> node: 0; u64 a: 0; u64 b: 0;]
+		if p.requests.len >= p.requests.max
+			call Compact: p;
+			if p.requests.len >= p.requests.max
+				return 0;
+			;;
+		;;
+		WlBuf full;
+		call Resolve: p url n addr full;
+		u32 id: p.next_request;
+		p.next_request++;
+		p.requests++;
+		u32 at_: p.requests.len - 1;
+		p.requests:at_.id is id;
+		p.requests:at_.kind is kind;
+		p.requests:at_.node is node;
+		p.requests:at_.a is a;
+		p.requests:at_.b is b;
+		p.requests:at_.url is (full.Take);
+		ptr<u8> asked: p.requests:at_.url;
+		if p.host.load is 0
+			call Delivered: p id 0 0 0;
+			return id;
+		;;
+		call p.host.load: p asked kind id;
+	[end: id]
+
+	# drop the finished ones, which keeps the table from filling up
+	[Compact: ptr<Page> p: 0;]
+		u32 w: 0;
+		while u32 r: 0; r < p.requests.len; r++;
+			if p.requests:r.done
+				if p.requests:r.url is not 0
+					free p.requests:r.url;
+				;;
+				p.requests:r.url is 0;
+			;;
+			else
+				if w is not r
+					p.requests:w is p.requests:r;
+				;;
+				w++;
+			;;
+		;;
+		p.requests.len is w;
+	[end]
+
+	[Find: ptr<Page> p: 0; u32 id: 0;]
+		while u32 i: 0; i < p.requests.len; i++;
+			if p.requests:i.id is id
+				return addr p.requests:i;
+			;;
+		;;
+	[end: 0 as ptr<PageRequest>]
+
+	[RequestDone: ptr<Page> p: 0; u32 id: 0;]
+		ptr<PageRequest> r: (Find: p id);
+	[end: r is 0 or r.done]
+
+	# What the browser calls with an answer. status is HTTP's, or 0 if it couldn't be had.
+	[Delivered: ptr<Page> p: 0; u32 id: 0; int status: 0; ptr<u8> bytes: 0; u32 n: 0;]
+		call Use: p;
+		ptr<PageRequest> r: (Find: p id);
+		if r is 0 or r.done or r.waiting return;
+		if p.nest > 0
+			r.waiting is true;
+			r.answer_status is status;
+			r.answer_len is n;
+			if n > 0
+				r.answer is (WlText.Dup: bytes n);
+			;;
+			return;
+		;;
+		call DeliverNow: p r status bytes n;
+		call RunJobs: p;
+		call Settle: p;
+		call Invalidate: p;
+	[end]
+
+	[DeliverNow: ptr<Page> p: 0; ptr<PageRequest> r: 0; int status: 0; ptr<u8> bytes: 0; u32 n: 0;]
+		r.done is true;
+		bln ok: status >= 200 and status < 300;
+		when r.kind
+			is PageLoad.SCRIPT
+				ptr<DomNode> s: r.node;
+				ptr<u8> name: r.url;
+				if ok
+					p.current_script is s;
+					call RunSource: p bytes n name;
+					p.current_script is 0;
+					call FireNode: p s 'load';
+				;;
+				else
+					call FireNode: p s 'error';
+				;;
+				if p.blocking > 0 and not p.parse_done
+					p.blocking--;
+					if p.blocking is 0
+						call p.parser.Resume;
+					;;
+				;;
+			;;
+			is PageLoad.STYLE
+				if ok
+					call SheetArrived: p r.node bytes n r.url;
+					call FireNode: p r.node 'load';
+				;;
+				else
+					call FireNode: p r.node 'error';
+				;;
+			;;
+			is PageLoad.FETCH
+				p.nest++;
+				call PageNet.Answer: p r status bytes n;
+				p.nest--;
+			;;
+			else
+				if r.node is not 0
+					if ok
+						call FireNode: p r.node 'load';
+					;;
+					else
+						call FireNode: p r.node 'error';
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	[Invalidate: ptr<Page> p: 0;]
+		if p.host.invalidate is not 0
+			call p.host.invalidate: p;
+		;;
+	[end]
+
+	# When the parser's finished and nothing it waits for is left: deferred scripts, then the events that say so.
+	[Settle: ptr<Page> p: 0;]
+		if p.parser.finished and not p.parse_done and p.blocking is 0
+			p.parse_done is true;
+			while u32 i: 0; i < p.defer_list.len; i++;
+				call Run: p p.defer_list:i false;
+			;;
+			p.defer_list.len is 0;
+			call ScanSheets: p;
+			call Fire: p (PageBind.Wrap: p.doc.root) 'readystatechange' false;
+			call Fire: p (PageBind.Wrap: p.doc.root) 'DOMContentLoaded' true;
+			call RunJobs: p;
+		;;
+		if p.parse_done and not p.load_fired
+			# (a request of the parser's, a stylesheet or a script, holds up load)
+			bln waiting: false;
+			while u32 r: 0; r < p.requests.len; r++;
+				if not p.requests:r.done and p.requests:r.kind is not PageLoad.FETCH and p.requests:r.kind is not PageLoad.IMAGE
+					waiting is true;
+					break;
+				;;
+			;;
+			if not waiting
+				p.load_fired is true;
+				call Fire: p (JsV.Obj: JsRt.r.global) 'load' false;
+				call RunJobs: p;
+			;;
+		;;
+	[end]
+
+	# ---- styles ----
+
+	# Finds <style> and <link rel=stylesheet> elements that are new or changed, and what's gone away. It walks
+	# the document, so only when the document has changed.
+	[ScanSheets: ptr<Page> p: 0;]
+		if p.sheets_scanned and p.sheets_version is p.doc.version return;
+		p.sheets_version is p.doc.version;
+		p.sheets_scanned is true;
+		while each s in p.sheets
+			s.seen is false;
+		;;
+		ptr<WlAtom> style_tag: (WlAtoms.GetZ: 'style');
+		ptr<WlAtom> link_tag: (WlAtoms.GetZ: 'link');
+		ptr<DomNode> n: p.doc.root;
+		while n is not 0
+			if n.type is DomType.ELEMENT and n.ns is DomNs.HTML
+				if n.tag is style_tag
+					call SeeStyle: p n;
+				;;
+				elif n.tag is link_tag
+					call SeeLink: p n;
+				;;
+			;;
+			n is (Dom.Next: n p.doc.root);
+		;;
+		# whatever wasn't found has left the document
+		while u32 i: 0; i < p.sheets.len; i++;
+			if not p.sheets:i.seen and p.sheets:i.sheet is not 0
+				call p.css.RemoveSheet: p.sheets:i.sheet;
+				call Css.FreeSheet: p.sheets:i.sheet;
+				p.sheets:i.sheet is 0;
+				p.sheets:i.node is 0;
+				p.sheets:i.text_hash is 0;
+			;;
+		;;
+		p.sheets_version is p.doc.version;
+	[end]
+
+	[SheetFor: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		while u32 i: 0; i < p.sheets.len; i++;
+			if p.sheets:i.node is n
+				return addr p.sheets:i;
+			;;
+		;;
+		if p.sheets.len >= p.sheets.max
+			return 0 as ptr<PageSheet>;
+		;;
+		p.sheets++;
+		ptr<PageSheet> s: addr p.sheets:(p.sheets.len - 1);
+		s.node is n;
+	[end: s]
+
+	[SeeStyle: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		ptr<PageSheet> s: (SheetFor: p n);
+		if s is 0 return;
+		s.seen is true;
+		WlBuf text;
+		call Dom.TextContent: n text;
+		u32 h: (WlText.Hash: text.data text.len);
+		if s.sheet is 0 or h is not s.text_hash or text.len is not s.text_len
+			if s.sheet is not 0
+				call p.css.RemoveSheet: s.sheet;
+				call Css.FreeSheet: s.sheet;
+			;;
+			s.sheet is (Css.ParseSheet: text.data text.len p.url);
+			s.text_hash is h;
+			s.text_len is text.len;
+			if s.sheet is not 0
+				call p.css.AddSheet: s.sheet;
+			;;
+		;;
+		call text.Free;
+	[end]
+
+	[SeeLink: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		ptr<u8> rel: (Dom.AttrValue: n 'rel');
+		ptr<u8> href: (Dom.AttrValue: n 'href');
+		if rel is 0 or href is 0 return;
+		if not (Same: rel 'stylesheet') return;
+		ptr<PageSheet> s: (SheetFor: p n);
+		if s is 0 return;
+		s.seen is true;
+		# asked for once; an empty record means it's on its way
+		if s.text_hash is 0
+			s.text_hash is 1;
+			call Request: p href (WlText.LenZ: href) PageLoad.STYLE n JsV.UNDEF JsV.UNDEF;
+		;;
+	[end]
+
+	[SheetArrived: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<u8> bytes: 0; u32 len: 0; ptr<u8> base_url: 0;]
+		ptr<PageSheet> s: (SheetFor: p n);
+		if s is 0 return;
+		s.seen is true;
+		if s.sheet is not 0
+			call p.css.RemoveSheet: s.sheet;
+			call Css.FreeSheet: s.sheet;
+		;;
+		s.sheet is (Css.ParseSheet: bytes len base_url);
+		if s.sheet is not 0
+			call p.css.AddSheet: s.sheet;
+		;;
+	[end]
+
+	# Every element's node.style right for the document as it is now. False if that failed; Css.error says why.
+	[UpdateStyle: ptr<Page> p: 0;]
+		call Use: p;
+		call ScanSheets: p;
+	[end: (p.css.Update)]
+
+	[SetViewport: ptr<Page> p: 0; f64 width: 0.0; f64 height: 0.0;]
+		call Use: p;
+		p.width is width;
+		p.height is height;
+		call p.css.SetViewport: width height;
+		call PageBind.SyncWindow: p;
+		call Fire: p (JsV.Obj: JsRt.r.global) 'resize' false;
+		call RunJobs: p;
+	[end]
+
+	# ---- time ----
+
+	# Whatever timers are due, oldest first, and promise jobs after each. Call this often.
+	[Tick: ptr<Page> p: 0; f64 now: 0.0;]
+		call Use: p;
+		p.now is now;
+		if not p.started_clock
+			p.started_clock is true;
+			p.started_at is now;
+		;;
+		# one pass, by id: a timer a timer sets runs on a later tick
+		int limit: p.next_timer;
+		bln fired: true;
+		while fired
+			fired is false;
+			int best: -1;
+			while int i: 0; i < p.timers.len as int; i++;
+				if not p.timers:i.frame and p.timers:i.id < limit and p.timers:i.due <= now
+					if best < 0 or p.timers:i.due < p.timers:best.due
+						best is i;
+					;;
+				;;
+			;;
+			if best >= 0
+				call FireTimer: p best now;
+				fired is true;
+			;;
+		;;
+		call RunJobs: p;
+		call Settle: p;
+	[end]
+
+	# requestAnimationFrame's callbacks, once each
+	[Frame: ptr<Page> p: 0; f64 now: 0.0;]
+		call Use: p;
+		p.now is now;
+		int limit: p.next_timer;
+		int i: 0;
+		while i < p.timers.len as int
+			if p.timers:i.frame and p.timers:i.id < limit
+				u64 fn: p.timers:i.fn;
+				call RemoveTimerAt: p i;
+				# (still safe from the collector: nothing's run since it was taken off)
+				call Js.Push: (JsV.Num: now - p.started_at);
+				p.nest++;
+				call Js.Call: fn JsV.UNDEF 1;
+				if Js.failed
+					call ReportException: p;
+				;;
+				p.nest--;
+				call RunJobs: p;
+			;;
+			else
+				i++;
+			;;
+		;;
+	[end]
+
+	# whether any callbacks are waiting for a frame
+	[WantsFrame: ptr<Page> p: 0;]
+		while each t in p.timers
+			if t.frame return true;
+		;;
+	[end: false]
+
+	[FireTimer: ptr<Page> p: 0; int i: 0; f64 now: 0.0;]
+		u64 fn: p.timers:i.fn;
+		u64 args: p.timers:i.args;
+		if p.timers:i.interval > 0.0
+			p.timers:i.due is now + p.timers:i.interval;
+		;;
+		else
+			call RemoveTimerAt: p i;
+		;;
+		int argc: 0;
+		if (JsV.IsObj: args)
+			ptr<JsObj> a: (JsV.AsObj: args);
+			while u32 k: 0; k < a.length; k++;
+				call Js.Push: a.elems:k;
+				argc++;
+			;;
+		;;
+		p.nest++;
+		call Js.Call: fn (JsV.Obj: JsRt.r.global) argc;
+		if Js.failed
+			call ReportException: p;
+		;;
+		p.nest--;
+		call RunJobs: p;
+	[end]
+
+	[RemoveTimerAt: ptr<Page> p: 0; int i: 0;]
+		u32 last: p.timers.len - 1;
+		while u32 j: i as u32; j < last; j++;
+			p.timers:j is p.timers:(j + 1);
+		;;
+		p.timers.len--;
+	[end]
+
+	[AddTimer: ptr<Page> p: 0; u64 fn: 0; u64 args: 0; f64 delay: 0.0; bln repeat: false; bln frame: false;]
+		if p.timers.len >= p.timers.max
+			call JsErr.Range: 'Too many timers';
+		;;
+		p.timers++;
+		u32 at_: p.timers.len - 1;
+		int id: p.next_timer;
+		p.next_timer++;
+		if delay < 0.0 or delay is not delay
+			delay is 0.0;
+		;;
+		p.timers:at_.id is id;
+		p.timers:at_.due is p.now + delay;
+		p.timers:at_.interval is 0.0;
+		if repeat
+			# (an interval of nothing would never let the page rest)
+			if delay < 1.0
+				delay is 1.0;
+			;;
+			p.timers:at_.interval is delay;
+		;;
+		p.timers:at_.fn is fn;
+		p.timers:at_.args is args;
+		p.timers:at_.frame is frame;
+	[end: id]
+
+	[ClearTimer: ptr<Page> p: 0; int id: 0;]
+		while int i: 0; i < p.timers.len as int; i++;
+			if p.timers:i.id is id
+				call RemoveTimerAt: p i;
+				return;
+			;;
+		;;
+	[end]
+
+	# ---- what happens to the page from outside ----
+
+	# An event at a node, as the browser sees it happen: a mouse event at a point, say. False if a handler
+	# called preventDefault. A link's default action is taken here, unless that happened.
+	[Click: ptr<Page> p: 0; ptr<DomNode> node: 0; f64 x: 0.0; f64 y: 0.0;]
+		call Use: p;
+		u64 ev: (PageEvents.NewMouse: 'click' x y 0 1);
+		p.nest++;
+		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: node) ev);
+		p.nest--;
+		call RunJobs: p;
+		if allowed
+			call DefaultClick: p node;
+		;;
+		call Invalidate: p;
+	[end: allowed]
+
+	# following a link, or ticking a box
+	[DefaultClick: ptr<Page> p: 0; ptr<DomNode> node: 0;]
+		ptr<WlAtom> a_tag: (WlAtoms.GetZ: 'a');
+		ptr<DomNode> n: node;
+		while n is not 0
+			if n.type is DomType.ELEMENT and n.tag is a_tag
+				ptr<u8> href: (Dom.AttrValue: n 'href');
+				if href is not 0 and p.host.navigate is not 0
+					WlBuf full;
+					call Resolve: p href (WlText.LenZ: href) addr full;
+					call p.host.navigate: p full.data;
+					call full.Free;
+				;;
+				return;
+			;;
+			n is n.parent;
+		;;
+	[end]
+
+	[MouseEvent: ptr<Page> p: 0; ptr<DomNode> node: 0; ptr<u8> type: 0; f64 x: 0.0; f64 y: 0.0; int button: 0;]
+		call Use: p;
+		p.nest++;
+		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: node) (PageEvents.NewMouse: type x y button 1));
+		p.nest--;
+		call RunJobs: p;
+		call Invalidate: p;
+	[end: allowed]
+
+	[KeyEvent: ptr<Page> p: 0; ptr<DomNode> node: 0; ptr<u8> type: 0; ptr<u8> key: 0; bln ctrl: false; bln shift: false; bln alt: false;]
+		call Use: p;
+		p.nest++;
+		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: node) (PageEvents.NewKey: type key ctrl shift alt));
+		p.nest--;
+		call RunJobs: p;
+		call Invalidate: p;
+	[end: allowed]
+}

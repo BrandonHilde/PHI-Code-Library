@@ -1,0 +1,17 @@
+Data only: never executed, only read by the tests.
+
+tree-construction/*.dat, README.md
+  web-platform-tests/wpt, commit bccd09efe0c96b2b7aa33f1a9f29a1d8aa252c1f, html/syntax/parsing/resources/
+  (3-clause BSD: LICENSE-wpt.md, from the same commit)
+  (these moved out of html5lib-tests in June 2026, commit 224991ec)
+
+tokenizer/*.test, README.md, LICENSE
+  html5lib/html5lib-tests, branch master, commit c5495c539ca8a79c3c5107f5f14010bcff9a35d5, tokenizer/
+  (MIT: LICENSE)
+
+tokenizer-flat/*.txt
+  made from tokenizer/*.test by tools/html_tokenizer_tests.py, for test_html5lib.phi to read.
+  SKIPPED.txt lists what it leaves out: 4 tests that need a lone surrogate in the input, which UTF-8
+  input can't hold, and xmlViolation.test, which is about coercing to XML rather than HTML parsing.
+
+The tests' lists of parse errors aren't compared: this parser doesn't report parse errors.

@@ -1,0 +1,35 @@
+# weblib through weblib.philib alone, as a program using it has it: no source beside this, so a
+# test here proves the compiled library works (one beside the source would test the source). A
+# document is parsed and written back, its text is read, and a script runs.
+use weblib;
+
+phi.TestWeblib:Program
+{
+	call Weblib.Start: 900000;
+	log 'version: ' Weblib.VERSION '\n';
+
+	# HTML: the parser fixes what's missing, and the serializer writes it as the spec says
+	ptr<u8> markup: '<title>T</title><p class=x>a &amp; b<br>c<p>d';
+	ptr<DomDocument> doc: (Html.Parse: markup (WlText.LenZ: markup) false);
+	log 'parsed: ' (doc is not 0) '\n';
+	WlBuf html;
+	call Html.Serialize: (Dom.Body: doc) html false;
+	log 'body: ' html.data '\n';
+	call html.Free;
+	WlBuf text;
+	call Dom.TextContent: (Dom.Body: doc) text;
+	log 'text: ' text.data '\n';
+	call text.Free;
+	call Dom.FreeDocument: doc;
+
+	# JavaScript
+	ptr<JsRuntime> js: (Js.New);
+	ptr<u8> script: '[1, 2, 3].map(x => x * 2).join("-") + " " + typeof Promise';
+	u64 result: (Js.Eval: script (WlText.LenZ: script) 'test');
+	WlBuf shown;
+	call Js.TextOf: result addr shown;
+	log 'script: ' (Js.failed is false) ' ' shown.data '\n';
+	call shown.Free;
+	call Js.Free: js;
+	exit 0;
+}

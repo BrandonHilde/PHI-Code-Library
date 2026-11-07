@@ -1,0 +1,28 @@
+true [object Counter] Counter 1
+15 15 15
+1
+1,2,3
+held by the host object held by the host object
+TypeError add needs a number true
+TypeError not a Counter
+TypeError Counter needs new
+6 0 2 sum function
+0,1,4 0
+6
+16
+RangeError from JS
+caught in the native 1
+InternalError true true
+still running
+3 item 0 item 2 undefined true false 0,1,2
+item 1 undefined
+plain
+false true undefined
+0 item 0
+1 item 1
+2 item 2
+undefined kept
+1 value
+0
+true
+rooted

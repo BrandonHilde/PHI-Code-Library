@@ -1,0 +1,2 @@
+From tc39/test262, commit d11543772591a5c24b3229e6195a74c73e56032e, harness/: the three files
+test_js262.phi's self-test loads, so it runs without the rest of test262 (BSD, in LICENSE).

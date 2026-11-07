@@ -1,0 +1,209 @@
+# What happens at the edges, at both stack budgets: recursion in JS, source nested too deep, data
+# deeper than any stack in the collector and in ropes.
+#
+#   test_js_limits          as phi test runs it
+#   test_js_limits depth    how deeply each form of source can nest, at 48 KB and at 900 KB
+#
+# takes up to 300 seconds
+
+use js.js;
+
+phi.TestJsLimits:Program
+{
+	call Js.Start: 48000;
+	ptr<u8> arg: (OS.Arguments);
+	if arg is not 0 and arg:0 is 'd'
+		call Depths: 48000;
+		call Depths: 900000;
+		exit 0;
+	;;
+	call Round: 48000;
+	call Round: 900000;
+	log 'done\n';
+	exit 0;
+
+	WlBuf src;
+
+	[Say: ptr<u8> what: 0; u64 r: 0;]
+		log what ': ';
+		if Js.failed
+			WlBuf b;
+			call Js.TextOf: (Js.GetProp: Js.exception 'name') addr b;
+			log b.data '\n';
+			call b.Free;
+			return;
+		;;
+		WlBuf c;
+		call Js.TextOf: r addr c;
+		log c.data '\n';
+		call c.Free;
+	[end]
+
+	# a script of this text, repeated count times, and then tail
+	[Repeat: ptr<u8> open: 0; ptr<u8> close: 0; u32 count: 0;]
+		call src.Clear;
+		while u32 i: 0; i < count; i++;
+			call src.AddZ: open;
+		;;
+		call src.AddZ: '1';
+		while u32 j: 0; j < count; j++;
+			call src.AddZ: close;
+		;;
+	[end]
+
+	[Round: u32 budget: 0;]
+		WlStack.budget is budget;
+		log 'budget ' budget '\n';
+		ptr<JsRuntime> rt: (Js.New);
+		ptr<u8> text: 'function f() { f(); } f();';
+		call Say: 'recursion' (Js.Eval: text (WlText.LenZ: text) 'a');
+		text is 'var o = { get g() { return this.g; } }; o.g;';
+		call Say: 'getter recursion' (Js.Eval: text (WlText.LenZ: text) 'b');
+		text is 'function n() { n.call(null); } n();';
+		call Say: 'native recursion' (Js.Eval: text (WlText.LenZ: text) 'c');
+		text is 'function* g() { yield* g(); } g().next();';
+		call Say: 'generator recursion' (Js.Eval: text (WlText.LenZ: text) 'd');
+		text is 'function f() { f(); } var c = 0; for (var i = 0; i < 5; i++) { try { f(); } catch (e) { c++; } } c;';
+		call Say: 'recovered, times' (Js.Eval: text (WlText.LenZ: text) 'e');
+		call Repeat: '(' ')' 300000;
+		call Say: 'parens' (Js.Eval: src.data src.len 'f');
+		call Repeat: '[' ']' 300000;
+		call Say: 'arrays' (Js.Eval: src.data src.len 'g');
+		call Repeat: '{' '}' 300000;
+		call Say: 'blocks' (Js.Eval: src.data src.len 'h');
+		call Repeat: 'function f(){' '}' 100000;
+		call Say: 'functions' (Js.Eval: src.data src.len 'i');
+		call Repeat: '!' '' 300000;
+		call Say: 'unary' (Js.Eval: src.data src.len 'j');
+		call Repeat: 'a=' '' 300000;
+		call Say: 'assignments' (Js.Eval: src.data src.len 'k');
+		call Repeat: 'x=>' '' 300000;
+		call Say: 'arrows' (Js.Eval: src.data src.len 'l');
+		call Repeat: 'class A extends (' '){}' 100000;
+		call Say: 'classes' (Js.Eval: src.data src.len 'm');
+		call Repeat: '`${' '}`' 100000;
+		call Say: 'templates' (Js.Eval: src.data src.len 'n');
+		call Repeat: '[a=' ']=1' 100000;
+		call Say: 'patterns' (Js.Eval: src.data src.len 'o');
+		# nothing nested at all, however long
+		call src.Clear;
+		call src.AddZ: '1';
+		while u32 i: 0; i < 200000; i++;
+			call src.AddZ: '+1';
+		;;
+		call Say: 'a long sum' (Js.Eval: src.data src.len 'p');
+		call src.Clear;
+		call src.AddZ: 'var o = {a: {b() { return this; }}}; o.a';
+		while u32 k: 0; k < 40; k++;
+			call src.AddZ: '.b()';
+		;;
+		call src.AddZ: ' === o.a';
+		call Say: 'a chain of calls' (Js.Eval: src.data src.len 'q');
+		# a million things in a line: the collector doesn't recurse, and nor does flattening
+		text is 'var head = null; for (var i = 0; i < 300000; i++) head = { next: head };';
+		call Say: 'long list' (Js.Eval: text (WlText.LenZ: text) 'r');
+		call Js.Collect;
+		text is 'var n = 0; for (var p = head; p; p = p.next) n++; n;';
+		call Say: 'after a collection' (Js.Eval: text (WlText.LenZ: text) 's');
+		text is 'var s = ""; for (var i = 0; i < 500000; i++) s += "abcdef".charAt(i % 6); s.charCodeAt(499999);';
+		call Say: 'a deep rope' (Js.Eval: text (WlText.LenZ: text) 't');
+		text is 'var r = ""; for (var i = 0; i < 100000; i++) r = "ab" + r + "cd"; r.length;';
+		call Say: 'a rope both ways' (Js.Eval: text (WlText.LenZ: text) 'u');
+		call Js.Collect;
+		text is 'r.charCodeAt(200000);';
+		call Say: 'read after a collection' (Js.Eval: text (WlText.LenZ: text) 'v');
+		# interrupted: no catch sees it, not even in a finally
+		call Js.SetPollHook: addr Stop 1000;
+		text is 'while (true) { try { for (;;) { } } catch (e) { } finally { continue; } }';
+		call Say: 'interrupted' (Js.Eval: text (WlText.LenZ: text) 'w');
+		call Js.SetPollHook: 0 20000;
+		text is '"still fine"';
+		call Say: 'after that' (Js.Eval: text (WlText.LenZ: text) 'x');
+		# running out of the value stack: many locals, many arguments
+		text is 'function a() { a.apply(null, [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]); } a();';
+		call Say: 'stack by arguments' (Js.Eval: text (WlText.LenZ: text) 'y');
+		text is 'var big = []; big.length = 150000; function g() { arguments; g(...big); } g();';
+		call Say: 'stack by spread' (Js.Eval: text (WlText.LenZ: text) 'z');
+		# holding on to too much: a RangeError that can be caught, and then all's well again
+		text is 'head = null; s = null; r = null; big = null; 0';
+		call Js.Eval: text (WlText.LenZ: text) 'aa';
+		call Js.Collect;
+		call Js.SetMemoryLimit: 20000000;
+		text is 'var keep = []; var how = "none"; try { for (;;) keep.push({ a: [1, 2, 3], s: "x" + keep.length }); } catch (e) { how = e.name; } keep = null; how;';
+		call Say: 'too much alive' (Js.Eval: text (WlText.LenZ: text) 'ab');
+		text is 'for (var i = 0; i < 100000; i++) ({ i: i }); "plenty again"';
+		call Say: 'after letting go' (Js.Eval: text (WlText.LenZ: text) 'ac');
+		text is 'var t = "x"; try { for (;;) { t = t + t; t.charCodeAt(0); } } catch (e) { t = e.name; } t';
+		call Say: 'a string too long' (Js.Eval: text (WlText.LenZ: text) 'ad');
+		call Js.SetMemoryLimit: 1500000000;
+		# in a 32-bit program, the heap itself runs out, at 128 MB, and that's the same error
+		if sizeof ptr<u8> is 4
+			text is 'var all = []; var e2 = "none"; try { for (;;) all.push([1, 2, 3, 4, 5, 6, 7, 8]); } catch (e) { e2 = e.name; } all = null; e2';
+			u64 oom: (Js.Eval: text (WlText.LenZ: text) 'ae');
+			if Js.failed or not (JsStrs.EqZ: (JsV.AsStr: oom) 'RangeError')
+				log 'the heap running out went wrong\n';
+			;;
+			text is 'for (var i = 0; i < 1000; i++) ({ i: i }); 1';
+			call Js.Eval: text (WlText.LenZ: text) 'af';
+			if Js.failed
+				log 'nothing works after the heap ran out\n';
+			;;
+		;;
+		call Js.Free: rt;
+	[end]
+
+	[Stop]
+		stop_count++;
+	[end: stop_count % 50 is 0]
+
+	int stop_count: 0;
+
+	# the deepest count of a form that compiles at this budget, by bisection
+	[Deepest: ptr<u8> name: 0; ptr<u8> open: 0; ptr<u8> close: 0;]
+		u32 lo: 1;
+		u32 hi: 200000;
+		while lo + 1 < hi
+			u32 mid: (lo + hi) / 2;
+			call Repeat: open close mid;
+			JsTryState t;
+			call Js.TryBegin: addr t;
+			ptr<JsCode> c: 0;
+			bln ok: true;
+			if call c is Js.Compile: src.data src.len 'depth' false throws err
+				call Js.TryCatchAll: addr t err;
+				ok is false;
+			;;
+			if ok
+				lo is mid;
+			;;
+			else
+				hi is mid;
+			;;
+		;;
+		log '  ' name ': ' lo '\n';
+	[end]
+
+	[Depths: u32 budget: 0;]
+		WlStack.budget is budget;
+		log 'budget ' budget '\n';
+		ptr<JsRuntime> rt: (Js.New);
+		call Deepest: '(((1)))' '(' ')';
+		call Deepest: '[[[1]]]' '[' ']';
+		call Deepest: '{a:{a:1}}' '({a:' '})';
+		call Deepest: 'f(f(1))' 'f(' ')';
+		call Deepest: 'a[a[1]]' 'a[' ']';
+		call Deepest: '!!!1' '!' '';
+		call Deepest: 'a=a=1' 'a=' '';
+		call Deepest: '{{{1}}}' '{' '}';
+		call Deepest: 'if(1)if(1)' 'if(1)' '';
+		call Deepest: 'for(;;)for(;;)' 'for(;;)' '';
+		call Deepest: 'function f(){function f(){' 'function f(){' '}';
+		call Deepest: '()=>()=>' '()=>' '';
+		call Deepest: 'x=>x=>' 'x=>' '';
+		call Deepest: 'class' 'class A extends (' '){}';
+		call Deepest: 'try{try{' 'try{' '}catch(e){}';
+		call Deepest: 'a?a?a:a:a' 'a?' ':a';
+		call Deepest: 'templates' '`${' '}`';
+		call Js.Free: rt;
+	[end]
+}

@@ -1,0 +1,52 @@
+# weblib: interpreting HTML, CSS and JavaScript, for a web browser.
+#
+#   phi build weblib.phi --library      # weblib.philib, which a browser includes with `use weblib;`
+#
+# See README.md for how to use it and docs/DESIGN.md for how it's built.
+
+use core.text;
+use core.buf;
+use core.atoms;
+use core.arena;
+use core.alloc;
+use core.stack;
+use dom.dom;
+use html.parser;
+use css.css;
+use js.js;
+use page.page;
+
+asm.WlSetFpu
+{
+	fldcw [{fpu_control}]
+	ret
+}
+
+x64.WlSetFpu
+{
+	fldcw [rel {fpu_control}]
+	ret
+}
+
+phi.Weblib:Library
+{
+	const int VERSION: 1;
+
+	# double precision, round to nearest, every exception masked: PHI's floating point runs on
+	# the x87, and without this its 80-bit results would be rounded twice, which JS can see
+	u16 fpu_control: 0x027F;
+	bln started: false;
+
+	# Call this once, near the top of the program, before anything else in the library.
+	# stack_bytes is how much of the stack the library may recurse through: 48 KB suits PHI OS's
+	# 64 KB stack; a Windows program has 1 MB and a Linux one usually 8 MB, so it can say more
+	# and handle more deeply nested scripts.
+	[Start: u32 stack_bytes: 48000;]
+		call WlStack.Used;
+		WlStack.budget is stack_bytes;
+		call WlSetFpu;
+		if started return;
+		started is true;
+		call Dom.Start;
+	[end]
+}

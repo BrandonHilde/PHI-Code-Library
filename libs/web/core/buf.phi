@@ -1,0 +1,145 @@
+# Growable byte buffers. Text in weblib is always (pointer, length), UTF-8, and a WlBuf keeps a
+# zero after its last byte so its data can also go where a ptr<u8> of text goes.
+#
+#   WlBuf b;                     # a plain struct: starts as all zeros, ready to use
+#   call b.AddZ: 'count: ';
+#   call b.AddInt: 42;
+#   log b.data;                  # count: 42
+#   call b.Free;
+
+use memory.mem;
+
+struct.WlBuf
+{
+	ptr<u8> data;
+	u32 len;
+	u32 cap;
+
+	# room for extra more bytes and the ending zero
+	[Reserve: u32 extra: 0;]
+		u32 need: len + extra + 1;
+		if data is not 0 and need <= cap return;
+		u32 room: cap * 2;
+		if room < 32
+			room is 32;
+		;;
+		if room < need
+			room is need;
+		;;
+		ptr<u8> grown: new u8[room];
+		if grown is 0
+			throw 'out of memory growing a buffer to ' room ' bytes';
+		;;
+		if len > 0
+			call Mem.Copy: grown data len;
+		;;
+		if data is not 0
+			free data;
+		;;
+		data is grown;
+		cap is room;
+	[end]
+
+	[Add: u8 b: 0;]
+		if data is 0 or len + 2 > cap
+			call Reserve: 1;
+		;;
+		data:len is b;
+		len++;
+		data:len is 0;
+	[end]
+
+	[AddN: ptr<u8> from: 0; u32 count: 0;]
+		if count is 0
+			if data is 0
+				call Reserve: 0;
+			;;
+			return;
+		;;
+		call Reserve: count;
+		call Mem.Copy: data + len from count;
+		len++ count;
+		data:len is 0;
+	[end]
+
+	# zero-terminated text
+	[AddZ: ptr<u8> text: 0;]
+		if text is 0 return;
+		u32 count: 0;
+		while text:count is not 0
+			count++;
+		;;
+		call AddN: text count;
+	[end]
+
+	[AddInt: int n: 0;]
+		u8 digits[12];
+		int count: 0;
+		u32 left: n as u32;
+		if n < 0
+			call Add: '-';
+			left is (0 - n) as u32;
+		;;
+		while left > 0 or count is 0
+			digits:count is ('0' + left % 10) as u8;
+			left is left / 10;
+			count++;
+		;;
+		while count > 0
+			count--;
+			call Add: digits:count;
+		;;
+	[end]
+
+	# a code point as UTF-8; anything that isn't one (past 0x10FFFF) as U+FFFD
+	[AddCode: u32 cp: 0;]
+		if cp < 0x80
+			call Add: cp as u8;
+			return;
+		;;
+		if cp > 0x10FFFF
+			cp is 0xFFFD;
+		;;
+		if cp < 0x800
+			call Add: (0xC0 | (cp >> 6)) as u8;
+		;;
+		elif cp < 0x10000
+			call Add: (0xE0 | (cp >> 12)) as u8;
+			call Add: (0x80 | ((cp >> 6) & 63)) as u8;
+		;;
+		else
+			call Add: (0xF0 | (cp >> 18)) as u8;
+			call Add: (0x80 | ((cp >> 12) & 63)) as u8;
+			call Add: (0x80 | ((cp >> 6) & 63)) as u8;
+		;;
+		call Add: (0x80 | (cp & 63)) as u8;
+	[end]
+
+	# empty again, keeping the room
+	[Clear]
+		len is 0;
+		if data is not 0
+			data:0 is 0;
+		;;
+	[end]
+
+	[Free]
+		if data is not 0
+			free data;
+		;;
+		data is 0;
+		len is 0;
+		cap is 0;
+	[end]
+
+	# the bytes for keeping (zero-terminated, the caller's to free); the buffer is empty after
+	[Take]
+		if data is 0
+			call Reserve: 0;
+		;;
+		ptr<u8> kept: data;
+		data is 0;
+		len is 0;
+		cap is 0;
+	[end: kept]
+}

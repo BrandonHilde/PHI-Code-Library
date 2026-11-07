@@ -1,0 +1,489 @@
+# Selectors against a document, expected answers written by hand (many after WPT's
+# selectors/ and dom/nodes/ParentNode-querySelector-All cases). Prints only what's wrong and a count.
+use weblib;
+use css.css;
+use css.testdom;
+
+phi.TestCssSelectors:Program
+{
+	call Weblib.Start: 900000;
+	call Css.Start;
+
+	doc is (CssTestDom.Build: 'html#h(head#hd(title#ti("t")) body#b.bd(
+		div#d1.a.b[title=hello world][lang=en-US][data-x=abcdef][data-y=one two three](
+			p#p1.x("text") p#p2.y[data-n=1] span#s1.x p#p3.z h1#hh1)
+		div#d2.a[dir=rtl](
+			ul#u1(li#l1 li#l2.odd li#l3 li#l4 li#l5) em#e1 "  " em#e2)
+		div#d3
+		div#d4("   ")
+		div#d5(div#d6(div#d7.deep(span#s2 span#s3.Mixed)))
+		form#f1(
+			input#i1[type=text][required] input#i2[type=checkbox][checked] input#i3[disabled][placeholder=x][type=text]
+			input#i6[type=radio] input#i7[readonly] input#i8[placeholder=y][value=z]
+			select#sel(option#o1 option#o2[selected]) textarea#ta[readonly] textarea#tb[placeholder=q]
+			button#btn button#btn2[type=button] input#sub[type=submit]
+			fieldset#fs[disabled](legend#lg(input#i4) input#i5))
+		a#a1[href=x] a#a2 area#a3[href=y]
+		div#ce[contenteditable](span#ces)
+	))');
+
+	# ---- type, universal, id, class
+	call Q: 'p' 'p1 p2 p3';
+	call Q: 'P' 'p1 p2 p3';
+	call Q: 'DiV#D1' '';
+	call Q: '#d1' 'd1';
+	call Q: '.a' 'd1 d2';
+	call Q: '.a.b' 'd1';
+	call Q: 'div.a#d2' 'd2';
+	call Q: '.Mixed' 's3';
+	call Q: '.mixed' '';
+	call Q: '*.x' 'p1 s1';
+	call Q: 'body > *' 'd1 d2 d3 d4 d5 f1 a1 a2 a3 ce';
+	call Q: '*|p' 'p1 p2 p3';
+	call Q: '|p' 'p1 p2 p3';
+	call Q: 'html|p' 'p1 p2 p3';
+	call Q: '*|*#d3' 'd3';
+
+	# ---- attributes
+	call Q: '[title]' 'd1';
+	call Q: '[TITLE]' 'd1';
+	call Q: '[title="hello world"]' 'd1';
+	call Q: '[title=hello]' '';
+	call Q: '[title~=world]' 'd1';
+	call Q: '[title~="hello world"]' '';
+	call Q: '[title~=""]' '';
+	call Q: '[lang|=en]' 'd1';
+	call Q: '[lang|=en-US]' 'd1';
+	call Q: '[lang|=e]' '';
+	call Q: '[data-x^=abc]' 'd1';
+	call Q: '[data-x^=""]' '';
+	call Q: '[data-x$=def]' 'd1';
+	call Q: '[data-x$=""]' '';
+	call Q: '[data-x*=cde]' 'd1';
+	call Q: '[data-x*=""]' '';
+	call Q: '[data-x*=CDE]' '';
+	call Q: '[data-x*=CDE i]' 'd1';
+	call Q: '[data-x*="CDE" I]' 'd1';
+	call Q: '[data-x*=cde s]' 'd1';
+	call Q: '[data-y~=two]' 'd1';
+	call Q: '[type=TEXT]' 'i1 i3';
+	call Q: '[type=TEXT s]' '';
+	call Q: '[*|title]' 'd1';
+	call Q: '[|title]' 'd1';
+	call Q: '[html|title]' 'd1';
+	call Q: '[ title = "hello world" i ]' 'd1';
+
+	# ---- combinators
+	call Q: 'div p' 'p1 p2 p3';
+	call Q: 'body p' 'p1 p2 p3';
+	call Q: 'div > p' 'p1 p2 p3';
+	call Q: 'body > p' '';
+	call Q: 'p + span' 's1';
+	call Q: 'p + p' 'p2';
+	call Q: 'p ~ p' 'p2 p3';
+	call Q: 'p#p1 ~ p' 'p2 p3';
+	call Q: 'p#p2 ~ *' 's1 p3 hh1';
+	call Q: 'span ~ p' 'p3';
+	call Q: 'li + li + li' 'l3 l4 l5';
+	call Q: 'div div div span' 's2 s3';
+	call Q: 'div > div > div > span' 's2 s3';
+	call Q: 'body > div > div > span' '';
+	call Q: 'html body div span.Mixed' 's3';
+	# what a greedy matcher gets wrong: the nearest div isn't the one with a b above it
+	call Q: '.deep span + span' 's3';
+	call Q: 'body div > div span' 's2 s3';
+	call Q: 'div > div div span' 's2 s3';
+	call Q: 'ul li ~ li + li' 'l3 l4 l5';
+	call Q: 'p ~ span + p' 'p3';
+	call Q: '#d1 > p ~ h1' 'hh1';
+	call Q: 'div ~ div > ul > li:first-child' 'l1';
+	call Q: 'div+div~div>div>div>span:last-child' 's3';
+	call Q: '#d5 span' 's2 s3';
+	call Q: 'a,p' 'p1 p2 p3 a1 a2';
+	call Q: ' p , #d3 ' 'p1 p2 p3 d3';
+
+	# ---- structure
+	call Q: ':root' 'h';
+	call Q: 'p:first-child' 'p1';
+	call Q: 'li:last-child' 'l5';
+	call Q: ':only-child' 'h ti d6 d7 i4 ces';
+	call Q: 'li:nth-child(1)' 'l1';
+	call Q: 'li:nth-child(even)' 'l2 l4';
+	call Q: 'li:nth-child(odd)' 'l1 l3 l5';
+	call Q: 'li:nth-child(2n+1)' 'l1 l3 l5';
+	call Q: 'li:nth-child(2n)' 'l2 l4';
+	call Q: 'li:nth-child(n)' 'l1 l2 l3 l4 l5';
+	call Q: 'li:nth-child(n+3)' 'l3 l4 l5';
+	call Q: 'li:nth-child(-n+2)' 'l1 l2';
+	call Q: 'li:nth-child(3n - 1)' 'l2 l5';
+	call Q: 'li:nth-child( +3 )' 'l3';
+	call Q: 'li:nth-child(0)' '';
+	call Q: 'li:nth-child(-1)' '';
+	call Q: 'li:nth-last-child(1)' 'l5';
+	call Q: 'li:nth-last-child(2n)' 'l2 l4';
+	call Q: 'li:nth-child(1 of .odd)' 'l2';
+	call Q: 'li:nth-child(2 of li)' 'l2';
+	call Q: 'li:nth-last-child(1 of :not(.odd))' 'l5';
+	call Q: 'p:first-of-type' 'p1';
+	call Q: 'p:last-of-type' 'p3';
+	call Q: 'span:only-of-type' 's1 ces';
+	call Q: 'em:nth-of-type(2)' 'e2';
+	call Q: 'em:nth-last-of-type(2)' 'e1';
+	call Q: 'p:nth-of-type(2n+1)' 'p1 p3';
+	call Q: 'em:only-of-type' '';
+	call Q: 'div:empty' 'd3';
+	call Q: 'p:empty' 'p2 p3';
+
+	# ---- logic
+	call Q: ':not(p):first-child' 'h hd ti d1 u1 l1 d6 d7 s2 i1 o1 lg i4 ces';
+	call Q: 'p:not(.x)' 'p2 p3';
+	call Q: 'p:not(.x, .y)' 'p3';
+	call Q: 'li:not(:nth-child(odd))' 'l2 l4';
+	call Q: 'p:is(.x, .z)' 'p1 p3';
+	call Q: ':is(p, span).x' 'p1 s1';
+	call Q: 'p:where(.x, .z)' 'p1 p3';
+	call Q: 'p:is(.x, :::nonsense)' 'p1';
+	call Q: 'p:is(:::nonsense)' '';
+	call Q: ':is(div p, div li) + p' 'p2';
+	call Q: 'div:has(> p)' 'd1';
+	call Q: 'div:has(p)' 'd1';
+	call Q: 'div:has(> ul li)' 'd2';
+	call Q: 'p:has(+ span)' 'p2';
+	call Q: 'p:has(~ h1)' 'p1 p2 p3';
+	call Q: 'body:has(#s3)' 'b';
+	call Q: 'div:not(:has(*))' 'd3 d4';
+	call Q: '*:has(> span + span)' 'd7';
+	call Q: 'div:has(.x, em)' 'd1 d2';
+
+	# ---- forms and links
+	call Q: ':link' 'a1 a3';
+	call Q: ':any-link' 'a1 a3';
+	call Q: ':visited' '';
+	call Q: ':checked' 'i2 o2';
+	call Q: ':disabled' 'i3 fs i5';
+	call Q: 'input:enabled' 'i1 i2 i6 i7 i8 sub i4';
+	call Q: ':required' 'i1';
+	call Q: 'select:optional' 'sel';
+	call Q: 'input:read-only' 'i2 i3 i6 i7 sub i5';
+	call Q: 'textarea:read-write' 'tb';
+	call Q: ':read-write' 'i1 i8 tb i4 ce ces';
+	call Q: ':placeholder-shown' 'i3 tb';
+	call Q: ':default' 'i2 o2 btn';
+	call Q: 'div:lang(en)' 'd1';
+	call Q: 'p:lang(en-US)' 'p1 p2 p3';
+	call Q: 'p:lang(de, en)' 'p1 p2 p3';
+	call Q: 'p:lang("*-US")' 'p1 p2 p3';
+	call Q: 'p:lang(de)' '';
+	call Q: 'li:dir(rtl)' 'l1 l2 l3 l4 l5';
+	call Q: 'p:dir(ltr)' 'p1 p2 p3';
+
+	# ---- escapes
+	call Q: '#\x5C64 1' 'd1';
+	call Q: '.\x5C61' 'd1 d2';
+	call Q: 'p\x5C:x' '';
+
+	# ---- :scope, query under an element, matches, closest
+	ptr<DomNode> d2: (Id: 'd2');
+	call QUnder: d2 'li' 'l1 l2 l3 l4 l5';
+	call QUnder: d2 ':scope > ul' 'u1';
+	call QUnder: d2 ':scope > li' '';
+	call QUnder: d2 'body li:first-child' 'l1';
+	call QUnder: d2 'div' '';
+	call M: 'p1' 'p' true;
+	call M: 'p1' '.x' true;
+	call M: 'p1' '.y' false;
+	call M: 'p1' 'div > p' true;
+	call M: 'p1' ':scope' true;
+	ptr<DomNode> close1: (Css.Closest: (Id: 'l3') 'div' 3);
+	call Say: 'closest' close1 is d2;
+	close1 is (Css.Closest: (Id: 'l3') '#none' 5);
+	call Say: 'closest none' close1 is 0;
+
+	# ---- what's invalid is a failure, not a crash, and valid for nothing
+	call Invalid: '';
+	call Invalid: ' ';
+	call Invalid: ',';
+	call Invalid: 'a,';
+	call Invalid: ',a';
+	call Invalid: 'a,,b';
+	call Invalid: '>';
+	call Invalid: 'a >';
+	call Invalid: '> a';
+	call Invalid: 'a > > b';
+	call Invalid: 'a + + b';
+	call Invalid: '.';
+	call Invalid: '.1';
+	call Invalid: '#';
+	call Invalid: '#1a';
+	call Invalid: '[';
+	call Invalid: '[]';
+	call Invalid: '[a=';
+	call Invalid: '[a=]';
+	call Invalid: '[a=1]';
+	call Invalid: '[a=b c]';
+	call Invalid: '[a=b i i]';
+	call Invalid: '[a=b x]';
+	call Invalid: '[a~b]';
+	call Invalid: ':';
+	call Invalid: '::';
+	call Invalid: ':nosuch';
+	call Invalid: '::nosuch';
+	call Invalid: ':not()';
+	call Invalid: ':not(:::x)';
+	call Invalid: ':has()';
+	call Invalid: ':has(:has(a))';
+	call Invalid: ':nth-child()';
+	call Invalid: ':nth-child(a)';
+	call Invalid: ':nth-child(1.5)';
+	call Invalid: ':nth-child(1 of)';
+	call Invalid: ':nth-of-type(1 of a)';
+	call Invalid: ':lang()';
+	call Invalid: ':dir(up)';
+	call Invalid: 'p::before a';
+	call Invalid: 'p::before.x';
+	call Invalid: 'p::before::after';
+	call Invalid: '$';
+	call Invalid: 'a|';
+	call Invalid: 'a||b';
+	call Invalid: 'a{';
+	call Invalid: '@media';
+	call Invalid: '1';
+	call Invalid: 'a!';
+
+	# a pseudo-element's rule matches nothing as a query, and it isn't invalid
+	call Q: 'p::before' '';
+	call Q: 'p:first-line' '';
+	call Q: 'p::-webkit-whatever' '';
+	call NotInvalid: 'p::before:hover';
+	# the end of the input closes what's open, in a selector as anywhere
+	call NotInvalid: '[title';
+	call Q: '[title' 'd1';
+	call Q: 'p:not(.x' 'p2 p3';
+
+	# ---- specificity: (a, b, c) as written out by a << 20 | b << 10 | c
+	call Spec: '*' 0 0 0;
+	call Spec: 'p' 0 0 1;
+	call Spec: 'p.a' 0 1 1;
+	call Spec: '#a' 1 0 0;
+	call Spec: 'div p' 0 0 2;
+	call Spec: 'ul li.x a[href]:hover' 0 3 3;
+	call Spec: 'p::before' 0 0 2;
+	call Spec: 'p:before' 0 0 2;
+	call Spec: ':root' 0 1 0;
+	call Spec: ':is(#a, .b, c)' 1 0 0;
+	call Spec: ':where(#a, .b, c)' 0 0 0;
+	call Spec: ':not(#a)' 1 0 0;
+	call Spec: ':not(.a, p)' 0 1 0;
+	call Spec: ':has(#a)' 1 0 0;
+	call Spec: ':has(> .a b)' 0 1 1;
+	call Spec: ':nth-child(2n)' 0 1 0;
+	call Spec: ':nth-child(2n of .a, #b)' 1 1 0;
+	call Spec: 'p:is(.a, .b):where(#c)' 0 1 1;
+	call Spec: '*|*' 0 0 0;
+	call Spec: 'html|p' 0 0 1;
+
+	# ---- the host's word on hover and friends
+	CssSel.on_state is addr State;
+	call Q: 'p:hover' 'p2';
+	call Q: 'div:hover p' 'p1 p2 p3';
+	call Q: ':focus' 'i1';
+	call Q: ':focus-within' 'h b f1 i1';
+	call Q: ':active' '';
+	call Q: ':target' 's3';
+	call Q: 'a:visited' 'a1';
+	call Q: 'a:link' '';
+	call Q: 'area:link' 'a3';
+	call Q: 'input:checked' 'i6';
+	CssSel.on_state is 0;
+
+	# ---- a deep tree, wider than any stack: matched in a loop
+	ptr<DomDocument> deep: (Dom.NewDocument);
+	ptr<DomNode> up: (Dom.CreateElementZ: deep 'html');
+	call Dom.Append: deep.root up;
+	while int i: 0; i < 20000; i++;
+		ptr<DomNode> kid: (Dom.CreateElementZ: deep 'div');
+		call Dom.Append: up kid;
+		up is kid;
+	;;
+	call Dom.SetAttrZ: up 'id' 'bottom';
+	WlBuf hold;
+	bln hit: (Css.Matches: up 'html div div div > div #nope, html div div > div div div' 52);
+	call Say: 'deep tree' hit;
+	bln miss: (Css.Matches: up 'nope div div div div div div div div div div div div div div div' 63);
+	call Say: 'deep tree, no match' miss is false;
+	call Dom.FreeDocument: deep;
+
+	# a selector nested past its limit is invalid, not a dead stack
+	WlBuf nest;
+	while int i: 0; i < 100000; i++;
+		call nest.AddZ: ':not(';
+	;;
+	call Invalid2: nest.data nest.len;
+	call nest.Clear;
+	while int i: 0; i < 200; i++;
+		call nest.AddZ: ':is(';
+	;;
+	call nest.Add: 112;
+	while int i: 0; i < 200; i++;
+		call nest.Add: 41;
+	;;
+	# :is() forgives what it can't read, so this one is valid and matches nothing
+	call Say: 'nested :is' (Css.Query: doc.root nest.data nest.len) is 0;
+	call nest.Free;
+
+	log 'selectors: ' passed ' passed, ' failed ' failed\n';
+	exit 0;
+
+	ptr<DomDocument> doc: 0;
+	int passed: 0;
+	int failed: 0;
+
+	[Id: ptr<u8> id: 0;]
+	[end: (Dom.FindById: doc.root (WlAtoms.GetZ: id))]
+
+	[State: ptr<DomNode> e: 0; u32 what: 0;]
+		ptr<WlAtom> id: e.id_atom;
+		if id is 0 return -1;
+		if what is CssSel.ST_HOVER
+			if (WlText.EqZ: id.text id.len 'p2') or (WlText.EqZ: id.text id.len 'd1') return 1;
+			return 0;
+		;;
+		if what is CssSel.ST_FOCUS
+			if (WlText.EqZ: id.text id.len 'i1') return 1;
+			return 0;
+		;;
+		if what is CssSel.ST_TARGET
+			if (WlText.EqZ: id.text id.len 's3') return 1;
+			return 0;
+		;;
+		if what is CssSel.ST_VISITED
+			if (WlText.EqZ: id.text id.len 'a1') return 1;
+			return 0;
+		;;
+		if what is CssSel.ST_CHECKED
+			if (WlText.EqZ: id.text id.len 'i6') return 1;
+			return 0;
+		;;
+	[end: -1]
+
+	[Say: ptr<u8> what: 0; bln ok: false;]
+		if ok
+			passed++;
+		;;
+		else
+			failed++;
+			log 'FAIL ' what '\n';
+		;;
+	[end]
+
+	[Q: ptr<u8> sel: 0; ptr<u8> want: 0;]
+		call QUnder: doc.root sel want;
+	[end]
+
+	[QUnder: ptr<DomNode> root: 0; ptr<u8> sel: 0; ptr<u8> want: 0;]
+		CssNodeList found;
+		int n: (Css.QueryAll: root sel (WlText.LenZ: sel) addr found);
+		WlBuf text;
+		if n < 0
+			call text.AddZ: 'INVALID';
+		;;
+		while u32 i: 0; i < found.count; i++;
+			ptr<DomNode> e: found.items:i;
+			if i > 0
+				call text.Add: 32;
+			;;
+			if e.id_atom is not 0
+				ptr<WlAtom> id: e.id_atom;
+				call text.AddN: id.text id.len;
+			;;
+			else
+				call text.Add: 63;
+			;;
+		;;
+		call found.Free;
+		if (WlText.EqZ: text.data text.len want)
+			passed++;
+		;;
+		else
+			failed++;
+			log 'FAIL ' sel '\n  want ' want '\n  got  ';
+			if text.data is not 0
+				log text.data;
+			;;
+			log '\n';
+		;;
+		# and querySelector agrees
+		ptr<DomNode> first: (Css.Query: root sel (WlText.LenZ: sel));
+		if want:0 is 0
+			if first is not 0
+				failed++;
+				log 'FAIL first ' sel ': expected nothing\n';
+			;;
+		;;
+		elif first is 0
+			failed++;
+			log 'FAIL first ' sel ': found nothing\n';
+		;;
+		call text.Free;
+	[end]
+
+	[M: ptr<u8> id: 0; ptr<u8> sel: 0; bln want: false;]
+		call Say: sel (Css.Matches: (Id: id) sel (WlText.LenZ: sel)) is want;
+	[end]
+
+	[Invalid: ptr<u8> sel: 0;]
+		call Invalid2: sel (WlText.LenZ: sel);
+	[end]
+
+	[Invalid2: ptr<u8> sel: 0; u32 n: 0;]
+		ptr<DomNode> e: (Id: 'p1');
+		ptr<DomNode> got: (Css.Query: doc.root sel n);
+		bln a: Css.invalid;
+		bln m: (Css.Matches: e sel n);
+		bln b: Css.invalid;
+		CssNodeList found;
+		int count: (Css.QueryAll: doc.root sel n addr found);
+		if a and b and got is 0 and m is false and count is -1 and n < 100
+			passed++;
+		;;
+		elif a and b and got is 0 and m is false and count is -1
+			passed++;
+		;;
+		else
+			failed++;
+			log 'FAIL should be invalid: ';
+			if n < 80
+				log sel;
+			;;
+			else
+				log '(long) ' n;
+			;;
+			log ' ' a ' ' b ' ' count '\n';
+		;;
+		call found.Free;
+	[end]
+
+	[NotInvalid: ptr<u8> sel: 0;]
+		ptr<DomNode> got: (Css.Query: doc.root sel (WlText.LenZ: sel));
+		call Say: sel Css.invalid is false;
+	[end]
+
+	[Spec: ptr<u8> sel: 0; u32 a: 0; u32 b: 0; u32 c: 0;]
+		ptr<CssSelList> list: (Css.Selector: sel (WlText.LenZ: sel));
+		if list is 0
+			failed++;
+			log 'FAIL spec ' sel ': invalid\n';
+			return;
+		;;
+		ptr<CssComplex> one: list.first;
+		u32 got: one.spec;
+		u32 want: (a << 20) | (b << 10) | c;
+		if got is want
+			passed++;
+		;;
+		else
+			failed++;
+			log 'FAIL spec ' sel ': got ' (got >> 20) ' ' ((got >> 10) & 1023) ' ' (got & 1023) '\n';
+		;;
+	[end]
+}

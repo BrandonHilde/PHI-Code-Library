@@ -1,0 +1,728 @@
+# The cascade and computed values, with answers worked out by hand. Prints what's wrong and a count.
+use weblib;
+use css.css;
+use css.testdom;
+
+phi.TestCssCascade:Program
+{
+	call Weblib.Start: 900000;
+	call Css.Start;
+
+	# ---- the UA sheet
+	call Setup: 'html#h(head#hd(title#ti style#st) body#b(div#d(p#p span#s("x") a#a1[href=u] a#a2) h1#h1 h2#h2 ul#u(li#l ol#o(li#l2)) table#t(tbody#tb(tr#tr(td#td th#th))) pre#pr b#bo i#it em#em strong#str code#co small#sm sub#su input#inp button#bt center#ce blockquote#bq hr#hr div#hid[hidden]))' '';
+	call C: 'hid' 'display' 'none';
+	call C: 'h' 'display' 'block';
+	call C: 'hd' 'display' 'none';
+	call C: 'ti' 'display' 'none';
+	call C: 'st' 'display' 'none';
+	call C: 'b' 'display' 'block';
+	call C: 'b' 'margin-top' '8px';
+	call C: 'b' 'margin' '8px';
+	call C: 'd' 'display' 'block';
+	call C: 'd' 'margin-top' '0px';
+	call C: 'p' 'display' 'block';
+	call C: 'p' 'margin-top' '16px';
+	call C: 'p' 'margin-left' '0px';
+	call C: 's' 'display' 'inline';
+	call C: 'h1' 'font-size' '32px';
+	call C: 'h1' 'font-weight' '700';
+	call C: 'h1' 'margin-top' '21.44px';
+	call C: 'h2' 'font-size' '24px';
+	call C: 'u' 'padding-left' '40px';
+	call C: 'u' 'list-style-type' 'disc';
+	call C: 'l' 'display' 'list-item';
+	call C: 'o' 'list-style-type' 'decimal';
+	call C: 'o' 'margin-top' '0px';
+	call C: 't' 'display' 'table';
+	call C: 't' 'border-spacing' '2px';
+	call C: 'tb' 'display' 'table-row-group';
+	call C: 'tr' 'display' 'table-row';
+	call C: 'td' 'display' 'table-cell';
+	call C: 'td' 'padding-top' '1px';
+	call C: 'th' 'font-weight' '700';
+	call C: 'pr' 'white-space' 'pre';
+	call C: 'pr' 'font-family' 'monospace';
+	call C: 'bo' 'font-weight' '700';
+	call C: 'it' 'font-style' 'italic';
+	call C: 'em' 'font-style' 'italic';
+	call C: 'str' 'font-weight' '700';
+	call C: 'co' 'font-family' 'monospace';
+	call C: 'sm' 'font-size' '13.33333px';
+	call C: 'su' 'vertical-align' 'sub';
+	call C: 'inp' 'display' 'inline-block';
+	call C: 'bt' 'display' 'inline-block';
+	call C: 'ce' 'text-align' 'center';
+	call C: 'bq' 'margin-left' '40px';
+	call C: 'a1' 'text-decoration-line' 'underline';
+	call C: 'a2' 'text-decoration-line' 'none';
+	call C: 'a1' 'color' 'rgb(0, 0, 238)';
+	call C: 'a2' 'color' 'rgb(0, 0, 0)';
+	call C: 'h' 'font-family' 'serif';
+	call C: 'hr' 'border-top-width' '1px';
+	call Finish;
+
+	# ---- order: specificity, source order, !important, inline
+	call Setup: 'html(body(p#a.x.y p#b.x[style=color:blue;margin-left:1px] p#c[style=color:blue] p#d.x[style=color:blue!important] div#e.z))'
+		'p { color: red; margin-top: 1px; } p { color: green; } .x { color: orange; } .x.y { color: purple; } #a { margin-top: 5px; } p.x { color: teal; } p#c { color: lime !important; } .x { color: navy !important; } .z { width: 10px; width: bogus; height: 1px; height: calc(1px + 2px); }';
+	call C: 'a' 'color' 'rgb(0, 0, 128)';
+	call C: 'a' 'margin-top' '5px';
+	call C: 'b' 'color' 'rgb(0, 0, 128)';
+	call C: 'b' 'margin-left' '1px';
+	call C: 'c' 'color' 'rgb(0, 255, 0)';
+	call C: 'd' 'color' 'rgb(0, 0, 255)';
+	call C: 'e' 'width' '10px';
+	call C: 'e' 'height' '3px';
+	call Finish;
+
+	# specificity decides before order, order only ties
+	call Setup: 'html(body(p#a.x))' '#a { color: red } p.x { color: green } p { color: blue } .x { margin-top: 1px } p { margin-top: 2px } :where(#a) { margin-left: 1px } p { margin-left: 2px } :is(#a) { padding-left: 1px } .x.x.x.x { padding-left: 2px }';
+	call C: 'a' 'color' 'rgb(255, 0, 0)';
+	call C: 'a' 'margin-top' '1px';
+	call C: 'a' 'margin-left' '2px';
+	call C: 'a' 'padding-left' '1px';
+	call Finish;
+
+	# ---- inheritance
+	call Setup: 'html(body(div#o(div#m(div#i span#s))))'
+		'#o { color: red; font-size: 20px; line-height: 1.5; margin-top: 7px; background-color: blue; visibility: hidden; text-align: right; } #m { font-size: 2em; border-top: 1px solid; } #i { margin-top: inherit; background-color: inherit; color: initial; visibility: unset; border-top-width: inherit; width: inherit; } #s { font-size: 50%; line-height: inherit; }';
+	call C: 'm' 'color' 'rgb(255, 0, 0)';
+	call C: 'm' 'font-size' '40px';
+	call C: 'm' 'margin-top' '0px';
+	call C: 'm' 'background-color' 'rgba(0, 0, 0, 0)';
+	call C: 'm' 'text-align' 'right';
+	call C: 'm' 'line-height' '1.5';
+	call C: 'm' 'border-top-color' 'rgb(255, 0, 0)';
+	call C: 'i' 'margin-top' '0px';
+	call C: 'i' 'background-color' 'rgba(0, 0, 0, 0)';
+	call C: 'i' 'color' 'rgb(0, 0, 0)';
+	call C: 'i' 'visibility' 'hidden';
+	call C: 'i' 'border-top-width' '0px';
+	call C: 's' 'font-size' '20px';
+	call C: 's' 'line-height' '1.5';
+	call Finish;
+
+	# revert goes back to the UA's value; unset to inherited or initial
+	call Setup: 'html(body(h1#a p#b.x div#c(p#d)))'
+		'h1 { font-size: 50px; font-weight: 100; display: inline; } #a { font-size: revert; display: revert; font-weight: revert; } .x { margin-top: 100px; margin-top: revert; } #c { color: red; } #d { color: unset; margin-top: unset; }';
+	call C: 'a' 'font-size' '32px';
+	call C: 'a' 'display' 'block';
+	call C: 'a' 'font-weight' '700';
+	call C: 'b' 'margin-top' '16px';
+	call C: 'd' 'color' 'rgb(255, 0, 0)';
+	call C: 'd' 'margin-top' '0px';
+	call Finish;
+
+	# ---- lengths and units
+	call Setup: 'html#h(body#b(div#d(div#e span#s)))'
+		'html { font-size: 10px; } #d { font-size: 20px; width: 2em; height: 3rem; margin-top: 1in; margin-right: 1cm; margin-bottom: 1pt; margin-left: 1pc; padding-top: 10mm; padding-right: 4Q; padding-bottom: 1ex; padding-left: 1ch; top: 10vw; right: 10vh; bottom: 10vmin; left: 10vmax; } #e { width: 50%; height: auto; min-width: 0; max-width: none; margin-left: auto; font-size: 1.5em; letter-spacing: 0.1em; text-indent: 5%; line-height: 150%; } #s { line-height: 2em; word-spacing: normal; vertical-align: 10%; opacity: 50%; z-index: 7; flex-grow: 2.5; }';
+	call C: 'd' 'width' '40px';
+	call C: 'd' 'height' '30px';
+	call C: 'd' 'margin-top' '96px';
+	call C: 'd' 'margin-right' '37.79528px';
+	call C: 'd' 'margin-bottom' '1.333333px';
+	call C: 'd' 'margin-left' '16px';
+	call C: 'd' 'padding-top' '37.79528px';
+	call C: 'd' 'padding-right' '3.779528px';
+	call C: 'd' 'padding-bottom' '10px';
+	call C: 'd' 'padding-left' '10px';
+	call C: 'd' 'top' '80px';
+	call C: 'd' 'right' '60px';
+	call C: 'd' 'bottom' '60px';
+	call C: 'd' 'left' '80px';
+	call C: 'e' 'width' '50%';
+	call C: 'e' 'height' 'auto';
+	call C: 'e' 'min-width' '0px';
+	call C: 'e' 'max-width' 'none';
+	call C: 'e' 'margin-left' 'auto';
+	call C: 'e' 'font-size' '30px';
+	call C: 'e' 'letter-spacing' '3px';
+	call C: 'e' 'text-indent' '5%';
+	call C: 'e' 'line-height' '45px';
+	call C: 's' 'line-height' '40px';
+	call C: 's' 'word-spacing' 'normal';
+	call C: 's' 'vertical-align' '10%';
+	call C: 's' 'opacity' '0.5';
+	call C: 's' 'z-index' '7';
+	call C: 's' 'flex-grow' '2.5';
+	call Typed;
+	call Finish;
+
+	# ---- calc
+	call Setup: 'html(body(div#a))'
+		'#a { font-size: 10px; width: calc(1in + 4px); height: calc(10% + 2em); margin-top: calc(2 * 3px); margin-right: calc(10px / 2); margin-bottom: calc((1px + 2px) * 2); margin-left: min(10px, 20px); padding-top: max(1px, 2px, 3px); padding-right: clamp(1px, 5px, 3px); padding-bottom: calc(-5px); padding-left: min(10px, 50%); top: calc(1em - 1em); right: calc(100% - 10px); opacity: calc(1 / 2); z-index: calc(1 + 2); line-height: calc(1 + 0.5); rotate: calc(45deg + 45deg); transition-duration: calc(1s + 500ms); bottom: calc(1px + calc(2px + 3px)); left: calc(1vw); } #a { flex-grow: calc(1px); flex-shrink: calc(1 + 1px); order: calc(1.5); column-width: calc(1% + 1px); }';
+	call C: 'a' 'width' '100px';
+	call C: 'a' 'height' 'calc(10% + 20px)';
+	call C: 'a' 'margin-top' '6px';
+	call C: 'a' 'margin-right' '5px';
+	call C: 'a' 'margin-bottom' '6px';
+	call C: 'a' 'margin-left' '10px';
+	call C: 'a' 'padding-top' '3px';
+	call C: 'a' 'padding-right' '3px';
+	call C: 'a' 'padding-bottom' '0px';
+	call C: 'a' 'padding-left' 'min(10px, 50%)';
+	call C: 'a' 'top' '0px';
+	call C: 'a' 'right' 'calc(100% - 10px)';
+	call C: 'a' 'opacity' '0.5';
+	call C: 'a' 'z-index' '3';
+	call C: 'a' 'line-height' '1.5';
+	call C: 'a' 'rotate' '90deg';
+	call C: 'a' 'transition-duration' '1.5s';
+	call C: 'a' 'bottom' '6px';
+	call C: 'a' 'left' '8px';
+	# wrong types drop the declaration
+	call C: 'a' 'flex-grow' '0';
+	call C: 'a' 'flex-shrink' '1';
+	call C: 'a' 'column-width' 'auto';
+	call CalcTyped;
+	call Finish;
+
+	# ---- var()
+	call Setup: 'html#h(body#b(div#a(div#c) div#d div#e div#f div#g))'
+		'html { --main: red; --size: 10px; --empty:; --Case: 1px; } #a { color: var(--main); width: var(--size); height: calc(var(--size) * 2); margin: var(--size) 2px; background-color: var(--nope, blue); padding-top: var(--nope, var(--size)); padding-left: var(--nope); border-top: var(--size) solid var(--main); --local: var(--size) var(--main); --main: green; outline-color: var(--main); } #c { color: var(--main); --size: 3px; width: var(--size); --a: var(--b); --b: var(--a); height: var(--a, 5px); margin-top: var(--a); --self: var(--self); padding-top: var(--self, 9px); padding-bottom: var(--case, 8px); padding-right: var(--Case, 8px); } #d { width: 1px var(--size); height: var(--size) !important; height: 7px; font-size: var(--nope, 20px); --w: 2; line-height: var(--w); z-index: var(--w)var(--w); } #e { --x: initial; color: var(--main, purple); --main: initial; background-color: var(--main, purple); width: var(--empty) 4px; } #f { --big: 1px; --v: var(--big) var(--big); --u: var(--v) var(--v); margin: var(--big); transition: var(--nope, opacity) 1s; } #g { --c1: var(--c2, 1px); --c2: var(--c3, 2px); --c3: var(--c1, 3px); width: var(--c1, 40px); height: var(--c3, 50px); --ok: var(--c1, 60px); left: var(--ok); }';
+	call C: 'a' 'color' 'rgb(0, 128, 0)';
+	call C: 'a' 'width' '10px';
+	call C: 'a' 'height' '20px';
+	call C: 'a' 'margin-top' '10px';
+	call C: 'a' 'margin-right' '2px';
+	call C: 'a' 'margin-bottom' '10px';
+	call C: 'a' 'background-color' 'rgb(0, 0, 255)';
+	call C: 'a' 'padding-top' '10px';
+	call C: 'a' 'padding-left' '0px';
+	call C: 'a' 'border-top-width' '10px';
+	call C: 'a' 'border-top-style' 'solid';
+	call C: 'a' 'border-top-color' 'rgb(0, 128, 0)';
+	call C: 'a' 'outline-color' 'rgb(0, 128, 0)';
+	call C: 'c' 'color' 'rgb(0, 128, 0)';
+	call C: 'c' 'width' '3px';
+	call C: 'c' 'height' '5px';
+	call C: 'c' 'margin-top' '0px';
+	call C: 'c' 'padding-top' '9px';
+	call C: 'c' 'padding-bottom' '8px';
+	call C: 'c' 'padding-right' '1px';
+	call C: 'd' 'width' 'auto';
+	call C: 'd' 'height' '10px';
+	call C: 'd' 'font-size' '20px';
+	call C: 'd' 'line-height' '2';
+	call C: 'd' 'z-index' 'auto';
+	call C: 'e' 'color' 'rgb(128, 0, 128)';
+	call C: 'e' 'background-color' 'rgb(128, 0, 128)';
+	call C: 'e' 'width' '4px';
+	call C: 'f' 'margin-left' '1px';
+	call C: 'f' 'transition-property' 'opacity';
+	call C: 'f' 'transition-duration' '1s';
+	call C: 'g' 'width' '40px';
+	call C: 'g' 'height' '50px';
+	call C: 'g' 'left' '60px';
+	call C: 'a' '--local' '/**/10px/**/ /**/green/**/';
+	call C: 'f' '--u' '/**//**/1px/**/ /**/1px/**//**/ /**//**/1px/**/ /**/1px/**//**/';
+	call Absent: 'a' '--nope';
+	call Absent: 'c' '--a';
+	call Finish;
+
+	# a value that grows too big by substitution is invalid, not out of memory
+	WlBuf many;
+	call many.AddZ: '#a { --v0: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; ';
+	while int i: 1; i < 40; i++;
+		call many.AddZ: '--v';
+		call many.AddInt: i;
+		call many.AddZ: ': var(--v';
+		call many.AddInt: i - 1;
+		call many.AddZ: ') var(--v';
+		call many.AddInt: i - 1;
+		call many.AddZ: '); ';
+	;;
+	call many.AddZ: 'width: var(--v39, 5px); height: var(--v2, 6px); }';
+	call Setup: 'html(body(div#a))' many.data;
+	call C: 'a' 'width' '5px';
+	call C: 'a' 'height' 'auto';
+	call Finish;
+	call many.Free;
+
+	# ---- @media, with the viewport changing
+	call Setup: 'html(body(div#a))'
+		'@media (min-width: 500px) { #a { width: 1px; } } @media (max-width: 499px) { #a { width: 2px; } } @media print { #a { height: 1px; } } @media screen { #a { height: 2px; } } @media not print { #a { margin-top: 3px; } } @media not screen { #a { margin-top: 4px; } } @media (orientation: landscape) { #a { margin-left: 1px; } } @media (orientation: portrait) { #a { margin-left: 2px; } } @media (prefers-color-scheme: dark) { #a { color: white; } } @media (400px <= width <= 700px) { #a { top: 1px; } } @media (width > 700px) { #a { top: 2px; } } @media screen and (min-width: 100px) and (max-width: 10000px) { #a { left: 1px; } } @media (nonsense) { #a { right: 1px; } } @media not (nonsense) { #a { bottom: 1px; } } @media (min-width: 1000px), print { #a { padding-top: 1px; } } @media ((min-width: 1px) or (nonsense)) and (not (max-width: 1px)) { #a { padding-left: 1px; } } @media all { @media (min-width: 1px) { #a { padding-right: 1px; } } } @media foo { #a { padding-bottom: 1px; } } @media { #a { z-index: 1; } } @media 1 + 1 { #a { order: 1; } } @media screen, 1 { #a { order: 2; } }';
+	call e.SetViewport: 800.0 600.0;
+	call e.Update;
+	call C: 'a' 'width' '1px';
+	call C: 'a' 'height' '2px';
+	call C: 'a' 'margin-top' '3px';
+	call C: 'a' 'margin-left' '1px';
+	call C: 'a' 'color' 'rgb(0, 0, 0)';
+	call C: 'a' 'top' '2px';
+	call C: 'a' 'left' '1px';
+	call C: 'a' 'right' 'auto';
+	call C: 'a' 'bottom' 'auto';
+	call C: 'a' 'padding-top' '0px';
+	call C: 'a' 'padding-left' '1px';
+	call C: 'a' 'padding-right' '1px';
+	call C: 'a' 'padding-bottom' '0px';
+	call C: 'a' 'z-index' '1';
+	call C: 'a' 'order' '2';
+	call e.SetViewport: 400.0 600.0;
+	call e.Update;
+	call C: 'a' 'width' '2px';
+	call C: 'a' 'margin-left' '2px';
+	call C: 'a' 'top' '1px';
+	call e.SetViewport: 1200.0 600.0;
+	e.env.dark is true;
+	e.env.print is true;
+	call e.MediaChanged;
+	call e.Update;
+	call C: 'a' 'color' 'rgb(255, 255, 255)';
+	call C: 'a' 'height' '1px';
+	call C: 'a' 'margin-top' '4px';
+	call C: 'a' 'padding-top' '1px';
+	call Say: 'matchMedia yes' (Css.MatchMedia: e '(min-width: 1000px)' 19);
+	call Say: 'matchMedia no' (Css.MatchMedia: e '(min-width: 2000px)' 19) is false;
+	call Finish;
+
+	# vw units follow the viewport; only the viewport's going to change them
+	call Setup: 'html(body(div#a))' '#a { width: 10vw; height: 10vh; }';
+	call e.SetViewport: 1000.0 500.0;
+	call e.Update;
+	call C: 'a' 'width' '100px';
+	call C: 'a' 'height' '50px';
+	call e.SetViewport: 2000.0 100.0;
+	call e.Update;
+	call C: 'a' 'width' '200px';
+	call C: 'a' 'height' '10px';
+	call Finish;
+
+	# ---- @supports
+	call Setup: 'html(body(div#a))'
+		'@supports (display: flex) { #a { top: 1px; } } @supports (display: nonsense) { #a { top: 2px; } } @supports (nonsense: 1) { #a { top: 3px; } } @supports not (display: nonsense) { #a { left: 1px; } } @supports (display: flex) and (color: red) { #a { right: 1px; } } @supports (display: nonsense) or (color: red) { #a { bottom: 1px; } } @supports selector(a > b) { #a { margin-top: 1px; } } @supports selector(a:nosuch) { #a { margin-top: 2px; } } @supports (--x: 1) { #a { margin-left: 1px; } } @supports (width: calc(1px + 1%)) { #a { margin-right: 1px; } } @supports (width: var(--x)) { #a { margin-bottom: 1px; } } @supports (display: flex) and (color: red) or (top: 0) { #a { padding-top: 1px; } } @supports display: flex { #a { padding-left: 1px; } } @supports ((display: flex)) { #a { padding-right: 1px; } } @supports (color: red !important) { #a { padding-bottom: 1px; } } @supports (color: rgb(1 2 3 / 50%)) { #a { z-index: 1; } }';
+	call C: 'a' 'top' '1px';
+	call C: 'a' 'left' '1px';
+	call C: 'a' 'right' '1px';
+	call C: 'a' 'bottom' '1px';
+	call C: 'a' 'margin-top' '1px';
+	call C: 'a' 'margin-left' '1px';
+	call C: 'a' 'margin-right' '1px';
+	call C: 'a' 'margin-bottom' '1px';
+	call C: 'a' 'padding-top' '0px';
+	call C: 'a' 'padding-left' '0px';
+	call C: 'a' 'padding-right' '1px';
+	call C: 'a' 'padding-bottom' '1px';
+	call C: 'a' 'z-index' '1';
+	call Say: 'CSS.supports yes' (Css.Supports: '(display: grid)' 15);
+	call Say: 'CSS.supports no' (Css.Supports: '(display: grod)' 15) is false;
+	call Say: 'CSS.supports(prop, value)' (Css.SupportsProperty: 'color' 5 'red' 3);
+	call Say: 'CSS.supports(prop, bad)' (Css.SupportsProperty: 'color' 5 'blurple' 7) is false;
+	call Say: 'CSS.supports(bad prop)' (Css.SupportsProperty: 'colour' 6 'red' 3) is false;
+	call Finish;
+
+	# ---- layers
+	call Setup: 'html(body(div#a div#b[style=top:9px!important;left:9px] div#c))'
+		'@layer one, two; @layer two { #a { color: red; margin-top: 2px !important; } } @layer one { #a { color: blue; width: 1px; margin-top: 1px !important; } } #a { width: 3px; height: 1px !important; } @layer two { #a { height: 2px !important; } } @layer one { #b { top: 1px !important; left: 1px !important; } } @layer outer { #c { color: red; } @layer inner { #c { color: blue; width: 7px; } } } @layer outer.inner { #c { width: 8px; } } @layer { #c { height: 1px; } } @layer { #c { height: 2px; } }';
+	call C: 'a' 'color' 'rgb(255, 0, 0)';
+	call C: 'a' 'width' '3px';
+	call C: 'a' 'margin-top' '1px';
+	call C: 'a' 'height' '2px';
+	call C: 'b' 'top' '9px';
+	call C: 'b' 'left' '1px';
+	call C: 'c' 'color' 'rgb(255, 0, 0)';
+	call C: 'c' 'width' '8px';
+	call C: 'c' 'height' '2px';
+	call Finish;
+
+	# ---- what a computed value is by definition
+	call Setup: 'html#h(body#b(span#f span#ab span#fx-box div#flex(span#item) div#gr(span#gi) p#ov p#bs span#fi span#c1))'
+		'#f { float: left; } #ab { position: absolute; float: right; } #flex { display: flex; } #gr { display: inline-grid; } #ov { overflow-x: hidden; overflow-y: visible; } #bs { border: 5px none red; outline: 7px solid; border-left-style: solid; border-right-style: hidden; } #fi { display: inline-flex; float: left; } #c1 { display: contents; position: fixed; }';
+	call C: 'f' 'display' 'block';
+	call C: 'ab' 'display' 'block';
+	call C: 'ab' 'float' 'none';
+	call C: 'flex' 'display' 'flex';
+	call C: 'item' 'display' 'block';
+	call C: 'gi' 'display' 'block';
+	call C: 'ov' 'overflow-x' 'hidden';
+	call C: 'ov' 'overflow-y' 'auto';
+	call C: 'bs' 'border-top-width' '0px';
+	call C: 'bs' 'border-left-width' '5px';
+	call C: 'bs' 'border-right-width' '0px';
+	call C: 'bs' 'outline-width' '7px';
+	call C: 'fi' 'display' 'flex';
+	call C: 'c1' 'display' 'contents';
+	call Finish;
+
+	# ---- pseudo-elements
+	call Setup: 'html(body(div#a[data-t=hi] div#b p#c))'
+		'#a::before { content: "<" attr(data-t) ">" attr(nope, "!"); color: red; font-size: 2em; display: block; } #a::after { content: none; } #a { font-size: 10px; } #b:before { width: 1px; } p::first-line { color: blue; } p::first-letter { color: green; } p::selection { color: pink; }';
+	call Pseudos;
+	call Finish;
+
+	# ---- presentational attributes
+	call Setup: 'html(body[bgcolor=red][text=blue](img#i[width=100][height=50%][hspace=3] table#t[border=2][width=80%][cellspacing=4][align=center](tbody(tr(td#d[bgcolor=#00ff00][align=right][valign=top]))) font#f[color=green][face=Arial] div#s[align=center][width=9] img#o[width=5][style=width:7px]))'
+		'#o { height: 1px; }';
+	ptr<DomNode> body: (Dom.Body: doc);
+	call Node: body 'background-color' 'rgb(255, 0, 0)';
+	call Node: body 'color' 'rgb(0, 0, 255)';
+	call C: 'i' 'width' '100px';
+	call C: 'i' 'height' '50%';
+	call C: 'i' 'margin-left' '3px';
+	call C: 't' 'border-top-width' '2px';
+	call C: 't' 'width' '80%';
+	call C: 't' 'border-spacing' '4px';
+	call C: 't' 'margin-left' 'auto';
+	call C: 'd' 'background-color' 'rgb(0, 255, 0)';
+	call C: 'd' 'text-align' 'right';
+	call C: 'd' 'vertical-align' 'top';
+	call C: 'f' 'color' 'rgb(0, 128, 0)';
+	call C: 'f' 'font-family' 'Arial';
+	call C: 's' 'text-align' 'center';
+	call C: 's' 'width' 'auto';
+	call C: 'o' 'width' '7px';
+	call Finish;
+
+	# ---- dynamic: what's dirty is recomputed, what isn't keeps its very style
+	call Setup: 'html(body(div#p.a(div#k span#ks) div#sib div#other))' '.a { color: red; } .b { color: blue; } .a #k { width: 1px; } .b #k { width: 2px; } #sib { height: 1px; } .a + #sib { height: 2px; } [data-on] { margin-top: 1px; } li:first-child { top: 1px; } li:last-child { left: 1px; }';
+	ptr<DomNode> pn: (Id: 'p');
+	ptr<DomNode> other: (Id: 'other');
+	ptr<u8> other_style: other.style;
+	call C: 'k' 'color' 'rgb(255, 0, 0)';
+	call C: 'k' 'width' '1px';
+	call C: 'sib' 'height' '2px';
+	u32 v0: doc.version;
+	call e.Update;
+	call Say: 'no change, no version change' doc.version is v0;
+	call Dom.SetAttrZ: pn 'class' 'b';
+	call e.Update;
+	call C: 'p' 'color' 'rgb(0, 0, 255)';
+	call C: 'k' 'color' 'rgb(0, 0, 255)';
+	call C: 'k' 'width' '2px';
+	call C: 'sib' 'height' '1px';
+	call Dom.SetAttrZ: other 'data-on' '';
+	call e.Update;
+	call C: 'other' 'margin-top' '1px';
+	call Dom.RemoveAttr: other (WlAtoms.GetZ: 'data-on');
+	call e.Update;
+	call C: 'other' 'margin-top' '0px';
+	# the style attribute, written by hand
+	call Dom.SetAttrZ: other 'style' 'margin-top: 5px';
+	call e.Update;
+	call C: 'other' 'margin-top' '5px';
+	call Dom.SetAttrZ: other 'style' 'margin-top: 6px';
+	call e.Update;
+	call C: 'other' 'margin-top' '6px';
+	call Dom.RemoveAttr: other (WlAtoms.GetZ: 'style');
+	call e.Update;
+	call C: 'other' 'margin-top' '0px';
+	# new elements, and positions that change as they come
+	ptr<DomNode> list: (Dom.CreateElementZ: doc 'ul');
+	call Dom.Append: (Dom.Body: doc) list;
+	ptr<DomNode> li1: (Dom.CreateElementZ: doc 'li');
+	call Dom.Append: list li1;
+	call Dom.SetAttrZ: li1 'id' 'li1';
+	call e.Update;
+	call C: 'li1' 'top' '1px';
+	call C: 'li1' 'left' '1px';
+	ptr<DomNode> li2: (Dom.CreateElementZ: doc 'li');
+	call Dom.Append: list li2;
+	call Dom.SetAttrZ: li2 'id' 'li2';
+	call e.Update;
+	call C: 'li1' 'left' 'auto';
+	call C: 'li2' 'top' 'auto';
+	call C: 'li2' 'left' '1px';
+	call Dom.Remove: li2;
+	call e.Update;
+	call C: 'li1' 'left' '1px';
+	# moved under another parent, it inherits from there
+	call Dom.SetAttrZ: li2 'style' 'width: 3px';
+	call Dom.Append: pn li2;
+	call e.Update;
+	call C: 'li2' 'color' 'rgb(0, 0, 255)';
+	call C: 'li2' 'width' '3px';
+	# a sheet added and taken away
+	ptr<CssSheet> extra: (Css.ParseSheet: '#k { color: lime; }' 19 0);
+	call e.AddSheet: extra;
+	call e.Update;
+	call C: 'k' 'color' 'rgb(0, 255, 0)';
+	call e.RemoveSheet: extra;
+	call e.Update;
+	call C: 'k' 'color' 'rgb(0, 0, 255)';
+	call Css.FreeSheet: extra;
+	# hover, through the host
+	ptr<CssSheet> hv: (Css.ParseSheet: '#k:hover { color: pink; }' 25 0);
+	call e.AddSheet: hv;
+	call e.Update;
+	CssSel.on_state is addr HoverK;
+	call e.MarkDirty: (Id: 'k');
+	call e.Update;
+	call C: 'k' 'color' 'rgb(255, 192, 203)';
+	CssSel.on_state is 0;
+	call e.MarkDirty: (Id: 'k');
+	call e.Update;
+	call C: 'k' 'color' 'rgb(0, 0, 255)';
+	call e.RemoveSheet: hv;
+	call Css.FreeSheet: hv;
+	call Finish;
+
+	# ---- sharing: 1000 elements alike are one style
+	WlBuf big;
+	call big.AddZ: 'html(body(div#w(';
+	while int i: 0; i < 1000; i++;
+		call big.AddZ: 'p.x ';
+	;;
+	call big.AddZ: ')))';
+	call Setup: big.data '.x { color: red; margin: 1px; }';
+	call big.Free;
+	ptr<DomNode> w: (Id: 'w');
+	ptr<DomNode> p1: (Dom.FirstElementChild: w);
+	ptr<DomNode> p2: (Dom.NextElement: p1);
+	call Say: 'siblings share a style' p1.style is p2.style;
+	ptr<CssComputed> ws: p1.style as ptr<CssComputed>;
+	call Say: 'an untouched group is shared with the initial style' ws.g:(CssP.G_BG) is CssStyles.initial.g:(CssP.G_BG);
+	call Finish;
+
+	# ---- @import, sync and async, and cycles
+	imports is 0;
+	call Setup2: 'html(body(div#a))' '@import "one.css"; @import url(two.css) screen; @import "three.css" print; @import "four.css" layer(l); @import "late.css" supports(display: nope); #a { color: red; } @import "ignored.css"; ' 'https://x.test/dir/main.css';
+	call C: 'a' 'width' '1px';
+	call C: 'a' 'height' '2px';
+	call C: 'a' 'color' 'rgb(255, 0, 0)';
+	call C: 'a' 'margin-top' '0px';
+	call C: 'a' 'margin-left' '9px';
+	call Say: 'imports asked' imports is 4;
+	call Finish;
+
+	# ---- @font-face and @keyframes, for the browser to read
+	call FontsAndFrames;
+
+	# ---- URLs
+	call Url: 'http://a.test/b/c.css' 'd.png' 'http://a.test/b/d.png';
+	call Url: 'http://a.test/b/c.css' '../d.png' 'http://a.test/d.png';
+	call Url: 'http://a.test/b/c.css' './e/../d.png' 'http://a.test/b/d.png';
+	call Url: 'http://a.test/b/c.css' '/d.png' 'http://a.test/d.png';
+	call Url: 'http://a.test/b/c.css' '//z.test/d.png' 'http://z.test/d.png';
+	call Url: 'http://a.test/b/c.css' 'https://q.test/x' 'https://q.test/x';
+	call Url: 'http://a.test/b/c.css' 'data:image/png;base64,AAAA' 'data:image/png;base64,AAAA';
+	call Url: 'http://a.test/b/c.css?q=1#f' 'd.png?x=1#y' 'http://a.test/b/d.png?x=1#y';
+	call Url: 'http://a.test/b/c.css' '#frag' 'http://a.test/b/c.css#frag';
+	call Url: 'http://a.test/b/c.css' '?q' 'http://a.test/b/c.css?q';
+	call Url: 'http://a.test' 'd.png' 'http://a.test/d.png';
+	call Url: 'http://a.test/b/c.css' '../../../d.png' 'http://a.test/d.png';
+	call Url: 'http://a.test/b/' 'd/' 'http://a.test/b/d/';
+	call Url: 'http://a.test/b/' '  d  ' 'http://a.test/b/d';
+
+	log 'cascade: ' passed ' passed, ' failed ' failed\n';
+	exit 0;
+
+	ptr<DomDocument> doc: 0;
+	ptr<CssEngine> e: 0;
+	ptr<CssSheet> sheet: 0;
+	int passed: 0;
+	int failed: 0;
+	int imports: 0;
+
+	[Setup: ptr<u8> tree: 0; ptr<u8> css: 0;]
+		call Setup2: tree css 0;
+	[end]
+
+	[Setup2: ptr<u8> tree: 0; ptr<u8> css: 0; ptr<u8> base: 0;]
+		doc is (CssTestDom.Build: tree);
+		e is (Css.NewEngine: doc);
+		if e is 0
+			log 'no engine: ' Css.error '\n';
+			exit 1;
+		;;
+		e.on_import is addr OnImport;
+		sheet is (Css.ParseSheet: css (WlText.LenZ: css) base);
+		call e.AddSheet: sheet;
+		if (e.Update) is false
+			failed++;
+			log 'FAIL Update: ' Css.error '\n';
+		;;
+	[end]
+
+	[Finish]
+		call e.Free;
+		call Css.FreeSheet: sheet;
+		call Dom.FreeDocument: doc;
+	[end]
+
+	[OnImport: ptr<CssEngine> eng: 0; ptr<CssImport> im: 0;]
+		imports++;
+		ptr<u8> url: im.url;
+		u32 n: (WlText.LenZ: url);
+		if (WlText.EqZ: url n 'https://x.test/dir/one.css')
+			call Css.ImportDone: eng im '#a { width: 1px; }' 18;
+		;;
+		elif (WlText.EqZ: url n 'https://x.test/dir/two.css')
+			call Css.ImportDone: eng im '@import "one.css"; #a { height: 2px; margin-left: 9px; }' 56;
+		;;
+		elif (WlText.EqZ: url n 'https://x.test/dir/four.css')
+			call Css.ImportDone: eng im '#a { margin-left: 1px; }' 24;
+		;;
+		else
+			log 'FAIL asked to import ' url '\n';
+			failed++;
+		;;
+	[end]
+
+	[HoverK: ptr<DomNode> n: 0; u32 what: 0;]
+		if what is CssSel.ST_HOVER and n.id_atom is (WlAtoms.GetZ: 'k') return 1;
+	[end: 0]
+
+	[Id: ptr<u8> id: 0;]
+	[end: (Dom.FindById: doc.root (WlAtoms.GetZ: id))]
+
+	[Say: ptr<u8> what: 0; bln ok: false;]
+		if ok
+			passed++;
+		;;
+		else
+			failed++;
+			log 'FAIL ' what '\n';
+		;;
+	[end]
+
+	[C: ptr<u8> id: 0; ptr<u8> prop: 0; ptr<u8> want: 0;]
+		ptr<DomNode> n: (Id: id);
+		if n is 0
+			failed++;
+			log 'FAIL no element ' id '\n';
+			return;
+		;;
+		call Node: n prop want;
+	[end]
+
+	[Node: ptr<DomNode> n: 0; ptr<u8> prop: 0; ptr<u8> want: 0;]
+		WlBuf text;
+		bln ok: (Css.ComputedText: n prop (WlText.LenZ: prop) addr text);
+		if ok and (WlText.EqZ: text.data text.len want)
+			passed++;
+		;;
+		else
+			failed++;
+			ptr<WlAtom> id: n.id_atom;
+			log 'FAIL ';
+			if id is not 0
+				log '#' id.text ' ';
+			;;
+			log prop ' want ' want ' got ';
+			if text.data is not 0
+				log text.data;
+			;;
+			log '\n';
+		;;
+		call text.Free;
+	[end]
+
+	[Absent: ptr<u8> id: 0; ptr<u8> prop: 0;]
+		WlBuf text;
+		bln ok: (Css.ComputedText: (Id: id) prop (WlText.LenZ: prop) addr text);
+		call Say: prop ok is false;
+		call text.Free;
+	[end]
+
+	# the getters a layout engine uses
+	[Typed]
+		ptr<CssComputed> s: (Css.StyleOf: (Id: 'e'));
+		call Say: 'Len percent' (s.Len: CssP.WIDTH 200.0 -1.0) is 100.0;
+		call Say: 'Len auto' (s.Len: CssP.HEIGHT 200.0 -1.0) is -1.0;
+		call Say: 'IsAuto' (s.IsAuto: CssP.HEIGHT);
+		call Say: 'IsAuto no' (s.IsAuto: CssP.WIDTH) is false;
+		call Say: 'IsPercent' (s.IsPercent: CssP.WIDTH);
+		call Say: 'Display' (s.Display) is CssK.BLOCK;
+		call Say: 'FontPx' (s.FontPx) is 30.0;
+		call Say: 'LineHeightPx' (s.LineHeightPx) is 45.0;
+		call Say: 'MarginLeft auto' (s.MarginLeft: 100.0) is 0.0;
+		ptr<CssComputed> t: (Css.StyleOf: (Id: 's'));
+		call Say: 'ZIndex' (t.ZIndex) is 7;
+		call Say: 'ZIndexAuto' (t.ZIndexAuto) is false;
+		call Say: 'Opacity' (t.Opacity) is 0.5;
+		call Say: 'Num' (t.Num: CssP.FLEX_GROW 0.0) is 2.5;
+		call Say: 'Kw' (t.Kw: CssP.DISPLAY) is CssK.INLINE;
+		call Say: 'TextColor' (t.TextColor) is 0x000000FF;
+		call Say: 'Color currentcolor' (t.Color: CssP.BORDER_TOP_COLOR) is 0x000000FF;
+		call Say: 'BackgroundColor' (t.BackgroundColor) is 0;
+		call Say: 'FontWeight' (t.FontWeight) is 400.0;
+		# a text node's style is its parent's
+		ptr<DomNode> sn: (Id: 's');
+		ptr<DomNode> txt: (Dom.CreateTextZ: doc 'x');
+		call Dom.Append: sn txt;
+		call Say: 'StyleOf a text node' (Css.StyleOf: txt) is t;
+		call Dom.Remove: txt;
+		call Say: 'StyleOf nothing' (Css.StyleOf: 0) is CssStyles.initial;
+	[end]
+
+	[CalcTyped]
+		ptr<CssComputed> s: (Css.StyleOf: (Id: 'a'));
+		call Say: 'calc resolved' (s.Len: CssP.HEIGHT 200.0 -1.0) is 40.0;
+		call Say: 'min resolved low' (s.Len: CssP.PADDING_LEFT 10.0 -1.0) is 5.0;
+		call Say: 'min resolved high' (s.Len: CssP.PADDING_LEFT 100.0 -1.0) is 10.0;
+		call Say: 'calc is a percent' (s.IsPercent: CssP.HEIGHT);
+		call Say: 'calc not auto' (s.IsAuto: CssP.HEIGHT) is false;
+	[end]
+
+	[Pseudos]
+		ptr<DomNode> a: (Id: 'a');
+		ptr<CssComputed> before: (Css.PseudoOf: a Css.PE_BEFORE);
+		call Say: 'before exists' before is not 0;
+		if before is 0 return;
+		call Say: 'before size' (before.FontPx) is 20.0;
+		call Say: 'before color' (before.TextColor) is 0xFF0000FF;
+		call Say: 'before display' (before.Display) is CssK.BLOCK;
+		call Say: 'before has content' (Css.HasContent: before);
+		WlBuf text;
+		call Css.ContentText: a before addr text;
+		call Say: 'content text' (WlText.EqZ: text.data text.len '<hi>!');
+		call text.Free;
+		WlBuf ser;
+		call CssSer.Computed: before CssP.CONTENT addr ser;
+		call Say: 'content serialized' (WlText.EqZ: ser.data ser.len '"<" attr(data-t) ">" attr(nope, "!")');
+		call ser.Free;
+		ptr<CssComputed> after: (Css.PseudoOf: a Css.PE_AFTER);
+		call Say: 'after none' after is not 0 and (Css.HasContent: after) is false;
+		ptr<CssComputed> own: (Css.StyleOf: a);
+		call Say: 'the element itself unaffected' (own.FontPx) is 10.0;
+	[end]
+
+	[FontsAndFrames]
+		call Setup: 'html(body(div#a))' '@font-face { font-family: "My Font"; src: local(Foo Bar), url(a.woff2) format("woff2"), url("b.ttf"); font-weight: 100 900; font-style: italic; font-display: swap; unicode-range: U+26, u+0-7f, U+590-5ff, u+4??; } @font-face { font-family: Plain Name; src: url(c.woff); } @font-face { font-family: nosource; } @keyframes spin { from { transform: rotate(0deg); } 50%, 75% { opacity: 0.5; bogus: 1; } to { transform: rotate(1turn); } } @-webkit-keyframes other { 10% { top: 1px; } 200% { top: 2px; } } @media print { @font-face { font-family: printed; src: url(p.woff); } } @page { margin: 1cm; } @namespace svg url(http://www.w3.org/2000/svg); @charset "utf-8"; #a { width: 1px; }';
+		call C: 'a' 'width' '1px';
+		call Say: 'font-face count' e.face_count is 2;
+		ptr<CssFontFace> f: e.faces:0;
+		call Say: 'family' (WlText.EqZ: f.family (WlText.LenZ: f.family) 'My Font');
+		call Say: 'weight low' f.weight_low is 100.0;
+		call Say: 'weight high' f.weight_high is 900.0;
+		call Say: 'style' f.style is CssK.ITALIC as u16;
+		call Say: 'display' f.display is CssK.SWAP as u16;
+		call Say: 'ranges' f.range_count is 4;
+		call Say: 'range 0' f.ranges:0 is 0x26 and f.ranges:1 is 0x26;
+		call Say: 'range 1' f.ranges:2 is 0 and f.ranges:3 is 0x7F;
+		call Say: 'range 3' f.ranges:6 is 0x400 and f.ranges:7 is 0x4FF;
+		ptr<CssFontSrc> s: f.src;
+		call Say: 'src 0' s.is_local and (WlText.EqZ: s.url (WlText.LenZ: s.url) 'Foo Bar');
+		s is s.next;
+		call Say: 'src 1' s.is_local is false and (WlText.EqZ: s.url (WlText.LenZ: s.url) 'a.woff2') and (WlText.EqZ: s.format (WlText.LenZ: s.format) 'woff2');
+		s is s.next;
+		call Say: 'src 2' s.format is 0 and s.next is 0;
+		ptr<CssFontFace> g: e.faces:1;
+		call Say: 'family words' (WlText.EqZ: g.family (WlText.LenZ: g.family) 'Plain Name');
+		call Say: 'keyframes count' e.frame_count is 2;
+		ptr<CssKeyframes> set: e.frames:0;
+		call Say: 'keyframes name' set.name is (WlAtoms.GetZ: 'spin');
+		call Say: 'keyframes frames' set.count is 3;
+		ptr<CssKeyframe> k: set.first;
+		call Say: 'from' k.offset_count is 1 and k.offsets:0 is 0.0;
+		k is k.next;
+		call Say: 'list' k.offset_count is 2 and k.offsets:0 is 0.5 and k.offsets:1 is 0.75;
+		call Say: 'its declarations' k.decls.count is 1;
+		ptr<CssKeyframes> other: e.frames:1;
+		call Say: 'bad keyframe dropped' other.count is 1;
+		call Finish;
+	[end]
+
+	[Url: ptr<u8> base: 0; ptr<u8> rel: 0; ptr<u8> want: 0;]
+		WlBuf b;
+		call CssUrl.Join: base rel (WlText.LenZ: rel) addr b;
+		if (WlText.EqZ: b.data b.len want)
+			passed++;
+		;;
+		else
+			failed++;
+			log 'FAIL url ' base ' + ' rel ' want ' want ' got ' b.data '\n';
+		;;
+		call b.Free;
+	[end]
+}

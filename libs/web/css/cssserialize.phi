@@ -1,0 +1,419 @@
+# Values back to text: what getComputedStyle() and element.style give.
+
+use core.text;
+use core.buf;
+use core.atoms;
+use css.tables;
+use css.values;
+use css.calc;
+use css.decls;
+use css.style;
+use css.color;
+
+phi.CssSer:Library
+{
+	# a color, as CSS Color 4 serializes one
+	[Color: u32 rgba: 0; ptr<WlBuf> b: 0;]
+		u32 a: rgba & 255;
+		if a is 255
+			call b.AddZ: 'rgb(';
+		;;
+		else
+			call b.AddZ: 'rgba(';
+		;;
+		call b.AddInt: (rgba >> 24) as int;
+		call b.AddZ: ', ';
+		call b.AddInt: ((rgba >> 16) & 255) as int;
+		call b.AddZ: ', ';
+		call b.AddInt: ((rgba >> 8) & 255) as int;
+		if a is not 255
+			call b.AddZ: ', ';
+			call Alpha: a b;
+		;;
+		call b.Add: ')';
+	[end]
+
+	# in as few decimals as still read back as the same 8-bit alpha
+	[Alpha: u32 a: 0; ptr<WlBuf> b: 0;]
+		f64 exact: a / 255.0;
+		f64 two: (Float.Round: exact * 100.0) / 100.0;
+		if (Float.Round: two * 255.0) is (a * 1.0)
+			call CssNum.Add: b two 3;
+			return;
+		;;
+		f64 three: (Float.Round: exact * 1000.0) / 1000.0;
+		call CssNum.Add: b three 4;
+	[end]
+
+	[Str: ptr<u8> text: 0; u32 n: 0; ptr<WlBuf> b: 0;]
+		call b.Add: 34;
+		while u32 i: 0; i < n; i++;
+			u32 c: text:i;
+			if c is 34 or c is 92
+				call b.Add: 92;
+				call b.Add: c as u8;
+			;;
+			elif c < 32 or c is 127
+				# an escape, with the space that ends it
+				call b.Add: 92;
+				call Hex: c b;
+				call b.Add: 32;
+			;;
+			else
+				call b.Add: c as u8;
+			;;
+		;;
+		call b.Add: 34;
+	[end]
+
+	[Hex: u32 c: 0; ptr<WlBuf> b: 0;]
+		if c >= 16
+			call b.Add: (HexDigit: c >> 4) as u8;
+		;;
+		call b.Add: (HexDigit: c & 15) as u8;
+	[end]
+
+	[HexDigit: u32 d: 0;]
+		if d < 10 return 48 + d;
+	[end: 87 + d]
+
+	# an identifier as written, with what wouldn't read back as part of one escaped
+	[Ident: ptr<u8> text: 0; u32 n: 0; ptr<WlBuf> b: 0;]
+		while u32 i: 0; i < n; i++;
+			u32 c: text:i;
+			bln fine: c >= 0x80 or (WlText.IsAlpha: c) or c is 95 or c is 45 or c is 32 or (i > 0 and (WlText.IsDigit: c));
+			if fine is false
+				call b.Add: 92;
+				if (WlText.IsDigit: c)
+					call Hex: c b;
+					call b.Add: 32;
+				;;
+				else
+					call b.Add: c as u8;
+				;;
+			;;
+			else
+				call b.Add: c as u8;
+			;;
+		;;
+	[end]
+
+	# a single value (not a LIST)
+	[Value: ptr<CssVal> v: 0; ptr<WlBuf> b: 0;]
+		u32 kind: v.kind;
+		if kind is CssV.KW or kind is CssV.WIDE
+			call b.AddZ: (CssProps.KwName: v.code);
+			return;
+		;;
+		if kind is CssV.LEN or kind is CssV.ANGLE or kind is CssV.TIME or kind is CssV.FLEX or kind is CssV.RES
+			call CssNum.Add: b (v.Num) 7;
+			if v.unit is not 0
+				call b.AddZ: (CssProps.UnitName: v.unit);
+			;;
+			return;
+		;;
+		if kind is CssV.PCT
+			call CssNum.Add: b (v.Num) 7;
+			call b.Add: 37;
+			return;
+		;;
+		if kind is CssV.NUM
+			call CssNum.Add: b (v.Num) 7;
+			return;
+		;;
+		if kind is CssV.INT
+			call b.AddInt: v.bits as int;
+			return;
+		;;
+		if kind is CssV.COLOR
+			call Color: v.bits b;
+			return;
+		;;
+		if kind is CssV.STR
+			call Str: (CssV.Text: v) (CssV.TextLen: v) b;
+			return;
+		;;
+		if kind is CssV.URL
+			call b.AddZ: 'url(';
+			call Str: (CssV.Text: v) (CssV.TextLen: v) b;
+			call b.Add: ')';
+			return;
+		;;
+		if kind is CssV.IDENT
+			call Ident: (CssV.Text: v) (CssV.TextLen: v) b;
+			return;
+		;;
+		if kind is CssV.RAW
+			call b.AddN: (CssV.Text: v) (CssV.TextLen: v);
+			return;
+		;;
+		if kind is CssV.CALC
+			call CssCalc.Serialize: v b;
+			return;
+		;;
+		if kind is CssV.LIST
+			ptr<CssVal> items: (CssV.Items: v);
+			call Items: items CssV.item_count b;
+		;;
+	[end]
+
+	# items of a list: spaces between them, a comma right after, functions around theirs
+	[Items: ptr<CssVal> items: 0; u32 n: 0; ptr<WlBuf> b: 0;]
+		u32 i: 0;
+		bln space: false;
+		# where each open function ends, and whether it's a [ ] of line names
+		u32 ends[16];
+		bln bracket[16];
+		u32 depth: 0;
+		while i <= n
+			while depth > 0 and i is ends:(depth - 1)
+				depth--;
+				if bracket:depth
+					call b.Add: 93;
+				;;
+				else
+					call b.Add: 41;
+				;;
+				space is true;
+			;;
+			if i >= n break;
+			ptr<CssVal> it: addr items:i;
+			u32 kind: it.kind;
+			if kind is CssV.SEP
+				if it.code is 44
+					call b.AddZ: ', ';
+				;;
+				else
+					call b.AddZ: ' / ';
+				;;
+				space is false;
+				i++;
+				continue;
+			;;
+			if space
+				call b.Add: 32;
+			;;
+			if kind is CssV.FUNC
+				bln is_bracket: it.code is 0;
+				if is_bracket
+					call b.Add: 91;
+				;;
+				else
+					call b.AddZ: (CssProps.KwName: it.code);
+					call b.Add: 40;
+				;;
+				if depth < 16
+					ends:depth is i + 1 + it.bits;
+					bracket:depth is is_bracket;
+					depth++;
+				;;
+				space is false;
+				i++;
+				continue;
+			;;
+			call Value: it b;
+			space is true;
+			i++;
+		;;
+	[end]
+
+	# ---- a computed value
+
+	# a longhand as getComputedStyle reads it: currentcolor comes out as the color
+	[Computed: ptr<CssComputed> s: 0; u32 prop: 0; ptr<WlBuf> b: 0;]
+		if (CssProps.IsShorthand: prop)
+			call ComputedShorthand: s prop b;
+			return;
+		;;
+		ptr<CssVal> v: (s.Val: prop);
+		if v.kind is CssV.KW as u8 and v.code is CssK.CURRENTCOLOR as u16
+			call Color: s.current_color b;
+			return;
+		;;
+		call Value: v b;
+	[end]
+
+	[ComputedShorthand: ptr<CssComputed> s: 0; u32 prop: 0; ptr<WlBuf> b: 0;]
+		ptr<CssPropInfo> info: addr CssProps.info:prop;
+		u32 kind: info.sh_kind;
+		if kind is CssProps.SH_BOX4 or kind is CssProps.SH_RADIUS
+			# as few of the four as it takes
+			u32 n: info.sub_count;
+			WlBuf parts[4];
+			while u32 i: 0; i < 4 and i < n; i++;
+				call Computed: s info.subs:i addr parts:i;
+			;;
+			call Sides: addr parts:0 addr parts:1 addr parts:2 addr parts:3 b;
+			while u32 k: 0; k < 4; k++;
+				call parts:k.Free;
+			;;
+			return;
+		;;
+		# the longhands that aren't at their initial value, in order
+		bln any: false;
+		while u32 i: 0; i < info.sub_count; i++;
+			u32 sub: info.subs:i;
+			if (CssProps.IsShorthand: sub)
+				continue;
+			;;
+			ptr<CssVal> v: (s.Val: sub);
+			ptr<CssVal> init: (CssStyles.initial.Val: sub);
+			if (CssV.Same: v init) is false
+				if any
+					call b.Add: 32;
+				;;
+				call Computed: s sub b;
+				any is true;
+			;;
+		;;
+		if any is false and info.sub_count > 0
+			call Computed: s info.subs:0 b;
+		;;
+	[end]
+
+	# top right bottom left, leaving out what repeats
+	[Sides: ptr<WlBuf> t: 0; ptr<WlBuf> r: 0; ptr<WlBuf> bt: 0; ptr<WlBuf> l: 0; ptr<WlBuf> b: 0;]
+		bln lr: (WlText.Eq: l.data l.len r.data r.len);
+		bln tb: (WlText.Eq: t.data t.len bt.data bt.len);
+		bln all4: lr and tb and (WlText.Eq: t.data t.len r.data r.len);
+		call b.AddN: t.data t.len;
+		if all4 return;
+		call b.Add: 32;
+		call b.AddN: r.data r.len;
+		if tb and lr return;
+		if lr is false
+			call b.Add: 32;
+			call b.AddN: bt.data bt.len;
+			call b.Add: 32;
+			call b.AddN: l.data l.len;
+			return;
+		;;
+		call b.Add: 32;
+		call b.AddN: bt.data bt.len;
+	[end]
+
+	# ---- declarations
+
+	# Whether the block has a value for the property, written to b. A shorthand works if all its
+	# longhands are there and agree about !important, the way CSSOM asks.
+	[Declared: ptr<CssDecls> d: 0; u32 prop: 0; ptr<WlBuf> b: 0;]
+		if (CssProps.IsShorthand: prop) is false
+			ptr<CssDecl> one: (d.Find: prop);
+			if one is 0 return false;
+			if one.shorthand is not 0
+				# part of a shorthand with var() in it: there's no way to say which part yet
+				return true;
+			;;
+			call Value: addr one.val b;
+			return true;
+		;;
+		ptr<CssPropInfo> info: addr CssProps.info:prop;
+		if info.sub_count is 0 return false;
+		ptr<CssDecl> first: (d.Find: info.subs:0);
+		if first is 0 return false;
+		while u32 i: 1; i < info.sub_count; i++;
+			if (CssProps.IsShorthand: info.subs:i) return false;
+			ptr<CssDecl> other: (d.Find: info.subs:i);
+			if other is 0 or other.important is not first.important return false;
+			# inherit and the rest speak for all or none of them
+			if (first.val.kind is CssV.WIDE as u8) is not (other.val.kind is CssV.WIDE as u8) return false;
+		;;
+		if first.val.kind is CssV.WIDE as u8
+			call Value: addr first.val b;
+			return true;
+		;;
+		if first.shorthand is (prop + 1) as u16
+			call Value: addr first.val b;
+			return true;
+		;;
+		u32 kind: info.sh_kind;
+		if kind is CssProps.SH_BOX4 or kind is CssProps.SH_RADIUS
+			WlBuf parts[4];
+			while u32 k: 0; k < 4; k++;
+				call Value: (DeclVal: d info.subs:k) addr parts:k;
+			;;
+			call Sides: addr parts:0 addr parts:1 addr parts:2 addr parts:3 b;
+			while u32 k: 0; k < 4; k++;
+				call parts:k.Free;
+			;;
+			return true;
+		;;
+		if kind is CssProps.SH_PAIR
+			WlBuf a;
+			WlBuf c;
+			call Value: (DeclVal: d info.subs:0) addr a;
+			call Value: (DeclVal: d info.subs:1) addr c;
+			call b.AddN: a.data a.len;
+			if (WlText.Eq: a.data a.len c.data c.len) is false
+				call b.Add: 32;
+				call b.AddN: c.data c.len;
+			;;
+			call a.Free;
+			call c.Free;
+			return true;
+		;;
+		if kind is CssProps.SH_SLASH
+			while u32 k: 0; k < info.sub_count; k++;
+				if k > 0
+					call b.AddZ: ' / ';
+				;;
+				call Value: (DeclVal: d info.subs:k) b;
+			;;
+			return true;
+		;;
+		# the ones that say something: their initial values go without saying
+		bln any: false;
+		while u32 k: 0; k < info.sub_count; k++;
+			ptr<CssDecl> part: (d.Find: info.subs:k);
+			ptr<CssVal> init: (CssSh.Initial: info.subs:k);
+			if (SameValue: addr part.val init) is false
+				if any
+					call b.Add: 32;
+				;;
+				call Value: addr part.val b;
+				any is true;
+			;;
+		;;
+		if any is false
+			call Value: addr first.val b;
+		;;
+	[end: true]
+
+	[DeclVal: ptr<CssDecls> d: 0; u32 prop: 0;]
+		ptr<CssDecl> one: (d.Find: prop);
+	[end: addr one.val]
+
+	[SameValue: ptr<CssVal> a: 0; ptr<CssVal> c: 0;]
+		if (CssV.Same: a c) return true;
+		if a.kind is not c.kind return false;
+		WlBuf x;
+		WlBuf y;
+		call Value: a addr x;
+		call Value: c addr y;
+		bln same: (WlText.Eq: x.data x.len y.data y.len);
+		call x.Free;
+		call y.Free;
+	[end: same]
+
+	# the whole block as cssText. Longhands that came from one shorthand aren't put back together.
+	[Block: ptr<CssDecls> d: 0; ptr<WlBuf> b: 0;]
+		while u32 i: 0; i < d.count; i++;
+			ptr<CssDecl> one: addr d.items:i;
+			if i > 0
+				call b.Add: 32;
+			;;
+			if one.prop is CssP.CUSTOM as u16
+				call b.AddN: one.name.text one.name.len;
+			;;
+			else
+				call b.AddZ: (CssProps.Name: one.prop);
+			;;
+			call b.AddZ: ': ';
+			call Value: addr one.val b;
+			if one.important is not 0
+				call b.AddZ: ' !important';
+			;;
+			call b.Add: 59;
+		;;
+	[end]
+}

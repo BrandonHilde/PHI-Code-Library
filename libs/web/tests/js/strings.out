@@ -1,0 +1,30 @@
+2 55357 56832 NaN
+a\ud83d\ude00b 4 98 3
+1 true 55357 56832
+1 55357 56832 true 2 true
+2 56832 55357
+6 true
+85 55357 56832 48 true
+15 233 6 12 w\u00f6rld 49
+9860
+9860
+b undefined 3 3 undefined b undefined
+5 b true true 0,1,2,3,4 object boxed!
+b true
+TypeError
+TypeError
+TypeError
+1,2,1,1
+a-b 1
+5 AAAA ab a'" 2
+2 7
+false true true true true true false true
+4000 b abab
+400 z y
+1
+b 1,1.5,01
+1 1 1
+null undefined true 1,2,3 [object Object] function () { } Symbol(d)
+TypeError
+b true 5 0 3 bc b true
+AB A 

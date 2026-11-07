@@ -1,0 +1,1017 @@
+# ArrayBuffer, the typed arrays and DataView. A typed array is a host object whose hooks answer index keys from
+# its buffer's bytes. Most of its methods can be Array.prototype's own natives, which go through the same hooks;
+# those that must make a new typed array, or sort by number, are here. No BigInt64 arrays, as there's no BigInt,
+# and buffers can't be resized.
+
+struct.JsBufferData
+{
+	ptr<u8> bytes;
+	u32 len;
+	bln detached;
+}
+
+struct.JsViewData
+{
+	u64 buffer;
+	u32 offset;
+	u32 length;            # elements, for a typed array; bytes, for a DataView
+	u32 kind;
+}
+
+phi.JsTyped:Library
+{
+	const u32 INT8: 0;
+	const u32 UINT8: 1;
+	const u32 UINT8C: 2;
+	const u32 INT16: 3;
+	const u32 UINT16: 4;
+	const u32 INT32: 5;
+	const u32 UINT32: 6;
+	const u32 FLOAT32: 7;
+	const u32 FLOAT64: 8;
+	const u32 KINDS: 9;
+
+	const u32 MAX_BYTES: 1000000000;
+
+	ptr<JsClass> buffer_class: 0;
+	ptr<JsClass> array_class: 0;
+	ptr<JsClass> view_class: 0;
+
+	[Init]
+		if buffer_class is 0
+			buffer_class is (JsObjs.NewClass: 'ArrayBuffer');
+			buffer_class.finalize is addr FreeBuffer;
+			array_class is (JsObjs.NewClass: 'TypedArray');
+			array_class.trace is addr TraceView;
+			array_class.finalize is addr FreeView;
+			array_class.get is addr HookGet;
+			array_class.set is addr HookSet;
+			array_class.has_key is addr HookHas;
+			array_class.del is addr HookDelete;
+			array_class.keys is addr HookKeys;
+			array_class.get_own is addr HookGetOwn;
+			array_class.define is addr HookDefine;
+			view_class is (JsObjs.NewClass: 'DataView');
+			view_class.trace is addr TraceView;
+			view_class.finalize is addr FreeView;
+		;;
+		ptr<JsObj> bp: (JsObjs.NewObject);
+		JsRt.P.arraybuffer is bp;
+		ptr<JsNativeFn> bc: (Js.DefineClass: 'ArrayBuffer' addr BufferCtor 1 bp);
+		call Js.DefineSymbolGetter: bc as ptr<JsObj> JsRt.S.species '[Symbol.species]' addr JsArrayBuiltins.Species 0;
+		call Js.DefineNative: bc as ptr<JsObj> 'isView' addr IsView 1;
+		call Js.DefineGetter: bp 'byteLength' addr BufferLength 0;
+		call Js.DefineNative: bp 'slice' addr BufferSlice 2;
+		call JsObjs.DefineValue: bp JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'ArrayBuffer') JsObjs.C;
+
+		# %TypedArray%: not global, and it can't be called
+		ptr<JsObj> tp: (JsObjs.NewObject);
+		JsRt.P.typed_array is tp;
+		ptr<JsNativeFn> tc: (JsObjs.NewNative: addr AbstractCtor 'TypedArray' 0 false);
+		tc.o.flags is tc.o.flags | JsObjs.F_CTOR as u16;
+		ptr<JsObj> tco: tc as ptr<JsObj>;
+		call JsObjs.Materialize: tco;
+		call JsObjs.AddProp: tco JsRt.A.prototype as ptr<u8> (JsV.Obj: tp) 0;
+		call JsObjs.DefineValue: tp JsRt.A.constructor as ptr<u8> (JsV.Obj: tco) JsObjs.WC;
+		call Js.DefineSymbolGetter: tco JsRt.S.species '[Symbol.species]' addr JsArrayBuiltins.Species 0;
+		call Js.DefineNativeSafe: tco 'from' addr From 1;
+		call Js.DefineNative: tco 'of' addr OfFn 0;
+		call Js.DefineGetter: tp 'buffer' addr GetBuffer 0;
+		call Js.DefineGetter: tp 'byteLength' addr GetByteLength 0;
+		call Js.DefineGetter: tp 'byteOffset' addr GetByteOffset 0;
+		call Js.DefineGetter: tp 'length' addr GetLength 0;
+		call Js.DefineSymbolGetter: tp JsRt.S.toStringTag '[Symbol.toStringTag]' addr GetTag 0;
+		call Js.DefineNative: tp 'set' addr SetFn 1;
+		call Js.DefineNative: tp 'subarray' addr Subarray 2;
+		call Js.DefineNative: tp 'slice' addr Slice 2;
+		call Js.DefineNativeSafe: tp 'map' addr MapFn 1;
+		call Js.DefineNativeSafe: tp 'filter' addr FilterFn 1;
+		call Js.DefineNativeSafe: tp 'sort' addr Sort 1;
+		# the rest work as they do on an array: they only look at indexes and length
+		ptr<u8> shared: 'at copyWithin entries every fill find findIndex findLast findLastIndex forEach includes indexOf join keys lastIndexOf reduce reduceRight reverse some toLocaleString toString values ';
+		u32 i: 0;
+		while shared:i is not 0
+			u32 start: i;
+			while shared:i is not 32
+				i++;
+			;;
+			ptr<JsStr> name: (JsStrs.Intern: shared + start i - start);
+			ptr<JsProp> m: (JsObjs.Find: JsRt.P.array name as ptr<u8>);
+			if m is not 0
+				call JsObjs.DefineValue: tp name as ptr<u8> m.value JsObjs.WC;
+			;;
+			i++;
+		;;
+		ptr<JsProp> vals: (JsObjs.Find: tp (JsStrs.InternZ: 'values') as ptr<u8>);
+		call JsObjs.DefineValue: tp JsRt.S.iterator as ptr<u8> vals.value JsObjs.WC;
+
+		call OneKind: 'Int8Array' INT8 tco tp;
+		call OneKind: 'Uint8Array' UINT8 tco tp;
+		call OneKind: 'Uint8ClampedArray' UINT8C tco tp;
+		call OneKind: 'Int16Array' INT16 tco tp;
+		call OneKind: 'Uint16Array' UINT16 tco tp;
+		call OneKind: 'Int32Array' INT32 tco tp;
+		call OneKind: 'Uint32Array' UINT32 tco tp;
+		call OneKind: 'Float32Array' FLOAT32 tco tp;
+		call OneKind: 'Float64Array' FLOAT64 tco tp;
+
+		ptr<JsObj> vp: (JsObjs.NewObject);
+		JsRt.P.dataview is vp;
+		call Js.DefineClass: 'DataView' addr ViewCtor 1 vp;
+		call Js.DefineGetter: vp 'buffer' addr GetBuffer 0;
+		call Js.DefineGetter: vp 'byteLength' addr ViewByteLength 0;
+		call Js.DefineGetter: vp 'byteOffset' addr GetByteOffset 0;
+		call JsObjs.DefineValue: vp JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'DataView') JsObjs.C;
+		call ViewMethods: vp 'Int8' INT8;
+		call ViewMethods: vp 'Uint8' UINT8;
+		call ViewMethods: vp 'Int16' INT16;
+		call ViewMethods: vp 'Uint16' UINT16;
+		call ViewMethods: vp 'Int32' INT32;
+		call ViewMethods: vp 'Uint32' UINT32;
+		call ViewMethods: vp 'Float32' FLOAT32;
+		call ViewMethods: vp 'Float64' FLOAT64;
+	[end]
+
+	[OneKind: ptr<u8> name: 0; u32 kind: 0; ptr<JsObj> tco: 0; ptr<JsObj> tp: 0;]
+		ptr<JsObj> p: (JsObjs.NewWithProto: tp);
+		ptr<JsNativeFn> c: (Js.DefineClass: name addr ArrayCtor 3 p);
+		c.magic is kind;
+		ptr<JsObj> co: c as ptr<JsObj>;
+		co.proto is tco;
+		f64 size: (SizeOf: kind) as f64;
+		call Js.Define: co 'BYTES_PER_ELEMENT' (JsV.Num: size) 0;
+		call Js.Define: p 'BYTES_PER_ELEMENT' (JsV.Num: size) 0;
+		# new Uint8Array(...) needs the prototype of its kind, so the constructor keeps it
+		c.data is (JsV.Obj: p);
+	[end]
+
+	[ViewMethods: ptr<JsObj> vp: 0; ptr<u8> name: 0; u32 kind: 0;]
+		str getter: ('get' name);
+		str setter: ('set' name);
+		ptr<JsNativeFn> g: (Js.DefineNative: vp getter addr ViewGet 1);
+		g.magic is kind;
+		ptr<JsNativeFn> s: (Js.DefineNative: vp setter addr ViewSet 2);
+		s.magic is kind;
+	[end]
+
+	[SizeOf: u32 kind: 0;]
+		when kind
+			is INT8 UINT8 UINT8C
+				return 1;
+			;;
+			is INT16 UINT16
+				return 2;
+			;;
+			is INT32 UINT32 FLOAT32
+				return 4;
+			;;
+		;;
+	[end: 8 as u32]
+
+	[FreeBuffer: ptr<JsObj> o: 0;]
+		ptr<JsBufferData> d: o.data as ptr<JsBufferData>;
+		if d.bytes is not 0
+			free d.bytes;
+		;;
+		free d;
+	[end]
+
+	[TraceView: ptr<JsObj> o: 0;]
+		ptr<JsViewData> d: o.data as ptr<JsViewData>;
+		call Js.Mark: d.buffer;
+	[end]
+
+	[FreeView: ptr<JsObj> o: 0;]
+		free o.data;
+	[end]
+
+	# ---- ArrayBuffer ----
+
+	# A buffer of this many zero bytes. So a browser can make one from bytes it has: (JsTyped.BytesOf: v).
+	[NewBuffer: f64 n: 0.0; ptr<JsObj> proto: 0;]
+		if n > (MAX_BYTES as f64) or n < 0.0
+			call JsErr.Range: 'Array buffer allocation failed';
+		;;
+		ptr<JsBufferData> d: new JsBufferData;
+		if d is 0
+			throw 'out of memory';
+		;;
+		u32 count: n as u32;
+		d.bytes is new u8[count + 1];
+		if d.bytes is 0
+			free d;
+			call JsErr.Range: 'Array buffer allocation failed';
+		;;
+		d.len is count;
+		call JsGc.Account: count;
+		ptr<JsObj> o: (JsObjs.NewHost: buffer_class proto d as ptr<u8>);
+	[end: o]
+
+	[BufferCtor: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'Constructor ArrayBuffer requires new';
+		;;
+		f64 n: (ToIndex: (Js.Arg: args argc 0));
+	[end: (JsV.Obj: (NewBuffer: n (JsOps.ProtoFromCtor: nt JsRt.P.arraybuffer)))]
+
+	[ToIndex: u64 v: 0;]
+		if v is JsV.UNDEF return 0.0;
+		f64 n: (JsOps.ToInteger: v);
+		if n < 0.0 or n > 9007199254740991.0
+			call JsErr.Range: 'Invalid index';
+		;;
+	[end: n]
+
+	[IsView: ptr<u64> args: 0; int argc: 0;]
+		u64 v: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: v)
+			return JsV.FALSE;
+		;;
+		ptr<JsObj> o: (JsV.AsObj: v);
+	[end: (JsV.Bool: o.cls is array_class or o.cls is view_class)]
+
+	[ThisBuffer: ptr<u64> args: 0;]
+		u64 v: args:(-1);
+		if (JsV.IsObj: v)
+			ptr<JsObj> o: (JsV.AsObj: v);
+			if o.cls is buffer_class
+				return o.data as ptr<JsBufferData>;
+			;;
+		;;
+		call JsErr.Type: 'This method requires an ArrayBuffer';
+	[end: 0 as ptr<JsBufferData>]
+
+	[BufferLength: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsBufferData> d: (ThisBuffer: args);
+	[end: (JsV.Uint: d.len)]
+
+	[BufferSlice: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsBufferData> d: (ThisBuffer: args);
+		f64 len: d.len as f64;
+		f64 first: (JsOps.RelativeIndex: (Js.Arg: args argc 0) len 0.0);
+		f64 last: (JsOps.RelativeIndex: (Js.Arg: args argc 1) len len);
+		f64 count: last - first;
+		if count < 0.0
+			count is 0.0;
+		;;
+		ptr<JsObj> self: (JsV.AsObj: args:(-1));
+		ptr<JsProp> cp: (JsObjs.Find: JsRt.P.arraybuffer JsRt.A.constructor as ptr<u8>);
+		u64 ctor: (JsOps.Species: self cp.value);
+		call Js.Push: (JsV.Num: count);
+		u64 made: (Js.Construct: ctor 1);
+		if not (JsV.IsObj: made)
+			call JsErr.Type: 'ArrayBuffer species did not make an ArrayBuffer';
+		;;
+		ptr<JsObj> mo: (JsV.AsObj: made);
+		if mo.cls is not buffer_class or mo is self
+			call JsErr.Type: 'ArrayBuffer species did not make a new ArrayBuffer';
+		;;
+		ptr<JsBufferData> md: mo.data as ptr<JsBufferData>;
+		if (md.len as f64) < count
+			call JsErr.Type: 'ArrayBuffer species made one too short';
+		;;
+		if count > 0.0
+			call Mem.Copy: md.bytes d.bytes + first as u32 count as u32;
+		;;
+	[end: made]
+
+	# for a host: where a buffer's bytes are, and how many (BytesLen)
+	[BytesOf: u64 v: 0;]
+		ptr<JsObj> o: (JsV.AsObj: v);
+		ptr<JsBufferData> d: o.data as ptr<JsBufferData>;
+	[end: d.bytes]
+
+	[BytesLen: u64 v: 0;]
+		ptr<JsObj> o: (JsV.AsObj: v);
+		ptr<JsBufferData> d: o.data as ptr<JsBufferData>;
+	[end: d.len]
+
+	# ---- reading and writing elements ----
+
+	[Load: ptr<u8> p: 0; u32 kind: 0;]
+		when kind
+			is INT8
+				ptr<i8> a: p as ptr<i8>;
+				return (JsV.Int: a:0 as int);
+			;;
+			is UINT8 UINT8C
+				return (JsV.Int: p:0 as int);
+			;;
+			is INT16
+				ptr<i16> b: p as ptr<i16>;
+				return (JsV.Int: b:0 as int);
+			;;
+			is UINT16
+				ptr<u16> c: p as ptr<u16>;
+				return (JsV.Int: c:0 as int);
+			;;
+			is INT32
+				ptr<i32> d: p as ptr<i32>;
+				return (JsV.Int: d:0);
+			;;
+			is UINT32
+				ptr<u32> e: p as ptr<u32>;
+				return (JsV.Uint: e:0);
+			;;
+			is FLOAT32
+				ptr<f32> f: p as ptr<f32>;
+				f64 wide: f:0 as f64;
+				return (JsV.Num: wide);
+			;;
+		;;
+		ptr<f64> g: p as ptr<f64>;
+	[end: (JsV.Num: g:0)]
+
+	[Store: ptr<u8> p: 0; u32 kind: 0; f64 x: 0.0;]
+		when kind
+			is INT8 UINT8
+				p:0 is (JsOps.ToUint32Num: x) as u8;
+			;;
+			is UINT8C
+				f64 c: x;
+				if c is not c or c <= 0.0
+					p:0 is 0;
+				;;
+				elif c >= 255.0
+					p:0 is 255;
+				;;
+				else
+					# to the nearest, halves to even
+					p:0 is (Float.Round: c) as u8;
+				;;
+			;;
+			is INT16 UINT16
+				ptr<u16> a: p as ptr<u16>;
+				a:0 is (JsOps.ToUint32Num: x) as u16;
+			;;
+			is INT32 UINT32
+				ptr<u32> b: p as ptr<u32>;
+				b:0 is (JsOps.ToUint32Num: x);
+			;;
+			is FLOAT32
+				ptr<f32> f: p as ptr<f32>;
+				f:0 is x as f32;
+			;;
+			else
+				ptr<f64> g: p as ptr<f64>;
+				g:0 is x;
+			;;
+		;;
+	[end]
+
+	[IsClass: u64 v: 0; ptr<JsClass> cl: 0;]
+		if not (JsV.IsObj: v) return false;
+		ptr<JsObj> o: (JsV.AsObj: v);
+	[end: o.cls is cl]
+
+	[ViewOf: ptr<JsObj> o: 0;]
+	[end: o.data as ptr<JsViewData>]
+
+	[BufferOf: ptr<JsViewData> v: 0;]
+		ptr<JsObj> b: (JsV.AsObj: v.buffer);
+	[end: b.data as ptr<JsBufferData>]
+
+	# the address of element i
+	[At: ptr<JsViewData> v: 0; u32 i: 0;]
+		ptr<JsBufferData> d: (BufferOf: v);
+	[end: d.bytes + v.offset + i * (SizeOf: v.kind)]
+
+	# ---- the hooks: index keys are the array's; a key that's another number has no element ----
+
+	[IsIndex: ptr<JsViewData> v: 0; u64 key: 0;]
+		if not (JsObjs.IsIndexKey: key) return false;
+	[end: (key as u32) < v.length]
+
+	[HookGet: ptr<JsObj> o: 0; u64 key: 0; u64 recv: 0; ptr<u64> output: 0;]
+		if not (JsObjs.IsIndexKey: key) return 0;
+		ptr<JsViewData> v: (ViewOf: o);
+		if (key as u32) >= v.length
+			output:0 is JsV.UNDEF;
+			return 1;
+		;;
+		output:0 is (Load: (At: v key as u32) v.kind);
+	[end: 1]
+
+	[HookSet: ptr<JsObj> o: 0; u64 key: 0; u64 val: 0; u64 recv: 0;]
+		if not (JsObjs.IsIndexKey: key) return 0;
+		ptr<JsViewData> v: (ViewOf: o);
+		f64 x: (JsOps.ToNumber: val);
+		if (key as u32) < v.length
+			call Store: (At: v key as u32) v.kind x;
+		;;
+	[end: 1]
+
+	[HookHas: ptr<JsObj> o: 0; u64 key: 0;]
+		if not (JsObjs.IsIndexKey: key) return 0;
+		if (IsIndex: (ViewOf: o) key) return 1;
+	[end: -1]
+
+	[HookDelete: ptr<JsObj> o: 0; u64 key: 0;]
+		if not (JsObjs.IsIndexKey: key) return 0;
+		if (IsIndex: (ViewOf: o) key) return -1;
+	[end: 1]
+
+	[HookKeys: ptr<JsObj> o: 0; ptr<JsObj> list: 0;]
+		ptr<JsViewData> v: (ViewOf: o);
+		while u32 i: 0; i < v.length; i++;
+			call JsObjs.ArrayPush: list (JsV.Str: (JsStrs.InternIndex: i));
+		;;
+		# then its ordinary ones, as any object's
+		ptr<JsObj> rest: (JsObjs.OrdinaryKeys: o);
+		while u32 j: 0; j < rest.length; j++;
+			call JsObjs.ArrayPush: list rest.elems:j;
+		;;
+	[end]
+
+	[HookGetOwn: ptr<JsObj> o: 0; u64 key: 0; ptr<JsDesc> d: 0;]
+		if not (JsObjs.IsIndexKey: key) return 0;
+		ptr<JsViewData> v: (ViewOf: o);
+		if (key as u32) >= v.length return -1;
+		d.value is (Load: (At: v key as u32) v.kind);
+		d.getter is JsV.UNDEF;
+		d.setter is JsV.UNDEF;
+		d.flags is JsObjs.WEC;
+	[end: 1]
+
+	[HookDefine: ptr<JsObj> o: 0; u64 key: 0; ptr<JsDesc> d: 0;]
+		if not (JsObjs.IsIndexKey: key) return 0;
+		ptr<JsViewData> v: (ViewOf: o);
+		if (key as u32) >= v.length return -1;
+		if (d.flags & (JsObjs.H_GET | JsObjs.H_SET)) is not 0 return -1;
+		if (d.flags & JsObjs.H_C) is not 0 and (d.flags & JsObjs.C) is 0 return -1;
+		if (d.flags & JsObjs.H_E) is not 0 and (d.flags & JsObjs.E) is 0 return -1;
+		if (d.flags & JsObjs.H_W) is not 0 and (d.flags & JsObjs.W) is 0 return -1;
+		if (d.flags & JsObjs.H_VALUE) is not 0
+			f64 x: (JsOps.ToNumber: d.value);
+			call Store: (At: v key as u32) v.kind x;
+		;;
+	[end: 1]
+
+	# ---- making them ----
+
+	[AbstractCtor: ptr<u64> args: 0; int argc: 0;]
+		call JsErr.Type: 'Abstract class TypedArray not directly constructable';
+	[end: JsV.UNDEF]
+
+	[Make: u32 kind: 0; u64 buffer: 0; u32 offset: 0; u32 length: 0; ptr<JsObj> proto: 0;]
+		ptr<JsViewData> v: new JsViewData;
+		if v is 0
+			throw 'out of memory';
+		;;
+		v.kind is kind;
+		v.buffer is buffer;
+		v.offset is offset;
+		v.length is length;
+		ptr<JsObj> o: (JsObjs.NewHost: array_class proto v as ptr<u8>);
+	[end: o]
+
+	[MakeSized: u32 kind: 0; f64 n: 0.0; ptr<JsObj> proto: 0;]
+		f64 bytes: n * ((SizeOf: kind) as f64);
+		ptr<JsObj> b: (NewBuffer: bytes JsRt.P.arraybuffer);
+	[end: (Make: kind (JsV.Obj: b) 0 n as u32 proto)]
+
+	[ArrayCtor: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u32 kind: self.magic;
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'Constructor of a typed array requires new';
+		;;
+		ptr<JsObj> proto: (JsOps.ProtoFromCtor: nt (JsV.AsObj: self.data));
+		u64 first: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: first)
+			return (JsV.Obj: (MakeSized: kind (ToIndex: first) proto));
+		;;
+		ptr<JsObj> fo: (JsV.AsObj: first);
+		u32 size: (SizeOf: kind);
+		if fo.cls is buffer_class
+			f64 off: (ToIndex: (Js.Arg: args argc 1));
+			if (off % (size as f64)) is not 0.0
+				call JsErr.Range: 'Start offset of a typed array must be a multiple of its element size';
+			;;
+			ptr<JsBufferData> bd: fo.data as ptr<JsBufferData>;
+			f64 count: 0.0;
+			if (Js.Arg: args argc 2) is JsV.UNDEF
+				if (bd.len % size) is not 0
+					call JsErr.Range: 'Byte length of a buffer must be a multiple of the element size';
+				;;
+				if off > (bd.len as f64)
+					call JsErr.Range: 'Start offset is outside the bounds of the buffer';
+				;;
+				count is ((bd.len as f64) - off) / (size as f64);
+			;;
+			else
+				count is (ToIndex: args:2);
+				if off + count * (size as f64) > (bd.len as f64)
+					call JsErr.Range: 'Invalid typed array length';
+				;;
+			;;
+			return (JsV.Obj: (Make: kind first off as u32 count as u32 proto));
+		;;
+		if fo.cls is array_class
+			ptr<JsViewData> src: (ViewOf: fo);
+			ptr<JsObj> made: (MakeSized: kind src.length as f64 proto);
+			ptr<JsViewData> mv: (ViewOf: made);
+			while u32 i: 0; i < src.length; i++;
+				call Store: (At: mv i) kind (JsV.AsNum: (Load: (At: src i) src.kind));
+			;;
+			return (JsV.Obj: made);
+		;;
+		# from an iterable if it is one, or else array-like
+		ptr<JsObj> list: (ListOf: first);
+		ptr<JsObj> filled: (MakeSized: kind list.length as f64 proto);
+		call FillFrom: filled list;
+	[end: (JsV.Obj: filled)]
+
+	# an array of what an iterable or array-like holds
+	[ListOf: u64 v: 0;]
+		ptr<JsObj> list: (JsObjs.NewArray: 0);
+		u64 m: (JsOps.GetMethod: v JsRt.S.iterator as ptr<u8>);
+		if m is not JsV.UNDEF
+			call JsIter.Each: v addr ListItem list as ptr<u8>;
+			return list;
+		;;
+		ptr<JsObj> o: (JsOps.ToObject: v);
+		f64 n: (JsArrayBuiltins.LengthOf: o);
+		f64 i: 0.0;
+		while i < n
+			call JsObjs.ArrayPush: list (JsObjs.Get: o (JsArrayBuiltins.IndexKey: i) (JsV.Obj: o));
+			i is i + 1.0;
+		;;
+	[end: list]
+
+	[ListItem: u64 item: 0; ptr<u8> state: 0;]
+		call JsObjs.ArrayPush: state as ptr<JsObj> item;
+	[end]
+
+	[FillFrom: ptr<JsObj> target: 0; ptr<JsObj> list: 0;]
+		ptr<JsViewData> v: (ViewOf: target);
+		while u32 i: 0; i < list.length and i < v.length; i++;
+			call Store: (At: v i) v.kind (JsOps.ToNumber: list.elems:i);
+		;;
+	[end]
+
+	[ThisArray: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.cls is array_class
+				return o;
+			;;
+		;;
+		call JsErr.Type: 'this is not a typed array';
+	[end: 0 as ptr<JsObj>]
+
+	# a new typed array, by the species of an existing one
+	[SpeciesMake: ptr<JsObj> o: 0; f64 n: 0.0;]
+		ptr<JsViewData> v: (ViewOf: o);
+		ptr<JsProp> gp: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: (KindName: v.kind)) as ptr<u8>);
+		u64 c: (JsOps.Species: o gp.value);
+		call Js.Push: (JsV.Num: n);
+		u64 made: (Js.Construct: c 1);
+		if not (JsV.IsObj: made)
+			call JsErr.Type: 'The species constructor did not make a typed array';
+		;;
+		ptr<JsObj> mo: (JsV.AsObj: made);
+		if mo.cls is not array_class
+			call JsErr.Type: 'The species constructor did not make a typed array';
+		;;
+		ptr<JsViewData> mv: (ViewOf: mo);
+		if (mv.length as f64) < n
+			call JsErr.Type: 'The species constructor made a typed array too short';
+		;;
+	[end: mo]
+
+	[KindName: u32 kind: 0;]
+		when kind
+			is INT8
+				return 'Int8Array';
+			;;
+			is UINT8
+				return 'Uint8Array';
+			;;
+			is UINT8C
+				return 'Uint8ClampedArray';
+			;;
+			is INT16
+				return 'Int16Array';
+			;;
+			is UINT16
+				return 'Uint16Array';
+			;;
+			is INT32
+				return 'Int32Array';
+			;;
+			is UINT32
+				return 'Uint32Array';
+			;;
+			is FLOAT32
+				return 'Float32Array';
+			;;
+		;;
+		ptr<u8> last: 'Float64Array';
+	[end: last]
+
+	[From: ptr<u64> args: 0; int argc: 0;]
+		u64 c: args:(-1);
+		if not (JsOps.IsConstructor: c)
+			call JsErr.Type: 'TypedArray.from: this is not a constructor';
+		;;
+		u64 mapf: (Js.Arg: args argc 1);
+		u64 this_arg: (Js.Arg: args argc 2);
+		if mapf is not JsV.UNDEF and not (JsOps.IsCallable: mapf)
+			call JsErr.Type: 'TypedArray.from: the mapper is not a function';
+		;;
+		ptr<JsObj> list: (ListOf: (Js.Arg: args argc 0));
+		call Js.Push: (JsV.Obj: list);
+		call Js.Push: (JsV.Uint: list.length);
+		u64 made: (Js.Construct: c 1);
+		if not (JsV.IsObj: made)
+			call JsErr.Type: 'TypedArray.from: the constructor did not make an object';
+		;;
+		call Js.Push: made;
+		ptr<JsObj> mo: (JsV.AsObj: made);
+		while u32 i: 0; i < list.length; i++;
+			u64 v: list.elems:i;
+			if mapf is not JsV.UNDEF
+				v is (JsVm.Call2: mapf this_arg v (JsV.Uint: i));
+			;;
+			if not (JsObjs.Set: mo JsV.INT_BASE | i v made)
+				call JsErr.Type: 'TypedArray.from: could not set an element';
+			;;
+		;;
+	[end: made]
+
+	[OfFn: ptr<u64> args: 0; int argc: 0;]
+		u64 c: args:(-1);
+		if not (JsOps.IsConstructor: c)
+			call JsErr.Type: 'TypedArray.of: this is not a constructor';
+		;;
+		call Js.Push: (JsV.Int: argc);
+		u64 made: (Js.Construct: c 1);
+		if not (JsV.IsObj: made)
+			call JsErr.Type: 'TypedArray.of: the constructor did not make an object';
+		;;
+		ptr<JsObj> mo: (JsV.AsObj: made);
+		while int i: 0; i < argc; i++;
+			if not (JsObjs.Set: mo JsV.INT_BASE | i as u32 args:i made)
+				call JsErr.Type: 'TypedArray.of: could not set an element';
+			;;
+		;;
+	[end: made]
+
+	# ---- its properties ----
+
+	# a typed array or a DataView
+	[ThisView: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.cls is array_class or o.cls is view_class
+				return o.data as ptr<JsViewData>;
+			;;
+		;;
+		call JsErr.Type: 'this is not a typed array or DataView';
+	[end: 0 as ptr<JsViewData>]
+
+	[GetBuffer: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsViewData> v: (ThisView: args);
+	[end: v.buffer]
+
+	[GetByteLength: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisArray: args);
+		ptr<JsViewData> v: (ViewOf: o);
+	[end: (JsV.Uint: v.length * (SizeOf: v.kind))]
+
+	[ViewByteLength: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsViewData> v: (ThisView: args);
+	[end: (JsV.Uint: v.length)]
+
+	[GetByteOffset: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsViewData> v: (ThisView: args);
+	[end: (JsV.Uint: v.offset)]
+
+	[GetLength: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisArray: args);
+		ptr<JsViewData> v: (ViewOf: o);
+	[end: (JsV.Uint: v.length)]
+
+	[GetTag: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if not (JsV.IsObj: t)
+			return JsV.UNDEF;
+		;;
+		ptr<JsObj> o: (JsV.AsObj: t);
+		if o.cls is not array_class
+			return JsV.UNDEF;
+		;;
+		ptr<JsViewData> v: (ViewOf: o);
+	[end: (Js.NewStringZ: (KindName: v.kind))]
+
+	# ---- its methods ----
+
+	[SetFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisArray: args);
+		ptr<JsViewData> v: (ViewOf: o);
+		f64 off: (JsOps.ToInteger: (Js.Arg: args argc 1));
+		if off < 0.0
+			call JsErr.Range: 'offset is out of bounds';
+		;;
+		u64 src: (Js.Arg: args argc 0);
+		if (IsClass: src array_class)
+			ptr<JsViewData> sv: (ViewOf: (JsV.AsObj: src));
+			if off + (sv.length as f64) > (v.length as f64)
+				call JsErr.Range: 'offset is out of bounds';
+			;;
+			# they may share a buffer, so what's read goes somewhere safe first
+			u32 n: sv.length;
+			ptr<f64> copy: new f64[n + 1];
+			if copy is 0
+				throw 'out of memory';
+			;;
+			while u32 i: 0; i < n; i++;
+				copy:i is (JsV.AsNum: (Load: (At: sv i) sv.kind));
+			;;
+			while u32 j: 0; j < n; j++;
+				call Store: (At: v (off as u32) + j) v.kind copy:j;
+			;;
+			free copy;
+			return JsV.UNDEF;
+		;;
+		ptr<JsObj> so: (JsOps.ToObject: src);
+		f64 len: (JsArrayBuiltins.LengthOf: so);
+		if off + len > (v.length as f64)
+			call JsErr.Range: 'offset is out of bounds';
+		;;
+		u32 count: len as u32;
+		while u32 k: 0; k < count; k++;
+			u64 e: (JsObjs.GetIndex: so k (JsV.Obj: so));
+			call Store: (At: v (off as u32) + k) v.kind (JsOps.ToNumber: e);
+		;;
+	[end: JsV.UNDEF]
+
+	[Subarray: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisArray: args);
+		ptr<JsViewData> v: (ViewOf: o);
+		f64 len: v.length as f64;
+		f64 first: (JsOps.RelativeIndex: (Js.Arg: args argc 0) len 0.0);
+		f64 last: (JsOps.RelativeIndex: (Js.Arg: args argc 1) len len);
+		f64 count: last - first;
+		if count < 0.0
+			count is 0.0;
+		;;
+		ptr<JsProp> gp: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: (KindName: v.kind)) as ptr<u8>);
+		u64 c: (JsOps.Species: o gp.value);
+		call Js.Push: v.buffer;
+		call Js.Push: (JsV.Num: (v.offset as f64) + first * ((SizeOf: v.kind) as f64));
+		call Js.Push: (JsV.Num: count);
+	[end: (Js.Construct: c 3)]
+
+	[Slice: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisArray: args);
+		ptr<JsViewData> v: (ViewOf: o);
+		f64 len: v.length as f64;
+		f64 first: (JsOps.RelativeIndex: (Js.Arg: args argc 0) len 0.0);
+		f64 last: (JsOps.RelativeIndex: (Js.Arg: args argc 1) len len);
+		f64 count: last - first;
+		if count < 0.0
+			count is 0.0;
+		;;
+		ptr<JsObj> made: (SpeciesMake: o count);
+		ptr<JsViewData> mv: (ViewOf: made);
+		u32 n: count as u32;
+		u32 start: first as u32;
+		while u32 i: 0; i < n and start + i < v.length; i++;
+			call Store: (At: mv i) mv.kind (JsV.AsNum: (Load: (At: v start + i) v.kind));
+		;;
+	[end: (JsV.Obj: made)]
+
+	[MapFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisArray: args);
+		u64 ov: args:(-1);
+		ptr<JsViewData> v: (ViewOf: o);
+		u64 f: (Js.Arg: args argc 0);
+		if not (JsOps.IsCallable: f)
+			call JsErr.Type: 'callback is not a function';
+		;;
+		u64 this_arg: (Js.Arg: args argc 1);
+		ptr<JsObj> made: (SpeciesMake: o v.length as f64);
+		call Js.Push: (JsV.Obj: made);
+		while u32 i: 0; i < v.length; i++;
+			call Js.Checkpoint;
+			u64 r: (JsVm.Call3: f this_arg (Load: (At: v i) v.kind) (JsV.Uint: i) ov);
+			if not (JsObjs.Set: made JsV.INT_BASE | i r (JsV.Obj: made))
+				call JsErr.Type: 'could not set an element';
+			;;
+		;;
+	[end: (JsV.Obj: made)]
+
+	[FilterFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (ThisArray: args);
+		u64 ov: args:(-1);
+		ptr<JsViewData> v: (ViewOf: o);
+		u64 f: (Js.Arg: args argc 0);
+		if not (JsOps.IsCallable: f)
+			call JsErr.Type: 'callback is not a function';
+		;;
+		u64 this_arg: (Js.Arg: args argc 1);
+		ptr<JsObj> kept: (JsObjs.NewArray: 0);
+		call Js.Push: (JsV.Obj: kept);
+		while u32 i: 0; i < v.length; i++;
+			call Js.Checkpoint;
+			u64 e: (Load: (At: v i) v.kind);
+			if (JsOps.ToBool: (JsVm.Call3: f this_arg e (JsV.Uint: i) ov))
+				call JsObjs.ArrayPush: kept e;
+			;;
+		;;
+		ptr<JsObj> made: (SpeciesMake: o kept.length as f64);
+		ptr<JsViewData> mv: (ViewOf: made);
+		while u32 j: 0; j < kept.length; j++;
+			call Store: (At: mv j) mv.kind (JsV.AsNum: kept.elems:j);
+		;;
+	[end: (JsV.Obj: made)]
+
+	# by number, with -0 before 0 and NaN last, unless a function says otherwise
+	[Sort: ptr<u64> args: 0; int argc: 0;]
+		u64 cmp: (Js.Arg: args argc 0);
+		if cmp is not JsV.UNDEF and not (JsOps.IsCallable: cmp)
+			call JsErr.Type: 'The comparison function must be either a function or undefined';
+		;;
+		ptr<JsObj> o: (ThisArray: args);
+		ptr<JsViewData> v: (ViewOf: o);
+		u32 n: v.length;
+		ptr<JsObj> a: (JsObjs.NewArray: n);
+		call Js.Push: (JsV.Obj: a);
+		ptr<JsObj> b: (JsObjs.NewArray: n);
+		call Js.Push: (JsV.Obj: b);
+		while u32 i: 0; i < n; i++;
+			call JsObjs.ArrayPush: a (Load: (At: v i) v.kind);
+			call JsObjs.ArrayPush: b JsV.UNDEF;
+		;;
+		sort_cmp is cmp;
+		call SortRuns: a.elems b.elems n cmp;
+		while u32 j: 0; j < n; j++;
+			call Store: (At: v j) v.kind (JsV.AsNum: a.elems:j);
+		;;
+	[end: args:(-1)]
+
+	u64 sort_cmp: 0;
+
+	[SortRuns: ptr<u64> items: 0; ptr<u64> other: 0; u32 n: 0; u64 cmp: 0;]
+		ptr<u64> from: items;
+		ptr<u64> to: other;
+		u32 width: 1;
+		while width < n
+			u32 lo: 0;
+			while lo < n
+				u32 mid: lo + width;
+				if mid > n
+					mid is n;
+				;;
+				u32 hi: mid + width;
+				if hi > n
+					hi is n;
+				;;
+				u32 l: lo;
+				u32 r: mid;
+				u32 place: lo;
+				while l < mid or r < hi
+					if r >= hi or (l < mid and (Less: from:l from:r cmp))
+						to:place is from:l;
+						l++;
+					;;
+					else
+						to:place is from:r;
+						r++;
+					;;
+					place++;
+				;;
+				lo is hi;
+			;;
+			ptr<u64> swap: from;
+			from is to;
+			to is swap;
+			width is width * 2;
+		;;
+		if from is not items
+			call Mem.Copy: items as ptr<u8> from as ptr<u8> n * 8;
+		;;
+	[end]
+
+	# whether a stays in front of b
+	[Less: u64 a: 0; u64 b: 0; u64 cmp: 0;]
+		call Js.Checkpoint;
+		if cmp is not JsV.UNDEF
+			f64 r: (JsOps.ToNumber: (JsVm.Call2: cmp JsV.UNDEF a b));
+			return not (r > 0.0);
+		;;
+		f64 x: (JsV.AsNum: a);
+		f64 y: (JsV.AsNum: b);
+		if x is not x return y is not y;
+		if y is not y return true;
+		if x < y return true;
+		if x > y return false;
+		if x is 0.0 and y is 0.0
+			return (WlNum.IsNegative: x) or not (WlNum.IsNegative: y);
+		;;
+	[end: true]
+
+	# ---- DataView ----
+
+	[ViewCtor: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'Constructor DataView requires new';
+		;;
+		u64 bv: (Js.Arg: args argc 0);
+		if not (IsClass: bv buffer_class)
+			call JsErr.Type: 'First argument to DataView constructor must be an ArrayBuffer';
+		;;
+		ptr<JsBufferData> bd: (BytesData: bv);
+		f64 off: (ToIndex: (Js.Arg: args argc 1));
+		if off > (bd.len as f64)
+			call JsErr.Range: 'Start offset is outside the bounds of the buffer';
+		;;
+		f64 count: (bd.len as f64) - off;
+		if (Js.Arg: args argc 2) is not JsV.UNDEF
+			count is (ToIndex: args:2);
+			if off + count > (bd.len as f64)
+				call JsErr.Range: 'Invalid DataView length';
+			;;
+		;;
+		ptr<JsObj> proto: (JsOps.ProtoFromCtor: nt JsRt.P.dataview);
+		ptr<JsViewData> v: new JsViewData;
+		if v is 0
+			throw 'out of memory';
+		;;
+		v.buffer is bv;
+		v.offset is off as u32;
+		v.length is count as u32;
+		ptr<JsObj> o: (JsObjs.NewHost: view_class proto v as ptr<u8>);
+	[end: (JsV.Obj: o)]
+
+	[BytesData: u64 bv: 0;]
+		ptr<JsObj> b: (JsV.AsObj: bv);
+	[end: b.data as ptr<JsBufferData>]
+
+	[ThisDataView: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.cls is view_class
+				return o.data as ptr<JsViewData>;
+			;;
+		;;
+		call JsErr.Type: 'this is not a DataView';
+	[end: 0 as ptr<JsViewData>]
+
+	# the element's bytes, in the machine's order, in tmp
+	u8 tmp[8];
+
+	[ViewGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u32 kind: self.magic;
+		ptr<JsViewData> v: (ThisDataView: args);
+		f64 at_: (ToIndex: (Js.Arg: args argc 0));
+		bln little: (JsOps.ToBool: (Js.Arg: args argc 1));
+		u32 size: (SizeOf: kind);
+		if at_ + (size as f64) > (v.length as f64)
+			call JsErr.Range: 'Offset is outside the bounds of the DataView';
+		;;
+		ptr<JsBufferData> bd: (BufferOf: v);
+		ptr<u8> p: bd.bytes + v.offset + at_ as u32;
+		while u32 i: 0; i < size; i++;
+			if little
+				tmp:i is p:i;
+			;;
+			else
+				tmp:i is p:(size - 1 - i);
+			;;
+		;;
+	[end: (Load: addr tmp:0 kind)]
+
+	[ViewSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u32 kind: self.magic;
+		ptr<JsViewData> v: (ThisDataView: args);
+		f64 at_: (ToIndex: (Js.Arg: args argc 0));
+		f64 x: (JsOps.ToNumber: (Js.Arg: args argc 1));
+		bln little: (JsOps.ToBool: (Js.Arg: args argc 2));
+		u32 size: (SizeOf: kind);
+		if at_ + (size as f64) > (v.length as f64)
+			call JsErr.Range: 'Offset is outside the bounds of the DataView';
+		;;
+		call Store: addr tmp:0 kind x;
+		ptr<JsBufferData> bd: (BufferOf: v);
+		ptr<u8> p: bd.bytes + v.offset + at_ as u32;
+		while u32 i: 0; i < size; i++;
+			if little
+				p:i is tmp:i;
+			;;
+			else
+				p:i is tmp:(size - 1 - i);
+			;;
+		;;
+	[end: JsV.UNDEF]
+}

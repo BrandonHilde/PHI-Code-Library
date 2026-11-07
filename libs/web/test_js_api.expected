@@ -1,0 +1,43 @@
+eval: a
+eval: undefined
+eval: b
+eval: aundefined
+eval: b1
+eval: a
+eval: a still here
+eval: failed, Unexpected end of input (line 1)
+eval: failed, 5
+eval: failed, r
+eval: failed, Cannot read properties of null (reading x)
+eval: 1
+call: 42
+call with nothing: failed, no a
+call of undefined: failed, value is not a function
+with a this: 0
+eval: 0
+constructed: 7
+stack balanced 1
+eval: n1.5true2465533
+has 1 0 deleted 1 0
+by index: plain
+by key: 6
+by number: null
+eval: 0
+root: held by a root
+root function: held by a function
+collections 1
+eval: [object Promise]
+eval: 0
+job 1
+job 2
+jobs failed 1 with failed, 9
+eval: failed, script interrupted
+eval: 3
+eval: failed, script interrupted
+polled 1
+eval: fine afterwards
+once: 1
+twice: 2
+compile error: SyntaxError
+eval: 790
+done

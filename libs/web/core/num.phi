@@ -1,0 +1,1010 @@
+# Numbers and text, exactly. WlNum turns an f64 into the shortest decimal that reads back as the
+# same f64, as JavaScript's Number::toString asks, and text into the f64 nearest to it, with
+# big-integer arithmetic wherever the easy way could be off by a bit. Simple rather than fast;
+# what's common (whole numbers, short decimals) takes a short way that's just as exact.
+# Everything but radix conversion relies on Weblib.Start's double-precision x87 setting.
+#
+#   WlBuf b;
+#   call WlNum.ToText: 0.1 + 0.2 addr b;          # 0.30000000000000004
+#   call WlNum.ToRadix: 255.5 16 addr b;          # ff.8
+#   call WlNum.ToFixed: 1.005 2 addr b;           # 1.00 (the exact value is below 1.005)
+#   call WlNum.ToExponential: 12.5 1 addr b;      # 1.3e+1 (f of -1: as many digits as it takes)
+#   call WlNum.ToPrecision: 123.456 4 addr b;     # 123.5
+#   f64 x: (WlNum.Parse: text length);            # digits[.digits][e[+-]digits], all of it
+#   f64 y: (WlNum.ParseRadix: text length 16);    # digits of any radix from 2 to 36
+#
+# The three digit generators are also there on their own, leaving WlNum.dig (ASCII digits),
+# WlNum.ndig and WlNum.point, where the value is 0.DIGITS times 10 to the point:
+#   call WlNum.Shortest: x;    call WlNum.Exact: x;    call WlNum.RoundDigits: count;
+
+use memory.mem;
+use core.buf;
+
+struct.WlBig
+{
+	ptr<u32> d;
+	u32 n;
+
+	[Set: u32 v: 0;]
+		n is 0;
+		if v is not 0
+			d:0 is v;
+			n is 1;
+		;;
+	[end]
+
+	[SetU64: u64 v: 0;]
+		d:0 is v as u32;
+		d:1 is (v >> 32) as u32;
+		n is 2;
+		call Trim;
+	[end]
+
+	[Copy: ptr<WlBig> o: 0;]
+		n is o.n;
+		while u32 i: 0; i < n; i++;
+			d:i is o.d:i;
+		;;
+	[end]
+
+	[Trim]
+		while n > 0 and d:(n - 1) is 0
+			n--;
+		;;
+	[end]
+
+	[Room: u32 limbs: 0;]
+		if limbs >= WlNum.BIG_LIMBS
+			throw 'number too large to convert';
+		;;
+	[end]
+
+	[Mul: u32 m: 0;]
+		u64 carry: 0;
+		while u32 i: 0; i < n; i++;
+			u64 t: (d:i as u64) * m + carry;
+			d:i is t as u32;
+			carry is t >> 32;
+		;;
+		if carry is not 0
+			call Room: n + 1;
+			d:n is carry as u32;
+			n++;
+		;;
+	[end]
+
+	[AddSmall: u32 v: 0;]
+		u64 carry: v;
+		u32 i: 0;
+		while carry is not 0
+			if i >= n
+				call Room: n + 1;
+				d:n is 0;
+				n++;
+			;;
+			u64 t: (d:i as u64) + carry;
+			d:i is t as u32;
+			carry is t >> 32;
+			i++;
+		;;
+	[end]
+
+	[Pow10: u32 e: 0;]
+		while e >= 9
+			call Mul: 1000000000;
+			e-- 9;
+		;;
+		u32 m: 1;
+		while e > 0
+			m is m * 10;
+			e--;
+		;;
+		if m is not 1
+			call Mul: m;
+		;;
+	[end]
+
+	[Pow5: u32 e: 0;]
+		while e >= 13
+			call Mul: 1220703125;
+			e-- 13;
+		;;
+		u32 m: 1;
+		while e > 0
+			m is m * 5;
+			e--;
+		;;
+		if m is not 1
+			call Mul: m;
+		;;
+	[end]
+
+	[Shl: u32 bits: 0;]
+		if n is 0 or bits is 0 return;
+		u32 words: bits >> 5;
+		u32 rest: bits & 31;
+		call Room: n + words + 1;
+		if rest is not 0
+			u32 carry: 0;
+			while u32 i: 0; i < n; i++;
+				u32 v: d:i;
+				d:i is (v << rest) | carry;
+				carry is v >> (32 - rest);
+			;;
+			if carry is not 0
+				d:n is carry;
+				n++;
+			;;
+		;;
+		if words is not 0
+			u32 j: n;
+			while j > 0
+				j--;
+				d:(j + words) is d:j;
+			;;
+			while u32 k: 0; k < words; k++;
+				d:k is 0;
+			;;
+			n++ words;
+		;;
+	[end]
+
+	[Shr1]
+		u32 carry: 0;
+		u32 i: n;
+		while i > 0
+			i--;
+			u32 v: d:i;
+			d:i is (v >> 1) | carry;
+			carry is v << 31;
+		;;
+		call Trim;
+	[end]
+
+	[Bits]
+		if n is 0 return 0 as u32;
+		u32 top: d:(n - 1);
+		u32 b: (n - 1) * 32;
+		while top is not 0
+			b++;
+			top is top >> 1;
+		;;
+	[end: b]
+
+	# -1, 0 or 1
+	[Cmp: ptr<WlBig> o: 0;]
+		if n is not o.n
+			if n < o.n return -1;
+			return 1;
+		;;
+		u32 i: n;
+		while i > 0
+			i--;
+			if d:i is not o.d:i
+				if d:i < o.d:i return -1;
+				return 1;
+			;;
+		;;
+	[end: 0]
+
+	[Add: ptr<WlBig> o: 0;]
+		u64 carry: 0;
+		u32 top: n;
+		if o.n > top
+			top is o.n;
+		;;
+		call Room: top + 1;
+		while u32 i: 0; i < top; i++;
+			u64 t: carry;
+			if i < n
+				t is t + d:i;
+			;;
+			if i < o.n
+				t is t + o.d:i;
+			;;
+			d:i is t as u32;
+			carry is t >> 32;
+		;;
+		n is top;
+		if carry is not 0
+			d:n is carry as u32;
+			n++;
+		;;
+	[end]
+
+	# this minus o, which isn't more than this
+	[Sub: ptr<WlBig> o: 0;]
+		u32 borrow: 0;
+		while u32 i: 0; i < n; i++;
+			u32 sub: borrow;
+			if i < o.n
+				u64 w: (o.d:i as u64) + borrow;
+				if w > 0xFFFFFFFF
+					# all ones plus a borrow: this limb stays and the borrow carries on
+					continue;
+				;;
+				sub is w as u32;
+			;;
+			u32 v: d:i;
+			d:i is v - sub;
+			if v < sub
+				borrow is 1;
+			;;
+			else
+				borrow is 0;
+			;;
+		;;
+		call Trim;
+	[end]
+
+	# divides by a small number and gives the remainder
+	[DivSmall: u32 m: 0;]
+		u64 rem: 0;
+		u32 i: n;
+		while i > 0
+			i--;
+			u64 cur: (rem << 32) | d:i;
+			d:i is (cur / m) as u32;
+			rem is cur % m;
+		;;
+		call Trim;
+	[end: rem as u32]
+}
+
+phi.WlNum:Library
+{
+	const u32 BIG_LIMBS: 400;
+	const u32 DIG_ROOM: 2400;
+
+	ptr<u8> dig: 0;           # digits (ASCII) of the last generator
+	int ndig: 0;              # how many
+	int point: 0;             # the value is 0.DIGITS x 10^point
+
+	ptr<u32> limbs: 0;
+	WlBig big_a;
+	WlBig big_b;
+	WlBig big_c;
+	WlBig big_d;
+	WlBig big_e;
+	f64 tens: 1.0 10.0 100.0 1000.0 10000.0 100000.0 1000000.0 10000000.0 100000000.0 1000000000.0 10000000000.0
+		100000000000.0 1000000000000.0 10000000000000.0 100000000000000.0 1000000000000000.0 10000000000000000.0
+		100000000000000000.0 1000000000000000000.0 10000000000000000000.0 100000000000000000000.0
+		1000000000000000000000.0 10000000000000000000000.0;
+
+	[Start]
+		if limbs is not 0 return;
+		limbs is new u32[BIG_LIMBS * 5 + 10];
+		dig is new u8[DIG_ROOM];
+		if limbs is 0 or dig is 0
+			throw 'out of memory for number conversion';
+		;;
+		big_a.d is limbs;
+		big_b.d is limbs + (BIG_LIMBS + 2) * 4;
+		big_c.d is limbs + (BIG_LIMBS + 2) * 8;
+		big_d.d is limbs + (BIG_LIMBS + 2) * 12;
+		big_e.d is limbs + (BIG_LIMBS + 2) * 16;
+	[end]
+
+	[Bits64: f64 x: 0.0;]
+		ptr<u64> p: (addr x) as ptr<u64>;
+	[end: p:0]
+
+	[FromBits: u64 v: 0;]
+		ptr<f64> p: (addr v) as ptr<f64>;
+	[end: p:0]
+
+	[IsFinite: f64 x: 0.0;]
+	[end: ((Bits64: x) >> 52) as u32 & 0x7FF is not 0x7FF]
+
+	[IsNegative: f64 x: 0.0;]
+	[end: ((Bits64: x) >> 63) as u32 is 1]
+
+	[AddU64: u64 v: 0; ptr<WlBuf> b: 0;]
+		u8 tmp[24];
+		int count: 0;
+		while v is not 0 or count is 0
+			tmp:count is ('0' + (v % 10) as u32) as u8;
+			v is v / 10;
+			count++;
+		;;
+		while count > 0
+			count--;
+			call b.Add: tmp:count;
+		;;
+	[end]
+
+	# ---- digit generators ----
+
+	# The shortest digits that read back as x (x above 0 and finite), and of those the closest:
+	# Steele & White's and Dragon4's way, as Burger and Dybvig tell it.
+	[Shortest: f64 x: 0.0;]
+		call Start;
+		u64 bits: (Bits64: x);
+		u32 expo: (bits >> 52) as u32 & 0x7FF;
+		u64 m: bits & 0xFFFFFFFFFFFFF;
+		int e: -1074;
+		bln closer: false;
+		if expo is not 0
+			closer is m is 0 and expo > 1;
+			m is m | 0x10000000000000;
+			e is (expo as int) - 1075;
+		;;
+		bln even: (m as u32 & 1) is 0;
+		ptr<WlBig> r: addr big_a;
+		ptr<WlBig> s: addr big_b;
+		ptr<WlBig> mp: addr big_c;
+		ptr<WlBig> mm: addr big_d;
+		ptr<WlBig> t: addr big_e;
+		call r.SetU64: m;
+		call s.Set: 1;
+		call mp.Set: 1;
+		call mm.Set: 1;
+		u32 extra: 1;
+		if closer
+			extra is 2;
+		;;
+		if e >= 0
+			call r.Shl: (e as u32) + extra;
+			call s.Shl: extra;
+			call mp.Shl: e as u32;
+			call mm.Shl: e as u32;
+		;;
+		else
+			call r.Shl: extra;
+			call s.Shl: ((0 - e) as u32) + extra;
+		;;
+		if closer
+			call mp.Shl: 1;
+		;;
+		int blen: 0;
+		u64 mt: m;
+		while mt is not 0
+			blen++;
+			mt is mt >> 1;
+		;;
+		f64 lg: ((e + blen - 1) as f64) * 0.30102999566398114 - 0.0000000001;
+		int k: (Float.Ceil: lg) as int;
+		if k >= 0
+			call s.Pow10: k as u32;
+		;;
+		else
+			call r.Pow10: (0 - k) as u32;
+			call mp.Pow10: (0 - k) as u32;
+			call mm.Pow10: (0 - k) as u32;
+		;;
+		call t.Copy: r;
+		call t.Add: mp;
+		int c: (t.Cmp: s);
+		if c > 0 or (even and c is 0)
+			k++;
+		;;
+		else
+			call r.Mul: 10;
+			call mp.Mul: 10;
+			call mm.Mul: 10;
+		;;
+		ndig is 0;
+		while true
+			u32 digit: 0;
+			while (r.Cmp: s) >= 0
+				call r.Sub: s;
+				digit++;
+			;;
+			int low: (r.Cmp: mm);
+			call t.Copy: r;
+			call t.Add: mp;
+			int high: (t.Cmp: s);
+			bln tc1: low < 0 or (even and low is 0);
+			bln tc2: high > 0 or (even and high is 0);
+			if not tc1 and not tc2
+				dig:ndig is ('0' + digit) as u8;
+				ndig++;
+				call r.Mul: 10;
+				call mp.Mul: 10;
+				call mm.Mul: 10;
+				continue;
+			;;
+			if tc1 and tc2
+				call t.Copy: r;
+				call t.Shl: 1;
+				if (t.Cmp: s) >= 0
+					digit++;
+				;;
+			;;
+			elif tc2
+				digit++;
+			;;
+			dig:ndig is ('0' + digit) as u8;
+			ndig++;
+			break;
+		;;
+		point is k;
+	[end]
+
+	# Every digit of x, exactly: any finite f64 is a whole number over a power of ten.
+	[Exact: f64 x: 0.0;]
+		call Start;
+		ndig is 0;
+		point is 1;
+		if x is 0.0 return;
+		u64 bits: (Bits64: x);
+		u32 expo: (bits >> 52) as u32 & 0x7FF;
+		u64 m: bits & 0xFFFFFFFFFFFFF;
+		int e: -1074;
+		if expo is not 0
+			m is m | 0x10000000000000;
+			e is (expo as int) - 1075;
+		;;
+		ptr<WlBig> a: addr big_a;
+		call a.SetU64: m;
+		if e >= 0
+			call a.Shl: e as u32;
+		;;
+		else
+			call a.Pow5: (0 - e) as u32;
+		;;
+		# nine digits at a time from the low end, into the far end of the buffer
+		int at_end: DIG_ROOM as int;
+		while a.n > 0
+			u32 chunk: (a.DivSmall: 1000000000);
+			while int i: 0; i < 9; i++;
+				at_end--;
+				dig:at_end is ('0' + chunk % 10) as u8;
+				chunk is chunk / 10;
+			;;
+		;;
+		while at_end < DIG_ROOM as int and dig:at_end is '0'
+			at_end++;
+		;;
+		ndig is (DIG_ROOM as int) - at_end;
+		call Mem.Move: dig dig + at_end ndig as u32;
+		point is ndig;
+		if e < 0
+			point is ndig + e;
+		;;
+		while ndig > 1 and dig:(ndig - 1) is '0'
+			ndig--;
+		;;
+	[end]
+
+	# Keeps count digits, rounding what's dropped half up, as toFixed and the others ask.
+	[RoundDigits: int count: 0;]
+		if count < 0
+			ndig is 0;
+			return;
+		;;
+		if count >= ndig
+			while ndig < count and ndig < (DIG_ROOM as int) - 1
+				dig:ndig is '0';
+				ndig++;
+			;;
+			return;
+		;;
+		bln up: dig:count >= '5';
+		ndig is count;
+		if not up return;
+		int i: count;
+		while i > 0
+			i--;
+			if dig:i is '9'
+				dig:i is '0';
+			;;
+			else
+				dig:i is dig:i + 1;
+				return;
+			;;
+		;;
+		# all nines, or nothing kept: a one in front
+		call Mem.Move: dig + 1 dig ndig as u32;
+		dig:0 is '1';
+		point++;
+		if count is 0
+			ndig is 1;
+		;;
+	[end]
+
+	# ---- to text ----
+
+	# x as JavaScript's Number::toString writes it
+	[ToText: f64 x: 0.0; ptr<WlBuf> b: 0;]
+		if x is not x
+			call b.AddZ: 'NaN';
+			return;
+		;;
+		if x is 0.0
+			call b.Add: '0';
+			return;
+		;;
+		if x < 0.0
+			call b.Add: '-';
+			x is 0.0 - x;
+		;;
+		if not (IsFinite: x)
+			call b.AddZ: 'Infinity';
+			return;
+		;;
+		if x < 9007199254740992.0
+			u64 whole: x as u64;
+			if (whole as f64) is x
+				call AddU64: whole b;
+				return;
+			;;
+		;;
+		call Shortest: x;
+		call WriteShortest: b;
+	[end]
+
+	[WriteDigits: int from: 0; int count: 0; ptr<WlBuf> b: 0;]
+		if count > 0
+			call b.AddN: dig + from count as u32;
+		;;
+	[end]
+
+	[WriteExponent: int e: 0; ptr<WlBuf> b: 0;]
+		call b.Add: 'e';
+		if e >= 0
+			call b.Add: '+';
+		;;
+		call b.AddInt: e;
+	[end]
+
+	[WriteShortest: ptr<WlBuf> b: 0;]
+		int k: ndig;
+		int n: point;
+		if k <= n and n <= 21
+			call WriteDigits: 0 k b;
+			while int i: 0; i < n - k; i++;
+				call b.Add: '0';
+			;;
+			return;
+		;;
+		if n > 0 and n <= 21
+			call WriteDigits: 0 n b;
+			call b.Add: '.';
+			call WriteDigits: n k - n b;
+			return;
+		;;
+		if n > -6 and n <= 0
+			call b.AddZ: '0.';
+			while int j: 0; j < 0 - n; j++;
+				call b.Add: '0';
+			;;
+			call WriteDigits: 0 k b;
+			return;
+		;;
+		call WriteDigits: 0 1 b;
+		if k > 1
+			call b.Add: '.';
+			call WriteDigits: 1 k - 1 b;
+		;;
+		call WriteExponent: n - 1 b;
+	[end]
+
+	[DigitChar: u32 d: 0;]
+		if d < 10 return '0' + d;
+	[end: 'a' + d - 10]
+
+	# x in a radix from 2 to 36: as many fraction digits as tell it from its neighbours, the
+	# same way browsers do it
+	[ToRadix: f64 x: 0.0; int radix: 10; ptr<WlBuf> b: 0;]
+		if radix is 10 or x is not x or not (IsFinite: x)
+			call ToText: x b;
+			return;
+		;;
+		if x is 0.0
+			call b.Add: '0';
+			return;
+		;;
+		call Start;
+		if x < 0.0
+			call b.Add: '-';
+			x is 0.0 - x;
+		;;
+		f64 r: radix as f64;
+		f64 whole: (Float.Floor: x);
+		f64 frac: x - whole;
+		f64 delta: 0.5 * ((FromBits: (Bits64: x) + 1) - x);
+		f64 tiny: (FromBits: 1);
+		if delta < tiny
+			delta is tiny;
+		;;
+		int count: 0;
+		if frac >= delta
+			while true
+				frac is frac * r;
+				delta is delta * r;
+				int digit: frac as int;
+				dig:count is digit as u8;
+				count++;
+				frac is frac - (digit as f64);
+				if frac > 0.5 or (frac is 0.5 and (digit & 1) is 1)
+					if frac + delta > 1.0
+						# round up, carrying
+						while true
+							count--;
+							if count < 0
+								whole is whole + 1.0;
+								count is 0;
+								break;
+							;;
+							if (dig:count as int) + 1 < radix
+								dig:count is dig:count + 1;
+								count++;
+								break;
+							;;
+						;;
+						break;
+					;;
+				;;
+				if frac < delta or count >= (DIG_ROOM as int) / 2
+					break;
+				;;
+			;;
+		;;
+		# the whole part, from its low digit, at the end of the buffer
+		int at_end: DIG_ROOM as int;
+		while whole >= 9007199254740992.0
+			whole is whole / r;
+			at_end--;
+			dig:at_end is '0';
+		;;
+		while true
+			f64 rem: whole % r;
+			at_end--;
+			dig:at_end is (DigitChar: rem as u32) as u8;
+			whole is (whole - rem) / r;
+			if whole <= 0.0 or at_end <= count + 2
+				break;
+			;;
+		;;
+		call b.AddN: dig + at_end ((DIG_ROOM as int) - at_end) as u32;
+		if count > 0
+			call b.Add: '.';
+			while int i: 0; i < count; i++;
+				call b.Add: (DigitChar: dig:i) as u8;
+			;;
+		;;
+	[end]
+
+	[WriteFixed: int f: 0; ptr<WlBuf> b: 0;]
+		if point <= 0
+			call b.Add: '0';
+		;;
+		else
+			while int i: 0; i < point; i++;
+				if i < ndig
+					call b.Add: dig:i;
+				;;
+				else
+					call b.Add: '0';
+				;;
+			;;
+		;;
+		if f <= 0 return;
+		call b.Add: '.';
+		while int j: 0; j < f; j++;
+			int at_place: point + j;
+			if at_place >= 0 and at_place < ndig
+				call b.Add: dig:at_place;
+			;;
+			else
+				call b.Add: '0';
+			;;
+		;;
+	[end]
+
+	[WriteExp: ptr<WlBuf> b: 0;]
+		call b.Add: dig:0;
+		if ndig > 1
+			call b.Add: '.';
+			call WriteDigits: 1 ndig - 1 b;
+		;;
+		call WriteExponent: point - 1 b;
+	[end]
+
+	# Number.prototype.toFixed: f from 0 to 100
+	[ToFixed: f64 x: 0.0; int f: 0; ptr<WlBuf> b: 0;]
+		if x is not x or not (IsFinite: x) or x >= 1e21 or x <= -1e21
+			call ToText: x b;
+			return;
+		;;
+		if x < 0.0
+			call b.Add: '-';
+			x is 0.0 - x;
+		;;
+		call Exact: x;
+		if x is 0.0
+			point is 0;
+		;;
+		call RoundDigits: point + f;
+		call WriteFixed: f b;
+	[end]
+
+	# Number.prototype.toExponential: f from 0 to 100, or -1 for as many digits as it takes
+	[ToExponential: f64 x: 0.0; int f: -1; ptr<WlBuf> b: 0;]
+		if x is not x or not (IsFinite: x)
+			call ToText: x b;
+			return;
+		;;
+		if x < 0.0
+			call b.Add: '-';
+			x is 0.0 - x;
+		;;
+		if x is 0.0
+			call Exact: x;
+			if f < 0
+				f is 0;
+			;;
+			call RoundDigits: f + 1;
+		;;
+		elif f < 0
+			call Shortest: x;
+		;;
+		else
+			call Exact: x;
+			call RoundDigits: f + 1;
+		;;
+		call WriteExp: b;
+	[end]
+
+	# Number.prototype.toPrecision: p from 1 to 100
+	[ToPrecision: f64 x: 0.0; int p: 1; ptr<WlBuf> b: 0;]
+		if x is not x or not (IsFinite: x)
+			call ToText: x b;
+			return;
+		;;
+		if x < 0.0
+			call b.Add: '-';
+			x is 0.0 - x;
+		;;
+		call Exact: x;
+		call RoundDigits: p;
+		int e: point - 1;
+		if e < -6 or e >= p
+			call WriteExp: b;
+			return;
+		;;
+		call WriteFixed: p - 1 - e b;
+	[end]
+
+	# ---- from text ----
+
+	# A number in the form digits[.digits][e[+-]digits], every byte of it; what isn't that gives
+	# NaN. Callers deal with signs, spaces and Infinity. There may be digits on just one side.
+	[Parse: ptr<u8> text: 0; u32 n: 0;]
+		call Start;
+		u32 i: 0;
+		u64 fast: 0;           # the first 19 significant digits
+		int sig: 0;            # how many significant digits there are
+		int stored: 0;         # how many of them are in dig
+		int scale: 0;          # 10^scale times the digits read
+		bln any: false;
+		bln sticky: false;
+		bln seen_point: false;
+		while i < n
+			u32 c: text:i;
+			if c is '.'
+				if seen_point break;
+				seen_point is true;
+				i++;
+				continue;
+			;;
+			if c < '0' or c > '9' break;
+			any is true;
+			if seen_point
+				scale--;
+			;;
+			if sig > 0 or c is not '0'
+				if sig < 19
+					fast is fast * 10 + (c - '0');
+				;;
+				if stored < 800
+					dig:stored is c as u8;
+					stored++;
+				;;
+				else
+					# past what can matter: only whether something's there
+					if c is not '0'
+						sticky is true;
+					;;
+					scale++;
+				;;
+				sig++;
+			;;
+			i++;
+		;;
+		if not any
+			return (FromBits: 0x7FF8000000000000);
+		;;
+		int ex: 0;
+		if i < n
+			if text:i is not 'e' and text:i is not 'E'
+				return (FromBits: 0x7FF8000000000000);
+			;;
+			i++;
+			bln neg: false;
+			if i < n and (text:i is '+' or text:i is '-')
+				neg is (text:i is '-');
+				i++;
+			;;
+			if i >= n
+				return (FromBits: 0x7FF8000000000000);
+			;;
+			while i < n
+				u32 ec: text:i;
+				if ec < '0' or ec > '9'
+					return (FromBits: 0x7FF8000000000000);
+				;;
+				if ex < 100000
+					ex is ex * 10 + ((ec - '0') as int);
+				;;
+				i++;
+			;;
+			if neg
+				ex is 0 - ex;
+			;;
+		;;
+		if sig is 0 return 0.0;
+		ex is ex + scale;
+		if sig <= 15 and ex >= -22 and ex <= 22
+			f64 fv: fast as f64;
+			if ex < 0
+				return fv / tens:(0 - ex);
+			;;
+			return fv * tens:ex;
+		;;
+		# the value is under 10^(stored + ex), and at least 10^(stored + ex - 1)
+		if stored + ex > 310
+			return (FromBits: 0x7FF0000000000000);
+		;;
+		if stored + ex < -330
+			return 0.0;
+		;;
+	[end: (Slow: stored ex sticky)]
+
+	# dig's digits times 10^ex, to the nearest f64, ties to even, exactly
+	[Slow: int stored: 0; int ex: 0; bln sticky: false;]
+		ptr<WlBig> num: addr big_a;
+		ptr<WlBig> den: addr big_b;
+		call num.Set: 0;
+		int at_digit: 0;
+		while at_digit < stored
+			u32 chunk: 0;
+			u32 scale_by: 1;
+			while at_digit < stored and scale_by < 1000000000
+				chunk is chunk * 10 + (dig:at_digit - '0');
+				scale_by is scale_by * 10;
+				at_digit++;
+			;;
+			call num.Mul: scale_by;
+			call num.AddSmall: chunk;
+		;;
+		if sticky
+			call num.Mul: 10;
+			call num.AddSmall: 1;
+			ex--;
+		;;
+		call den.Set: 1;
+		if ex >= 0
+			call num.Pow10: ex as u32;
+		;;
+		else
+			call den.Pow10: (0 - ex) as u32;
+		;;
+		# num/den, scaled so that the quotient has 55 or 56 bits
+		int sh: 55 - ((num.Bits) as int - (den.Bits) as int);
+		if sh > 0
+			call num.Shl: sh as u32;
+		;;
+		elif sh < 0
+			call den.Shl: (0 - sh) as u32;
+		;;
+		call den.Shl: 57;
+		u64 q: 0;
+		while int i: 0; i < 58; i++;
+			q is q << 1;
+			if (num.Cmp: den) >= 0
+				call num.Sub: den;
+				q is q | 1;
+			;;
+			call den.Shr1;
+		;;
+		bln rem: num.n is not 0;
+		# q x 2^-sh, and something more if rem
+		int qbits: 0;
+		u64 qt: q;
+		while qt is not 0
+			qbits++;
+			qt is qt >> 1;
+		;;
+		int e2: qbits - 1 - sh;
+		if e2 > 1023
+			return (FromBits: 0x7FF0000000000000);
+		;;
+		int keep: 53;
+		if e2 < -1022
+			keep is 53 - (-1022 - e2);
+		;;
+		if keep < 0 return 0.0;
+		int drop: qbits - keep;
+		u64 mant: q >> drop;
+		u64 mask: ((1 as u64) << drop) - 1;
+		u64 low: q & mask;
+		u64 half: (1 as u64) << (drop - 1);
+		if low > half or (low is half and (rem or (mant as u32 & 1) is 1))
+			mant is mant + 1;
+		;;
+		u64 result: mant;
+		if e2 >= -1022
+			# mant has its top bit: adding it to the exponent less one sets the exponent, and a
+			# carry from rounding goes where it should
+			result is (((e2 + 1022) as u64) << 52) + mant;
+		;;
+	[end: (FromBits: result)]
+
+	[DigitValue: u32 c: 0;]
+		if c >= '0' and c <= '9' return (c - '0') as int;
+		if c >= 'a' and c <= 'z' return (c - 'a' + 10) as int;
+		if c >= 'A' and c <= 'Z' return (c - 'A' + 10) as int;
+	[end: 99]
+
+	# Digits of a radix, nothing else, to the nearest f64; one that isn't a digit gives NaN.
+	[ParseRadix: ptr<u8> text: 0; u32 n: 0; int radix: 10;]
+		if radix is 10
+			return (Parse: text n);
+		;;
+		if n is 0
+			return (FromBits: 0x7FF8000000000000);
+		;;
+		call Start;
+		ptr<WlBig> a: addr big_a;
+		call a.Set: 0;
+		while u32 i: 0; i < n; i++;
+			int v: (DigitValue: text:i);
+			if v >= radix
+				return (FromBits: 0x7FF8000000000000);
+			;;
+			if (a.Bits) > 1100
+				# past any f64; the rest must still be digits
+				continue;
+			;;
+			call a.Mul: radix as u32;
+			call a.AddSmall: v as u32;
+		;;
+		u32 bl: (a.Bits);
+		if bl is 0 return 0.0;
+		if bl > 1024
+			return (FromBits: 0x7FF0000000000000);
+		;;
+		if bl <= 64
+			u64 small: 0;
+			if a.n > 1
+				small is (a.d:1 as u64) << 32;
+			;;
+			small is small | a.d:0;
+			if bl <= 53
+				return small as f64;
+			;;
+		;;
+		# round the top 53 bits
+		ptr<WlBig> top: addr big_b;
+		call top.Copy: a;
+		u32 drop: bl - 53;
+		bln sticky: false;
+		bln half: false;
+		bln odd: false;
+		while u32 j: 0; j < drop; j++;
+			if half
+				sticky is true;
+			;;
+			half is (top.d:0 & 1) is 1;
+			call top.Shr1;
+		;;
+		u64 mant: (top.d:1 as u64) << 32 | top.d:0;
+		odd is (top.d:0 & 1) is 1;
+		if half and (sticky or odd)
+			mant is mant + 1;
+		;;
+		u64 result: (((bl - 2 + 1023) as u64) << 52) + mant;
+	[end: (FromBits: result)]
+}

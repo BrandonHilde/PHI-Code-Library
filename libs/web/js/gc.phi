@@ -1,0 +1,536 @@
+# The garbage collector: precise mark-sweep with an explicit mark stack, so nothing recurses however
+# deep the data goes. Every GC thing starts with the fields of a JsCell and is on one list.
+#
+# It runs only at VM safepoints (calls and loop back-edges), when enough has been allocated. So
+# allocating never collects: a native can make as many objects as it likes without rooting any.
+# And while a native that isn't marked gc_safe is on the PHI stack, JsGc.no_gc is above zero and
+# nothing collects, even in JS that the native called. See docs/JS-INTERNALS.md for the rules.
+
+struct.JsCell
+{
+	ptr<JsCell> gc_next;
+	u8 kind;
+	u8 mark;
+	u16 flags;
+	u32 size;
+}
+
+# what a closure can see: its variables that were captured, one scope per block that has some
+struct.JsScope
+{
+	ptr<JsCell> gc_next;
+	u8 kind;
+	u8 mark;
+	u16 flags;
+	u32 size;
+	ptr<JsScope> parent;
+	ptr<u64> slots;        # right after this struct
+	u32 count;
+}
+
+# a getter and setter, kept in a property's value
+struct.JsAccessor
+{
+	ptr<JsCell> gc_next;
+	u8 kind;
+	u8 mark;
+	u16 flags;
+	u32 size;
+	u64 getter;
+	u64 setter;
+}
+
+# a script's text, kept for Function.prototype.toString
+struct.JsSource
+{
+	ptr<JsCell> gc_next;
+	u8 kind;
+	u8 mark;
+	u16 flags;
+	u32 size;
+	ptr<JsStr> name;
+	ptr<u8> text;
+	u32 len;
+}
+
+phi.JsGc:Library
+{
+	const u32 K_STRING: 1;
+	const u32 K_SYMBOL: 2;
+	const u32 K_SCOPE: 3;
+	const u32 K_CODE: 4;
+	const u32 K_ACCESSOR: 5;
+	const u32 K_GEN: 6;
+	const u32 K_SOURCE: 7;
+	const u32 K_REACTION: 8;
+	# objects from here on
+	const u32 K_OBJECT: 16;
+	const u32 K_ARRAY: 17;
+	const u32 K_FUNCTION: 18;
+	const u32 K_NATIVE: 19;
+	const u32 K_BOUND: 20;
+	const u32 K_ERROR: 21;
+	const u32 K_BOXED: 22;
+	const u32 K_ARGUMENTS: 23;
+	const u32 K_GENERATOR: 24;
+	const u32 K_PROMISE: 25;
+	const u32 K_HOST: 26;
+
+	int no_gc: 0;
+
+	# a zeroed cell of size bytes, on the heap's list
+	[New: u32 size: 0; u32 kind: 0;]
+		ptr<JsCell> c: (WlAlloc.Alloc: size) as ptr<JsCell>;
+		if c is 0
+			throw 'out of memory';      # (JsVm.TakeError calls HeapFull)
+		;;
+		ptr<JsRuntime> r: JsRt.r;
+		c.gc_next is r.all;
+		r.all is c;
+		c.kind is kind as u8;
+		c.size is size;
+		r.allocated is r.allocated + size;
+		if r.allocated > r.threshold
+			JsVm.fuel is 0;
+		;;
+	[end: c as ptr<u8>]
+
+	# The heap said no. Nothing can be collected right here, since allocating never collects, so the
+	# script sees a RangeError. So that it doesn't happen again for want of a collection, the next
+	# safepoint collects, and from now on collections come well before this much is in use.
+	[HeapFull]
+		ptr<JsRuntime> r: JsRt.r;
+		u32 used: r.live + r.allocated;
+		if used < r.heap_ceiling
+			r.heap_ceiling is used;
+		;;
+		r.threshold is 0;
+		JsVm.fuel is 0;
+	[end]
+
+	# bytes allocated apart from a cell, for deciding when to collect
+	[Account: u32 bytes: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		r.allocated is r.allocated + bytes;
+		if r.allocated > r.threshold
+			JsVm.fuel is 0;
+		;;
+	[end]
+
+	# ---- marking ----
+
+	[Mark: u64 v: 0;]
+		u32 tag: (v >> 48) as u32;
+		if tag < JsV.TAG_OBJ or tag > JsV.TAG_SYM return;
+		call MarkCell: (v & JsV.PTR_MASK) as ptr<JsCell>;
+	[end]
+
+	[MarkCell: ptr<JsCell> c: 0;]
+		if c is 0 or c.mark is not 0 return;
+		c.mark is 1;
+		# a flat string has nothing else to reach, unless it knows its interned twin
+		if c.kind is K_STRING
+			ptr<JsStr> s: c as ptr<JsStr>;
+			if s.left is 0 return;
+		;;
+		ptr<JsRuntime> r: JsRt.r;
+		if r.mark_top >= r.mark_cap
+			if not (GrowMarkStack)
+				# the rescan after the stack empties will get to it
+				r.mark_overflow is true;
+				return;
+			;;
+		;;
+		r.mark_stack:(r.mark_top) is c;
+		r.mark_top is r.mark_top + 1;
+	[end]
+
+	[MarkObj: ptr<JsObj> o: 0;]
+		call MarkCell: o as ptr<JsCell>;
+	[end]
+
+	[MarkStr: ptr<JsStr> s: 0;]
+		call MarkCell: s as ptr<JsCell>;
+	[end]
+
+	[IsMarked: u64 v: 0;]
+		u32 tag: (v >> 48) as u32;
+		if tag < JsV.TAG_OBJ or tag > JsV.TAG_SYM return true;
+		ptr<JsCell> c: (v & JsV.PTR_MASK) as ptr<JsCell>;
+	[end: c.mark is not 0]
+
+	[GrowMarkStack]
+		ptr<JsRuntime> r: JsRt.r;
+		u32 room: r.mark_cap * 2;
+		if room is 0
+			room is 4096;
+		;;
+		ptr<ptr<JsCell>> grown: new ptr<JsCell>[room];
+		if grown is 0 return false;
+		if r.mark_stack is not 0
+			call Mem.Copy: grown as ptr<u8> r.mark_stack as ptr<u8> r.mark_top * sizeof ptr<u8>;
+			free r.mark_stack;
+		;;
+		r.mark_stack is grown;
+		r.mark_cap is room;
+	[end: true]
+
+	[Drain]
+		ptr<JsRuntime> r: JsRt.r;
+		while true
+			while r.mark_top > 0
+				r.mark_top is r.mark_top - 1;
+				call Trace: r.mark_stack:(r.mark_top);
+			;;
+			if not r.mark_overflow break;
+			# the stack filled up: find the marked cells whose children may have been missed
+			r.mark_overflow is false;
+			ptr<JsCell> c: r.all;
+			while c is not 0
+				if c.mark is not 0
+					call Trace: c;
+				;;
+				c is c.gc_next;
+			;;
+		;;
+	[end]
+
+	[MarkValues: ptr<u64> p: 0; u32 n: 0;]
+		while u32 i: 0; i < n; i++;
+			call Mark: p:i;
+		;;
+	[end]
+
+	[Trace: ptr<JsCell> c: 0;]
+		u32 k: c.kind;
+		if k >= K_OBJECT
+			call TraceObj: c as ptr<JsObj>;
+			return;
+		;;
+		when k
+			is K_STRING
+				ptr<JsStr> s: c as ptr<JsStr>;
+				call MarkCell: s.left as ptr<JsCell>;
+				call MarkCell: s.right as ptr<JsCell>;
+			;;
+			is K_SYMBOL
+				ptr<JsSym> y: c as ptr<JsSym>;
+				call MarkCell: y.desc as ptr<JsCell>;
+			;;
+			is K_SCOPE
+				ptr<JsScope> sc: c as ptr<JsScope>;
+				call MarkCell: sc.parent as ptr<JsCell>;
+				call MarkValues: sc.slots sc.count;
+			;;
+			is K_ACCESSOR
+				ptr<JsAccessor> ac: c as ptr<JsAccessor>;
+				call Mark: ac.getter;
+				call Mark: ac.setter;
+			;;
+			is K_CODE
+				ptr<JsCode> co: c as ptr<JsCode>;
+				call MarkValues: co.consts co.nconsts;
+				call MarkCell: co.name as ptr<JsCell>;
+				call MarkCell: co.src as ptr<JsCell>;
+			;;
+			is K_GEN
+				call JsVm.TraceGen: c as ptr<JsGen>;
+			;;
+			is K_SOURCE
+				ptr<JsSource> so: c as ptr<JsSource>;
+				call MarkCell: so.name as ptr<JsCell>;
+			;;
+			is K_REACTION
+				call JsPromises.TraceReaction: c as ptr<JsReaction>;
+			;;
+		;;
+	[end]
+
+	[TraceObj: ptr<JsObj> o: 0;]
+		call MarkCell: o.proto as ptr<JsCell>;
+		ptr<JsProp> p: o.props;
+		u32 n: o.count;
+		while u32 i: 0; i < n; i++;
+			if p:i.key is not 0
+				call MarkCell: p:i.key as ptr<JsCell>;
+				call Mark: p:i.value;
+			;;
+		;;
+		call MarkValues: o.elems o.elem_len;
+		call Mark: o.slot;
+		u32 k: o.kind;
+		if k is K_FUNCTION
+			ptr<JsFn> f: o as ptr<JsFn>;
+			call MarkCell: f.code as ptr<JsCell>;
+			call MarkCell: f.scope as ptr<JsCell>;
+			call MarkCell: f.home as ptr<JsCell>;
+			call MarkCell: f.fields as ptr<JsCell>;
+		;;
+		elif k is K_NATIVE
+			ptr<JsNativeFn> nf: o as ptr<JsNativeFn>;
+			call Mark: nf.data;
+			call Mark: nf.data2;
+		;;
+		elif k is K_BOUND
+			ptr<JsBoundFn> b: o as ptr<JsBoundFn>;
+			call Mark: b.target;
+			call Mark: b.this_val;
+			call MarkValues: b.args b.argc;
+		;;
+		elif k is K_ARGUMENTS or k is K_GENERATOR
+			call MarkCell: o.data as ptr<JsCell>;
+		;;
+		elif k is K_PROMISE
+			call JsPromises.TraceData: o;
+		;;
+		ptr<JsClass> cl: o.cls;
+		if cl is not 0
+			if cl.trace is not 0
+				call cl.trace: o;
+			;;
+			if cl.ephemeron is not 0 or cl.weak_clear is not 0
+				call AddWeak: o;
+			;;
+		;;
+	[end]
+
+	[AddWeak: ptr<JsObj> o: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		# (a rescan after an overflow may see an object twice, which does no harm)
+		if r.weak_count >= r.weak_cap
+			u32 room: r.weak_cap * 2;
+			if room is 0
+				room is 64;
+			;;
+			ptr<ptr<JsObj>> grown: new ptr<JsObj>[room];
+			if grown is 0
+				throw 'out of memory in the collector';
+			;;
+			if r.weak_list is not 0
+				call Mem.Copy: grown as ptr<u8> r.weak_list as ptr<u8> r.weak_count * sizeof ptr<u8>;
+				free r.weak_list;
+			;;
+			r.weak_list is grown;
+			r.weak_cap is room;
+		;;
+		r.weak_list:(r.weak_count) is o;
+		r.weak_count is r.weak_count + 1;
+	[end]
+
+	[MarkRoots]
+		ptr<JsRuntime> r: JsRt.r;
+		# the value stack, and the frames
+		ptr<u64> s: r.stack;
+		while s < JsVm.sp
+			call Mark: s:0;
+			s++ 8;
+		;;
+		ptr<JsFrame> f: r.frames;
+		ptr<JsFrame> top: JsVm.fr;
+		while f <= top
+			call MarkCell: f.fn as ptr<JsCell>;
+			call MarkCell: f.code as ptr<JsCell>;
+			call MarkCell: f.scope as ptr<JsCell>;
+			call MarkCell: f.gen as ptr<JsCell>;
+			call Mark: f.new_target;
+			f++ sizeof JsFrame;
+		;;
+		call Mark: JsVm.nt;
+		call MarkObj: r.global;
+		call MarkObj: r.global_lex;
+		call MarkObj: r.sym_registry;
+		call Mark: r.exception;
+		call Mark: r.oom_error;
+		# atoms, symbols and prototypes: each set is nothing but pointers
+		ptr<ptr<JsCell>> list: (addr r.atoms) as ptr<ptr<JsCell>>;
+		u32 count: sizeof JsAtomSet / sizeof ptr<u8>;
+		while u32 i: 0; i < count; i++;
+			call MarkCell: list:i;
+		;;
+		list is (addr r.syms) as ptr<ptr<JsCell>>;
+		count is sizeof JsSymSet / sizeof ptr<u8>;
+		while u32 j: 0; j < count; j++;
+			call MarkCell: list:j;
+		;;
+		list is (addr r.protos) as ptr<ptr<JsCell>>;
+		count is sizeof JsProtoSet / sizeof ptr<u8>;
+		while u32 m: 0; m < count; m++;
+			call MarkCell: list:m;
+		;;
+		call MarkCell: JsRt.blank as ptr<JsCell>;
+		call JsLex.MarkKeywords;
+		call JsPromises.MarkJobs;
+		while u32 a: 0; a < r.root_count; a++;
+			ptr<u64> slot: r.root_slots:a;
+			call Mark: slot:0;
+		;;
+		while u32 b: 0; b < r.root_fn_count; b++;
+			call r.root_fns:b.fn;
+		;;
+	[end]
+
+	# ---- collecting ----
+
+	# A whole collection, if it's safe now. The VM calls this at a safepoint.
+	[Collect]
+		if no_gc > 0 return;
+		ptr<JsRuntime> r: JsRt.r;
+		r.mark_top is 0;
+		r.weak_count is 0;
+		r.mark_overflow is false;
+		call MarkRoots;
+		call Drain;
+		# ephemerons: what a live key's value reaches is live, until nothing new turns up
+		while true
+			int found: 0;
+			while u32 i: 0; i < r.weak_count; i++;
+				ptr<JsObj> w: r.weak_list:i;
+				if w.cls.ephemeron is not 0
+					found++ (w.cls.ephemeron: w);
+				;;
+			;;
+			call Drain;
+			if found is 0 break;
+		;;
+		while u32 j: 0; j < r.weak_count; j++;
+			ptr<JsObj> w2: r.weak_list:j;
+			if w2.cls.weak_clear is not 0
+				call w2.cls.weak_clear: w2;
+			;;
+		;;
+		r.walk_str is 0;
+		call Mem.Fill: r.unit_strs as ptr<u8> 0 128 * sizeof ptr<u8>;
+		call Sweep;
+		r.collections is r.collections + 1;
+		r.allocated is 0;
+		u32 want: r.live;
+		if want < 8000000
+			want is 8000000;
+		;;
+		if want > 256000000
+			want is 256000000;
+		;;
+		# Allocating never collects, so the heap must never fill between two collections: at most
+		# half the room that's left goes by before the next one. Without this, a heap of 78 MB
+		# alive waits for 78 MB more, and a 128 MB heap runs out while it's mostly garbage.
+		u32 room: 0;
+		if r.live < r.heap_ceiling
+			room is (r.heap_ceiling - r.live) / 2;
+		;;
+		if want > room
+			want is room;
+		;;
+		if want < 1000000
+			want is 1000000;
+		;;
+		r.threshold is want;
+	[end]
+
+	[Sweep]
+		ptr<JsRuntime> r: JsRt.r;
+		ptr<JsCell> c: r.all;
+		ptr<JsCell> kept: 0;
+		ptr<JsCell> kept_tail: 0;
+		u32 live: 0;
+		while c is not 0
+			ptr<JsCell> following: c.gc_next;
+			if c.mark is not 0
+				c.mark is 0;
+				c.gc_next is 0;
+				if kept_tail is 0
+					kept is c;
+				;;
+				else
+					kept_tail.gc_next is c;
+				;;
+				kept_tail is c;
+				live is live + c.size;
+				if c.kind >= K_OBJECT
+					ptr<JsObj> o: c as ptr<JsObj>;
+					live is live + o.cap * sizeof JsProp + o.elem_cap * 8;
+				;;
+				elif c.kind is K_STRING
+					ptr<JsStr> ks: c as ptr<JsStr>;
+					if (ks.flags & JsStrs.F_OWN_DATA) is not 0
+						live is live + ks.bytes;
+					;;
+				;;
+			;;
+			else
+				call FreeCell: c;
+			;;
+			c is following;
+		;;
+		r.all is kept;
+		r.live is live;
+	[end]
+
+	[FreeCell: ptr<JsCell> c: 0;]
+		u32 k: c.kind;
+		if k >= K_OBJECT
+			ptr<JsObj> o: c as ptr<JsObj>;
+			if o.cls is not 0 and o.cls.finalize is not 0
+				call o.cls.finalize: o;
+			;;
+			if o.props is not 0
+				call WlAlloc.Free: o.props as ptr<u8> o.cap * sizeof JsProp;
+			;;
+			if o.index is not 0
+				free o.index;
+			;;
+			if o.elems is not 0
+				call WlAlloc.Free: o.elems as ptr<u8> o.elem_cap * 8;
+			;;
+			if k is K_BOUND
+				ptr<JsBoundFn> b: o as ptr<JsBoundFn>;
+				if b.args is not 0
+					free b.args;
+				;;
+			;;
+		;;
+		elif k is K_STRING
+			ptr<JsStr> s: c as ptr<JsStr>;
+			if (s.flags & JsStrs.F_INTERNED) is not 0
+				call JsStrs.Forget: s;
+			;;
+			if (s.flags & JsStrs.F_OWN_DATA) is not 0
+				free s.data;
+			;;
+		;;
+		elif k is K_CODE
+			call JsCodes.FreeParts: c as ptr<JsCode>;
+		;;
+		elif k is K_GEN
+			call JsVm.FreeGen: c as ptr<JsGen>;
+		;;
+		elif k is K_SOURCE
+			ptr<JsSource> so: c as ptr<JsSource>;
+			if so.text is not 0
+				free so.text;
+			;;
+		;;
+		# under stress, what's freed is scribbled on, so anything still using it shows at once
+		u32 size: c.size;
+		if JsRt.r.stress
+			call Mem.Fill: c as ptr<u8> 0xDD size;
+		;;
+		call WlAlloc.Free: c as ptr<u8> size;
+	[end]
+
+	# everything goes: the runtime is being freed
+	[FreeAll]
+		ptr<JsRuntime> r: JsRt.r;
+		ptr<JsCell> c: r.all;
+		while c is not 0
+			ptr<JsCell> following: c.gc_next;
+			# (interned strings need no forgetting now)
+			if c.kind is K_STRING
+				ptr<JsStr> s: c as ptr<JsStr>;
+				s.flags is s.flags & (0xFFFF - JsStrs.F_INTERNED);
+			;;
+			call FreeCell: c;
+			c is following;
+		;;
+		r.all is 0;
+	[end]
+}

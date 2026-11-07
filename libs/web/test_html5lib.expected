@@ -1,0 +1,82 @@
+tree construction: passes/runs (whole, bytes, write, write-pieces)
+adoption01 140/140
+adoption02 32/32
+blocks 384/384
+comments01 128/128
+doctype01 296/296
+domjs-unsafe 392/392
+entities01 600/600
+entities02 208/208
+foreign-fragment 264/264
+html5test-com 240/240
+inbody01 32/32
+isindex 32/32
+main-element 24/24
+math 32/32
+menuitem-element 160/160
+namespace-sensitivity 8/8
+noscript01 72/72
+pending-spec-changes-plain-text-unsafe 8/8
+pending-spec-changes 24/24
+plain-text-unsafe 380/380
+processing-instructions 988/988
+quirks01 32/32
+ruby 168/168
+scriptdata01 208/208
+scripted_adoption01 4/4
+scripted_ark 4/4
+scripted_foster01 8/8
+scripted_webkit01 8/8
+search-element 64/64
+svg 32/32
+tables01 152/152
+template 1000/1000
+tests1 896/896
+tests10 432/432
+tests11 104/104
+tests12 16/16
+tests14 56/56
+tests15 112/112
+tests16 1528/1528
+tests17 104/104
+tests18 284/284
+tests19 856/856
+tests2 504/504
+tests20 512/512
+tests21 184/184
+tests22 40/40
+tests23 40/40
+tests24 64/64
+tests25 208/208
+tests26 160/160
+tests3 192/192
+tests4 36/36
+tests5 128/128
+tests6 364/364
+tests7 268/268
+tests8 80/80
+tests9 216/216
+tests_innerHTML_1 324/324
+tricky01 72/72
+void-in-phrasing 104/104
+webkit01 416/416
+webkit02 368/368
+tree construction total 14792/14792
+by input mode: whole 3904/3904 bytes 3904/3904 write 3492/3492 write-pieces 3492/3492
+serialize then parse again gives the same tree: 3319/3492
+tokenizer: passes/runs (whole and byte at a time)
+contentModelFlags 48/48
+domjs 112/112
+entities 160/160
+escapeFlag 18/18
+namedEntities 8420/8420
+numericEntities 672/672
+pendingSpecChanges 2/2
+test1 138/138
+test2 92/92
+test3 3604/3604
+test4 170/170
+unicodeChars 646/646
+unicodeCharsProblematic 2/2
+tokenizer total 14084/14084
+done

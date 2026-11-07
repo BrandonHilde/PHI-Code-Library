@@ -1,0 +1,984 @@
+# css-syntax-3's tokenizer. The whole input becomes a flat array of tokens with the comments gone,
+# and each opening token ('(', '[', '{', a function) knows where its block ends. So a component
+# value is just a token index, skipping one is a jump, and parsing never has to recurse on what a
+# page nested: the rest of css/ works on ranges of this array.
+#
+#   ptr<CssToks> ts: (CssLex.Run: bytes len);     # throws only when out of memory
+#   ... ts.t:i.type, ts.t:i.text, ts.t:i.num ...  # ts.t:(ts.n) is always an EOF token
+#   call CssLex.Free: ts;
+#
+# The tokens point into ts.src and ts.arena, so they last until Free; bytes must outlive them
+# (unless they needed cleaning up, when ts.src is a copy).
+
+use memory.mem;
+use core.text;
+use core.buf;
+use core.arena;
+
+struct.CssTok
+{
+	u8 type;
+	u8 flag;        # CssLex.F_...
+	u16 kw;         # the keyword an ident is, worked out when first asked (CssVp.Kw): 0 not yet
+	u32 match;      # an opening token: where its block's closing token is (ts.n if it never closes)
+	                # a dimension: the length of its number's text
+	                # a unicode-range: its last code point
+	u32 start;      # where it is in ts.src
+	u32 stop;
+	u32 len;        # text's length
+	ptr<u8> text;   # the value of an ident, function, at-keyword, hash, string, url; a dimension's unit
+	f64 num;        # a number, percentage or dimension's value; a unicode-range's first code point
+}
+
+struct.CssToks
+{
+	ptr<CssTok> t;
+	u32 n;          # tokens, not counting the EOF token after them
+	u32 cap;
+	ptr<u8> src;    # the input, cleaned up as the spec's preprocessing says
+	u32 src_len;
+	bln own_src;
+	WlArena arena;  # text with its escapes decoded
+}
+
+phi.CssLex:Library
+{
+	const u32 EOF: 0;
+	const u32 IDENT: 1;
+	const u32 FUNCTION: 2;
+	const u32 AT: 3;
+	const u32 HASH: 4;
+	const u32 STRING: 5;
+	const u32 BAD_STRING: 6;
+	const u32 URL: 7;
+	const u32 BAD_URL: 8;
+	const u32 DELIM: 9;
+	const u32 NUMBER: 10;
+	const u32 PERCENTAGE: 11;
+	const u32 DIMENSION: 12;
+	const u32 URANGE: 13;
+	const u32 WS: 14;
+	const u32 CDO: 15;
+	const u32 CDC: 16;
+	const u32 COLON: 17;
+	const u32 SEMICOLON: 18;
+	const u32 COMMA: 19;
+	const u32 LBRACKET: 20;
+	const u32 RBRACKET: 21;
+	const u32 LPAREN: 22;
+	const u32 RPAREN: 23;
+	const u32 LBRACE: 24;
+	const u32 RBRACE: 25;
+	const u32 INCLUDE_MATCH: 26;   # ~=
+	const u32 DASH_MATCH: 27;      # |=
+	const u32 PREFIX_MATCH: 28;    # ^=
+	const u32 SUFFIX_MATCH: 29;    # $=
+	const u32 SUBSTRING_MATCH: 30; # *=
+	const u32 COLUMN: 31;          # ||
+
+	const u32 F_INTEGER: 1;        # a number's type is integer
+	const u32 F_ID: 2;             # a hash whose type is id
+	const u32 F_EOF: 4;            # a string, url or comment the input ended inside
+	const u32 F_STRAY: 8;          # a closing token with nothing open for it
+	const u32 F_UNCLOSED: 16;      # an opening token whose block the input ended inside
+
+	const u32 MAX_TOKENS: 8000000;
+	const u32 MAX_INPUT: 0x10000000;
+
+	# css-syntax-3 dropped the unicode-range token, since it broke selectors like u+a. It's kept
+	# here for what still wants it (the @font-face descriptor and css-parsing-tests): true only
+	# while tokenizing those.
+	bln unicode_ranges: false;
+
+	# working state
+	ptr<CssToks> ts: 0;
+	ptr<u8> s: 0;
+	u32 n: 0;
+	u32 i: 0;
+	WlBuf buf;
+	ptr<u8> got: 0;
+	u32 got_len: 0;
+
+	[Run: ptr<u8> bytes: 0; u32 len: 0;]
+		ptr<CssToks> out_toks: new CssToks;
+		if out_toks is 0
+			throw 'out of memory for CSS tokens';
+		;;
+		if len > MAX_INPUT
+			len is MAX_INPUT;
+		;;
+		ts is out_toks;
+		call Clean: bytes len;
+		s is ts.src;
+		n is ts.src_len;
+		i is 0;
+		u32 guess: n / 3 + 16;
+		if guess > MAX_TOKENS
+			guess is MAX_TOKENS;
+		;;
+		ts.cap is guess + 1;
+		ts.t is new CssTok[ts.cap];
+		if ts.t is 0
+			throw 'out of memory for CSS tokens';
+		;;
+		while i < n and ts.n < MAX_TOKENS
+			call One;
+		;;
+		call MatchBlocks;
+		ts is 0;
+	[end: out_toks]
+
+	[Free: ptr<CssToks> toks: 0;]
+		if toks is 0 return;
+		if toks.t is not 0
+			free toks.t;
+		;;
+		if toks.own_src and toks.src is not 0
+			free toks.src;
+		;;
+		call toks.arena.Free;
+		free toks;
+	[end]
+
+	# The spec's preprocessing: CR, FF and CRLF become LF, and NUL becomes U+FFFD. Most input has
+	# none of them and isn't copied.
+	[Clean: ptr<u8> bytes: 0; u32 len: 0;]
+		bln dirty: false;
+		u32 extra: 0;
+		while u32 k: 0; k < len; k++;
+			u32 c: bytes:k;
+			if c is 13 or c is 12
+				dirty is true;
+			;;
+			elif c is 0
+				dirty is true;
+				extra++ 2;
+			;;
+		;;
+		if dirty is false
+			ts.src is bytes;
+			ts.src_len is len;
+			return;
+		;;
+		ptr<u8> copy: new u8[len + extra + 1];
+		if copy is 0
+			throw 'out of memory for CSS text';
+		;;
+		u32 o: 0;
+		u32 j: 0;
+		while j < len
+			u32 c: bytes:j;
+			if c is 13
+				copy:o is 10;
+				o++;
+				if j + 1 < len and bytes:(j + 1) is 10
+					j++;
+				;;
+			;;
+			elif c is 12
+				copy:o is 10;
+				o++;
+			;;
+			elif c is 0
+				copy:o is 0xEF;
+				copy:(o + 1) is 0xBF;
+				copy:(o + 2) is 0xBD;
+				o++ 3;
+			;;
+			else
+				copy:o is c as u8;
+				o++;
+			;;
+			j++;
+		;;
+		ts.src is copy;
+		ts.src_len is o;
+		ts.own_src is true;
+	[end]
+
+	[Push: u32 type: 0; u32 start: 0;]
+		if ts.n + 1 >= ts.cap
+			u32 room: ts.cap * 2;
+			if room > MAX_TOKENS + 2
+				room is MAX_TOKENS + 2;
+			;;
+			ptr<CssTok> grown: new CssTok[room];
+			if grown is 0
+				throw 'out of memory for CSS tokens';
+			;;
+			call Mem.Copy: grown ts.t ts.n * sizeof CssTok;
+			free ts.t;
+			ts.t is grown;
+			ts.cap is room;
+		;;
+		ptr<CssTok> tk: addr ts.t:(ts.n);
+		tk.type is type as u8;
+		tk.start is start;
+		tk.stop is i;
+		ts.n++;
+	[end: tk]
+
+	# ---- classes of byte
+
+	[IsNameStart: u32 c: 0;]
+	[end: (c >= 97 and c <= 122) or (c >= 65 and c <= 90) or c is 95 or c >= 0x80]
+
+	[IsName: u32 c: 0;]
+	[end: (c >= 97 and c <= 122) or (c >= 65 and c <= 90) or (c >= 48 and c <= 57) or c is 95 or c is 45 or c >= 0x80]
+
+	[IsWs: u32 c: 0;]
+	[end: c is 32 or c is 10 or c is 9]
+
+	# whether the bytes at p are a backslash that starts an escape
+	[ValidEscape: u32 p: 0;]
+		if p >= n or s:p is not 92 return false;
+		if p + 1 < n and s:(p + 1) is 10 return false;
+	[end: true]
+
+	[StartsIdent: u32 p: 0;]
+		if p >= n return false;
+		u32 c: s:p;
+		if c is 45
+			if p + 1 >= n return false;
+			u32 d: s:(p + 1);
+			if (IsNameStart: d) or d is 45 return true;
+			return (ValidEscape: p + 1);
+		;;
+		if (IsNameStart: c) return true;
+		if c is 92 return (ValidEscape: p);
+	[end: false]
+
+	[StartsNumber: u32 p: 0;]
+		if p >= n return false;
+		u32 c: s:p;
+		if c is 43 or c is 45
+			p++;
+			if p >= n return false;
+			c is s:p;
+		;;
+		if c >= 48 and c <= 57 return true;
+		if c is 46 and p + 1 < n and s:(p + 1) >= 48 and s:(p + 1) <= 57 return true;
+	[end: false]
+
+	# ---- one token
+
+	[One]
+		u32 start: i;
+		u32 c: s:i;
+
+		# what most CSS is made of goes first
+		if (IsNameStart: c)
+			if unicode_ranges and (c is 117 or c is 85) and i + 2 < n and s:(i + 1) is 43 and ((WlText.IsHex: s:(i + 2)) or s:(i + 2) is 63)
+				call Range;
+				return;
+			;;
+			call IdentLike;
+			return;
+		;;
+		if (IsWs: c)
+			while i < n and (IsWs: s:i)
+				i++;
+			;;
+			call Push: WS start;
+			return;
+		;;
+		if c >= 48 and c <= 57
+			call Numeric;
+			return;
+		;;
+		if c is 47
+			if i + 1 < n and s:(i + 1) is 42
+				i++ 2;
+				while i < n
+					if s:i is 42 and i + 1 < n and s:(i + 1) is 47
+						i++ 2;
+						return;
+					;;
+					i++;
+				;;
+				return;
+			;;
+			i++;
+			call Delim: c start;
+			return;
+		;;
+		when c
+			is 58
+				i++;
+				call Push: COLON start;
+				return;
+			;;
+			is 59
+				i++;
+				call Push: SEMICOLON start;
+				return;
+			;;
+			is 44
+				i++;
+				call Push: COMMA start;
+				return;
+			;;
+			is 123
+				i++;
+				call Push: LBRACE start;
+				return;
+			;;
+			is 125
+				i++;
+				call Push: RBRACE start;
+				return;
+			;;
+			is 40
+				i++;
+				call Push: LPAREN start;
+				return;
+			;;
+			is 41
+				i++;
+				call Push: RPAREN start;
+				return;
+			;;
+			is 91
+				i++;
+				call Push: LBRACKET start;
+				return;
+			;;
+			is 93
+				i++;
+				call Push: RBRACKET start;
+				return;
+			;;
+			is 34 39
+				call Str: c;
+				return;
+			;;
+			is 35
+				if i + 1 < n and ((IsName: s:(i + 1)) or (ValidEscape: i + 1))
+					bln id: (StartsIdent: i + 1);
+					i++;
+					call Name;
+					ptr<CssTok> h: (Push: HASH start);
+					h.text is got;
+					h.len is got_len;
+					if id
+						h.flag is F_ID as u8;
+					;;
+					return;
+				;;
+				i++;
+				call Delim: c start;
+				return;
+			;;
+			is 64
+				if (StartsIdent: i + 1)
+					i++;
+					call Name;
+					ptr<CssTok> a: (Push: AT start);
+					a.text is got;
+					a.len is got_len;
+					return;
+				;;
+				i++;
+				call Delim: c start;
+				return;
+			;;
+			is 43
+				if (StartsNumber: i)
+					call Numeric;
+					return;
+				;;
+				i++;
+				call Delim: c start;
+				return;
+			;;
+			is 45
+				if (StartsNumber: i)
+					call Numeric;
+					return;
+				;;
+				if i + 2 < n and s:(i + 1) is 45 and s:(i + 2) is 62
+					i++ 3;
+					call Push: CDC start;
+					return;
+				;;
+				if (StartsIdent: i)
+					call IdentLike;
+					return;
+				;;
+				i++;
+				call Delim: c start;
+				return;
+			;;
+			is 46
+				if (StartsNumber: i)
+					call Numeric;
+					return;
+				;;
+				i++;
+				call Delim: c start;
+				return;
+			;;
+			is 60
+				if i + 3 < n and s:(i + 1) is 33 and s:(i + 2) is 45 and s:(i + 3) is 45
+					i++ 4;
+					call Push: CDO start;
+					return;
+				;;
+				i++;
+				call Delim: c start;
+				return;
+			;;
+			is 92
+				if (ValidEscape: i)
+					call IdentLike;
+					return;
+				;;
+				i++;
+				call Delim: c start;
+				return;
+			;;
+			is 126
+				call MatchOr: c INCLUDE_MATCH start;
+				return;
+			;;
+			is 94
+				call MatchOr: c PREFIX_MATCH start;
+				return;
+			;;
+			is 36
+				call MatchOr: c SUFFIX_MATCH start;
+				return;
+			;;
+			is 42
+				call MatchOr: c SUBSTRING_MATCH start;
+				return;
+			;;
+			is 124
+				if i + 1 < n and s:(i + 1) is 124
+					i++ 2;
+					call Push: COLUMN start;
+					return;
+				;;
+				call MatchOr: c DASH_MATCH start;
+				return;
+			;;
+			else
+				i++;
+				call Delim: c start;
+			;;
+		;;
+	[end]
+
+	[Delim: u32 c: 0; u32 start: 0;]
+		ptr<CssTok> d: (Push: DELIM start);
+		d.num is c;
+	[end]
+
+	[MatchOr: u32 c: 0; u32 type: 0; u32 start: 0;]
+		if i + 1 < n and s:(i + 1) is 61
+			i++ 2;
+			call Push: type start;
+			return;
+		;;
+		i++;
+		call Delim: c start;
+	[end]
+
+	# ---- names and escapes
+
+	# the name at i, in got and got_len: in the input if there's no escape in it, or in the arena
+	[Name]
+		u32 from: i;
+		while i < n and (IsName: s:i)
+			i++;
+		;;
+		if i >= n or s:i is not 92 or (ValidEscape: i) is false
+			got is s + from;
+			got_len is i - from;
+			return;
+		;;
+		call buf.Clear;
+		call buf.AddN: s + from i - from;
+		while i < n
+			u32 c: s:i;
+			if (IsName: c)
+				call buf.Add: c as u8;
+				i++;
+			;;
+			elif (ValidEscape: i)
+				call Escape;
+			;;
+			else
+				break;
+			;;
+		;;
+		got is (ts.arena.Text: buf.data buf.len);
+		got_len is buf.len;
+	[end]
+
+	# an escape at i, whose decoded value goes on buf
+	[Escape]
+		i++;
+		if i >= n
+			call buf.AddCode: 0xFFFD;
+			return;
+		;;
+		u32 c: s:i;
+		if (WlText.IsHex: c)
+			u32 cp: 0;
+			u32 count: 0;
+			while i < n and count < 6 and (WlText.IsHex: s:i)
+				cp is cp * 16 + (WlText.HexValue: s:i) as u32;
+				i++;
+				count++;
+			;;
+			if i < n and (IsWs: s:i)
+				i++;
+			;;
+			if cp is 0 or (cp >= 0xD800 and cp <= 0xDFFF) or cp > 0x10FFFF
+				cp is 0xFFFD;
+			;;
+			call buf.AddCode: cp;
+			return;
+		;;
+		call buf.Add: c as u8;
+		i++;
+	[end]
+
+	[IdentLike]
+		u32 start: i;
+		call Name;
+		ptr<u8> name: got;
+		u32 name_len: got_len;
+		if i < n and s:i is 40
+			i++;
+			if name_len is 3 and (WlText.EqNoCaseZ: name 3 'url')
+				# whitespace, then a quote, means a function; anything else is the unquoted form
+				u32 p: i;
+				while p + 1 < n and (IsWs: s:p) and (IsWs: s:(p + 1))
+					p++;
+				;;
+				bln quoted: false;
+				if p < n and (s:p is 34 or s:p is 39)
+					quoted is true;
+				;;
+				if p + 1 < n and (IsWs: s:p) and (s:(p + 1) is 34 or s:(p + 1) is 39)
+					quoted is true;
+				;;
+				if quoted is false
+					call Url: start;
+					return;
+				;;
+				i is p;
+			;;
+			ptr<CssTok> f: (Push: FUNCTION start);
+			f.text is name;
+			f.len is name_len;
+			return;
+		;;
+		ptr<CssTok> tk: (Push: IDENT start);
+		tk.text is name;
+		tk.len is name_len;
+	[end]
+
+	[Url: u32 start: 0;]
+		while i < n and (IsWs: s:i)
+			i++;
+		;;
+		u32 from: i;
+		bln plain: true;
+		call buf.Clear;
+		while true
+			if i >= n
+				ptr<CssTok> e: (UrlToken: start from plain i);
+				e.flag is F_EOF as u8;
+				return;
+			;;
+			u32 c: s:i;
+			if c is 41
+				ptr<CssTok> u: (UrlToken: start from plain i);
+				i++;
+				u.stop is i;
+				return;
+			;;
+			if (IsWs: c)
+				u32 last: i;
+				while i < n and (IsWs: s:i)
+					i++;
+				;;
+				if i >= n
+					ptr<CssTok> e2: (UrlToken: start from plain last);
+					e2.flag is F_EOF as u8;
+					return;
+				;;
+				if s:i is 41
+					ptr<CssTok> u2: (UrlToken: start from plain last);
+					i++;
+					u2.stop is i;
+					return;
+				;;
+				call BadUrl: start;
+				return;
+			;;
+			if c is 34 or c is 39 or c is 40 or c <= 8 or c is 11 or (c >= 14 and c <= 31) or c is 127
+				call BadUrl: start;
+				return;
+			;;
+			if c is 92
+				if (ValidEscape: i) is false
+					call BadUrl: start;
+					return;
+				;;
+				if plain
+					call buf.AddN: s + from i - from;
+					plain is false;
+				;;
+				call Escape;
+				continue;
+			;;
+			if plain is false
+				call buf.Add: c as u8;
+			;;
+			i++;
+		;;
+	[end]
+
+	[UrlToken: u32 start: 0; u32 from: 0; bln plain: true; u32 last: 0;]
+		ptr<CssTok> u: (Push: URL start);
+		if plain
+			u.text is s + from;
+			u.len is last - from;
+		;;
+		else
+			u.text is (ts.arena.Text: buf.data buf.len);
+			u.len is buf.len;
+		;;
+	[end: u]
+
+	[BadUrl: u32 start: 0;]
+		while i < n
+			if s:i is 41
+				i++;
+				break;
+			;;
+			if (ValidEscape: i)
+				i++ 2;
+				continue;
+			;;
+			i++;
+		;;
+		if i > n
+			i is n;
+		;;
+		call Push: BAD_URL start;
+	[end]
+
+	[Str: u32 quote: 0;]
+		u32 start: i;
+		i++;
+		u32 from: i;
+		bln plain: true;
+		call buf.Clear;
+		while true
+			if i >= n
+				ptr<CssTok> e: (StrToken: start from plain i);
+				e.flag is F_EOF as u8;
+				return;
+			;;
+			u32 c: s:i;
+			if c is quote
+				ptr<CssTok> tk: (StrToken: start from plain i);
+				i++;
+				tk.stop is i;
+				return;
+			;;
+			if c is 10
+				call Push: BAD_STRING start;
+				return;
+			;;
+			if c is 92
+				if plain
+					call buf.AddN: s + from i - from;
+					plain is false;
+				;;
+				if i + 1 >= n
+					i++;
+					continue;
+				;;
+				if s:(i + 1) is 10
+					i++ 2;
+					continue;
+				;;
+				call Escape;
+				continue;
+			;;
+			if plain is false
+				call buf.Add: c as u8;
+			;;
+			i++;
+		;;
+	[end]
+
+	[StrToken: u32 start: 0; u32 from: 0; bln plain: true; u32 last: 0;]
+		ptr<CssTok> tk: (Push: STRING start);
+		if plain
+			tk.text is s + from;
+			tk.len is last - from;
+		;;
+		else
+			tk.text is (ts.arena.Text: buf.data buf.len);
+			tk.len is buf.len;
+		;;
+	[end: tk]
+
+	# ---- numbers
+
+	[Numeric]
+		u32 start: i;
+		bln integer: true;
+		if s:i is 43 or s:i is 45
+			i++;
+		;;
+		while i < n and s:i >= 48 and s:i <= 57
+			i++;
+		;;
+		if i + 1 < n and s:i is 46 and s:(i + 1) >= 48 and s:(i + 1) <= 57
+			integer is false;
+			i++;
+			while i < n and s:i >= 48 and s:i <= 57
+				i++;
+			;;
+		;;
+		if i < n and (s:i is 101 or s:i is 69)
+			u32 p: i + 1;
+			if p < n and (s:p is 43 or s:p is 45)
+				p++;
+			;;
+			if p < n and s:p >= 48 and s:p <= 57
+				integer is false;
+				i is p;
+				while i < n and s:i >= 48 and s:i <= 57
+					i++;
+				;;
+			;;
+		;;
+		u32 num_stop: i;
+		f64 value: (ParseNumber: s + start num_stop - start);
+		u8 flag: 0;
+		if integer
+			flag is F_INTEGER as u8;
+		;;
+		if (StartsIdent: i)
+			call Name;
+			ptr<CssTok> d: (Push: DIMENSION start);
+			d.text is got;
+			d.len is got_len;
+			d.num is value;
+			d.flag is flag;
+			d.match is num_stop - start;
+			return;
+		;;
+		if i < n and s:i is 37
+			i++;
+			ptr<CssTok> pc: (Push: PERCENTAGE start);
+			pc.num is value;
+			pc.flag is flag;
+			return;
+		;;
+		ptr<CssTok> nm: (Push: NUMBER start);
+		nm.num is value;
+		nm.flag is flag;
+	[end]
+
+	# Decimal text to a double: its digits, then a power of ten, which is exact for the numbers
+	# CSS is really written in and close enough for the rest.
+	[ParseNumber: ptr<u8> p: 0; u32 len: 0;]
+		u32 k: 0;
+		bln negative: false;
+		if k < len and (p:k is 43 or p:k is 45)
+			negative is (p:k is 45);
+			k++;
+		;;
+		f64 value: 0.0;
+		int scale: 0;
+		int digits: 0;
+		while k < len and p:k >= 48 and p:k <= 57
+			if digits < 18
+				value is value * 10.0 + (p:k - 48);
+				if value > 0.0
+					digits++;
+				;;
+			;;
+			else
+				scale++;
+			;;
+			k++;
+		;;
+		if k < len and p:k is 46
+			k++;
+			while k < len and p:k >= 48 and p:k <= 57
+				if digits < 18
+					value is value * 10.0 + (p:k - 48);
+					if value > 0.0
+						digits++;
+					;;
+					scale--;
+				;;
+				k++;
+			;;
+		;;
+		if k < len and (p:k is 101 or p:k is 69)
+			k++;
+			bln down: false;
+			if k < len and (p:k is 43 or p:k is 45)
+				down is (p:k is 45);
+				k++;
+			;;
+			int e: 0;
+			while k < len and p:k >= 48 and p:k <= 57
+				if e < 100000
+					e is e * 10 + (p:k - 48);
+				;;
+				k++;
+			;;
+			if down
+				scale-- e;
+			;;
+			else
+				scale++ e;
+			;;
+		;;
+		if scale > 400
+			scale is 400;
+		;;
+		if scale < -400
+			scale is -400;
+		;;
+		if value > 0.0 and scale is not 0
+			f64 power: 1.0;
+			int left: scale;
+			if left < 0
+				left is 0 - left;
+			;;
+			# in two steps for the far end, where 10^left alone would overflow
+			if left > 300
+				if scale < 0
+					value is value / 1e300;
+				;;
+				else
+					value is value * 1e300;
+				;;
+				left-- 300;
+			;;
+			f64 ten: 10.0;
+			while left > 0
+				if (left & 1) is 1
+					power is power * ten;
+				;;
+				ten is ten * ten;
+				left is left >> 1;
+			;;
+			if scale < 0
+				value is value / power;
+			;;
+			else
+				value is value * power;
+			;;
+		;;
+		if negative
+			value is 0.0 - value;
+		;;
+	[end: value]
+
+	# U+... as css-syntax-3 used to tokenize it
+	[Range]
+		u32 start: i;
+		i++ 2;
+		u32 from_cp: 0;
+		u32 digits: 0;
+		while i < n and digits < 6 and (WlText.IsHex: s:i)
+			from_cp is from_cp * 16 + (WlText.HexValue: s:i) as u32;
+			i++;
+			digits++;
+		;;
+		u32 to_cp: from_cp;
+		bln wild: false;
+		while i < n and digits < 6 and s:i is 63
+			from_cp is from_cp * 16;
+			to_cp is to_cp * 16 + 15;
+			i++;
+			digits++;
+			wild is true;
+		;;
+		if wild is false and i + 1 < n and s:i is 45 and (WlText.IsHex: s:(i + 1))
+			i++;
+			to_cp is 0;
+			u32 more: 0;
+			while i < n and more < 6 and (WlText.IsHex: s:i)
+				to_cp is to_cp * 16 + (WlText.HexValue: s:i) as u32;
+				i++;
+				more++;
+			;;
+		;;
+		ptr<CssTok> r: (Push: URANGE start);
+		r.num is from_cp;
+		r.match is to_cp;
+	[end]
+
+	# ---- blocks
+
+	# Pairs up what opens and closes, as consuming a simple block would. A closing token only
+	# closes the innermost block, and only if it's the right kind: anything else in a block is
+	# just a token in it.
+	[MatchBlocks]
+		ptr<CssTok> t: ts.t;
+		u32 count: ts.n;
+		t:count.type is EOF as u8;
+		t:count.start is ts.src_len;
+		t:count.stop is ts.src_len;
+		u32 room: 64;
+		ptr<u32> stack: new u32[room];
+		if stack is 0
+			throw 'out of memory matching CSS blocks';
+		;;
+		u32 depth: 0;
+		while u32 k: 0; k < count; k++;
+			u32 type: t:k.type;
+			if type is FUNCTION or type is LPAREN or type is LBRACKET or type is LBRACE
+				if depth >= room
+					ptr<u32> bigger: new u32[room * 2];
+					if bigger is 0
+						free stack;
+						throw 'out of memory matching CSS blocks';
+					;;
+					call Mem.Copy: bigger stack depth * 4;
+					free stack;
+					stack is bigger;
+					room is room * 2;
+				;;
+				stack:depth is k;
+				depth++;
+			;;
+			elif type is RPAREN or type is RBRACKET or type is RBRACE
+				bln closes: false;
+				if depth > 0
+					u32 open: t:(stack:(depth - 1)).type;
+					closes is (type is RPAREN and (open is FUNCTION or open is LPAREN)) or (type is RBRACKET and open is LBRACKET) or (type is RBRACE and open is LBRACE);
+				;;
+				if closes
+					depth--;
+					t:(stack:depth).match is k;
+				;;
+				else
+					t:k.flag is F_STRAY as u8;
+				;;
+			;;
+		;;
+		while depth > 0
+			depth--;
+			t:(stack:depth).match is count;
+			t:(stack:depth).flag is t:(stack:depth).flag | (F_UNCLOSED as u8);
+		;;
+		free stack;
+	[end]
+}

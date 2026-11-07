@@ -1,0 +1,44 @@
+component_value_list: 50 of 50
+one_component_value: 10 of 10
+declaration_list: 10 of 10
+one_declaration: 21 of 21
+rule_list: 15 of 15
+stylesheet: 16 of 16
+one_rule: 14 of 14
+blocks_contents: 13 of 13
+An_B: 128 of 128
+color_hexadecimal_3: 81 of 81
+color_hexadecimal_4: 324 of 324
+color_keywords_3: 160 of 160
+color_keywords_4: 1 of 1
+color_hsl_3: 256 of 256
+color_hsl_4: 500 of 500
+color_hwb_4: 500 of 500
+color_lab_4: 1500 of 1500
+color_lch_4: 1500 of 1500
+color_oklab_4: 1500 of 1500
+color_oklch_4: 1500 of 1500
+color_function_4: 219 of 219
+  FAIL color_functions_5 case 11 input color(--valid 0 0 0 0)
+    want "color(--valid 0 0 0 0)"
+    got  null
+  FAIL color_functions_5 case 12 input color(--valid 10% 10% 10% 0)
+    want "color(--valid 0.1 0.1 0.1 0)"
+    got  null
+  FAIL color_functions_5 case 13 input color(--valid 0 0 0 0 / 50%)
+    want "color(--valid 0 0 0 0 / 0.5)"
+    got  null
+  FAIL color_functions_5 case 14 input color(--valid 0 0 0 0 / 0.5)
+    want "color(--valid 0 0 0 0 / 0.5)"
+    got  null
+  FAIL color_functions_5 case 15 input color(--valid 0 0 0 0 / 150%)
+    want "color(--valid 0 0 0 0)"
+    got  null
+  FAIL color_functions_5 case 16 input color(--valid 0 0 0 0 / -150%)
+    want "color(--valid 0 0 0 0 / 0)"
+    got  null
+  FAIL color_functions_5 case 18 input light-dark(device-cmyk(0 81% 81% 30%), color(--valid 0 0 0 0))
+    want ["color(device-cmyk 0 0.81 0.81 0.3)","color(--valid 0 0 0 0)"]
+    got  null
+color_functions_5: 13 of 20
+all 8331 of 8338

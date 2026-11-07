@@ -1,0 +1,69 @@
+Error m true true [object Error] Error: m Error 1 0
+TypeError m true true [object Error] TypeError: m TypeError 1 0
+RangeError m true true [object Error] RangeError: m RangeError 1 0
+ReferenceError m true true [object Error] ReferenceError: m ReferenceError 1 0
+SyntaxError m true true [object Error] SyntaxError: m SyntaxError 1 0
+EvalError m true true [object Error] EvalError: m EvalError 1 0
+URIError m true true [object Error] URIError: m URIError 1 0
+true true false true
+1 false
+true N: M Error
+2 many AggregateError
+Error: deep
+    at inner (errors:12)
+    at middle (errors:13)
+    at outer (errors:14)
+TypeError: Cannot read properties of null (reading x)
+    at errors:19
+ReferenceError undefinedName is not defined
+RangeError true
+RangeError true
+RangeError true
+3000
+RangeError
+RangeError
+RangeError
+1
+joined
+RangeError
+RangeError
+RangeError
+( SyntaxError
+[ SyntaxError
+{a: SyntaxError
+! SyntaxError
+- SyntaxError
+f( SyntaxError
+a? SyntaxError
+x=> SyntaxError
+{ SyntaxError
+function SyntaxError
+if SyntaxError
+class SyntaxError
+20001
+chain
+end
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+SyntaxError
+trailing comma ok
+3 true function
+3 undefined undefined 1 4 5 5 undefined

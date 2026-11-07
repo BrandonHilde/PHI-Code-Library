@@ -1,0 +1,3305 @@
+# The bytecode compiler: a checked, scope-analysed tree to JsCode. Jumps go through small patch
+# lists, control-flow exits (break, continue, return) walk a stack of JsCtl to do what each thing
+# they leave needs (pop a scope, close an iterator, run a finally). Expressions leave one value on
+# the stack; statements leave none, which is asserted as it goes.
+
+struct.JsExit
+{
+	ptr<JsExit> next;
+	ptr<JsCtl> target;     # where it was going
+	u32 id;                # its number in the finally's kind slot
+	u32 how;               # 0 break, 1 continue, 2 return
+}
+
+struct.JsCtl
+{
+	ptr<JsCtl> parent;
+	ptr<JsLabelUse> labels;
+	ptr<JsExit> exits;
+	ptr<JsCtl> owner;      # an iterator's: the loop it belongs to
+	u32 kind;              # JsCompile.C_...
+	u32 slot;              # iterator's slots; a finally's kind slot
+	u32 val_slot;          # a finally's value slot
+	u32 break_list;        # patch lists
+	u32 cont_list;
+	u32 fin_list;
+	u32 next_id;
+	bln is_async;
+	bln breakable;
+	bln continuable;
+}
+
+struct.JsLabelUse
+{
+	ptr<JsLabelUse> next;
+	ptr<JsStr> name;
+}
+
+struct.JsFnState
+{
+	ptr<JsFnState> parent;
+	ptr<JsFnInfo> info;
+	ptr<JsNode> node;
+	ptr<u32> code;
+	ptr<u64> consts;
+	ptr<u32> kmap;
+	ptr<JsTry> tries;
+	ptr<u32> lines;
+	ptr<JsCtl> ctl;
+	ptr<JsBlock> block;
+	ptr<JsLabelUse> pending_labels;
+	u32 len;
+	u32 cap;
+	u32 nk;
+	u32 kcap;
+	u32 kmask;
+	u32 ntries;
+	u32 tries_cap;
+	u32 nlines;
+	u32 lines_cap;
+	u32 last_line;
+	ptr<u32> calls;        # pairs: a call's instruction, the constant naming what it calls
+	u32 ncalls;
+	u32 calls_cap;
+	u32 last_op_at;        # where the last instruction is, if nothing can jump to just after it
+	int depth;
+	int max_depth;
+	u32 nlocals;
+	u32 max_locals;
+	int cpl;               # a script's completion value: its slot, or -1
+	u32 opt_list;          # the optional chain being compiled: where short circuits go
+	u32 ret_list;          # a derived constructor's returns: all to the same place
+	bln strict;
+}
+
+phi.JsCompile:Library
+{
+	const u32 C_LOOP: 1;
+	const u32 C_BLOCK: 2;     # a switch, or a labelled statement
+	const u32 C_SCOPE: 3;
+	const u32 C_ITER: 4;
+	const u32 C_FINALLY: 5;
+
+	const u32 M_ASSIGN: 0;    # a[0] = v, or x = v
+	const u32 M_VAR: 1;       # var x = v: as assignment
+	const u32 M_INIT: 2;      # let, const, parameters: initializing
+
+	const u32 MAX_INS: 0x7FFFF0;
+	const u32 ASYNC_BIT: 0x800000;
+
+	ptr<JsFnState> cf: 0;
+	ptr<WlArena> arena: 0;
+	ptr<JsSource> source: 0;
+
+	# ---- emitting ----
+
+	[Word: u32 w: 0;]
+		ptr<JsFnState> f: cf;
+		if f.len >= f.cap
+			call GrowCode;
+		;;
+		f.code:(f.len) is w;
+		f.len is f.len + 1;
+	[end]
+
+	[GrowCode]
+		ptr<JsFnState> f: cf;
+		u32 room: f.cap * 2;
+		if room < 64
+			room is 64;
+		;;
+		if room > MAX_INS
+			call JsParse.FailAt: 'Function too large' f.last_line;
+		;;
+		ptr<u32> grown: new u32[room];
+		if grown is 0
+			throw 'out of memory compiling';
+		;;
+		if f.code is not 0
+			call Mem.Copy: grown as ptr<u8> f.code as ptr<u8> f.len * 4;
+			free f.code;
+		;;
+		f.code is grown;
+		f.cap is room;
+	[end]
+
+	[Adjust: int delta: 0;]
+		ptr<JsFnState> f: cf;
+		f.depth is f.depth + delta;
+		if f.depth > f.max_depth
+			f.max_depth is f.depth;
+		;;
+	[end]
+
+	[Op: u32 op: 0;]
+		ptr<JsFnState> f: cf;
+		f.last_op_at is f.len;
+		call Word: op;
+		call Adjust: (JsOp.effects:op as int) - 64;
+	[end]
+
+	[OpA: u32 op: 0; u32 a: 0;]
+		if a >= 0x1000000
+			call JsParse.FailAt: 'Function too large' cf.last_line;
+		;;
+		ptr<JsFnState> f: cf;
+		f.last_op_at is f.len;
+		call Word: op | (a << 8);
+		call Adjust: (JsOp.effects:op as int) - 64;
+	[end]
+
+	# an instruction whose effect on the stack depends on its operand
+	[OpFx: u32 op: 0; u32 a: 0; int delta: 0;]
+		ptr<JsFnState> f: cf;
+		f.last_op_at is f.len;
+		call Word: op | (a << 8);
+		call Adjust: delta;
+	[end]
+
+	[Here]
+		cf.last_op_at is 0xFFFFFFFF;
+	[end: cf.len]
+
+	# ---- jumps: a list threaded through the operands of the jumps waiting for their target ----
+
+	# a jump to somewhere not known yet; it goes on the list, which is returned
+	[Jump: u32 op: 0; u32 list: 0;]
+		ptr<JsFnState> f: cf;
+		u32 at_ins: f.len;
+		f.last_op_at is f.len;
+		call Word: op | (list << 8);
+		call Adjust: (JsOp.effects:op as int) - 64;
+	[end: at_ins + 1]
+
+	# the second word of an instruction is the jump
+	[JumpWord: u32 list: 0;]
+		u32 at_ins: cf.len;
+		call Word: list | 0x80000000;
+	[end: at_ins + 1]
+
+	[Bind: u32 list: 0;]
+		ptr<JsFnState> f: cf;
+		u32 target: f.len;
+		f.last_op_at is 0xFFFFFFFF;
+		while list is not 0
+			u32 at_ins: list - 1;
+			u32 w: f.code:at_ins;
+			if (w & 0x80000000) is not 0 and (w & 0xFF000000) is 0x80000000
+				list is w & 0xFFFFFF;
+				f.code:at_ins is target;
+			;;
+			else
+				list is w >> 8;
+				f.code:at_ins is (w & 0xFF) | (target << 8);
+			;;
+		;;
+	[end]
+
+	# two lists as one
+	[Join: u32 a: 0; u32 b: 0;]
+		if b is 0 return a;
+		if a is 0 return b;
+		ptr<JsFnState> f: cf;
+		u32 walk: b;
+		while true
+			u32 w: f.code:(walk - 1);
+			u32 next_one: 0;
+			if (w & 0xFF000000) is 0x80000000
+				next_one is w & 0xFFFFFF;
+				if next_one is 0
+					f.code:(walk - 1) is w | a;
+					break;
+				;;
+			;;
+			else
+				next_one is w >> 8;
+				if next_one is 0
+					f.code:(walk - 1) is w | (a << 8);
+					break;
+				;;
+			;;
+			walk is next_one;
+		;;
+	[end: b]
+
+	# ---- constants, lines, locals ----
+
+	[Const: u64 v: 0;]
+		ptr<JsFnState> f: cf;
+		if f.nk * 2 >= f.kmask
+			call GrowConsts;
+		;;
+		u32 h: ((v as u32) ^ ((v >> 32) as u32)) * 2654435769;
+		u32 place: (h >> 8) & f.kmask;
+		ptr<u32> map: f.kmap;
+		while map:place is not 0
+			u32 i: map:place - 1;
+			if f.consts:i is v return i;
+			place is (place + 1) & f.kmask;
+		;;
+		if f.nk >= f.kcap
+			call GrowConstArray;
+		;;
+		f.consts:(f.nk) is v;
+		f.nk is f.nk + 1;
+		map:place is f.nk;
+	[end: f.nk - 1]
+
+	# a constant no other may share
+	[ConstNew: u64 v: 0;]
+		ptr<JsFnState> f: cf;
+		if f.nk >= f.kcap
+			call GrowConstArray;
+		;;
+		f.consts:(f.nk) is v;
+		f.nk is f.nk + 1;
+	[end: f.nk - 1]
+
+	[GrowConstArray]
+		ptr<JsFnState> f: cf;
+		u32 room: f.kcap * 2;
+		if room < 16
+			room is 16;
+		;;
+		ptr<u64> grown: new u64[room];
+		if grown is 0
+			throw 'out of memory compiling';
+		;;
+		if f.consts is not 0
+			call Mem.Copy: grown as ptr<u8> f.consts as ptr<u8> f.nk * 8;
+			free f.consts;
+		;;
+		f.consts is grown;
+		f.kcap is room;
+	[end]
+
+	[GrowConsts]
+		ptr<JsFnState> f: cf;
+		u32 size: (f.kmask + 1) * 2;
+		if size < 64
+			size is 64;
+		;;
+		# (ConstNew adds without looking here, so there may be many more than the table had)
+		while size < f.nk * 4
+			size is size * 2;
+		;;
+		ptr<u32> map: new u32[size];
+		if map is 0
+			throw 'out of memory compiling';
+		;;
+		if f.kmap is not 0
+			free f.kmap;
+		;;
+		f.kmap is map;
+		f.kmask is size - 1;
+		while u32 i: 0; i < f.nk; i++;
+			u64 v: f.consts:i;
+			u32 h: ((v as u32) ^ ((v >> 32) as u32)) * 2654435769;
+			u32 place: (h >> 8) & f.kmask;
+			while map:place is not 0
+				place is (place + 1) & f.kmask;
+			;;
+			map:place is i + 1;
+		;;
+	[end]
+
+	[Atom: ptr<JsStr> a: 0;]
+	[end: (Const: (JsV.Str: a))]
+
+	[Line: u32 line: 0;]
+		ptr<JsFnState> f: cf;
+		if line is f.last_line or line is 0 return;
+		f.last_line is line;
+		if f.nlines >= f.lines_cap
+			u32 room: f.lines_cap * 2;
+			if room < 16
+				room is 16;
+			;;
+			ptr<u32> grown: new u32[room * 2];
+			if grown is 0
+				throw 'out of memory compiling';
+			;;
+			if f.lines is not 0
+				call Mem.Copy: grown as ptr<u8> f.lines as ptr<u8> f.nlines * 8;
+				free f.lines;
+			;;
+			f.lines is grown;
+			f.lines_cap is room;
+		;;
+		f.lines:(f.nlines * 2) is f.len;
+		f.lines:(f.nlines * 2 + 1) is line;
+		f.nlines is f.nlines + 1;
+	[end]
+
+	# remembers what the next instruction calls, by name, for an error message if it can't
+	[NoteCall: ptr<JsNode> callee: 0;]
+		ptr<JsStr> name: 0;
+		u32 k: callee.kind;
+		if k is JsN.IDENT or k is JsN.MEMBER
+			name is callee.name;
+		;;
+		elif k is JsN.INDEX and callee.b.kind is JsN.STR
+			name is callee.b.name;
+		;;
+		elif k is JsN.PRIVATE
+			name is callee.name;
+		;;
+		if name is 0 return;
+		ptr<JsFnState> f: cf;
+		if f.ncalls >= f.calls_cap
+			u32 room: f.calls_cap * 2;
+			if room < 16
+				room is 16;
+			;;
+			ptr<u32> grown: new u32[room * 2];
+			if grown is 0
+				throw 'out of memory compiling';
+			;;
+			if f.calls is not 0
+				call Mem.Copy: grown as ptr<u8> f.calls as ptr<u8> f.ncalls * 8;
+				free f.calls;
+			;;
+			f.calls is grown;
+			f.calls_cap is room;
+		;;
+		f.calls:(f.ncalls * 2) is f.len;
+		f.calls:(f.ncalls * 2 + 1) is (Atom: name);
+		f.ncalls is f.ncalls + 1;
+	[end]
+
+	[AllocLocal]
+		ptr<JsFnState> f: cf;
+		u32 s: f.nlocals;
+		f.nlocals is s + 1;
+		if f.nlocals > f.max_locals
+			f.max_locals is f.nlocals;
+		;;
+		if s >= 0xFFFF
+			call JsParse.FailAt: 'Too many local variables' f.last_line;
+		;;
+	[end: s]
+
+	[AddTry: u32 start: 0; u32 stop: 0; u32 handler: 0;]
+		ptr<JsFnState> f: cf;
+		if start is stop return;
+		if f.ntries >= f.tries_cap
+			u32 room: f.tries_cap * 2;
+			if room < 8
+				room is 8;
+			;;
+			ptr<JsTry> grown: new JsTry[room];
+			if grown is 0
+				throw 'out of memory compiling';
+			;;
+			if f.tries is not 0
+				call Mem.Copy: grown as ptr<u8> f.tries as ptr<u8> f.ntries * sizeof JsTry;
+				free f.tries;
+			;;
+			f.tries is grown;
+			f.tries_cap is room;
+		;;
+		ptr<JsTry> t: f.tries + f.ntries * sizeof JsTry;
+		t.start is start;
+		t.stop is stop;
+		t.handler is handler;
+		f.ntries is f.ntries + 1;
+	[end]
+
+	[PushCtl: u32 kind: 0;]
+		ptr<JsCtl> c: (arena.Alloc: sizeof JsCtl) as ptr<JsCtl>;
+		c.kind is kind;
+		c.parent is cf.ctl;
+		cf.ctl is c;
+	[end: c]
+
+	[PopCtl]
+		cf.ctl is cf.ctl.parent;
+	[end]
+
+	# ---- scopes at run time ----
+
+	# whether a variable of this block is reached from the scope in place now, and how far up
+	[Hops: ptr<JsVar> v: 0;]
+		ptr<JsBlock> b: cf.block;
+		u32 hops: 0;
+		while b is not v.block
+			if b.heap_count > 0
+				hops++;
+			;;
+			b is b.parent;
+			if b is 0
+				throw 'internal: a variable out of its scope';
+			;;
+		;;
+		if hops > 255 or (v.slot as u32) > 0xFFFF
+			call JsParse.FailAt: 'Scopes nested too deeply' cf.last_line;
+		;;
+	[end: (hops << 16) | (v.slot as u32)]
+
+	[GetVarOp: ptr<JsVar> v: 0; bln check: false;]
+		if v.captured
+			if check
+				call OpA: JsOp.GETVAR_C (Hops: v);
+			;;
+			else
+				call OpA: JsOp.GETVAR (Hops: v);
+			;;
+			return;
+		;;
+		if check
+			call OpA: JsOp.GETLOC_C v.slot as u32;
+		;;
+		else
+			call OpA: JsOp.GETLOC v.slot as u32;
+		;;
+	[end]
+
+	# pops into the variable
+	[SetVarOp: ptr<JsVar> v: 0; bln check: false;]
+		if v.captured
+			if check
+				call OpA: JsOp.SETVAR_C (Hops: v);
+			;;
+			else
+				call OpA: JsOp.SETVAR (Hops: v);
+			;;
+			return;
+		;;
+		if check
+			call OpA: JsOp.SETLOC_C v.slot as u32;
+		;;
+		else
+			call OpA: JsOp.SETLOC v.slot as u32;
+		;;
+	[end]
+
+	[EnterBlock: ptr<JsBlock> b: 0;]
+		if b is 0 return;
+		cf.block is b;
+		if b.heap_count > 0
+			call OpA: JsOp.PUSH_SCOPE b.heap_count;
+			call PushCtl: C_SCOPE;
+		;;
+		ptr<JsVar> v: b.vars;
+		while v is not 0
+			if not v.captured
+				v.slot is (AllocLocal) as int;
+				if v.needs_tdz
+					call OpA: JsOp.HOLELOC v.slot as u32;
+				;;
+			;;
+			v is v.next;
+		;;
+	[end]
+
+	[LeaveBlock: ptr<JsBlock> b: 0;]
+		if b is 0 return;
+		if b.heap_count > 0
+			call Op: JsOp.POP_SCOPE;
+			call PopCtl;
+		;;
+		cf.block is b.parent;
+	[end]
+
+	# ---- reaching this, new.target and the running function, from arrows or not ----
+
+	[OwnFn]
+		ptr<JsFnInfo> f: cf.info;
+		while (f.node.flags & JsN.FN_ARROW) is not 0
+			f is f.parent;
+		;;
+	[end: f]
+
+	[PushThis]
+		ptr<JsFnInfo> f: (OwnFn);
+		if f is cf.info and f.this_var is 0
+			call Op: JsOp.THIS;
+			return;
+		;;
+		bln derived: (f.node.flags & JsN.FN_DERIVED) is not 0;
+		call GetVarOp: f.this_var derived;
+	[end]
+
+	[PushNewTarget]
+		ptr<JsFnInfo> f: (OwnFn);
+		if f is cf.info
+			call Op: JsOp.NEWTARGET;
+			return;
+		;;
+		call GetVarOp: f.nt_var false;
+	[end]
+
+	[PushFunc]
+		ptr<JsFnInfo> f: (OwnFn);
+		if f is cf.info
+			call Op: JsOp.CALLEE;
+			return;
+		;;
+		call GetVarOp: f.func_var false;
+	[end]
+
+	# ---- expressions ----
+
+	[PushNum: f64 x: 0.0;]
+		if x >= -8000000.0 and x <= 8000000.0
+			int i: x as int;
+			if (i as f64) is x and not (i is 0 and (WlNum.IsNegative: x))
+				call OpA: JsOp.INT (i as u32) & 0xFFFFFF;
+				return;
+			;;
+		;;
+		call OpA: JsOp.CONST (Const: (JsV.Num: x));
+	[end]
+
+	[PushStr: ptr<JsStr> s: 0;]
+		call OpA: JsOp.CONST (Atom: s);
+	[end]
+
+	[Expr: ptr<JsNode> n: 0;]
+		call WlStack.Check;
+		u32 k: n.kind;
+		when k
+			is JsN.IDENT
+				call ExprIdent: n;
+			;;
+			is JsN.NUM
+				call PushNum: n.num;
+			;;
+			is JsN.STR
+				call PushStr: n.name;
+			;;
+			is JsN.MEMBER
+				call ExprMember: n;
+			;;
+			is JsN.INDEX
+				call ExprIndex: n;
+			;;
+			is JsN.CALL
+				call ExprCall: n;
+			;;
+			is JsN.BINARY JsN.LOGICAL
+				call ExprBinary: n;
+			;;
+			is JsN.ASSIGN
+				call ExprAssign: n true;
+			;;
+			is JsN.UNARY
+				call ExprUnary: n;
+			;;
+			is JsN.UPDATE
+				call ExprUpdate: n true;
+			;;
+			is JsN.COND
+				call ExprCond: n;
+			;;
+			is JsN.THIS
+				call PushThis;
+			;;
+			is JsN.TRUE
+				call Op: JsOp.TRUE;
+			;;
+			is JsN.FALSE
+				call Op: JsOp.FALSE;
+			;;
+			is JsN.NULL
+				call Op: JsOp.NULL;
+			;;
+			is JsN.FUNC
+				call ExprFunction: n;
+			;;
+			is JsN.OBJECT
+				call ExprObject: n;
+			;;
+			is JsN.ARRAY
+				call ExprArray: n;
+			;;
+			is JsN.NEW
+				call ExprNew: n;
+			;;
+			is JsN.SEQ
+				ptr<JsNode> e: n.a;
+				while e.next is not 0
+					call ExprVoid: e;
+					e is e.next;
+				;;
+				call Expr: e;
+			;;
+			is JsN.TEMPLATE
+				call ExprTemplate: n;
+			;;
+			is JsN.TAGGED
+				call ExprTagged: n;
+			;;
+			is JsN.REGEX
+				if JsRt.r.regexp_check_hook is not 0
+					call JsRt.r.regexp_check_hook: n.name n.raw;
+				;;
+				u32 ki: (ConstNew: (JsV.Str: n.name));
+				call ConstNew: (JsV.Str: n.raw);
+				call OpA: JsOp.REGEX ki;
+			;;
+			is JsN.CLASS
+				call ExprClass: n;
+			;;
+			is JsN.OPTCHAIN
+				call ExprOptChain: n;
+			;;
+			is JsN.YIELD
+				call ExprYield: n;
+			;;
+			is JsN.AWAIT
+				call Expr: n.a;
+				call EmitAwait;
+			;;
+			is JsN.NEWTARGET
+				call PushNewTarget;
+			;;
+			is JsN.PRIVATE
+				call Expr: n.a;
+				if (n.flags & JsN.X_OPT) is not 0
+					cf.opt_list is (Jump: JsOp.JNIL_POP cf.opt_list);
+				;;
+				call GetVarOp: n.info as ptr<JsVar> false;
+				call Op: JsOp.GET_PRIVATE;
+			;;
+			is JsN.PRIVATE_IN
+				call Expr: n.a;
+				call GetVarOp: n.info as ptr<JsVar> false;
+				call Op: JsOp.HAS_PRIVATE;
+			;;
+			else
+				throw 'internal: an expression the compiler does not know';
+			;;
+		;;
+	[end]
+
+	[ExprIdent: ptr<JsNode> n: 0;]
+		ptr<JsVar> v: n.info as ptr<JsVar>;
+		if v is 0
+			if n.name is JsRt.A.undefined
+				# (it can't be reassigned, and nothing can shadow it at this point but a variable)
+				call Op: JsOp.UNDEF;
+				return;
+			;;
+			call Line: n.line;
+			call OpA: JsOp.GETGLOBAL (Atom: n.name);
+			return;
+		;;
+		call GetVarOp: v (n.flags & JsN.X_TDZ) is not 0;
+	[end]
+
+	[ExprMember: ptr<JsNode> n: 0;]
+		if n.a.kind is JsN.SUPER
+			call PushThis;
+			call PushStr: n.name;
+			call Line: n.line;
+			call Op: JsOp.GETSUPER;
+			return;
+		;;
+		call Expr: n.a;
+		if (n.flags & JsN.X_OPT) is not 0
+			cf.opt_list is (Jump: JsOp.JNIL_POP cf.opt_list);
+		;;
+		call Line: n.line;
+		if n.name is JsRt.A.length
+			call Op: JsOp.LENGTH;
+			return;
+		;;
+		call OpA: JsOp.GETFIELD (Atom: n.name);
+	[end]
+
+	[ExprIndex: ptr<JsNode> n: 0;]
+		if n.a.kind is JsN.SUPER
+			call PushThis;
+			call Expr: n.b;
+			call Line: n.line;
+			call Op: JsOp.GETSUPER;
+			return;
+		;;
+		call Expr: n.a;
+		if (n.flags & JsN.X_OPT) is not 0
+			cf.opt_list is (Jump: JsOp.JNIL_POP cf.opt_list);
+		;;
+		if n.b.kind is JsN.STR and n.b.name.index is JsStrs.NO_INDEX
+			call Line: n.line;
+			call OpA: JsOp.GETFIELD (Atom: n.b.name);
+			return;
+		;;
+		call Expr: n.b;
+		call Line: n.line;
+		call Op: JsOp.GETELEM;
+	[end]
+
+	[ExprOptChain: ptr<JsNode> n: 0;]
+		u32 saved: cf.opt_list;
+		cf.opt_list is 0;
+		call Expr: n.a;
+		u32 skip: (Jump: JsOp.JMP 0);
+		call Bind: cf.opt_list;
+		# a short circuit popped its value: it comes out as undefined
+		call Adjust: -1;
+		call Op: JsOp.UNDEF;
+		call Bind: skip;
+		cf.opt_list is saved;
+	[end]
+
+	[BinOp: u32 tok: 0;]
+		when tok
+			is JsT.ADD
+				return JsOp.ADD;
+			;;
+			is JsT.SUB
+				return JsOp.SUB;
+			;;
+			is JsT.LT
+				return JsOp.LT;
+			;;
+			is JsT.MUL
+				return JsOp.MUL;
+			;;
+			is JsT.SEQ
+				return JsOp.SEQ;
+			;;
+			is JsT.SNE
+				return JsOp.SNE;
+			;;
+			is JsT.GT
+				return JsOp.GT;
+			;;
+			is JsT.LE
+				return JsOp.LE;
+			;;
+			is JsT.GE
+				return JsOp.GE;
+			;;
+			is JsT.EQ
+				return JsOp.EQ;
+			;;
+			is JsT.NE
+				return JsOp.NE;
+			;;
+			is JsT.DIV
+				return JsOp.DIV;
+			;;
+			is JsT.MOD
+				return JsOp.MOD;
+			;;
+			is JsT.BAND
+				return JsOp.BAND;
+			;;
+			is JsT.BOR
+				return JsOp.BOR;
+			;;
+			is JsT.BXOR
+				return JsOp.BXOR;
+			;;
+			is JsT.SHL
+				return JsOp.SHL;
+			;;
+			is JsT.SAR
+				return JsOp.SAR;
+			;;
+			is JsT.SHR
+				return JsOp.SHR;
+			;;
+			is JsT.EXP
+				return JsOp.EXP;
+			;;
+			is JsT.K_IN
+				return JsOp.IN;
+			;;
+			is JsT.K_INSTANCEOF
+				return JsOp.INSTANCEOF;
+			;;
+		;;
+		throw 'internal: an operator the compiler does not know';
+	[end: 0 as u32]
+
+	# a + b + c ... leans left, however long: walks down it with a link back up
+	[ExprBinary: ptr<JsNode> n: 0;]
+		ptr<JsNode> bottom: n;
+		while (bottom.a.kind is JsN.BINARY or bottom.a.kind is JsN.LOGICAL)
+			bottom.a.e is bottom;
+			bottom is bottom.a;
+		;;
+		call Expr: bottom.a;
+		ptr<JsNode> cur: bottom;
+		while true
+			u32 tok: cur.op;
+			if cur.kind is JsN.LOGICAL
+				u32 op: JsOp.JT_KEEP;
+				if tok is JsT.LAND
+					op is JsOp.JF_KEEP;
+				;;
+				elif tok is JsT.NULLISH
+					op is JsOp.JNOTNIL;
+				;;
+				u32 list: (Jump: op 0);
+				call Adjust: -1;
+				call Expr: cur.b;
+				call Bind: list;
+			;;
+			else
+				call Expr: cur.b;
+				call Line: cur.line;
+				call Op: (BinOp: tok);
+			;;
+			if cur is n break;
+			cur is cur.e;
+		;;
+	[end]
+
+	[ExprUnary: ptr<JsNode> n: 0;]
+		u32 tok: n.op;
+		ptr<JsNode> a: n.a;
+		when tok
+			is JsT.NOT
+				call Expr: a;
+				call Op: JsOp.NOT;
+			;;
+			is JsT.SUB
+				if a.kind is JsN.NUM
+					call PushNum: a.num * -1.0;
+					return;
+				;;
+				call Expr: a;
+				call Op: JsOp.NEG;
+			;;
+			is JsT.ADD
+				call Expr: a;
+				call Op: JsOp.PLUS;
+			;;
+			is JsT.TILDE
+				call Expr: a;
+				call Op: JsOp.BITNOT;
+			;;
+			is JsT.K_VOID
+				call ExprVoid: a;
+				call Op: JsOp.UNDEF;
+			;;
+			is JsT.K_TYPEOF
+				if a.kind is JsN.IDENT and a.info is 0 and a.name is not JsRt.A.undefined
+					call OpA: JsOp.TYPEOF_GLOBAL (Atom: a.name);
+					return;
+				;;
+				call Expr: a;
+				call Op: JsOp.TYPEOF;
+			;;
+			is JsT.K_DELETE
+				call ExprDelete: a;
+			;;
+		;;
+	[end]
+
+	[ExprDelete: ptr<JsNode> a: 0;]
+		u32 k: a.kind;
+		if k is JsN.OPTCHAIN
+			u32 saved: cf.opt_list;
+			cf.opt_list is 0;
+			call ExprDelete: a.a;
+			u32 skip: (Jump: JsOp.JMP 0);
+			call Bind: cf.opt_list;
+			call Adjust: -1;
+			call Op: JsOp.TRUE;
+			call Bind: skip;
+			cf.opt_list is saved;
+			return;
+		;;
+		if k is JsN.MEMBER or k is JsN.INDEX
+			if a.a.kind is JsN.SUPER
+				# delete super.x evaluates this and the key and always throws
+				call PushThis;
+				call Op: JsOp.POP;
+				if k is JsN.INDEX
+					call ExprVoid: a.b;
+				;;
+				call OpFx: JsOp.THROW_CONST 1 1;
+				return;
+			;;
+			call Expr: a.a;
+			if (a.flags & JsN.X_OPT) is not 0
+				cf.opt_list is (Jump: JsOp.JNIL_POP cf.opt_list);
+			;;
+			call Line: a.line;
+			if k is JsN.MEMBER
+				call OpA: JsOp.DELFIELD (Atom: a.name);
+			;;
+			else
+				call Expr: a.b;
+				call Op: JsOp.DELELEM;
+			;;
+			return;
+		;;
+		if k is JsN.IDENT
+			if a.info is 0
+				call OpA: JsOp.DELGLOBAL (Atom: a.name);
+			;;
+			else
+				call Op: JsOp.FALSE;
+			;;
+			return;
+		;;
+		call ExprVoid: a;
+		call Op: JsOp.TRUE;
+	[end]
+
+	[ExprCond: ptr<JsNode> n: 0;]
+		# a ? b : c ? d : e ... is a loop too
+		u32 done: 0;
+		while true
+			call Expr: n.a;
+			u32 to_else: (Jump: JsOp.JF 0);
+			call Expr: n.b;
+			done is (Jump: JsOp.JMP done);
+			call Adjust: -1;
+			call Bind: to_else;
+			if n.c.kind is not JsN.COND or (n.c.flags & JsN.X_PARENS) is not 0
+				call Expr: n.c;
+				break;
+			;;
+			n is n.c;
+		;;
+		call Bind: done;
+	[end]
+
+	# ---- calls ----
+
+	[HasSpread: ptr<JsNode> args: 0;]
+		while args is not 0
+			if args.kind is JsN.SPREAD return true;
+			args is args.next;
+		;;
+	[end: false]
+
+	# the arguments, pushed; how many
+	[PushArgs: ptr<JsNode> args: 0;]
+		u32 n: 0;
+		while args is not 0
+			call Expr: args;
+			n++;
+			args is args.next;
+		;;
+	[end: n]
+
+	# the arguments as one array
+	[ArgsArray: ptr<JsNode> args: 0;]
+		call OpA: JsOp.NEWARR 0;
+		while args is not 0
+			if args.kind is JsN.SPREAD
+				call Expr: args.a;
+				call Op: JsOp.APPEND_SPREAD;
+			;;
+			else
+				call Expr: args;
+				call Op: JsOp.APPEND;
+			;;
+			args is args.next;
+		;;
+	[end]
+
+	[ExprCall: ptr<JsNode> n: 0;]
+		ptr<JsNode> callee: n.a;
+		u32 k: callee.kind;
+		if k is JsN.SUPER
+			call ExprSuperCall: n;
+			return;
+		;;
+		# what's called and what it's called on: [function, this]
+		if k is JsN.MEMBER and callee.a.kind is not JsN.SUPER
+			call Expr: callee.a;
+			if (callee.flags & JsN.X_OPT) is not 0
+				cf.opt_list is (Jump: JsOp.JNIL_POP cf.opt_list);
+			;;
+			call Line: callee.line;
+			call OpA: JsOp.METHOD (Atom: callee.name);
+		;;
+		elif k is JsN.INDEX and callee.a.kind is not JsN.SUPER
+			call Expr: callee.a;
+			if (callee.flags & JsN.X_OPT) is not 0
+				cf.opt_list is (Jump: JsOp.JNIL_POP cf.opt_list);
+			;;
+			call Expr: callee.b;
+			call Line: callee.line;
+			call Op: JsOp.GET_METHOD_ELEM;
+		;;
+		elif k is JsN.MEMBER or k is JsN.INDEX
+			# super.m(): this is this
+			call Expr: callee;
+			call PushThis;
+		;;
+		elif k is JsN.PRIVATE
+			call Expr: callee.a;
+			if (callee.flags & JsN.X_OPT) is not 0
+				cf.opt_list is (Jump: JsOp.JNIL_POP cf.opt_list);
+			;;
+			call Op: JsOp.DUP;
+			call GetVarOp: callee.info as ptr<JsVar> false;
+			call Op: JsOp.GET_PRIVATE;
+			call Op: JsOp.SWAP;
+		;;
+		elif k is JsN.OPTCHAIN and (callee.flags & JsN.X_PARENS) is not 0
+			# (a?.b)() still calls with a as this
+			call ParenOptCallee: callee;
+		;;
+		else
+			call Expr: callee;
+			call Op: JsOp.UNDEF;
+		;;
+		if (n.flags & JsN.X_OPT) is not 0
+			# f?.(): [function this]; if the function's nil, the whole chain's undefined
+			call Op: JsOp.SWAP;
+			u32 ok: (Jump: JsOp.JNOTNIL 0);
+			# (it popped the function: [this] is left, to go too)
+			call Adjust: -1;
+			call Op: JsOp.POP;
+			cf.opt_list is (Jump: JsOp.JMP cf.opt_list);
+			call Adjust: 2;
+			call Bind: ok;
+			call Op: JsOp.SWAP;
+		;;
+		if (HasSpread: n.b)
+			call ArgsArray: n.b;
+			call Line: n.line;
+			call Op: JsOp.CALL_SPREAD;
+			return;
+		;;
+		u32 argc: (PushArgs: n.b);
+		call Line: n.line;
+		if k is JsN.IDENT and cf.strict and callee.name is JsRt.A.eval
+			# a direct eval in strict code is strict; that's all it inherits
+			call Op: JsOp.STRICT_EVAL;
+		;;
+		call NoteCall: callee;
+		call OpFx: JsOp.CALL argc 0 - (argc as int) - 1;
+	[end]
+
+	# (a?.b)(): the chain leaves [function this], with undefined for both if it stops short
+	[ParenOptCallee: ptr<JsNode> c: 0;]
+		u32 saved: cf.opt_list;
+		cf.opt_list is 0;
+		ptr<JsNode> m: c.a;
+		if m.kind is JsN.MEMBER and m.a.kind is not JsN.SUPER
+			call Expr: m.a;
+			if (m.flags & JsN.X_OPT) is not 0
+				cf.opt_list is (Jump: JsOp.JNIL_POP cf.opt_list);
+			;;
+			call OpA: JsOp.METHOD (Atom: m.name);
+		;;
+		elif m.kind is JsN.INDEX and m.a.kind is not JsN.SUPER
+			call Expr: m.a;
+			if (m.flags & JsN.X_OPT) is not 0
+				cf.opt_list is (Jump: JsOp.JNIL_POP cf.opt_list);
+			;;
+			call Expr: m.b;
+			call Op: JsOp.GET_METHOD_ELEM;
+		;;
+		else
+			call Expr: m;
+			call Op: JsOp.UNDEF;
+		;;
+		u32 skip: (Jump: JsOp.JMP 0);
+		call Bind: cf.opt_list;
+		call Adjust: -2;
+		call Op: JsOp.UNDEF;
+		call Op: JsOp.UNDEF;
+		call Bind: skip;
+		cf.opt_list is saved;
+	[end]
+
+	[ExprSuperCall: ptr<JsNode> n: 0;]
+		call PushFunc;
+		call PushNewTarget;
+		if (HasSpread: n.b)
+			call ArgsArray: n.b;
+			call Line: n.line;
+			call Op: JsOp.SUPER_SPREAD;
+		;;
+		else
+			u32 argc: (PushArgs: n.b);
+			call Line: n.line;
+			call OpFx: JsOp.SUPER_CALL argc 0 - (argc as int) - 1;
+		;;
+		call AfterSuper;
+	[end]
+
+	# [the new this]: bind it (only once), run the fields; leaves it on the stack
+	[AfterSuper]
+		ptr<JsFnInfo> f: (OwnFn);
+		call GetVarOp: f.this_var false;
+		call Op: JsOp.THROW_INIT;
+		call Op: JsOp.DUP;
+		call SetVarOp: f.this_var false;
+		call PushFunc;
+		call Op: JsOp.RUN_FIELDS;
+	[end]
+
+	[ExprNew: ptr<JsNode> n: 0;]
+		call Expr: n.a;
+		if (HasSpread: n.b)
+			call Op: JsOp.UNDEF;
+			call ArgsArray: n.b;
+			call Line: n.line;
+			call Op: JsOp.NEW_SPREAD;
+			return;
+		;;
+		call Op: JsOp.UNDEF;
+		u32 argc: (PushArgs: n.b);
+		call Line: n.line;
+		call NoteCall: n.a;
+		call OpFx: JsOp.NEW argc 0 - (argc as int) - 1;
+	[end]
+
+	# ---- assignment ----
+
+	# stores what's on the stack in an identifier and pops it
+	[StoreIdent: ptr<JsNode> t: 0; u32 mode: 0;]
+		ptr<JsVar> v: t.info as ptr<JsVar>;
+		if v is 0
+			if mode is M_INIT
+				call OpA: JsOp.INITLEX (Atom: t.name);
+				return;
+			;;
+			call Line: t.line;
+			if cf.strict
+				call OpA: JsOp.SETGLOBAL_S (Atom: t.name);
+			;;
+			else
+				call OpA: JsOp.SETGLOBAL (Atom: t.name);
+			;;
+			return;
+		;;
+		if mode is M_INIT
+			call SetVarOp: v false;
+			return;
+		;;
+		u32 k: v.kind;
+		if k is JsScopes.V_CONST or k is JsScopes.V_CLASS_NAME
+			# (the TDZ comes first, if it applies)
+			if (t.flags & JsN.X_TDZ) is not 0
+				call GetVarOp: v true;
+				call Op: JsOp.POP;
+			;;
+			call Line: t.line;
+			call OpA: JsOp.THROW_CONST 0;
+			call Op: JsOp.POP;
+			return;
+		;;
+		if k is JsScopes.V_FNAME
+			if cf.strict
+				call OpA: JsOp.THROW_CONST 0;
+			;;
+			call Op: JsOp.POP;
+			return;
+		;;
+		call SetVarOp: v (t.flags & JsN.X_TDZ) is not 0;
+	[end]
+
+	[ExprAssign: ptr<JsNode> n: 0; bln want: true;]
+		u32 op: n.op;
+		ptr<JsNode> t: n.a;
+		if op is JsT.ASSIGN
+			u32 k: t.kind;
+			if k is JsN.IDENT
+				call Expr: n.b;
+				if want
+					call Op: JsOp.DUP;
+				;;
+				call StoreIdent: t M_ASSIGN;
+				return;
+			;;
+			if k is JsN.ARRPAT or k is JsN.OBJPAT
+				call Expr: n.b;
+				if want
+					call Op: JsOp.DUP;
+				;;
+				call BindPattern: t M_ASSIGN;
+				return;
+			;;
+			if k is JsN.INDEX and t.a.kind is JsN.SUPER
+				call PushThis;
+				call Expr: t.b;
+			;;
+			else
+				call PreTarget: t;
+			;;
+			call Expr: n.b;
+			call Line: n.line;
+			call PutTarget: t want;
+			return;
+		;;
+		if op is JsT.LAND_A or op is JsT.LOR_A or op is JsT.NULLISH_A
+			call LogicalAssign: n want;
+			return;
+		;;
+		# x op= v
+		u32 bin: (BinOp: op + 19);
+		u32 k2: t.kind;
+		if k2 is JsN.IDENT
+			call ExprIdent: t;
+			call Expr: n.b;
+			call Line: n.line;
+			call Op: bin;
+			if want
+				call Op: JsOp.DUP;
+			;;
+			call StoreIdent: t M_ASSIGN;
+			return;
+		;;
+		call PreTarget: t;
+		call GetFromRef: t;
+		call Expr: n.b;
+		call Line: n.line;
+		call Op: bin;
+		call PutTarget: t want;
+	[end]
+
+	# x &&= v and the others: only assigns if it gets that far
+	[LogicalAssign: ptr<JsNode> n: 0; bln want: true;]
+		u32 op: n.op;
+		ptr<JsNode> t: n.a;
+		u32 jop: JsOp.JF_KEEP;
+		if op is JsT.LOR_A
+			jop is JsOp.JT_KEEP;
+		;;
+		elif op is JsT.NULLISH_A
+			jop is JsOp.JNOTNIL;
+		;;
+		u32 refs: (RefDepth: t);
+		call PreTarget: t;
+		if t.kind is JsN.IDENT
+			call ExprIdent: t;
+		;;
+		else
+			call GetFromRef: t;
+		;;
+		u32 short: (Jump: jop 0);
+		call Adjust: -1;
+		call Expr: n.b;
+		if t.kind is JsN.IDENT
+			call Op: JsOp.DUP;
+			call StoreIdent: t M_ASSIGN;
+			call Bind: short;
+		;;
+		else
+			call PutTarget: t true;
+			u32 skip: (Jump: JsOp.JMP 0);
+			call Bind: short;
+			# [refs... value] -> [value]
+			call Adjust: refs as int;
+			while u32 i: 0; i < refs; i++;
+				call Op: JsOp.SWAP;
+				call Op: JsOp.POP;
+			;;
+			call Bind: skip;
+		;;
+		if not want
+			call Op: JsOp.POP;
+		;;
+	[end]
+
+	[RefDepth: ptr<JsNode> t: 0;]
+		u32 k: t.kind;
+		if k is JsN.MEMBER
+			if t.a.kind is JsN.SUPER return 2 as u32;
+			return 1 as u32;
+		;;
+		if k is JsN.INDEX or k is JsN.PRIVATE return 2 as u32;
+		if k is JsN.CALL return 0 as u32;
+	[end: 0 as u32]
+
+	# what a target needs evaluated first: the object, the key
+	[PreTarget: ptr<JsNode> t: 0;]
+		u32 k: t.kind;
+		if k is JsN.MEMBER
+			if t.a.kind is JsN.SUPER
+				call PushThis;
+				call PushStr: t.name;
+				return;
+			;;
+			call Expr: t.a;
+			return;
+		;;
+		if k is JsN.INDEX
+			if t.a.kind is JsN.SUPER
+				call PushThis;
+				call Expr: t.b;
+				call Op: JsOp.TOKEY;
+				return;
+			;;
+			call Expr: t.a;
+			call Expr: t.b;
+			return;
+		;;
+		if k is JsN.PRIVATE
+			call Expr: t.a;
+			call GetVarOp: t.info as ptr<JsVar> false;
+			return;
+		;;
+		if k is JsN.CALL
+			# f() = 1: the call happens, then it's a ReferenceError
+			call ExprVoid: t;
+			call Op: JsOp.INVALID_ASSIGN;
+		;;
+	[end]
+
+	# [refs...] -> [refs... value]
+	[GetFromRef: ptr<JsNode> t: 0;]
+		u32 k: t.kind;
+		if k is JsN.MEMBER
+			if t.a.kind is JsN.SUPER
+				call Op: JsOp.DUP2;
+				call Op: JsOp.GETSUPER;
+				return;
+			;;
+			call Op: JsOp.DUP;
+			call OpA: JsOp.GETFIELD (Atom: t.name);
+			return;
+		;;
+		if k is JsN.INDEX
+			if t.a.kind is JsN.SUPER
+				call Op: JsOp.DUP2;
+				call Op: JsOp.GETSUPER;
+				return;
+			;;
+			call OpA: JsOp.TOKEY 1;
+			call Op: JsOp.DUP2;
+			call Op: JsOp.GETELEM;
+			return;
+		;;
+		if k is JsN.PRIVATE
+			call Op: JsOp.DUP2;
+			call Op: JsOp.GET_PRIVATE;
+			return;
+		;;
+		call Op: JsOp.UNDEF;
+	[end]
+
+	# [refs... value] -> [value] or []
+	[PutTarget: ptr<JsNode> t: 0; bln want: true;]
+		u32 k: t.kind;
+		if k is JsN.MEMBER
+			if t.a.kind is JsN.SUPER
+				call Op: JsOp.SETSUPER;
+			;;
+			else
+				call OpA: JsOp.SETFIELD (Atom: t.name);
+			;;
+		;;
+		elif k is JsN.INDEX
+			if t.a.kind is JsN.SUPER
+				call Op: JsOp.SETSUPER;
+			;;
+			else
+				call Op: JsOp.SETELEM;
+			;;
+		;;
+		elif k is JsN.PRIVATE
+			call Op: JsOp.SET_PRIVATE;
+		;;
+		if not want
+			call Op: JsOp.POP;
+		;;
+	[end]
+
+	[ExprUpdate: ptr<JsNode> n: 0; bln want: true;]
+		ptr<JsNode> t: n.a;
+		bln prefix: (n.flags & JsN.X_PREFIX) is not 0;
+		u32 op: JsOp.INC;
+		if n.op is JsT.DEC as u16
+			op is JsOp.DEC;
+		;;
+		if t.kind is JsN.IDENT
+			ptr<JsVar> v: t.info as ptr<JsVar>;
+			# i++ on a plain local, its value unused: the commonest thing in a loop
+			if not want and op is JsOp.INC and v is not 0 and not v.captured and (t.flags & JsN.X_TDZ) is 0
+				u32 vk: v.kind;
+				if vk is not JsScopes.V_CONST and vk is not JsScopes.V_FNAME and vk is not JsScopes.V_CLASS_NAME
+					call OpA: JsOp.INCLOC v.slot as u32;
+					return;
+				;;
+			;;
+			call ExprIdent: t;
+			call Line: n.line;
+			if prefix or not want
+				call Op: op;
+				if want
+					call Op: JsOp.DUP;
+				;;
+			;;
+			else
+				call Op: JsOp.TONUM;
+				call Op: JsOp.DUP;
+				call Op: op;
+			;;
+			call StoreIdent: t M_ASSIGN;
+			return;
+		;;
+		u32 refs: (RefDepth: t);
+		call PreTarget: t;
+		call GetFromRef: t;
+		call Line: n.line;
+		if prefix or not want
+			call Op: op;
+			call PutTarget: t want;
+			return;
+		;;
+		# old value under the refs: [refs old] -> [old refs new]
+		call Op: JsOp.TONUM;
+		if refs is 0
+			call Op: JsOp.DUP;
+			call Op: op;
+			call Op: JsOp.POP;
+			return;
+		;;
+		call Op: JsOp.DUP;
+		if refs is 1
+			# [o old old] -> [old o old]
+			call Op: JsOp.ROT3;
+		;;
+		else
+			# [o k old old] -> [old o k old]
+			call Op: JsOp.ROT4;
+		;;
+		call Op: op;
+		call PutTarget: t false;
+	[end]
+
+	# an expression whose value isn't wanted
+	[ExprVoid: ptr<JsNode> n: 0;]
+		u32 k: n.kind;
+		if k is JsN.ASSIGN
+			call WlStack.Check;
+			call ExprAssign: n false;
+			return;
+		;;
+		if k is JsN.UPDATE
+			call WlStack.Check;
+			call ExprUpdate: n false;
+			return;
+		;;
+		call Expr: n;
+		call Op: JsOp.POP;
+	[end]
+
+	# ---- patterns ----
+
+	[BindPattern: ptr<JsNode> t: 0; u32 mode: 0;]
+		call WlStack.Check;
+		u32 k: t.kind;
+		if k is JsN.IDENT
+			call StoreIdent: t mode;
+			return;
+		;;
+		if k is JsN.DEFAULT
+			u32 skip: (Jump: JsOp.JNOTUNDEF 0);
+			call Adjust: -1;
+			call Expr: t.b;
+			call Bind: skip;
+			call BindPattern: t.a mode;
+			return;
+		;;
+		if k is JsN.ARRPAT
+			call BindArray: t mode;
+			return;
+		;;
+		if k is JsN.OBJPAT
+			call BindObject: t mode;
+			return;
+		;;
+		# a member: only as an assignment target, whose refs come under the value here
+		u32 refs: (RefDepth: t);
+		call PreTarget: t;
+		# [value refs...] -> [refs... value]
+		if refs is 1
+			call Op: JsOp.SWAP;
+		;;
+		elif refs is 2
+			call Op: JsOp.ROT3;
+			call Op: JsOp.ROT3;
+		;;
+		call PutTarget: t false;
+	[end]
+
+	# one element's target, whose refs (if a member) are evaluated before its value arrives; the
+	# value arrives on the stack after this, from the caller
+	[ElementPre: ptr<JsNode> e: 0;]
+		ptr<JsNode> t: e;
+		if t.kind is JsN.DEFAULT
+			t is t.a;
+		;;
+		if t.kind is JsN.MEMBER or t.kind is JsN.INDEX or t.kind is JsN.PRIVATE
+			call PreTarget: t;
+		;;
+	[end]
+
+	# [refs... value] -> []
+	[ElementPut: ptr<JsNode> e: 0; u32 mode: 0;]
+		ptr<JsNode> t: e;
+		if t.kind is JsN.DEFAULT
+			u32 skip: (Jump: JsOp.JNOTUNDEF 0);
+			call Adjust: -1;
+			call Expr: t.b;
+			call Bind: skip;
+			t is t.a;
+		;;
+		if t.kind is JsN.MEMBER or t.kind is JsN.INDEX or t.kind is JsN.PRIVATE
+			call PutTarget: t false;
+			return;
+		;;
+		call BindPattern: t mode;
+	[end]
+
+	[BindArray: ptr<JsNode> t: 0; u32 mode: 0;]
+		u32 mark: cf.nlocals;
+		u32 it: (AllocLocal);
+		call AllocLocal;
+		call Line: t.line;
+		call OpA: JsOp.GETITER it;
+		ptr<JsCtl> c: (PushCtl: C_ITER);
+		c.slot is it;
+		u32 start: (Here);
+		ptr<JsNode> e: t.a;
+		while e is not 0
+			if e.kind is JsN.HOLE
+				call OpA: JsOp.FOROF_NEXT it;
+				call Word: 0;
+				call Op: JsOp.POP;
+			;;
+			elif e.kind is JsN.REST
+				call ElementPre: e.a;
+				call OpA: JsOp.ITER_REST it;
+				call ElementPut: e.a mode;
+			;;
+			else
+				call ElementPre: e;
+				call OpA: JsOp.FOROF_NEXT it;
+				call Word: 0;
+				call ElementPut: e mode;
+			;;
+			e is e.next;
+		;;
+		u32 stop: (Here);
+		call OpA: JsOp.ITER_CLOSE it;
+		u32 over: (Jump: JsOp.JMP 0);
+		call PopCtl;
+		u32 handler: (Here);
+		call AddTry: start stop handler;
+		call Adjust: 1;
+		call OpA: JsOp.ITER_CLOSE_SILENT it;
+		call Op: JsOp.THROW;
+		call Bind: over;
+		cf.nlocals is mark;
+	[end]
+
+	[BindObject: ptr<JsNode> t: 0; u32 mode: 0;]
+		u32 mark: cf.nlocals;
+		call Line: t.line;
+		call Op: JsOp.COERCIBLE;
+		u32 tmp: (AllocLocal);
+		call OpA: JsOp.SETLOC tmp;
+		bln has_rest: false;
+		ptr<JsNode> e: t.a;
+		while e is not 0
+			if e.kind is JsN.REST
+				has_rest is true;
+			;;
+			e is e.next;
+		;;
+		e is t.a;
+		while e is not 0
+			if e.kind is JsN.REST
+				call ElementPre: e.a;
+				call OpA: JsOp.GETLOC tmp;
+				# the keys that were taken
+				u32 n: 0;
+				ptr<JsNode> p: t.a;
+				while p is not e
+					if (p.flags & JsN.X_COMPUTED) is not 0
+						call OpA: JsOp.GETLOC p.stop;
+					;;
+					elif p.a.kind is JsN.STR
+						call PushStr: p.a.name;
+					;;
+					else
+						call PushNum: p.a.num;
+					;;
+					n++;
+					p is p.next;
+				;;
+				call OpFx: JsOp.COPYREST n 0 - (n as int);
+				call ElementPut: e.a mode;
+			;;
+			elif (e.flags & JsN.X_COMPUTED) is not 0
+				u32 kslot: (AllocLocal);
+				call Expr: e.a;
+				call Op: JsOp.TOKEY;
+				call OpA: JsOp.SETLOC kslot;
+				# (the rest pattern finds its slot here)
+				e.stop is kslot;
+				call ElementPre: e.b;
+				call OpA: JsOp.GETLOC tmp;
+				call OpA: JsOp.GETLOC kslot;
+				call Op: JsOp.GETELEM;
+				call ElementPut: e.b mode;
+			;;
+			else
+				call ElementPre: e.b;
+				call OpA: JsOp.GETLOC tmp;
+				if e.a.kind is JsN.STR and e.a.name.index is JsStrs.NO_INDEX
+					call OpA: JsOp.GETFIELD (Atom: e.a.name);
+				;;
+				elif e.a.kind is JsN.STR
+					call PushStr: e.a.name;
+					call Op: JsOp.GETELEM;
+				;;
+				else
+					call PushNum: e.a.num;
+					call Op: JsOp.GETELEM;
+				;;
+				call ElementPut: e.b mode;
+			;;
+			e is e.next;
+		;;
+		cf.nlocals is mark;
+	[end]
+
+	# ---- literals ----
+
+	[ExprTemplate: ptr<JsNode> n: 0;]
+		ptr<JsNode> q: n.a;
+		call PushStr: q.name;
+		q is q.next;
+		while q is not 0
+			# an expression, then the next piece
+			call Expr: q;
+			call Op: JsOp.TOSTR;
+			call Op: JsOp.STRCAT;
+			q is q.next;
+			if q.name.bytes > 0
+				call PushStr: q.name;
+				call Op: JsOp.STRCAT;
+			;;
+			q is q.next;
+		;;
+	[end]
+
+	[ExprTagged: ptr<JsNode> n: 0;]
+		ptr<JsNode> tag: n.a;
+		u32 k: tag.kind;
+		if k is JsN.MEMBER and tag.a.kind is not JsN.SUPER
+			call Expr: tag.a;
+			call Line: tag.line;
+			call OpA: JsOp.METHOD (Atom: tag.name);
+		;;
+		elif k is JsN.INDEX and tag.a.kind is not JsN.SUPER
+			call Expr: tag.a;
+			call Expr: tag.b;
+			call Op: JsOp.GET_METHOD_ELEM;
+		;;
+		elif k is JsN.MEMBER or k is JsN.INDEX
+			call Expr: tag;
+			call PushThis;
+		;;
+		else
+			call Expr: tag;
+			call Op: JsOp.UNDEF;
+		;;
+		# the strings array, made once per site, frozen with its raw array
+		ptr<JsObj> cooked: (JsObjs.NewArray: 4);
+		ptr<JsObj> raw: (JsObjs.NewArray: 4);
+		ptr<JsNode> q: n.b.a;
+		u32 argc: 1;
+		while q is not 0
+			if (q.flags & JsN.X_NO_SUPER_CHECK) is not 0
+				call JsObjs.ArrayPush: cooked JsV.UNDEF;
+			;;
+			else
+				call JsObjs.ArrayPush: cooked (JsV.Str: q.name);
+			;;
+			call JsObjs.ArrayPush: raw (JsV.Str: q.raw);
+			q is q.next;
+			if q is not 0
+				q is q.next;
+			;;
+		;;
+		call JsObjs.FreezeArray: raw;
+		call JsObjs.AddProp: cooked JsRt.A.raw as ptr<u8> (JsV.Obj: raw) 0;
+		call JsObjs.FreezeArray: cooked;
+		call OpA: JsOp.CONST (ConstNew: (JsV.Obj: cooked));
+		q is n.b.a.next;
+		while q is not 0
+			call Expr: q;
+			argc++;
+			q is q.next;
+			if q is not 0
+				q is q.next;
+			;;
+		;;
+		call Line: n.line;
+		call OpFx: JsOp.CALL argc 0 - (argc as int) - 1;
+	[end]
+
+	[ExprArray: ptr<JsNode> n: 0;]
+		u32 count: 0;
+		ptr<JsNode> e: n.a;
+		while e is not 0
+			count++;
+			e is e.next;
+		;;
+		call OpA: JsOp.NEWARR count & 0xFFFF;
+		e is n.a;
+		while e is not 0
+			if e.kind is JsN.HOLE
+				call Op: JsOp.APPEND_HOLE;
+			;;
+			elif e.kind is JsN.SPREAD
+				call Expr: e.a;
+				call Line: e.line;
+				call Op: JsOp.APPEND_SPREAD;
+			;;
+			else
+				call Expr: e;
+				call Op: JsOp.APPEND;
+			;;
+			e is e.next;
+		;;
+	[end]
+
+	# a key known now: as an atom on the stack, or a number
+	[PushKey: ptr<JsNode> key: 0; ptr<JsNode> prop: 0;]
+		if (prop.flags & JsN.X_COMPUTED) is not 0
+			call Expr: key;
+			call Op: JsOp.TOKEY;
+			return;
+		;;
+		if key.kind is JsN.NUM
+			call PushNum: key.num;
+			call Op: JsOp.TOKEY;
+			return;
+		;;
+		if key.name.index is not JsStrs.NO_INDEX
+			call PushStr: key.name;
+			call Op: JsOp.TOKEY;
+			return;
+		;;
+		call PushStr: key.name;
+	[end]
+
+	[ExprObject: ptr<JsNode> n: 0;]
+		call Op: JsOp.NEWOBJ;
+		ptr<JsNode> p: n.a;
+		while p is not 0
+			u32 kind: p.op;
+			if kind is JsN.P_SPREAD
+				call Expr: p.a;
+				call Op: JsOp.COPYPROPS;
+			;;
+			elif kind is JsN.P_INIT
+				if (p.flags & JsN.X_PROTO) is not 0
+					call Expr: p.b;
+					call Op: JsOp.INITPROTO;
+				;;
+				elif (p.flags & JsN.X_COMPUTED) is 0 and p.a.kind is JsN.STR and p.a.name.index is JsStrs.NO_INDEX
+					call Expr: p.b;
+					call OpA: JsOp.INITFIELD (Atom: p.a.name);
+				;;
+				else
+					call PushKey: p.a p;
+					call Expr: p.b;
+					if (p.flags & JsN.X_COMPUTED) is not 0 and (JsParse.IsAnonymousFn: p.b)
+						call OpA: JsOp.SETNAME 0;
+					;;
+					call Op: JsOp.INITELEM;
+				;;
+			;;
+			else
+				# a method, getter or setter: [object key function] -> [object]
+				call PushKey: p.a p;
+				call ExprFunction: p.b;
+				u32 name_bit: 0;
+				if (p.flags & JsN.X_COMPUTED) is not 0
+					name_bit is 8;
+				;;
+				if kind is JsN.P_METHOD
+					call OpA: JsOp.DEF_METHOD 4 | name_bit;
+				;;
+				elif kind is JsN.P_GET
+					call OpA: JsOp.DEF_ACCESSOR 1 | 4 | name_bit;
+				;;
+				else
+					call OpA: JsOp.DEF_ACCESSOR 2 | 4 | name_bit;
+				;;
+			;;
+			p is p.next;
+		;;
+	[end]
+
+	# ---- classes ----
+
+	[ExprClass: ptr<JsNode> n: 0;]
+		call WlStack.Check;
+		ptr<JsBlock> b: n.info as ptr<JsBlock>;
+		ptr<JsBlock> saved_block: cf.block;
+		u32 mark: cf.nlocals;
+		call Line: n.line;
+		bln saved_strict: cf.strict;
+		cf.strict is true;
+		call EnterBlock: b;
+		# the private names of this evaluation of the class
+		ptr<JsNode> m: n.b;
+		while m is not 0
+			if (m.flags & JsN.X_PRIVATE) is not 0
+				ptr<JsVar> pv: (JsScopes.Lookup: b (JsScopes.PrivateName: m.a.name));
+				if not pv.slotted
+					pv.slotted is true;
+					call OpA: JsOp.NEW_PRIVATE (Atom: (JsScopes.PrivateName: m.a.name));
+					call SetVarOp: pv false;
+				;;
+			;;
+			m is m.next;
+		;;
+		if n.a is not 0
+			call Expr: n.a;
+		;;
+		else
+			call OpA: JsOp.CONST (ConstNew: JsV.HOLE);
+		;;
+		# the constructor; [heritage] -> [constructor prototype]
+		ptr<JsNode> ctor: n.c;
+		if n.raw is not 0
+			ctor.raw is n.raw;
+		;;
+		elif n.name is not 0
+			ctor.raw is n.name;
+		;;
+		call OpA: JsOp.CLASS (ConstNew: (JsV.Cell: (CompileFn: ctor) as ptr<u8>));
+		m is n.b;
+		while m is not 0
+			call ClassMember: n m;
+			m is m.next;
+		;;
+		# [constructor prototype]: the instance fields' function hangs on the constructor
+		if n.d is not 0
+			call Op: JsOp.SWAP;
+			# [prototype constructor]
+			call ExprFunction: n.d;
+			call OpFx: JsOp.SET_FIELDS 1 -1;
+			call Op: JsOp.SWAP;
+		;;
+		call Op: JsOp.POP;
+		# [constructor]: its name inside the class
+		if n.name is not 0
+			ptr<JsVar> inner: (JsScopes.Lookup: b n.name);
+			call Op: JsOp.DUP;
+			call SetVarOp: inner false;
+		;;
+		if n.e is not 0
+			# the static part runs now, with the class as this: f.call(class)
+			call Op: JsOp.DUP;
+			call ExprFunction: n.e;
+			call OpFx: JsOp.SET_FIELDS 2 -2;
+		;;
+		call LeaveBlock: b;
+		cf.nlocals is mark;
+		cf.block is saved_block;
+		cf.strict is saved_strict;
+	[end]
+
+	# stack: [constructor prototype], and leaves that
+	[ClassMember: ptr<JsNode> cl: 0; ptr<JsNode> m: 0;]
+		u32 kind: m.op;
+		bln is_static: (m.flags & JsN.X_STATIC) is not 0;
+		bln is_private: (m.flags & JsN.X_PRIVATE) is not 0;
+		if kind is JsN.P_BLOCK return;
+		if kind is JsN.P_FIELD
+			if (m.flags & JsN.X_COMPUTED) is not 0
+				call Expr: m.a;
+				call Op: JsOp.TOKEY;
+				call SetVarOp: m.info as ptr<JsVar> false;
+			;;
+			return;
+		;;
+		if is_private
+			ptr<JsVar> pv: (JsScopes.Lookup: cl.info as ptr<JsBlock> (JsScopes.PrivateName: m.a.name));
+			if is_static
+				# on the class, now: [ctor proto] -> [proto ctor] ... and back
+				call Op: JsOp.SWAP;
+				call GetVarOp: pv false;
+				call ExprFunction: m.b;
+				call PrivateMemberOp: kind;
+				call Op: JsOp.SWAP;
+			;;
+			else
+				# its function is kept for the fields function to give each instance. home is the prototype.
+				call ExprFunction: m.b;
+				call OpFx: JsOp.SET_HOME 0 0;
+				call SetVarOp: m.info as ptr<JsVar> false;
+			;;
+			return;
+		;;
+		if is_static
+			call Op: JsOp.SWAP;
+		;;
+		call PushKey: m.a m;
+		call ExprFunction: m.b;
+		u32 name_bit: 0;
+		if (m.flags & JsN.X_COMPUTED) is not 0
+			name_bit is 8;
+		;;
+		if kind is JsN.P_METHOD
+			call OpA: JsOp.DEF_METHOD name_bit;
+		;;
+		elif kind is JsN.P_GET
+			call OpA: JsOp.DEF_ACCESSOR 1 | name_bit;
+		;;
+		else
+			call OpA: JsOp.DEF_ACCESSOR 2 | name_bit;
+		;;
+		if is_static
+			call Op: JsOp.SWAP;
+		;;
+	[end]
+
+	# [object symbol function] -> [object]
+	[PrivateMemberOp: u32 kind: 0;]
+		if kind is JsN.P_METHOD
+			call Op: JsOp.DEF_PRIVATE_METHOD;
+		;;
+		elif kind is JsN.P_GET
+			call OpFx: JsOp.DEF_PRIVATE_ACC 1 -2;
+		;;
+		else
+			call OpFx: JsOp.DEF_PRIVATE_ACC 2 -2;
+		;;
+	[end]
+
+	# the body of a class's made-up function: fields in order, private methods first
+	[FieldsBody: ptr<JsNode> f: 0;]
+		ptr<JsNode> cl: f.b;
+		bln want_static: (f.flags & JsN.FN_STATIC_INIT) is not 0;
+		call Op: JsOp.THIS;
+		ptr<JsNode> m: cl.b;
+		if not want_static
+			while m is not 0
+				if (m.flags & JsN.X_PRIVATE) is not 0 and (m.flags & JsN.X_STATIC) is 0 and m.op is not JsN.P_FIELD as u16
+					call GetVarOp: m.c.info as ptr<JsVar> false;
+					call GetVarOp: m.info as ptr<JsVar> false;
+					call PrivateMemberOp: m.op;
+				;;
+				m is m.next;
+			;;
+		;;
+		m is cl.b;
+		while m is not 0
+			bln is_static: (m.flags & JsN.X_STATIC) is not 0;
+			if is_static is want_static
+				if m.op is JsN.P_FIELD as u16
+					call FieldInit: m;
+				;;
+				elif m.op is JsN.P_BLOCK as u16
+					# [this] -> f.call(this)
+					call ExprFunction: m.b;
+					call OpFx: JsOp.SET_HOME 0 0;
+					call Op: JsOp.SWAP;
+					call Op: JsOp.DUP;
+					call Op: JsOp.ROT3;
+					call OpFx: JsOp.CALL 0 -1;
+					call Op: JsOp.POP;
+				;;
+			;;
+			m is m.next;
+		;;
+		call Op: JsOp.POP;
+	[end]
+
+	# [this] -> [this]
+	[FieldInit: ptr<JsNode> m: 0;]
+		call Line: m.line;
+		if (m.flags & JsN.X_PRIVATE) is not 0
+			call GetVarOp: m.c.info as ptr<JsVar> false;
+			if m.b is not 0
+				call Expr: m.b;
+			;;
+			else
+				call Op: JsOp.UNDEF;
+			;;
+			call Op: JsOp.DEF_PRIVATE;
+			return;
+		;;
+		if (m.flags & JsN.X_COMPUTED) is not 0
+			call GetVarOp: m.info as ptr<JsVar> false;
+		;;
+		else
+			call PushKey: m.a m;
+		;;
+		if m.b is not 0
+			call Expr: m.b;
+			if (m.flags & JsN.X_COMPUTED) is not 0 and (JsParse.IsAnonymousFn: m.b)
+				call OpA: JsOp.SETNAME 0;
+			;;
+		;;
+		else
+			call Op: JsOp.UNDEF;
+		;;
+		call Op: JsOp.DEFFIELD;
+	[end]
+
+	# ---- generators ----
+
+	[EmitAwait]
+		call Op: JsOp.AWAIT;
+		call Op: JsOp.AWAIT_CHECK;
+	[end]
+
+	[ExprYield: ptr<JsNode> n: 0;]
+		bln is_async: (cf.node.flags & JsN.FN_ASYNC) is not 0;
+		if (n.flags & JsN.X_DELEGATE) is not 0
+			call ExprYieldStar: n is_async;
+			return;
+		;;
+		if n.a is not 0
+			call Expr: n.a;
+		;;
+		else
+			call Op: JsOp.UNDEF;
+		;;
+		call Line: n.line;
+		if is_async
+			call EmitAwait;
+			call Op: JsOp.ASYNC_GEN_YIELD;
+		;;
+		else
+			call Op: JsOp.YIELD;
+		;;
+		u32 skip: (Jump: JsOp.RESUME 0);
+		# resumed by return(): this function returns what it was given
+		if is_async
+			call EmitAwait;
+		;;
+		call ReturnFromHere;
+		call Adjust: 1;
+		call Bind: skip;
+	[end]
+
+	[ExprYieldStar: ptr<JsNode> n: 0; bln is_async: false;]
+		u32 mark: cf.nlocals;
+		u32 it: (AllocLocal);
+		call AllocLocal;
+		call AllocLocal;
+		call Expr: n.a;
+		call Line: n.line;
+		if is_async
+			call OpA: JsOp.GETITER_ASYNC it;
+		;;
+		else
+			call OpA: JsOp.GETITER it;
+		;;
+		call Op: JsOp.UNDEF;
+		u32 top: (Here);
+		# [received] -> [result], or to the return below when there's no return method
+		call OpA: JsOp.DELEGATE_STEP it;
+		u32 ret_list: (JumpWord: 0);
+		if is_async
+			call EmitAwait;
+		;;
+		call OpA: JsOp.ITER_CHECK 0;
+		# not done: yield what the inner iterator gave, whole; [result] -> [received]
+		call OpFx: JsOp.ASYNC_DELEGATE_DONE (it << 1) | (is_async as u32) 0;
+		u32 finished: (JumpWord: 0);
+		u32 returned: (JumpWord: 0);
+		call OpA: JsOp.JMP top;
+		# done with return(): return its value
+		call Bind: ret_list;
+		if is_async
+			call EmitAwait;
+		;;
+		call Bind: returned;
+		call ReturnFromHere;
+		call Adjust: 1;
+		call Bind: finished;
+		cf.nlocals is mark;
+	[end]
+
+	# ---- functions ----
+
+	[ExprFunction: ptr<JsNode> f: 0;]
+		ptr<JsCode> c: (CompileFn: f);
+		call OpA: JsOp.CLOSURE (ConstNew: (JsV.Cell: c as ptr<u8>));
+	[end]
+
+	[CompileFn: ptr<JsNode> f: 0;]
+		call WlStack.Check;
+		ptr<JsFnState> st: (arena.Alloc: sizeof JsFnState) as ptr<JsFnState>;
+		st.parent is cf;
+		st.info is f.info as ptr<JsFnInfo>;
+		st.node is f;
+		st.cpl is -1;
+		st.last_op_at is 0xFFFFFFFF;
+		st.strict is (f.flags & JsN.FN_STRICT) is not 0;
+		st.block is st.info.top.parent;
+		if st.info.fname_var is not 0
+			st.block is st.info.top.parent.parent;
+		;;
+		cf is st;
+		ptr<JsCode> c: 0;
+		if call c is FunctionBody: f throws err
+			call FreeState: st;
+			cf is st.parent;
+			call Rethrow: err;
+		;;
+		cf is st.parent;
+	[end: c]
+
+	# passes an error on from a catch, with its own copy of the text (err.text is the buffer that
+	# the throw is about to write to)
+	[Rethrow: Error err;]
+		if JsRt.r.has_exception
+			throw 'js';
+		;;
+		str text: '';
+		text is err.text;
+		throw text;
+	[end]
+
+	[FreeState: ptr<JsFnState> st: 0;]
+		if st.code is not 0
+			free st.code;
+			st.code is 0;
+		;;
+		if st.consts is not 0
+			free st.consts;
+			st.consts is 0;
+		;;
+		if st.kmap is not 0
+			free st.kmap;
+			st.kmap is 0;
+		;;
+		if st.tries is not 0
+			free st.tries;
+			st.tries is 0;
+		;;
+		if st.lines is not 0
+			free st.lines;
+			st.lines is 0;
+		;;
+		if st.calls is not 0
+			free st.calls;
+			st.calls is 0;
+		;;
+	[end]
+
+	[FunctionBody: ptr<JsNode> f: 0;]
+		ptr<JsFnState> st: cf;
+		ptr<JsFnInfo> info: st.info;
+		bln simple: (f.flags & JsN.FN_SIMPLE) is not 0;
+		bln is_gen: (f.flags & JsN.FN_GEN) is not 0;
+		bln is_async: (f.flags & JsN.FN_ASYNC) is not 0;
+		u32 nparams: info.nparams;
+		st.nlocals is nparams;
+		st.max_locals is nparams;
+		call Line: f.line;
+		u32 async_start: 0;
+		if is_async and not is_gen
+			call Op: JsOp.ASYNC_ENTER;
+			async_start is (Here);
+		;;
+		# the function's own name
+		if info.fname_var is not 0
+			call EnterBlock: info.top.parent;
+			if info.fname_var.used
+				call Op: JsOp.CALLEE;
+				call SetVarOp: info.fname_var false;
+			;;
+		;;
+		# hidden variables and parameters
+		ptr<JsBlock> top: info.top;
+		cf.block is top;
+		if top.heap_count > 0
+			call OpA: JsOp.PUSH_SCOPE top.heap_count;
+			# (it's popped with the frame)
+		;;
+		if not st.strict and (info.uses_this or info.this_var is not 0) and (f.flags & JsN.FN_ARROW) is 0
+			call Op: JsOp.COERCE_THIS;
+		;;
+		ptr<JsVar> v: top.vars;
+		while v is not 0
+			if v.kind is JsScopes.V_PARAM and simple
+				if v.captured
+					call OpA: JsOp.GETLOC v.param_index as u32;
+					call OpA: JsOp.SETVAR v.slot as u32;
+				;;
+				else
+					v.slot is v.param_index;
+				;;
+			;;
+			elif not v.captured
+				v.slot is (AllocLocal) as int;
+				if v.needs_tdz and not simple and v.kind is JsScopes.V_PARAM
+					call OpA: JsOp.HOLELOC v.slot as u32;
+				;;
+			;;
+			v is v.next;
+		;;
+		if info.this_var is not 0
+			if (f.flags & JsN.FN_DERIVED) is not 0
+				if not info.this_var.captured
+					call OpA: JsOp.HOLELOC info.this_var.slot as u32;
+				;;
+			;;
+			else
+				call Op: JsOp.THIS;
+				call SetVarOp: info.this_var false;
+			;;
+		;;
+		if info.nt_var is not 0
+			call Op: JsOp.NEWTARGET;
+			call SetVarOp: info.nt_var false;
+		;;
+		if info.func_var is not 0
+			call Op: JsOp.CALLEE;
+			call SetVarOp: info.func_var false;
+		;;
+		if info.args_var is not 0
+			call OpFx: JsOp.ARGUMENTS info.mapped_args as u32 1;
+			call SetVarOp: info.args_var false;
+		;;
+		if not simple
+			# parameters with defaults and patterns, in order
+			ptr<JsNode> p: f.a;
+			u32 index: 0;
+			while p is not 0
+				if p.kind is JsN.REST
+					call ElementPre: p.a;
+					call OpA: JsOp.REST index;
+					call ElementPut: p.a M_INIT;
+				;;
+				else
+					call OpA: JsOp.GETLOC index;
+					call BindPattern: p M_INIT;
+				;;
+				index++;
+				p is p.next;
+			;;
+			# the body's own scope
+			ptr<JsBlock> body: info.body;
+			cf.block is body;
+			if body.heap_count > 0
+				call OpA: JsOp.PUSH_SCOPE body.heap_count;
+			;;
+			ptr<JsVar> w: body.vars;
+			while w is not 0
+				if not w.captured
+					w.slot is (AllocLocal) as int;
+				;;
+				if w.kind is JsScopes.V_VAR or w.kind is JsScopes.V_FUNC
+					# a var starts as the parameter of the same name, or undefined
+					ptr<JsVar> same: (JsScopes.Lookup: top w.name);
+					if same is not 0
+						ptr<JsBlock> here: cf.block;
+						call GetVarOp: same false;
+					;;
+					else
+						call Op: JsOp.UNDEF;
+					;;
+					call SetVarOp: w false;
+				;;
+				elif w.needs_tdz and not w.captured
+					call OpA: JsOp.HOLELOC w.slot as u32;
+				;;
+				w is w.next;
+			;;
+		;;
+		elif top.heap_count > 0
+			# captured vars start undefined; let and const stay as they are, uninitialized
+			ptr<JsVar> u: top.vars;
+			while u is not 0
+				if u.captured and (u.kind is JsScopes.V_VAR or u.kind is JsScopes.V_FUNC)
+					call Op: JsOp.UNDEF;
+					call SetVarOp: u false;
+				;;
+				u is u.next;
+			;;
+		;;
+		if simple and top.heap_count is 0
+			# lets at the top of the function need the hole if anything can see them early
+			ptr<JsVar> t2: top.vars;
+			while t2 is not 0
+				if t2.needs_tdz and not t2.captured and t2.kind is not JsScopes.V_PARAM
+					call OpA: JsOp.HOLELOC t2.slot as u32;
+				;;
+				t2 is t2.next;
+			;;
+		;;
+		elif simple
+			ptr<JsVar> t3: top.vars;
+			while t3 is not 0
+				if t3.needs_tdz and not t3.captured and t3.kind is not JsScopes.V_PARAM
+					call OpA: JsOp.HOLELOC t3.slot as u32;
+				;;
+				t3 is t3.next;
+			;;
+		;;
+		if (f.flags & JsN.FN_FIELDS) is not 0
+			call FieldsBody: f;
+			call Op: JsOp.UNDEF;
+			call Op: JsOp.RET;
+		;;
+		elif (f.flags & JsN.FN_DEFAULT) is not 0
+			if (f.flags & JsN.FN_DERIVED) is not 0
+				call PushFunc;
+				call PushNewTarget;
+				call OpFx: JsOp.DEFAULT_SUPER 0 -1;
+				call AfterSuper;
+				call Op: JsOp.RET;
+			;;
+			else
+				call Op: JsOp.RUN_FIELDS_SELF;
+				call Op: JsOp.UNDEF;
+				call Op: JsOp.RET;
+			;;
+		;;
+		else
+			call Hoist: f.b info.body;
+			if is_gen
+				call Op: JsOp.INITIAL_YIELD;
+				if is_async
+					async_start is (Here);
+				;;
+			;;
+			if (f.flags & JsN.FN_CTOR) is not 0 and (f.flags & JsN.FN_DERIVED) is 0
+				call Op: JsOp.RUN_FIELDS_SELF;
+			;;
+			call Statements: f.b;
+			# falling off the end
+			call Op: JsOp.UNDEF;
+			call ReturnFromHere;
+			if (f.flags & JsN.FN_DERIVED) is not 0
+				# an object is fine as it stands; undefined means this; anything else is an error,
+				# which the constructor's own try mustn't catch
+				call Bind: st.ret_list;
+				cf.block is top;
+				if info.body is not top
+					cf.block is info.body;
+				;;
+				call Adjust: 1;
+				u32 ok: (Jump: JsOp.DERIVED_RET 0);
+				call Adjust: -1;
+				call GetVarOp: info.this_var true;
+				call Bind: ok;
+				call Op: JsOp.RET;
+			;;
+		;;
+		if async_start is not 0
+			u32 async_stop: (Here);
+			call AddTry: async_start async_stop async_stop;
+			call Adjust: 1;
+			call Op: JsOp.ASYNC_THROW;
+		;;
+	[end: (Finish: f)]
+
+	# the JsCode for the function state now finished
+	[Finish: ptr<JsNode> f: 0;]
+		ptr<JsFnState> st: cf;
+		ptr<JsCode> c: (JsGc.New: sizeof JsCode JsGc.K_CODE) as ptr<JsCode>;
+		c.ins is st.code;
+		st.code is 0;
+		c.ins_len is st.len;
+		c.consts is st.consts;
+		st.consts is 0;
+		c.nconsts is st.nk;
+		c.tries is st.tries;
+		st.tries is 0;
+		c.ntries is st.ntries;
+		c.lines is st.lines;
+		st.lines is 0;
+		c.nlines is st.nlines;
+		c.calls is st.calls;
+		st.calls is 0;
+		c.ncalls is st.ncalls;
+		if st.kmap is not 0
+			free st.kmap;
+			st.kmap is 0;
+		;;
+		u32 fl: f.flags;
+		u32 cflags: 0;
+		if st.strict
+			cflags is cflags | JsCodes.F_STRICT;
+		;;
+		if (fl & JsN.FN_ARROW) is not 0
+			cflags is cflags | JsCodes.F_ARROW;
+		;;
+		if (fl & JsN.FN_ASYNC) is not 0
+			cflags is cflags | JsCodes.F_ASYNC;
+		;;
+		if (fl & JsN.FN_GEN) is not 0
+			cflags is cflags | JsCodes.F_GENERATOR | JsCodes.F_HAS_PROTO;
+		;;
+		if (fl & JsN.FN_METHOD) is not 0
+			cflags is cflags | JsCodes.F_METHOD;
+		;;
+		if (fl & JsN.FN_CTOR) is not 0
+			cflags is cflags | JsCodes.F_CLASS_CTOR | JsCodes.F_CONSTRUCTOR;
+			if (fl & JsN.FN_DERIVED) is not 0
+				cflags is cflags | JsCodes.F_DERIVED;
+			;;
+		;;
+		elif (fl & (JsN.FN_ARROW | JsN.FN_ASYNC | JsN.FN_GEN | JsN.FN_METHOD | JsN.FN_SCRIPT)) is 0
+			cflags is cflags | JsCodes.F_CONSTRUCTOR | JsCodes.F_HAS_PROTO;
+		;;
+		ptr<JsFnInfo> info: st.info;
+		bln has_rest: false;
+		int length: 0;
+		bln counting: true;
+		ptr<JsNode> p: f.a;
+		while p is not 0 and (fl & (JsN.FN_FIELDS | JsN.FN_SCRIPT)) is 0
+			if p.kind is JsN.REST
+				has_rest is true;
+				counting is false;
+			;;
+			elif p.kind is JsN.DEFAULT
+				counting is false;
+			;;
+			elif counting
+				length++;
+			;;
+			p is p.next;
+		;;
+		if info.args_var is not 0 or has_rest or ((fl & JsN.FN_DEFAULT) is not 0 and (fl & JsN.FN_DERIVED) is not 0)
+			cflags is cflags | JsCodes.F_NEEDS_ARGS;
+		;;
+		c.flags is cflags;
+		c.length is length;
+		c.nparams is info.nparams;
+		c.nlocals is st.max_locals;
+		c.max_stack is (st.max_depth as u32) + 8;
+		c.mapped_skip is info.mapped_skip;
+		if info.mapped_args
+			c.mapped_scope is info.nparams;
+		;;
+		c.src is source;
+		c.src_start is f.pos;
+		c.src_stop is f.stop;
+		ptr<JsStr> nm: f.name;
+		if nm is 0
+			nm is f.raw;
+		;;
+		c.name is nm;
+	[end: c]
+
+	# what returning means in this function: [value] -> gone
+	[ReturnFromHere]
+		call ExitTo: cf.ctl 0 2;
+	[end]
+
+	# the final step of a return, past every scope and finally
+	[FinalReturn]
+		u32 fl: cf.node.flags;
+		if (fl & JsN.FN_GEN) is not 0
+			call Op: JsOp.GEN_RET;
+			return;
+		;;
+		if (fl & JsN.FN_ASYNC) is not 0
+			call Op: JsOp.ASYNC_RET;
+			return;
+		;;
+		if (fl & JsN.FN_DERIVED) is not 0
+			# to the end of the function, outside every try: see FunctionBody
+			cf.ret_list is (Jump: JsOp.JMP cf.ret_list);
+			call Adjust: -1;
+			return;
+		;;
+		call Op: JsOp.RET;
+	[end]
+
+	# hoisted functions: made first thing on entering the block
+	[Hoist: ptr<JsNode> list: 0; ptr<JsBlock> b: 0;]
+		ptr<JsNode> s: list;
+		while s is not 0
+			ptr<JsNode> t: s;
+			while t.kind is JsN.LABELED
+				t is t.a;
+			;;
+			if t.kind is JsN.FUNCDECL
+				ptr<JsCode> c: (CompileFn: t.a);
+				call OpA: JsOp.CLOSURE (ConstNew: (JsV.Cell: c as ptr<u8>));
+				ptr<JsVar> v: (JsScopes.Lookup: b t.a.name);
+				if v is 0 or b.kind is JsScopes.B_GLOBAL
+					u32 eval_bit: 0;
+					if (cf.node.flags & JsN.FN_EVAL) is not 0
+						eval_bit is 0x800000;
+					;;
+					call OpA: JsOp.DEFGLOBAL_FN (Atom: t.a.name) | eval_bit;
+				;;
+				else
+					call SetVarOp: v false;
+				;;
+			;;
+			s is s.next;
+		;;
+	[end]
+
+	# ---- statements ----
+
+	[Statements: ptr<JsNode> s: 0;]
+		while s is not 0
+			call Stmt: s;
+			s is s.next;
+		;;
+	[end]
+
+	[Stmt: ptr<JsNode> n: 0;]
+		call WlStack.Check;
+		u32 k: n.kind;
+		call Line: n.line;
+		when k
+			is JsN.EXPR
+				if cf.cpl >= 0
+					call Expr: n.a;
+					call OpA: JsOp.SETLOC cf.cpl as u32;
+				;;
+				else
+					call ExprVoid: n.a;
+				;;
+			;;
+			is JsN.VARDECL
+				call StmtVar: n;
+			;;
+			is JsN.RETURN
+				if n.a is not 0
+					call Expr: n.a;
+					if (cf.node.flags & JsN.FN_GEN) is not 0 and (cf.node.flags & JsN.FN_ASYNC) is not 0
+						call EmitAwait;
+					;;
+				;;
+				else
+					call Op: JsOp.UNDEF;
+				;;
+				call Line: n.line;
+				call ReturnFromHere;
+			;;
+			is JsN.IF
+				call StmtIf: n;
+			;;
+			is JsN.FOR
+				call StmtFor: n;
+			;;
+			is JsN.BLOCK
+				call StmtBlock: n;
+			;;
+			is JsN.WHILE
+				call StmtWhile: n;
+			;;
+			is JsN.FUNCDECL
+				call StmtFuncDecl: n;
+			;;
+			is JsN.FORIN
+				call StmtForIn: n;
+			;;
+			is JsN.FOROF
+				call StmtForOf: n;
+			;;
+			is JsN.DOWHILE
+				call StmtDoWhile: n;
+			;;
+			is JsN.BREAK
+				call StmtBreak: n 0;
+			;;
+			is JsN.CONTINUE
+				call StmtBreak: n 1;
+			;;
+			is JsN.THROW
+				call Expr: n.a;
+				call Line: n.line;
+				call Op: JsOp.THROW;
+			;;
+			is JsN.TRY
+				call StmtTry: n;
+			;;
+			is JsN.SWITCH
+				call StmtSwitch: n;
+			;;
+			is JsN.LABELED
+				call StmtLabeled: n;
+			;;
+			is JsN.CLASSDECL
+				call ExprClass: n.a;
+				ptr<JsVar> v: n.info as ptr<JsVar>;
+				if v is 0
+					call OpA: JsOp.INITLEX (Atom: n.a.name);
+				;;
+				else
+					call SetVarOp: v false;
+				;;
+			;;
+			is JsN.EMPTY
+				cf.pending_labels is 0;
+			;;
+			else
+				throw 'internal: a statement the compiler does not know';
+			;;
+		;;
+		if cf.depth is not 0
+			throw 'internal: the stack is off after a statement';
+		;;
+	[end]
+
+	[ResetCompletion]
+		if cf.cpl >= 0
+			call Op: JsOp.UNDEF;
+			call OpA: JsOp.SETLOC cf.cpl as u32;
+		;;
+	[end]
+
+	[StmtVar: ptr<JsNode> n: 0;]
+		bln is_var: n.op is JsT.K_VAR as u16;
+		ptr<JsNode> d: n.a;
+		while d is not 0
+			if d.b is not 0
+				if d.a.kind is JsN.IDENT and is_var
+					call Expr: d.b;
+					call StoreIdent: d.a M_VAR;
+				;;
+				else
+					call Expr: d.b;
+					if is_var
+						call BindPattern: d.a M_VAR;
+					;;
+					else
+						call BindPattern: d.a M_INIT;
+					;;
+				;;
+			;;
+			elif not is_var
+				call Op: JsOp.UNDEF;
+				call StoreIdent: d.a M_INIT;
+			;;
+			d is d.next;
+		;;
+	[end]
+
+	[StmtFuncDecl: ptr<JsNode> n: 0;]
+		# it was made on entering the block; Annex B: reaching it here sets the var as well
+		if (n.flags & JsN.X_ANNEXB) is 0 return;
+		ptr<JsVar> inner: (JsScopes.Lookup: cf.block n.a.name);
+		if inner is 0 return;
+		if n.info is 0
+			if not (cf.block.kind is JsScopes.B_GLOBAL)
+				call GetVarOp: inner false;
+				call OpA: JsOp.ANNEX_GLOBAL (Atom: n.a.name);
+			;;
+			return;
+		;;
+		if inner is n.info as ptr<JsVar> return;
+		call GetVarOp: inner false;
+		call SetVarOp: n.info as ptr<JsVar> false;
+	[end]
+
+	[StmtBlock: ptr<JsNode> n: 0;]
+		ptr<JsLabelUse> labels: cf.pending_labels;
+		cf.pending_labels is 0;
+		ptr<JsBlock> b: n.info as ptr<JsBlock>;
+		u32 mark: cf.nlocals;
+		call EnterBlock: b;
+		if b is not 0
+			call Hoist: n.a b;
+		;;
+		call Statements: n.a;
+		call LeaveBlock: b;
+		cf.nlocals is mark;
+	[end]
+
+	[StmtIf: ptr<JsNode> n: 0;]
+		call ResetCompletion;
+		u32 done: 0;
+		while true
+			call Expr: n.a;
+			u32 to_else: (Jump: JsOp.JF 0);
+			call Stmt: n.b;
+			if n.c is 0
+				call Bind: to_else;
+				break;
+			;;
+			done is (Jump: JsOp.JMP done);
+			call Bind: to_else;
+			if n.c.kind is not JsN.IF
+				call Stmt: n.c;
+				break;
+			;;
+			n is n.c;
+			call Line: n.line;
+		;;
+		call Bind: done;
+	[end]
+
+	# a loop's control record, taking the labels waiting for it
+	[PushLoop]
+		ptr<JsCtl> c: (PushCtl: C_LOOP);
+		c.labels is cf.pending_labels;
+		cf.pending_labels is 0;
+		c.breakable is true;
+		c.continuable is true;
+	[end: c]
+
+	[StmtWhile: ptr<JsNode> n: 0;]
+		call ResetCompletion;
+		ptr<JsCtl> c: (PushLoop);
+		u32 top: (Here);
+		call Expr: n.a;
+		u32 out_list: (Jump: JsOp.JF 0);
+		call Stmt: n.d;
+		call Bind: c.cont_list;
+		call OpA: JsOp.LOOP top;
+		call Bind: out_list;
+		call Bind: c.break_list;
+		call PopCtl;
+	[end]
+
+	[StmtDoWhile: ptr<JsNode> n: 0;]
+		call ResetCompletion;
+		ptr<JsCtl> c: (PushLoop);
+		u32 top: (Here);
+		call Stmt: n.d;
+		call Bind: c.cont_list;
+		call Expr: n.a;
+		u32 out_list: (Jump: JsOp.JF 0);
+		call OpA: JsOp.LOOP top;
+		call Bind: out_list;
+		call Bind: c.break_list;
+		call PopCtl;
+	[end]
+
+	[StmtFor: ptr<JsNode> n: 0;]
+		call ResetCompletion;
+		ptr<JsBlock> b: n.info as ptr<JsBlock>;
+		u32 mark: cf.nlocals;
+		ptr<JsLabelUse> labels: cf.pending_labels;
+		cf.pending_labels is 0;
+		call EnterBlock: b;
+		bln per_iteration: b is not 0 and b.heap_count > 0;
+		if n.a is not 0
+			if n.a.kind is JsN.VARDECL
+				call StmtVar: n.a;
+			;;
+			else
+				call ExprVoid: n.a;
+			;;
+		;;
+		cf.pending_labels is labels;
+		ptr<JsCtl> c: (PushLoop);
+		if per_iteration
+			call Op: JsOp.COPY_SCOPE;
+		;;
+		u32 top: (Here);
+		u32 out_list: 0;
+		if n.b is not 0
+			call Expr: n.b;
+			out_list is (Jump: JsOp.JF 0);
+		;;
+		call Stmt: n.d;
+		call Bind: c.cont_list;
+		if per_iteration
+			# closures made in this round keep this round's variables
+			call Op: JsOp.COPY_SCOPE;
+		;;
+		if n.c is not 0
+			call ExprVoid: n.c;
+		;;
+		call OpA: JsOp.LOOP top;
+		call Bind: out_list;
+		call Bind: c.break_list;
+		call PopCtl;
+		call LeaveBlock: b;
+		cf.nlocals is mark;
+	[end]
+
+	# puts what's on the stack where a for-in/of's left side says
+	[ForBind: ptr<JsNode> left: 0;]
+		if left.kind is JsN.VARDECL
+			ptr<JsNode> t: left.a.a;
+			if left.op is JsT.K_VAR as u16
+				call BindPattern: t M_VAR;
+			;;
+			else
+				call BindPattern: t M_INIT;
+			;;
+			return;
+		;;
+		if left.kind is JsN.MEMBER or left.kind is JsN.INDEX or left.kind is JsN.PRIVATE
+			# [value] -> refs first, then store
+			u32 refs: (RefDepth: left);
+			call PreTarget: left;
+			if refs is 1
+				call Op: JsOp.SWAP;
+			;;
+			elif refs is 2
+				call Op: JsOp.ROT3;
+				call Op: JsOp.ROT3;
+			;;
+			call PutTarget: left false;
+			return;
+		;;
+		call BindPattern: left M_ASSIGN;
+	[end]
+
+	[StmtForIn: ptr<JsNode> n: 0;]
+		call ResetCompletion;
+		ptr<JsLabelUse> labels: cf.pending_labels;
+		cf.pending_labels is 0;
+		u32 mark: cf.nlocals;
+		ptr<JsBlock> b: n.info as ptr<JsBlock>;
+		u32 keys: (AllocLocal);
+		call AllocLocal;
+		call AllocLocal;
+		# for (var x = 1 in o), which old code has
+		if n.a.kind is JsN.VARDECL and n.a.a.b is not 0
+			call Expr: n.a.a.b;
+			call StoreIdent: n.a.a.a M_VAR;
+		;;
+		# the right side, with the left's names uninitialized
+		call EnterBlock: b;
+		if b is not 0
+			call HoleAll: b;
+		;;
+		call Expr: n.b;
+		call LeaveBlock: b;
+		call Line: n.line;
+		call OpA: JsOp.FORIN_START keys;
+		cf.pending_labels is labels;
+		ptr<JsCtl> c: (PushLoop);
+		u32 top: (Here);
+		call OpA: JsOp.FORIN_NEXT keys;
+		u32 out_list: (JumpWord: 0);
+		call EnterBlock: b;
+		call ForBind: n.a;
+		call Stmt: n.d;
+		call LeaveBlock: b;
+		call Bind: c.cont_list;
+		call OpA: JsOp.LOOP top;
+		call Bind: out_list;
+		# (at the jump the key wasn't pushed)
+		call Adjust: -1;
+		call Adjust: 1;
+		call Bind: c.break_list;
+		call PopCtl;
+		cf.nlocals is mark;
+	[end]
+
+	[HoleAll: ptr<JsBlock> b: 0;]
+		ptr<JsVar> v: b.vars;
+		while v is not 0
+			if not v.captured and not v.needs_tdz
+				call OpA: JsOp.HOLELOC v.slot as u32;
+			;;
+			v is v.next;
+		;;
+	[end]
+
+	[StmtForOf: ptr<JsNode> n: 0;]
+		call ResetCompletion;
+		bln is_await: (n.flags & JsN.X_AWAIT) is not 0;
+		ptr<JsLabelUse> labels: cf.pending_labels;
+		cf.pending_labels is 0;
+		u32 mark: cf.nlocals;
+		ptr<JsBlock> b: n.info as ptr<JsBlock>;
+		u32 it: (AllocLocal);
+		call AllocLocal;
+		u32 exc: (AllocLocal);
+		call EnterBlock: b;
+		if b is not 0
+			call HoleAll: b;
+		;;
+		call Expr: n.b;
+		call LeaveBlock: b;
+		call Line: n.line;
+		if is_await
+			call OpA: JsOp.GETITER_ASYNC it;
+		;;
+		else
+			call OpA: JsOp.GETITER it;
+		;;
+		cf.pending_labels is labels;
+		ptr<JsCtl> loop_ctl: (PushLoop);
+		u32 top: (Here);
+		u32 out_list: 0;
+		if is_await
+			call OpA: JsOp.CALLNEXT it;
+			call EmitAwait;
+			call OpA: JsOp.ITER_CHECK 0;
+			call Op: JsOp.DUP;
+			call OpA: JsOp.GETFIELD (Atom: JsRt.A.done);
+			u32 not_done: (Jump: JsOp.JF 0);
+			call Op: JsOp.POP;
+			out_list is (Jump: JsOp.JMP 0);
+			call Adjust: 1;
+			call Bind: not_done;
+			call OpA: JsOp.GETFIELD (Atom: JsRt.A.value);
+		;;
+		else
+			call OpA: JsOp.FOROF_NEXT it;
+			out_list is (JumpWord: 0);
+		;;
+		# from here to the loop's end, an exception closes the iterator
+		ptr<JsCtl> iter_ctl: (PushCtl: C_ITER);
+		iter_ctl.slot is it;
+		iter_ctl.owner is loop_ctl;
+		iter_ctl.is_async is is_await;
+		u32 start: (Here);
+		# [value]: the body may push a scope for the left's names, each round its own
+		call EnterBlock: b;
+		call ForBind: n.a;
+		call Stmt: n.d;
+		call LeaveBlock: b;
+		u32 stop: (Here);
+		call Bind: loop_ctl.cont_list;
+		call OpA: JsOp.LOOP top;
+		call PopCtl;
+		# the handler
+		u32 handler: (Here);
+		call AddTry: start stop handler;
+		call Adjust: 1;
+		if is_await
+			call OpA: JsOp.SETLOC exc;
+			u32 s2: (Here);
+			call OpFx: JsOp.ITER_CLOSE_SILENT it | ASYNC_BIT 1;
+			call EmitAwait;
+			call Op: JsOp.POP;
+			u32 e2: (Here);
+			u32 rethrow: (Jump: JsOp.JMP 0);
+			u32 h2: (Here);
+			call AddTry: s2 e2 h2;
+			call Adjust: 1;
+			call Op: JsOp.POP;
+			call Bind: rethrow;
+			call OpA: JsOp.GETLOC exc;
+		;;
+		else
+			call OpA: JsOp.ITER_CLOSE_SILENT it;
+		;;
+		call Op: JsOp.THROW;
+		call Bind: out_list;
+		call Bind: loop_ctl.break_list;
+		call PopCtl;
+		cf.nlocals is mark;
+	[end]
+
+	[StmtLabeled: ptr<JsNode> n: 0;]
+		ptr<JsLabelUse> luse: (arena.Alloc: sizeof JsLabelUse) as ptr<JsLabelUse>;
+		luse.name is n.name;
+		luse.next is cf.pending_labels;
+		cf.pending_labels is luse;
+		ptr<JsNode> body: n.a;
+		u32 k: body.kind;
+		if k is JsN.FOR or k is JsN.WHILE or k is JsN.DOWHILE or k is JsN.FORIN or k is JsN.FOROF or k is JsN.LABELED
+			call Stmt: body;
+			return;
+		;;
+		# a label on anything else: only break gets out of it
+		ptr<JsCtl> c: (PushCtl: C_BLOCK);
+		c.labels is cf.pending_labels;
+		cf.pending_labels is 0;
+		call Stmt: body;
+		call Bind: c.break_list;
+		call PopCtl;
+	[end]
+
+	# finds where a break or continue goes
+	[FindTarget: ptr<JsNode> n: 0; u32 how: 0;]
+		ptr<JsCtl> c: cf.ctl;
+		while c is not 0
+			if n.name is 0
+				if c.kind is C_LOOP
+					return c;
+				;;
+				if how is 0 and c.breakable
+					return c;
+				;;
+			;;
+			elif c.kind is C_LOOP or c.kind is C_BLOCK
+				ptr<JsLabelUse> l: c.labels;
+				while l is not 0
+					if l.name is n.name
+						return c;
+					;;
+					l is l.next;
+				;;
+			;;
+			c is c.parent;
+		;;
+		throw 'internal: a break with nowhere to go';
+	[end: 0 as ptr<JsCtl>]
+
+	[StmtBreak: ptr<JsNode> n: 0; u32 how: 0;]
+		call ExitTo: cf.ctl (FindTarget: n how) how;
+	[end]
+
+	# The way out from control record `from` to `target` (for a return, all the way, with the value
+	# on the stack): does what each thing passed needs. how: 0 break, 1 continue, 2 return.
+	[ExitTo: ptr<JsCtl> from: 0; ptr<JsCtl> target: 0; u32 how: 0;]
+		ptr<JsCtl> c: from;
+		while c is not target
+			u32 k: c.kind;
+			if k is C_SCOPE
+				call Op: JsOp.POP_SCOPE;
+			;;
+			elif k is C_ITER
+				if not (how is 1 and c.owner is target)
+					call CloseIter: c;
+				;;
+			;;
+			elif k is C_FINALLY
+				# through the finally block, then on from there
+				ptr<JsExit> e: (arena.Alloc: sizeof JsExit) as ptr<JsExit>;
+				e.target is target;
+				e.how is how;
+				c.next_id is c.next_id + 1;
+				e.id is c.next_id + 1;
+				e.next is c.exits;
+				c.exits is e;
+				if how is 2
+					call OpA: JsOp.SETLOC c.val_slot;
+				;;
+				call OpA: JsOp.INT e.id;
+				call OpA: JsOp.SETLOC c.slot;
+				c.fin_list is (Jump: JsOp.JMP c.fin_list);
+				return;
+			;;
+			c is c.parent;
+		;;
+		if how is 2
+			call FinalReturn;
+			return;
+		;;
+		if how is 0
+			target.break_list is (Jump: JsOp.JMP target.break_list);
+		;;
+		else
+			target.cont_list is (Jump: JsOp.JMP target.cont_list);
+		;;
+	[end]
+
+	[CloseIter: ptr<JsCtl> c: 0;]
+		if c.is_async
+			call OpFx: JsOp.ITER_CLOSE c.slot | ASYNC_BIT 1;
+			call EmitAwait;
+			call OpFx: JsOp.ITER_CHECK 1 -1;
+			return;
+		;;
+		call OpA: JsOp.ITER_CLOSE c.slot;
+	[end]
+
+	[StmtSwitch: ptr<JsNode> n: 0;]
+		call ResetCompletion;
+		ptr<JsLabelUse> labels: cf.pending_labels;
+		cf.pending_labels is 0;
+		u32 mark: cf.nlocals;
+		u32 d: (AllocLocal);
+		call Expr: n.a;
+		call OpA: JsOp.SETLOC d;
+		ptr<JsBlock> b: n.info as ptr<JsBlock>;
+		call EnterBlock: b;
+		if b is not 0
+			ptr<JsNode> h: n.b;
+			while h is not 0
+				call Hoist: h.b b;
+				h is h.next;
+			;;
+		;;
+		ptr<JsCtl> c: (PushCtl: C_BLOCK);
+		c.labels is labels;
+		c.breakable is true;
+		# the tests, in order; each jumps to its statements
+		u32 ncases: 0;
+		ptr<JsNode> w: n.b;
+		while w is not 0
+			if w.a is not 0
+				call OpA: JsOp.GETLOC d;
+				call Expr: w.a;
+				call Op: JsOp.SEQ;
+				w.stop is (Jump: JsOp.JT 0);
+			;;
+			w is w.next;
+		;;
+		u32 default_list: (Jump: JsOp.JMP 0);
+		bln had_default: false;
+		w is n.b;
+		while w is not 0
+			if w.a is not 0
+				call Bind: w.stop;
+			;;
+			else
+				call Bind: default_list;
+				had_default is true;
+			;;
+			call Statements: w.b;
+			w is w.next;
+		;;
+		if not had_default
+			call Bind: default_list;
+		;;
+		call Bind: c.break_list;
+		call PopCtl;
+		call LeaveBlock: b;
+		cf.nlocals is mark;
+	[end]
+
+	[StmtTry: ptr<JsNode> n: 0;]
+		call ResetCompletion;
+		u32 mark: cf.nlocals;
+		u32 saved_scope: (AllocLocal);
+		call OpA: JsOp.SAVE_SCOPE saved_scope;
+		ptr<JsCtl> finl: 0;
+		if n.d is not 0
+			finl is (PushCtl: C_FINALLY);
+			finl.slot is (AllocLocal);
+			finl.val_slot is (AllocLocal);
+		;;
+		u32 start: (Here);
+		call StmtBlock: n.a;
+		u32 stop: (Here);
+		if n.c is not 0
+			u32 over: (Jump: JsOp.JMP 0);
+			u32 handler: (Here);
+			call AddTry: start stop handler;
+			call Adjust: 1;
+			call OpA: JsOp.RESTORE_SCOPE saved_scope;
+			# [exception]
+			ptr<JsBlock> b: n.info as ptr<JsBlock>;
+			u32 cmark: cf.nlocals;
+			call EnterBlock: b;
+			if n.b is not 0
+				if b is not 0 and n.b.kind is JsN.IDENT
+					ptr<JsVar> cv: (JsScopes.Lookup: b n.b.name);
+					call SetVarOp: cv false;
+				;;
+				else
+					call BindPattern: n.b M_INIT;
+				;;
+			;;
+			else
+				call Op: JsOp.POP;
+			;;
+			call StmtBlock: n.c;
+			call LeaveBlock: b;
+			cf.nlocals is cmark;
+			call Bind: over;
+		;;
+		if finl is not 0
+			u32 all_stop: (Here);
+			# normal completion: kind 0
+			call OpA: JsOp.INT 0;
+			call OpA: JsOp.SETLOC finl.slot;
+			u32 to_fin: (Jump: JsOp.JMP finl.fin_list);
+			u32 handler2: (Here);
+			call AddTry: start all_stop handler2;
+			call Adjust: 1;
+			call OpA: JsOp.RESTORE_SCOPE saved_scope;
+			call OpA: JsOp.SETLOC finl.val_slot;
+			call OpA: JsOp.INT 1;
+			call OpA: JsOp.SETLOC finl.slot;
+			call PopCtl;
+			call Bind: to_fin;
+			u32 cpl_keep: 0;
+			# the finally block itself; its completion value doesn't count unless it's abrupt
+			int saved_cpl: cf.cpl;
+			if saved_cpl >= 0
+				cpl_keep is (AllocLocal);
+				call OpA: JsOp.GETLOC saved_cpl as u32;
+				call OpA: JsOp.SETLOC cpl_keep;
+				call Op: JsOp.UNDEF;
+				call OpA: JsOp.SETLOC saved_cpl as u32;
+			;;
+			call StmtBlock: n.d;
+			if saved_cpl >= 0
+				call OpA: JsOp.GETLOC cpl_keep;
+				call OpA: JsOp.SETLOC saved_cpl as u32;
+			;;
+			# and on with whatever brought us here
+			call OpA: JsOp.GETLOC finl.slot;
+			call OpA: JsOp.INT 1;
+			call Op: JsOp.SEQ;
+			u32 not_throw: (Jump: JsOp.JF 0);
+			call OpA: JsOp.GETLOC finl.val_slot;
+			call Op: JsOp.THROW;
+			call Bind: not_throw;
+			ptr<JsExit> e: finl.exits;
+			while e is not 0
+				call OpA: JsOp.GETLOC finl.slot;
+				call OpA: JsOp.INT e.id;
+				call Op: JsOp.SEQ;
+				u32 next_exit: (Jump: JsOp.JF 0);
+				if e.how is 2
+					call OpA: JsOp.GETLOC finl.val_slot;
+				;;
+				call ExitTo: finl.parent e.target e.how;
+				call Bind: next_exit;
+				e is e.next;
+			;;
+		;;
+		cf.nlocals is mark;
+	[end]
+
+	# ---- whole programs ----
+
+	# A script (or eval) into one JsCode. The arena holds the tree; the caller frees it.
+	[Program: ptr<JsNode> f: 0;]
+		ptr<JsFnState> st: (arena.Alloc: sizeof JsFnState) as ptr<JsFnState>;
+		ptr<JsFnInfo> info: f.info as ptr<JsFnInfo>;
+		st.info is info;
+		st.node is f;
+		st.cpl is -1;
+		st.last_op_at is 0xFFFFFFFF;
+		st.strict is (f.flags & JsN.FN_STRICT) is not 0;
+		st.block is info.top;
+		cf is st;
+		ptr<JsCode> c: 0;
+		if call c is ProgramBody: f throws err
+			call FreeState: st;
+			cf is 0;
+			call Rethrow: err;
+		;;
+		cf is 0;
+	[end: c]
+
+	[ProgramBody: ptr<JsNode> f: 0;]
+		ptr<JsFnState> st: cf;
+		ptr<JsFnInfo> info: st.info;
+		ptr<JsBlock> top: info.top;
+		ptr<JsBlock> lex: JsScopes.evalblock;
+		st.cpl is (AllocLocal) as int;
+		call Line: f.line;
+		if top.heap_count > 0
+			call OpA: JsOp.PUSH_SCOPE top.heap_count;
+		;;
+		if info.this_var is not 0
+			call Op: JsOp.THIS;
+			call SetVarOp: info.this_var false;
+		;;
+		# declare the globals: they all exist before any code runs, or none do
+		ptr<JsObj> list: (JsObjs.NewArray: 8);
+		bln is_eval: (f.flags & JsN.FN_EVAL) is not 0;
+		ptr<JsVar> v: top.vars;
+		while v is not 0
+			u32 k: v.kind;
+			if k is JsScopes.V_VAR or k is JsScopes.V_FUNC or k is JsScopes.V_LET or k is JsScopes.V_CONST or k is JsScopes.V_CLASS
+				call JsObjs.ArrayPush: list (JsV.Str: v.name);
+				call JsObjs.ArrayPush: list (JsV.Int: k as int);
+			;;
+			v is v.next;
+		;;
+		if list.length > 0
+			u32 flag: 0;
+			if is_eval
+				flag is 1;
+			;;
+			u32 ki: (ConstNew: (JsV.Obj: list));
+			call OpA: JsOp.DECL_GLOBALS (ki << 1) | flag;
+		;;
+		if lex is not top
+			call EnterBlock: lex;
+		;;
+		call Hoist: f.b info.body;
+		call Statements: f.b;
+		call OpA: JsOp.GETLOC st.cpl as u32;
+		call Op: JsOp.RET;
+	[end: (Finish: f)]
+}

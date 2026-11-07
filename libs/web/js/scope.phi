@@ -1,0 +1,1113 @@
+# Scope analysis: a pass over the finished tree that sets up every block's variables, resolves every
+# name, and finds which variables are captured by closures. Those live in heap scopes (JsScope);
+# the others get stack slots when the compiler reaches them. Each reference learns whether it needs
+# a TDZ check. Redeclaration errors are found here as well, so they're still before anything runs.
+
+struct.JsVar
+{
+	ptr<JsVar> next;
+	ptr<JsVar> chain;      # in the block's hash table
+	ptr<JsStr> name;
+	ptr<JsBlock> block;
+	int slot;              # a stack slot, or (if captured) a place in the scope; set by the compiler
+	u32 decl_end;          # references after this, in the same function, can't see it uninitialized
+	int param_index;       # which argument a simple parameter is
+	u8 kind;               # JsScopes.V_...
+	bln captured;
+	bln needs_tdz;         # a reference checks, so entering its block must mark it uninitialized
+	bln used;
+	bln slotted;           # (the compiler has given it its slot)
+}
+
+struct.JsBlock
+{
+	ptr<JsBlock> parent;
+	ptr<JsFnInfo> fn;
+	ptr<JsVar> vars;
+	ptr<JsVar> vars_tail;
+	ptr<ptr<JsVar>> table;
+	u32 count;
+	u32 table_mask;
+	u32 heap_count;        # how many captured variables: if any, this block has a JsScope at run time
+	u8 kind;               # JsScopes.B_...
+	bln is_switch;
+	bln in_heritage;       # a class's, while its extends clause is being walked
+}
+
+struct.JsFnInfo
+{
+	ptr<JsFnInfo> parent;
+	ptr<JsNode> node;
+	ptr<JsBlock> top;      # parameters, and everything else unless the parameters have expressions
+	ptr<JsBlock> body;     # where var goes
+	ptr<JsVar> this_var;
+	ptr<JsVar> nt_var;
+	ptr<JsVar> func_var;
+	ptr<JsVar> args_var;
+	ptr<JsVar> fname_var;
+	u32 mapped_skip;       # parameters repeated later on: not mapped to arguments
+	u32 nparams;           # how many stack slots hold arguments
+	bln uses_this;
+	bln mapped_args;
+}
+
+phi.JsScopes:Library
+{
+	# variable kinds
+	const u32 V_VAR: 1;
+	const u32 V_LET: 2;
+	const u32 V_CONST: 3;
+	const u32 V_CLASS: 4;
+	const u32 V_FUNC: 5;       # a function at the top of a function or script: acts as var
+	const u32 V_BLOCK_FUNC: 6; # a function in a block: acts as let, and needs no TDZ
+	const u32 V_PARAM: 7;
+	const u32 V_CATCH: 8;      # a simple catch parameter: var may share its name
+	const u32 V_CATCH_PAT: 9;  # a name in a catch pattern: var may not
+	const u32 V_FNAME: 10;     # a function expression's own name: assignments are ignored
+	const u32 V_ARGS: 11;      # `arguments`
+	const u32 V_THIS: 12;      # the hidden ones
+	const u32 V_NT: 13;
+	const u32 V_FN: 14;
+	const u32 V_PRIVATE: 15;
+	const u32 V_HIDDEN: 16;
+	const u32 V_CLASS_NAME: 17;  # a class's name inside itself: can't be assigned
+	const u32 V_BLOCK_FUNC2: 18; # an async function or generator in a block: may not repeat
+
+	# block kinds
+	const u32 B_GLOBAL: 1;     # a script's top: its names are global variables, not slots
+	const u32 B_FUNCTION: 2;
+	const u32 B_BODY: 3;       # a function's body, when its parameters need a scope of their own
+	const u32 B_BLOCK: 4;
+	const u32 B_CLASS: 5;
+	const u32 B_FNAME: 6;
+
+	ptr<WlArena> arena: 0;
+	ptr<JsBlock> cur: 0;
+	ptr<JsFnInfo> fn: 0;
+
+	# ---- blocks and declarations ----
+
+	[NewBlock: u32 kind: 0;]
+		ptr<JsBlock> b: (arena.Alloc: sizeof JsBlock) as ptr<JsBlock>;
+		b.kind is kind as u8;
+		b.parent is cur;
+		b.fn is fn;
+	[end: b]
+
+	[Lookup: ptr<JsBlock> b: 0; ptr<JsStr> name: 0;]
+		if b.table is not 0
+			ptr<JsVar> e: b.table:(name.hash & b.table_mask);
+			while e is not 0
+				if e.name is name return e;
+				e is e.chain;
+			;;
+			return 0;
+		;;
+		ptr<JsVar> v: b.vars;
+		while v is not 0
+			if v.name is name return v;
+			v is v.next;
+		;;
+	[end: 0 as ptr<JsVar>]
+
+	[AddVar: ptr<JsBlock> b: 0; ptr<JsStr> name: 0; u32 kind: 0; u32 decl_end: 0;]
+		ptr<JsVar> v: (arena.Alloc: sizeof JsVar) as ptr<JsVar>;
+		v.name is name;
+		v.kind is kind as u8;
+		v.block is b;
+		v.decl_end is decl_end;
+		v.slot is -1;
+		v.param_index is -1;
+		if b.vars_tail is 0
+			b.vars is v;
+		;;
+		else
+			b.vars_tail.next is v;
+		;;
+		b.vars_tail is v;
+		b.count is b.count + 1;
+		if b.table is not 0
+			u32 h: name.hash & b.table_mask;
+			v.chain is b.table:h;
+			b.table:h is v;
+		;;
+		elif b.count > 16
+			# many variables: a table, so a big function isn't quadratic
+			u32 size: 256;
+			while size < b.count * 8
+				size is size * 2;
+			;;
+			b.table is (arena.Alloc: size * sizeof ptr<u8>) as ptr<ptr<JsVar>>;
+			b.table_mask is size - 1;
+			ptr<JsVar> w: b.vars;
+			while w is not 0
+				u32 g: w.name.hash & b.table_mask;
+				w.chain is b.table:g;
+				b.table:g is w;
+				w is w.next;
+			;;
+		;;
+	[end: v]
+
+	[IsLexical: u32 k: 0;]
+	[end: k is V_LET or k is V_CONST or k is V_CLASS or k is V_BLOCK_FUNC or k is V_BLOCK_FUNC2]
+
+	[Fail: ptr<JsStr> name: 0; u32 line: 0;]
+		WlBuf m;
+		call m.AddZ: 'Identifier ';
+		call m.AddN: name.data name.bytes;
+		call m.AddZ: ' has already been declared';
+		call JsParse.FailAt: m.data line;
+	[end]
+
+	# let, const, class, or a function in a block
+	[DeclareLex: ptr<JsBlock> b: 0; ptr<JsStr> name: 0; u32 kind: 0; u32 decl_end: 0; u32 line: 0;]
+		ptr<JsVar> have: (Lookup: b name);
+		if have is not 0
+			# two sloppy functions in one block are fine
+			if not (kind is V_BLOCK_FUNC and have.kind is V_BLOCK_FUNC and not (FnIsStrict))
+				call Fail: name line;
+			;;
+			return have;
+		;;
+		if b.kind is B_BODY
+			ptr<JsVar> param: (Lookup: b.parent name);
+			if param is not 0 and param.kind is V_PARAM
+				call Fail: name line;
+			;;
+		;;
+	[end: (AddVar: b name kind decl_end)]
+
+	[FnIsStrict]
+	[end: (fn.node.flags & JsN.FN_STRICT) is not 0]
+
+	# a var, or a function at the top of a function
+	[DeclareVar: ptr<JsStr> name: 0; u32 kind: 0; u32 line: 0; bln annexb: false;]
+		ptr<JsBlock> b: fn.body;
+		ptr<JsVar> have: (Lookup: b name);
+		if have is not 0
+			if (IsLexical: have.kind as u32)
+				if annexb return;
+				call Fail: name line;
+			;;
+			if kind is V_FUNC and have.kind is V_VAR
+				have.kind is V_FUNC as u8;
+			;;
+			return;
+		;;
+		if name is JsRt.A.arguments and not (IsArrow: fn) and kind is V_VAR
+			if b.kind is B_FUNCTION
+				call AddArguments: b;
+				return;
+			;;
+			# in a body of its own, it starts with the parameter scope's arguments object
+			if b.kind is B_BODY and (Lookup: fn.top name) is 0
+				call AddArguments: fn.top;
+			;;
+		;;
+		call AddVar: b name kind 0;
+	[end]
+
+	[IsArrow: ptr<JsFnInfo> f: 0;]
+	[end: (f.node.flags & JsN.FN_ARROW) is not 0]
+
+	[AddArguments: ptr<JsBlock> b: 0;]
+		ptr<JsVar> v: (AddVar: b JsRt.A.arguments V_ARGS 0);
+		fn.args_var is v;
+		call MapArguments;
+	[end: v]
+
+	# In a sloppy function with simple parameters, arguments and parameters are the same variables
+	[MapArguments]
+		ptr<JsNode> f: fn.node;
+		if (f.flags & JsN.FN_STRICT) is not 0 or (f.flags & JsN.FN_SIMPLE) is 0 return;
+		if f.a is 0 return;
+		fn.mapped_args is true;
+		ptr<JsVar> v: fn.top.vars;
+		while v is not 0
+			if v.kind is V_PARAM
+				v.captured is true;
+			;;
+			v is v.next;
+		;;
+	[end]
+
+	[DeclarePattern: ptr<JsBlock> b: 0; ptr<JsNode> t: 0; u32 kind: 0; u32 decl_end: 0;]
+		call WlStack.Check;
+		u32 k: t.kind;
+		if k is JsN.IDENT
+			if kind is V_PARAM or kind is V_CATCH_PAT
+				if (Lookup: b t.name) is not 0
+					if kind is V_CATCH_PAT
+						call Fail: t.name t.line;
+					;;
+					# (a repeat in sloppy code's simple list; other lists fail in the parser)
+					return;
+				;;
+				call AddVar: b t.name kind decl_end;
+				return;
+			;;
+			call DeclareLex: b t.name kind decl_end t.line;
+			return;
+		;;
+		if k is JsN.DEFAULT or k is JsN.REST
+			call DeclarePattern: b t.a kind decl_end;
+			return;
+		;;
+		if k is JsN.PROP
+			call DeclarePattern: b t.b kind decl_end;
+			return;
+		;;
+		if k is JsN.ARRPAT or k is JsN.OBJPAT
+			ptr<JsNode> c: t.a;
+			while c is not 0
+				if c.kind is not JsN.HOLE
+					call DeclarePattern: b c kind decl_end;
+				;;
+				c is c.next;
+			;;
+		;;
+	[end]
+
+	# let, const, class in a statement list: `at_top` if it's the list of a function or script,
+	# whose functions are vars.
+	[DeclareStatements: ptr<JsBlock> b: 0; ptr<JsNode> list: 0; bln at_top: false;]
+		ptr<JsNode> s: list;
+		while s is not 0
+			ptr<JsNode> t: s;
+			while t.kind is JsN.LABELED
+				t is t.a;
+			;;
+			u32 k: t.kind;
+			if k is JsN.VARDECL and t.op is not JsT.K_VAR as u16
+				u32 vk: V_LET;
+				if t.op is JsT.K_CONST as u16
+					vk is V_CONST;
+				;;
+				ptr<JsNode> d: t.a;
+				while d is not 0
+					call DeclarePattern: b d.a vk d.stop;
+					d is d.next;
+				;;
+			;;
+			elif k is JsN.CLASSDECL
+				call DeclareLex: b t.a.name V_CLASS t.stop t.line;
+			;;
+			elif k is JsN.FUNCDECL
+				if at_top
+					t.flags is t.flags & (0xFFFFFFFF - JsN.X_ANNEXB);
+					call DeclareVar: t.a.name V_FUNC t.line false;
+				;;
+				elif (t.a.flags & (JsN.FN_ASYNC | JsN.FN_GEN)) is not 0
+					call DeclareLex: b t.a.name V_BLOCK_FUNC2 0 t.line;
+				;;
+				else
+					call DeclareLex: b t.a.name V_BLOCK_FUNC 0 t.line;
+				;;
+			;;
+			s is s.next;
+		;;
+	[end]
+
+	# whether a statement list declares anything that needs a block
+	[HasLexical: ptr<JsNode> list: 0;]
+		ptr<JsNode> s: list;
+		while s is not 0
+			ptr<JsNode> t: s;
+			while t.kind is JsN.LABELED
+				t is t.a;
+			;;
+			if (t.kind is JsN.VARDECL and t.op is not JsT.K_VAR as u16) or t.kind is JsN.CLASSDECL or t.kind is JsN.FUNCDECL
+				return true;
+			;;
+			s is s.next;
+		;;
+	[end: false]
+
+	# ---- resolving ----
+
+	# the variable a name means from here, or 0 if it's global; marks captures
+	[Resolve: ptr<JsStr> name: 0;]
+		ptr<JsBlock> b: cur;
+		while b is not 0
+			ptr<JsVar> v: (Lookup: b name);
+			if v is 0 and name is JsRt.A.arguments and b.kind is B_FUNCTION and b is b.fn.top and not (IsArrow: b.fn) and (b.fn.node.flags & (JsN.FN_FIELDS | JsN.FN_SCRIPT)) is 0
+				ptr<JsFnInfo> saved: fn;
+				fn is b.fn;
+				v is (AddArguments: b);
+				fn is saved;
+			;;
+			if v is not 0
+				if b.kind is B_GLOBAL return 0;
+				v.used is true;
+				if b.fn is not fn
+					v.captured is true;
+				;;
+				return v;
+			;;
+			b is b.parent;
+		;;
+	[end: 0 as ptr<JsVar>]
+
+	[NoteRef: ptr<JsNode> n: 0;]
+		ptr<JsVar> v: (Resolve: n.name);
+		n.info is v as ptr<u8>;
+		if v is 0 return;
+		u32 k: v.kind;
+		if k is V_LET or k is V_CONST or k is V_CLASS or k is V_PARAM or k is V_CLASS_NAME or k is V_CATCH_PAT
+			if v.decl_end is 0 return;
+			if v.block.fn is not fn or n.pos < v.decl_end or v.block.is_switch
+				n.flags is n.flags | JsN.X_TDZ;
+				v.needs_tdz is true;
+			;;
+		;;
+	[end]
+
+	# the nearest function that has its own `this`: not an arrow
+	[ThisFn]
+		ptr<JsFnInfo> f: fn;
+		while (IsArrow: f)
+			f is f.parent;
+		;;
+	[end: f]
+
+	# Marks that this function reaches `this` (or new.target, or the running function) from an arrow
+	[HiddenVar: ptr<JsFnInfo> f: 0; u32 kind: 0;]
+		ptr<JsVar> v: 0;
+		ptr<JsStr> name: JsRt.A.this_var;
+		if kind is V_THIS
+			v is f.this_var;
+		;;
+		elif kind is V_NT
+			v is f.nt_var;
+			name is JsRt.A.nt_var;
+		;;
+		else
+			v is f.func_var;
+			name is JsRt.blank;
+		;;
+		if v is 0
+			v is (AddVar: f.top name kind 0);
+			if kind is V_THIS
+				f.this_var is v;
+			;;
+			elif kind is V_NT
+				f.nt_var is v;
+			;;
+			else
+				f.func_var is v;
+			;;
+		;;
+		if f is not fn
+			v.captured is true;
+		;;
+		v.used is true;
+	[end: v]
+
+	[NoteThis]
+		ptr<JsFnInfo> f: (ThisFn);
+		if f is fn and (fn.node.flags & JsN.FN_DERIVED) is 0
+			fn.uses_this is true;
+			return;
+		;;
+		call HiddenVar: f V_THIS;
+	[end]
+
+	[NoteNewTarget]
+		ptr<JsFnInfo> f: (ThisFn);
+		if f is not fn
+			call HiddenVar: f V_NT;
+		;;
+	[end]
+
+	# ---- laying a block's captured variables out ----
+
+	[CloseBlock: ptr<JsBlock> b: 0;]
+		u32 heap: 0;
+		if b.kind is B_FUNCTION and b.fn.mapped_args
+			# arguments are positional, whatever else there is
+			heap is b.fn.nparams;
+		;;
+		ptr<JsVar> v: b.vars;
+		while v is not 0
+			if v.captured
+				if v.kind is V_PARAM and b.fn.mapped_args
+					v.slot is v.param_index;
+				;;
+				else
+					v.slot is heap as int;
+					heap++;
+				;;
+			;;
+			v is v.next;
+		;;
+		b.heap_count is heap;
+	[end]
+
+	# ---- the walk ----
+
+	[Program: ptr<JsNode> f: 0; ptr<WlArena> a: 0;]
+		arena is a;
+		cur is 0;
+		fn is 0;
+		ptr<JsFnInfo> info: (arena.Alloc: sizeof JsFnInfo) as ptr<JsFnInfo>;
+		info.node is f;
+		fn is info;
+		f.info is info as ptr<u8>;
+		ptr<JsBlock> top: (NewBlock: B_GLOBAL);
+		info.top is top;
+		info.body is top;
+		cur is top;
+		bln is_eval: (f.flags & JsN.FN_EVAL) is not 0;
+		bln strict: (f.flags & JsN.FN_STRICT) is not 0;
+		ptr<JsBlock> lex: top;
+		if is_eval
+			# an eval's let and const are its own; a strict one's var too
+			lex is (NewBlock: B_BLOCK);
+			cur is lex;
+			f.c is 0;
+			if strict
+				info.body is lex;
+			;;
+		;;
+		call DeclareStatements: lex f.b true;
+		call DeclareVarList: f;
+		f.e is 0;
+		call WalkList: f.b;
+		if is_eval
+			call CloseBlock: lex;
+		;;
+		call CloseBlock: top;
+		# the compiler finds lex again here
+		f.raw is 0;
+		evalblock is lex;
+	[end]
+
+	ptr<JsBlock> evalblock: 0;
+
+	[DeclareVarList: ptr<JsNode> f: 0;]
+		ptr<JsNode> v: f.d;
+		while v is not 0
+			call DeclareVar: v.name V_VAR v.line (v.flags & JsN.X_ANNEXB) is not 0;
+			v is v.next;
+		;;
+	[end]
+
+	[WalkList: ptr<JsNode> n: 0;]
+		while n is not 0
+			call Walk: n;
+			n is n.next;
+		;;
+	[end]
+
+	[WalkKids: ptr<JsNode> n: 0;]
+		if n.a is not 0
+			call WalkList: n.a;
+		;;
+		if n.b is not 0
+			call WalkList: n.b;
+		;;
+		if n.c is not 0
+			call WalkList: n.c;
+		;;
+		if n.d is not 0
+			call WalkList: n.d;
+		;;
+		if n.e is not 0
+			call WalkList: n.e;
+		;;
+	[end]
+
+	[Walk: ptr<JsNode> n: 0;]
+		call WlStack.Check;
+		u32 k: n.kind;
+		when k
+			is JsN.NUM JsN.STR JsN.NULL JsN.TRUE JsN.FALSE JsN.HOLE JsN.REGEX JsN.EMPTY JsN.BREAK JsN.CONTINUE
+				return;
+			;;
+			is JsN.IDENT
+				call NoteRef: n;
+				return;
+			;;
+			is JsN.THIS
+				call NoteThis;
+				return;
+			;;
+			is JsN.NEWTARGET
+				call NoteNewTarget;
+				return;
+			;;
+			is JsN.BINARY JsN.LOGICAL
+				# long chains of a + b + c lean left: a loop, not nested calls
+				while n.kind is JsN.BINARY or n.kind is JsN.LOGICAL
+					call Walk: n.b;
+					n is n.a;
+				;;
+				call Walk: n;
+				return;
+			;;
+			is JsN.SUPER
+				call NoteThis;
+				return;
+			;;
+			is JsN.CALL
+				if n.a.kind is JsN.SUPER
+					# super(...) needs the running constructor, new.target, and this
+					ptr<JsFnInfo> f: (ThisFn);
+					call HiddenVar: f V_THIS;
+					if f is not fn
+						call HiddenVar: f V_FN;
+						call HiddenVar: f V_NT;
+					;;
+					call WalkList: n.b;
+					return;
+				;;
+			;;
+			is JsN.FUNC
+				call WalkFunction: n;
+				return;
+			;;
+			is JsN.FUNCDECL
+				call WalkFunction: n.a;
+				return;
+			;;
+			is JsN.CLASS
+				call WalkClass: n;
+				return;
+			;;
+			is JsN.CLASSDECL
+				call WalkClass: n.a;
+				# its name in the enclosing block is resolved by the compiler, by the declaration
+				n.info is (Resolve: n.a.name) as ptr<u8>;
+				return;
+			;;
+			is JsN.PRIVATE
+				call NotePrivate: n;
+				call Walk: n.a;
+				return;
+			;;
+			is JsN.PRIVATE_IN
+				call NotePrivate: n;
+				call Walk: n.a;
+				return;
+			;;
+			is JsN.BLOCK
+				call WalkBlock: n;
+				return;
+			;;
+			is JsN.FOR JsN.FORIN JsN.FOROF
+				call WalkFor: n;
+				return;
+			;;
+			is JsN.SWITCH
+				call WalkSwitch: n;
+				return;
+			;;
+			is JsN.TRY
+				call WalkTry: n;
+				return;
+			;;
+			is JsN.VARDECL
+				if n.op is JsT.K_VAR as u16
+					call CheckVarConflicts: n.a;
+				;;
+			;;
+			is JsN.DECLARATOR
+				call WalkPatternExprs: n.a;
+				if n.b is not 0
+					call Walk: n.b;
+				;;
+				return;
+			;;
+		;;
+		call WalkKids: n;
+	[end]
+
+	# var x inside blocks that have a let x above it is an error
+	[CheckVarConflicts: ptr<JsNode> d: 0;]
+		while d is not 0
+			call CheckVarNames: d.a;
+			d is d.next;
+		;;
+	[end]
+
+	[CheckVarNames: ptr<JsNode> t: 0;]
+		call WlStack.Check;
+		u32 k: t.kind;
+		if k is JsN.IDENT
+			ptr<JsBlock> b: cur;
+			while b is not 0 and b is not fn.body
+				ptr<JsVar> v: (Lookup: b t.name);
+				if v is not 0 and ((IsLexical: v.kind as u32) or v.kind is V_CATCH_PAT)
+					call Fail: t.name t.line;
+				;;
+				b is b.parent;
+			;;
+			return;
+		;;
+		if k is JsN.DEFAULT or k is JsN.REST
+			call CheckVarNames: t.a;
+			return;
+		;;
+		if k is JsN.PROP
+			call CheckVarNames: t.b;
+			return;
+		;;
+		if k is JsN.ARRPAT or k is JsN.OBJPAT
+			ptr<JsNode> c: t.a;
+			while c is not 0
+				if c.kind is not JsN.HOLE
+					call CheckVarNames: c;
+				;;
+				c is c.next;
+			;;
+		;;
+	[end]
+
+	[WalkBlock: ptr<JsNode> n: 0;]
+		if not (HasLexical: n.a)
+			call WalkList: n.a;
+			return;
+		;;
+		ptr<JsBlock> b: (NewBlock: B_BLOCK);
+		n.info is b as ptr<u8>;
+		cur is b;
+		call DeclareStatements: b n.a false;
+		call WalkAnnexB: n.a;
+		call WalkList: n.a;
+		call CloseBlock: b;
+		cur is b.parent;
+	[end]
+
+	# Each sloppy function in this block also sets a var when it's reached, if no let in between
+	# would be in the way: decides, and leaves the var on the FUNCDECL's info.
+	[WalkAnnexB: ptr<JsNode> list: 0;]
+		ptr<JsNode> s: list;
+		while s is not 0
+			ptr<JsNode> t: s;
+			while t.kind is JsN.LABELED
+				t is t.a;
+			;;
+			if t.kind is JsN.FUNCDECL and (t.flags & JsN.X_ANNEXB) is not 0
+				ptr<JsStr> name: t.a.name;
+				bln clear: true;
+				ptr<JsBlock> b: cur.parent;
+				while b is not 0 and b is not fn.body
+					ptr<JsVar> v: (Lookup: b name);
+					if v is not 0 and v.kind is not V_CATCH
+						clear is false;
+						break;
+					;;
+					b is b.parent;
+				;;
+				t.flags is t.flags & (0xFFFFFFFF - JsN.X_ANNEXB);
+				if clear and b is not 0
+					ptr<JsVar> tv: (Lookup: b name);
+					if b.kind is B_GLOBAL
+						if tv is 0 or not (IsLexical: tv.kind as u32)
+							t.flags is t.flags | JsN.X_ANNEXB;
+							t.info is 0;
+						;;
+					;;
+					elif tv is not 0 and not (IsLexical: tv.kind as u32)
+						t.flags is t.flags | JsN.X_ANNEXB;
+						t.info is tv as ptr<u8>;
+						tv.used is true;
+					;;
+				;;
+			;;
+			s is s.next;
+		;;
+	[end]
+
+	[WalkFor: ptr<JsNode> n: 0;]
+		ptr<JsNode> init: n.a;
+		bln lexical: init is not 0 and init.kind is JsN.VARDECL and init.op is not JsT.K_VAR as u16;
+		if not lexical
+			call WalkKids: n;
+			return;
+		;;
+		ptr<JsBlock> b: (NewBlock: B_BLOCK);
+		n.info is b as ptr<u8>;
+		cur is b;
+		u32 vk: V_LET;
+		if init.op is JsT.K_CONST as u16
+			vk is V_CONST;
+		;;
+		ptr<JsNode> d: init.a;
+		while d is not 0
+			# for-in and for-of: the right side sees the names uninitialized
+			u32 stop_at: d.stop;
+			if n.kind is not JsN.FOR
+				stop_at is n.b.stop;
+			;;
+			call DeclarePattern: b d.a vk stop_at;
+			d is d.next;
+		;;
+		call WalkKids: n;
+		# var in the body may not share a name with the head's let
+		call CloseBlock: b;
+		cur is b.parent;
+	[end]
+
+	[WalkSwitch: ptr<JsNode> n: 0;]
+		call Walk: n.a;
+		ptr<JsNode> c: n.b;
+		bln any: false;
+		while c is not 0
+			if (HasLexical: c.b)
+				any is true;
+			;;
+			c is c.next;
+		;;
+		ptr<JsBlock> b: 0;
+		if any
+			b is (NewBlock: B_BLOCK);
+			b.is_switch is true;
+			n.info is b as ptr<u8>;
+			cur is b;
+			c is n.b;
+			while c is not 0
+				call DeclareStatements: b c.b false;
+				c is c.next;
+			;;
+			c is n.b;
+			while c is not 0
+				call WalkAnnexB: c.b;
+				c is c.next;
+			;;
+		;;
+		c is n.b;
+		while c is not 0
+			if c.a is not 0
+				call Walk: c.a;
+			;;
+			call WalkList: c.b;
+			c is c.next;
+		;;
+		if any
+			call CloseBlock: b;
+			cur is b.parent;
+		;;
+	[end]
+
+	[WalkTry: ptr<JsNode> n: 0;]
+		call Walk: n.a;
+		if n.c is not 0
+			ptr<JsBlock> b: 0;
+			if n.b is not 0
+				b is (NewBlock: B_BLOCK);
+				n.info is b as ptr<u8>;
+				cur is b;
+				if n.b.kind is JsN.IDENT
+					call AddVar: b n.b.name V_CATCH 0;
+				;;
+				else
+					call DeclarePattern: b n.b V_CATCH_PAT 0;
+				;;
+				call WalkPatternExprs: n.b;
+			;;
+			# let in the catch block can't share a name with the parameter
+			if b is not 0 and (HasLexical: n.c.a)
+				ptr<JsNode> s: n.c.a;
+				while s is not 0
+					call CheckCatchLex: b s;
+					s is s.next;
+				;;
+			;;
+			call Walk: n.c;
+			if b is not 0
+				call CloseBlock: b;
+				cur is b.parent;
+			;;
+		;;
+		if n.d is not 0
+			call Walk: n.d;
+		;;
+	[end]
+
+	[CheckCatchLex: ptr<JsBlock> b: 0; ptr<JsNode> s: 0;]
+		if s.kind is JsN.VARDECL and s.op is not JsT.K_VAR as u16
+			ptr<JsNode> d: s.a;
+			while d is not 0
+				call CheckNotIn: b d.a;
+				d is d.next;
+			;;
+		;;
+		elif s.kind is JsN.CLASSDECL or s.kind is JsN.FUNCDECL
+			if (Lookup: b s.a.name) is not 0
+				call Fail: s.a.name s.line;
+			;;
+		;;
+	[end]
+
+	[CheckNotIn: ptr<JsBlock> b: 0; ptr<JsNode> t: 0;]
+		call WlStack.Check;
+		u32 k: t.kind;
+		if k is JsN.IDENT
+			if (Lookup: b t.name) is not 0
+				call Fail: t.name t.line;
+			;;
+			return;
+		;;
+		if k is JsN.DEFAULT or k is JsN.REST
+			call CheckNotIn: b t.a;
+			return;
+		;;
+		if k is JsN.PROP
+			call CheckNotIn: b t.b;
+			return;
+		;;
+		if k is JsN.ARRPAT or k is JsN.OBJPAT
+			ptr<JsNode> c: t.a;
+			while c is not 0
+				if c.kind is not JsN.HOLE
+					call CheckNotIn: b c;
+				;;
+				c is c.next;
+			;;
+		;;
+	[end]
+
+	# In a pattern: the targets are resolved like any reference, and the defaults and computed keys
+	# walked. (A pattern used as an assignment target goes through here too.)
+	[WalkPatternExprs: ptr<JsNode> t: 0;]
+		call WlStack.Check;
+		u32 k: t.kind;
+		if k is JsN.IDENT
+			# (a declaration isn't a read: its own initialization needs no check)
+			t.info is (Resolve: t.name) as ptr<u8>;
+			return;
+		;;
+		if k is JsN.DEFAULT
+			call WalkPatternExprs: t.a;
+			call Walk: t.b;
+			return;
+		;;
+		if k is JsN.REST
+			call WalkPatternExprs: t.a;
+			return;
+		;;
+		if k is JsN.PROP
+			if (t.flags & JsN.X_COMPUTED) is not 0
+				call Walk: t.a;
+			;;
+			call WalkPatternExprs: t.b;
+			return;
+		;;
+		if k is JsN.ARRPAT or k is JsN.OBJPAT
+			ptr<JsNode> c: t.a;
+			while c is not 0
+				if c.kind is not JsN.HOLE
+					call WalkPatternExprs: c;
+				;;
+				c is c.next;
+			;;
+			return;
+		;;
+		call Walk: t;
+	[end]
+
+	[WalkFunction: ptr<JsNode> f: 0;]
+		call WlStack.Check;
+		ptr<JsFnInfo> saved_fn: fn;
+		ptr<JsBlock> saved_cur: cur;
+		ptr<JsFnInfo> info: (arena.Alloc: sizeof JsFnInfo) as ptr<JsFnInfo>;
+		info.parent is fn;
+		info.node is f;
+		f.info is info as ptr<u8>;
+		fn is info;
+		# a function expression's name, outside everything of its own
+		if (f.flags & JsN.FN_NAME_REF) is not 0
+			ptr<JsBlock> nb: (NewBlock: B_FNAME);
+			cur is nb;
+			info.fname_var is (AddVar: nb f.name V_FNAME 0);
+		;;
+		ptr<JsBlock> top: (NewBlock: B_FUNCTION);
+		info.top is top;
+		info.body is top;
+		cur is top;
+		bln simple: (f.flags & JsN.FN_SIMPLE) is not 0;
+		# parameters
+		if (f.flags & JsN.FN_FIELDS) is 0
+			u32 index: 0;
+			ptr<JsNode> p: f.a;
+			while p is not 0
+				if simple
+					ptr<JsVar> have: (Lookup: top p.name);
+					if have is not 0
+						# the later one wins; the earlier argument isn't mapped
+						if have.param_index < 32
+							info.mapped_skip is info.mapped_skip | ((1 as u32) << have.param_index);
+						;;
+						have.param_index is index as int;
+					;;
+					else
+						ptr<JsVar> pv: (AddVar: top p.name V_PARAM 0);
+						pv.param_index is index as int;
+					;;
+				;;
+				else
+					call DeclarePattern: top p V_PARAM p.stop;
+				;;
+				index++;
+				p is p.next;
+			;;
+			info.nparams is index;
+			if not simple
+				# the body's vars get a scope of their own, as parameter expressions can't see them
+				ptr<JsBlock> body: (NewBlock: B_BODY);
+				info.body is body;
+				f.flags is f.flags | JsN.FN_PEXPR;
+			;;
+		;;
+		if (f.flags & JsN.FN_DERIVED) is not 0
+			call HiddenVar: info V_THIS;
+		;;
+		if (f.flags & JsN.FN_FIELDS) is not 0
+			call WalkFields: f;
+		;;
+		elif (f.flags & JsN.FN_DEFAULT) is 0
+			# the parameters' expressions
+			if not simple
+				ptr<JsNode> q: f.a;
+				while q is not 0
+					call WalkPatternExprs: q;
+					q is q.next;
+				;;
+				cur is info.body;
+			;;
+			ptr<JsNode> stmts: f.b;
+			if (f.flags & JsN.FN_EXPR_BODY) is 0
+				call DeclareStatements: info.body stmts true;
+			;;
+			call DeclareVarList: f;
+			call WalkList: stmts;
+		;;
+		if info.body is not top
+			call CloseBlock: info.body;
+		;;
+		call CloseBlock: top;
+		if info.fname_var is not 0
+			call CloseBlock: top.parent;
+		;;
+		fn is saved_fn;
+		cur is saved_cur;
+	[end]
+
+	# a class's made-up function for fields: the initializers run in its scope
+	[WalkFields: ptr<JsNode> f: 0;]
+		ptr<JsNode> cl: f.b;
+		bln want_static: (f.flags & JsN.FN_STATIC_INIT) is not 0;
+		ptr<JsNode> m: cl.b;
+		while m is not 0
+			bln is_static: (m.flags & JsN.X_STATIC) is not 0;
+			if is_static is want_static
+				if m.op is JsN.P_FIELD as u16
+					if m.b is not 0
+						call Walk: m.b;
+					;;
+				;;
+				elif m.op is JsN.P_BLOCK as u16
+					call WalkFunction: m.b;
+				;;
+				if (m.flags & JsN.X_PRIVATE) is not 0
+					m.c is (PrivateRefNode: m.a.name);
+				;;
+			;;
+			m is m.next;
+		;;
+	[end]
+
+	# a node that resolves #name from here, for the compiler to read it through
+	[PrivateRefNode: ptr<JsStr> name: 0;]
+		ptr<JsNode> r: (arena.Alloc: sizeof JsNode) as ptr<JsNode>;
+		r.kind is JsN.PRIVATE as u16;
+		r.name is name;
+		call NotePrivate: r;
+	[end: r]
+
+	# #x, as a variable's name
+	[PrivateName: ptr<JsStr> name: 0;]
+		WlBuf b;
+		call b.Add: '#';
+		call JsStrs.Flat: name;
+		call b.AddN: name.data name.bytes;
+		ptr<JsStr> a: (JsStrs.Intern: b.data b.len);
+		call b.Free;
+	[end: a]
+
+	[NotePrivate: ptr<JsNode> n: 0;]
+		ptr<JsStr> pn: (PrivateName: n.name);
+		ptr<JsVar> v: (Resolve: pn);
+		if v is not 0 and v.block.in_heritage
+			# a class's heritage can't see that class's own names: look further out
+			ptr<JsBlock> saved_cur: cur;
+			while v is not 0 and v.block.in_heritage
+				cur is v.block.parent;
+				v is (Resolve: pn);
+			;;
+			cur is saved_cur;
+		;;
+		if v is 0
+			call JsParse.FailAt: 'Private field must be declared in an enclosing class' n.line;
+		;;
+		n.info is v as ptr<u8>;
+	[end]
+
+	[WalkClass: ptr<JsNode> n: 0;]
+		call WlStack.Check;
+		ptr<JsBlock> b: (NewBlock: B_CLASS);
+		n.info is b as ptr<u8>;
+		cur is b;
+		if n.name is not 0
+			call AddVar: b n.name V_CLASS_NAME n.stop;
+		;;
+		ptr<JsNode> m: n.b;
+		while m is not 0
+			if (m.flags & JsN.X_PRIVATE) is not 0
+				ptr<JsStr> pn: (PrivateName: m.a.name);
+				if (Lookup: b pn) is 0
+					ptr<JsVar> pv: (AddVar: b pn V_PRIVATE 0);
+					pv.captured is true;
+				;;
+				# a private method's function is kept in a variable, for each instance to be given
+				if m.op is not JsN.P_FIELD as u16 and (m.flags & JsN.X_STATIC) is 0
+					ptr<JsVar> hv: (AddVar: b JsRt.blank V_HIDDEN 0);
+					hv.captured is true;
+					m.info is hv as ptr<u8>;
+				;;
+			;;
+			elif m.op is JsN.P_FIELD as u16 and (m.flags & JsN.X_COMPUTED) is not 0
+				ptr<JsVar> kv: (AddVar: b JsRt.blank V_HIDDEN 0);
+				kv.captured is true;
+				m.info is kv as ptr<u8>;
+			;;
+			m is m.next;
+		;;
+		if n.a is not 0
+			b.in_heritage is true;
+			call Walk: n.a;
+			b.in_heritage is false;
+		;;
+		call WalkFunction: n.c;
+		m is n.b;
+		while m is not 0
+			if (m.flags & JsN.X_COMPUTED) is not 0
+				call Walk: m.a;
+			;;
+			if m.op is not JsN.P_FIELD as u16 and m.op is not JsN.P_BLOCK as u16
+				call WalkFunction: m.b;
+			;;
+			m is m.next;
+		;;
+		if n.d is not 0
+			call WalkFunction: n.d;
+		;;
+		if n.e is not 0
+			call WalkFunction: n.e;
+		;;
+		call CloseBlock: b;
+		cur is b.parent;
+	[end]
+}

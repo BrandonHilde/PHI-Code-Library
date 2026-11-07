@@ -1,0 +1,678 @@
+# Strings: WTF-8 bytes (UTF-8 that keeps lone surrogates, in canonical form, so that two equal
+# strings are equal bytes), their length in UTF-16 units, a hash, an ASCII flag. ASCII strings
+# index directly; others walk, with one remembered place to make a loop along a string linear.
+#
+# Concatenating makes a rope, which turns flat the first time its text is needed, so s += x in a
+# loop isn't quadratic. Anything that reads s.data must first call JsStrs.Flat.
+#
+# Property keys are interned: one JsStr for each distinct text, so they compare by pointer. A key
+# that's a canonical array index has that number in .index. The intern table is weak: a key nobody
+# holds goes away with the next collection.
+
+struct.JsStr
+{
+	ptr<JsCell> gc_next;
+	u8 kind;
+	u8 mark;
+	u16 flags;             # JsStrs.F_...; the top 8 bits hold a keyword's number
+	u32 size;
+	u32 hash;              # (at the same place as a JsSym's: see JsObjs.KeyHash) 0 until it's needed
+	u32 len;               # UTF-16 units
+	u32 bytes;
+	u32 index;             # if interned: the array index it spells, or JsStrs.NO_INDEX
+	ptr<u8> data;          # zero-terminated; 0 while it's a rope
+	ptr<JsStr> left;       # a rope's parts; once flat, left is the interned string with this text (or 0)
+	ptr<JsStr> right;
+}
+
+struct.JsSym
+{
+	ptr<JsCell> gc_next;
+	u8 kind;
+	u8 mark;
+	u16 flags;             # JsStrs.SYM_...
+	u32 size;
+	u32 hash;
+	ptr<JsStr> desc;       # 0 for no description
+}
+
+phi.JsStrs:Library
+{
+	const u32 F_ASCII: 1;
+	const u32 F_INTERNED: 2;
+	const u32 F_ROPE: 4;
+	const u32 F_OWN_DATA: 8;      # data is an allocation of its own
+	const u32 NO_INDEX: 0xFFFFFFFF;
+	const u32 MAX_BYTES: 0x20000000;
+	const u32 ROPE_MIN: 32;       # shorter results than this are just copied
+
+	const u32 SYM_PRIVATE: 1;     # #name in a class: invisible to everything but its own syntax
+	const u32 SYM_REGISTERED: 2;  # Symbol.for
+
+	# ---- making ----
+
+	[Alloc: u32 n: 0;]
+		ptr<JsStr> s: (JsGc.New: sizeof JsStr + n + 1 JsGc.K_STRING) as ptr<JsStr>;
+		s.data is (s as ptr<u8>) + sizeof JsStr;
+		s.bytes is n;
+		s.index is NO_INDEX;
+	[end: s]
+
+	# fills in len and the ASCII flag from the bytes
+	[Measure: ptr<JsStr> s: 0;]
+		ptr<u8> p: s.data;
+		u32 n: s.bytes;
+		u32 units: 0;
+		u32 i: 0;
+		while i < n and p:i < 0x80
+			i++;
+		;;
+		if i is n
+			s.len is n;
+			s.flags is s.flags | F_ASCII;
+			return;
+		;;
+		units is i;
+		while i < n
+			u32 c: p:i;
+			if (c & 0xC0) is not 0x80
+				units++;
+				if c >= 0xF0
+					units++;
+				;;
+			;;
+			i++;
+		;;
+		s.len is units;
+	[end]
+
+	# from bytes that are good WTF-8
+	[New: ptr<u8> text: 0; u32 n: 0;]
+		if n is 0 return JsRt.blank;
+		if n >= MAX_BYTES
+			call JsErr.Range: 'Invalid string length';
+		;;
+		ptr<JsStr> s: (Alloc: n);
+		call Mem.Copy: s.data text n;
+		call Measure: s;
+	[end: s]
+
+	[NewZ: ptr<u8> text: 0;]
+	[end: (New: text (WlText.LenZ: text))]
+
+	# from bytes that may be anything: what isn't good UTF-8 becomes U+FFFD
+	[FromUtf8: ptr<u8> text: 0; u32 n: 0;]
+		u32 i: 0;
+		while i < n and text:i < 0x80
+			i++;
+		;;
+		if i is n return (New: text n);
+		WlBuf b;
+		call b.AddN: text i;
+		while i < n
+			u32 c: (WlText.Decode: text + i n - i);
+			i++ WlText.width;
+			call b.AddCode: c;
+		;;
+		ptr<JsStr> s: (New: b.data b.len);
+		call b.Free;
+	[end: s]
+
+	[FromBuf: ptr<WlBuf> b: 0;]
+	[end: (New: b.data b.len)]
+
+	# a string of one UTF-16 unit; the ASCII ones are kept
+	[FromUnit: u32 u: 0;]
+		if u < 128
+			ptr<JsStr> have: JsRt.r.unit_strs:u;
+			if have is 0
+				u8 one: u as u8;
+				have is (Intern: addr one 1);
+				JsRt.r.unit_strs:u is have;
+			;;
+			return have;
+		;;
+		WlBuf b;
+		call BufAddUnit: addr b u;
+		ptr<JsStr> s: (New: b.data b.len);
+		call b.Free;
+	[end: s]
+
+	[FromCode: u32 cp: 0;]
+		if cp < 0x10000 return (FromUnit: cp);
+		WlBuf b;
+		call b.AddCode: cp;
+		ptr<JsStr> s: (New: b.data b.len);
+		call b.Free;
+	[end: s]
+
+	# Adds a UTF-16 unit to WTF-8 in a buffer. A low surrogate right after a high one joins it, so
+	# what's in the buffer is always canonical.
+	[BufAddUnit: ptr<WlBuf> b: 0; u32 u: 0;]
+		if u >= 0xDC00 and u <= 0xDFFF and b.len >= 3
+			ptr<u8> tail: b.data + b.len - 3;
+			if tail:0 is 0xED and tail:1 >= 0xA0 and tail:1 <= 0xAF
+				u32 hi: 0xD000 | ((tail:1 & 63) << 6) | (tail:2 & 63);
+				b.len-- 3;
+				call b.AddCode: 0x10000 + ((hi - 0xD800) << 10) + (u - 0xDC00);
+				return;
+			;;
+		;;
+		if u < 0x80
+			call b.Add: u as u8;
+		;;
+		elif u < 0x800
+			call b.Add: (0xC0 | (u >> 6)) as u8;
+			call b.Add: (0x80 | (u & 63)) as u8;
+		;;
+		else
+			call b.Add: (0xE0 | (u >> 12)) as u8;
+			call b.Add: (0x80 | ((u >> 6) & 63)) as u8;
+			call b.Add: (0x80 | (u & 63)) as u8;
+		;;
+	[end]
+
+	# Adds a code point or surrogate that was written as an escape
+	[BufAddCode: ptr<WlBuf> b: 0; u32 cp: 0;]
+		if cp < 0x10000
+			call BufAddUnit: b cp;
+			return;
+		;;
+		call b.AddCode: cp;
+	[end]
+
+	# ---- interning ----
+
+	[ArrayIndexOf: ptr<u8> p: 0; u32 n: 0;]
+		if n is 0 or n > 10 return NO_INDEX;
+		if p:0 is '0'
+			if n is 1 return 0 as u32;
+			return NO_INDEX;
+		;;
+		u64 v: 0;
+		while u32 i: 0; i < n; i++;
+			u32 c: p:i;
+			if c < '0' or c > '9' return NO_INDEX;
+			v is v * 10 + (c - '0');
+		;;
+		if v >= 0xFFFFFFFF return NO_INDEX;
+	[end: v as u32]
+
+	[Intern: ptr<u8> text: 0; u32 n: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		u32 h: (WlText.Hash: text n);
+		if h is 0
+			h is 1;
+		;;
+		if (r.intern_used + 1) * 4 > r.intern_cap * 3
+			call GrowIntern;
+		;;
+		u32 mask: r.intern_cap - 1;
+		u32 place: h & mask;
+		int free_place: -1;
+		ptr<ptr<JsStr>> tab: r.intern;
+		while true
+			ptr<JsStr> e: tab:place;
+			if e is 0 break;
+			if (e as u32) is 1
+				if free_place < 0
+					free_place is place as int;
+				;;
+			;;
+			elif e.hash is h and e.bytes is n and (Mem.Equal: e.data text n)
+				return e;
+			;;
+			place is (place + 1) & mask;
+		;;
+		ptr<JsStr> s: (Alloc: n);
+		if n > 0
+			call Mem.Copy: s.data text n;
+		;;
+		call Measure: s;
+		s.hash is h;
+		s.flags is s.flags | F_INTERNED;
+		s.index is (ArrayIndexOf: text n);
+		if free_place >= 0
+			place is free_place as u32;
+		;;
+		else
+			r.intern_used++;
+		;;
+		r.intern_count++;
+		tab:place is s;
+	[end: s]
+
+	[InternZ: ptr<u8> text: 0;]
+	[end: (Intern: text (WlText.LenZ: text))]
+
+	# the interned string with the same text as s
+	[InternStr: ptr<JsStr> s: 0;]
+		if (s.flags & F_INTERNED) is not 0 return s;
+		if (s.flags & F_ROPE) is not 0
+			call Flatten: s;
+		;;
+		if s.left is not 0 return s.left;
+		ptr<JsStr> a: (Intern: s.data s.bytes);
+		s.left is a;
+	[end: a]
+
+	[GrowIntern]
+		ptr<JsRuntime> r: JsRt.r;
+		u32 room: r.intern_cap * 2;
+		if room is 0
+			room is 2048;
+		;;
+		elif r.intern_count * 2 < r.intern_cap
+			# mostly tombstones: the same size will do
+			room is r.intern_cap;
+		;;
+		ptr<ptr<JsStr>> grown: new ptr<JsStr>[room];
+		if grown is 0
+			throw 'out of memory for the string table';
+		;;
+		u32 mask: room - 1;
+		u32 old_cap: r.intern_cap;
+		ptr<ptr<JsStr>> old: r.intern;
+		while u32 i: 0; i < old_cap; i++;
+			ptr<JsStr> e: old:i;
+			if e is not 0 and (e as u32) is not 1
+				u32 place: e.hash & mask;
+				while grown:place is not 0
+					place is (place + 1) & mask;
+				;;
+				grown:place is e;
+			;;
+		;;
+		if old is not 0
+			free old;
+		;;
+		r.intern is grown;
+		r.intern_cap is room;
+		r.intern_used is r.intern_count;
+	[end]
+
+	# the collector is freeing an interned string
+	[Forget: ptr<JsStr> s: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		u32 mask: r.intern_cap - 1;
+		u32 place: s.hash & mask;
+		ptr<ptr<JsStr>> tab: r.intern;
+		while true
+			ptr<JsStr> e: tab:place;
+			if e is s
+				tab:place is 1 as ptr<JsStr>;
+				r.intern_count--;
+				return;
+			;;
+			if e is 0 return;
+			place is (place + 1) & mask;
+		;;
+	[end]
+
+	# the interned string for an index
+	[InternIndex: u32 i: 0;]
+		u8 tmp[12];
+		int n: 0;
+		u32 v: i;
+		while v is not 0 or n is 0
+			tmp:n is ('0' + v % 10) as u8;
+			v is v / 10;
+			n++;
+		;;
+		u8 text[12];
+		while int j: 0; j < n; j++;
+			text:j is tmp:(n - 1 - j);
+		;;
+	[end: (Intern: addr text n as u32)]
+
+	# ---- ropes ----
+
+	[Concat: ptr<JsStr> a: 0; ptr<JsStr> b: 0;]
+		if a.bytes is 0 return b;
+		if b.bytes is 0 return a;
+		u32 total: a.bytes + b.bytes;
+		if total >= MAX_BYTES
+			call JsErr.Range: 'Invalid string length';
+		;;
+		u32 both: a.flags & b.flags & F_ASCII;
+		if both is 0 and (JoinsSurrogates: a b)
+			return (ConcatJoined: a b);
+		;;
+		if total < ROPE_MIN
+			call Flat: a;
+			call Flat: b;
+			ptr<JsStr> s: (Alloc: total);
+			call Mem.Copy: s.data a.data a.bytes;
+			call Mem.Copy: s.data + a.bytes b.data b.bytes;
+			s.len is a.len + b.len;
+			s.flags is s.flags | both;
+			return s;
+		;;
+		ptr<JsStr> rope: (JsGc.New: sizeof JsStr JsGc.K_STRING) as ptr<JsStr>;
+		rope.flags is both | F_ROPE;
+		rope.bytes is total;
+		rope.len is a.len + b.len;
+		rope.index is NO_INDEX;
+		rope.left is a;
+		rope.right is b;
+		# s += 'x' over and over: the short end is joined up, so there's one node per ROPE_MIN bytes
+		# and not one per append, and the ones in between are garbage
+		if (a.flags & F_ROPE) is not 0 and (a.right.flags & F_ROPE) is 0 and (b.flags & F_ROPE) is 0 and a.right.bytes + b.bytes < ROPE_MIN
+			rope.left is a.left;
+			rope.right is (Concat: a.right b);
+		;;
+	[end: rope]
+
+	# whether a ends in a high surrogate and b starts with a low one
+	[JoinsSurrogates: ptr<JsStr> a: 0; ptr<JsStr> b: 0;]
+		ptr<JsStr> l: a;
+		while (l.flags & F_ROPE) is not 0
+			l is l.right;
+		;;
+		if (l.flags & F_ASCII) is not 0 or l.bytes < 3 return false;
+		ptr<u8> tail: l.data + l.bytes - 3;
+		if tail:0 is not 0xED or tail:1 < 0xA0 or tail:1 > 0xAF return false;
+		ptr<JsStr> f: b;
+		while (f.flags & F_ROPE) is not 0
+			f is f.left;
+		;;
+		if (f.flags & F_ASCII) is not 0 or f.bytes < 3 return false;
+		ptr<u8> head: f.data;
+	[end: head:0 is 0xED and head:1 >= 0xB0 and head:1 <= 0xBF]
+
+	[ConcatJoined: ptr<JsStr> a: 0; ptr<JsStr> b: 0;]
+		call Flat: a;
+		call Flat: b;
+		WlBuf u;
+		call u.Reserve: a.bytes + b.bytes;
+		call u.AddN: a.data a.bytes;
+		u32 lo: 0xD000 | ((b.data:1 & 63) << 6) | (b.data:2 & 63);
+		call BufAddUnit: addr u lo;
+		call u.AddN: b.data + 3 b.bytes - 3;
+		ptr<JsStr> s: (New: u.data u.len);
+		call u.Free;
+	[end: s]
+
+	[Flat: ptr<JsStr> s: 0;]
+		if (s.flags & F_ROPE) is not 0
+			call Flatten: s;
+		;;
+	[end: s]
+
+	# Writes a rope's leaves into one block, without recursion however deep it is: keeps a stack
+	# of what's still to write, working from the far end.
+	[Flatten: ptr<JsStr> s: 0;]
+		u32 total: s.bytes;
+		ptr<u8> mem: new u8[total + 1];
+		if mem is 0
+			call JsErr.Range: 'Invalid string length';
+		;;
+		ptr<JsRuntime> r: JsRt.r;
+		if r.flat_stack_cap is 0
+			r.flat_stack_cap is 256;
+			r.flat_stack is new ptr<JsStr>[256];
+			if r.flat_stack is 0
+				throw 'out of memory flattening a string';
+			;;
+		;;
+		r.flat_stack:0 is s;
+		u32 top: 1;
+		u32 place: total;
+		while top > 0
+			top--;
+			ptr<JsStr> n: r.flat_stack:top;
+			while (n.flags & F_ROPE) is not 0
+				if top + 1 >= r.flat_stack_cap
+					call GrowFlatStack;
+				;;
+				r.flat_stack:top is n.left;
+				top++;
+				n is n.right;
+			;;
+			place is place - n.bytes;
+			if n.bytes > 0
+				call Mem.Copy: mem + place n.data n.bytes;
+			;;
+		;;
+		s.data is mem;
+		s.left is 0;
+		s.right is 0;
+		s.flags is (s.flags & (0xFFFF - F_ROPE)) | F_OWN_DATA;
+		call JsGc.Account: total;
+	[end]
+
+	[GrowFlatStack]
+		ptr<JsRuntime> r: JsRt.r;
+		u32 room: r.flat_stack_cap * 2;
+		ptr<ptr<JsStr>> grown: new ptr<JsStr>[room];
+		if grown is 0
+			throw 'out of memory flattening a string';
+		;;
+		call Mem.Copy: grown as ptr<u8> r.flat_stack as ptr<u8> r.flat_stack_cap * sizeof ptr<u8>;
+		free r.flat_stack;
+		r.flat_stack is grown;
+		r.flat_stack_cap is room;
+	[end]
+
+	# ---- reading ----
+
+	[Hash: ptr<JsStr> s: 0;]
+		if s.hash is 0
+			call Flat: s;
+			u32 h: (WlText.Hash: s.data s.bytes);
+			if h is 0
+				h is 1;
+			;;
+			s.hash is h;
+		;;
+	[end: s.hash]
+
+	[Eq: ptr<JsStr> a: 0; ptr<JsStr> b: 0;]
+		if a is b return true;
+		if a.bytes is not b.bytes or a.len is not b.len return false;
+		# two interned strings with different pointers differ
+		if (a.flags & b.flags & F_INTERNED) is not 0 return false;
+		call Flat: a;
+		call Flat: b;
+	[end: (Mem.Equal: a.data b.data a.bytes)]
+
+	[EqZ: ptr<JsStr> a: 0; ptr<u8> text: 0;]
+		call Flat: a;
+	[end: (WlText.EqZ: a.data a.bytes text)]
+
+	# Where UTF-16 unit i is, in bytes (non-ASCII strings). Unit i may be the second half of a
+	# four-byte sequence, in which case it's that sequence's place and JsStrs.mid_pair is true.
+	bln mid_pair: false;
+
+	[OffsetOf: ptr<JsStr> s: 0; u32 i: 0;]
+		mid_pair is false;
+		ptr<JsRuntime> r: JsRt.r;
+		ptr<u8> p: s.data;
+		u32 unit: 0;
+		u32 off: 0;
+		if r.walk_str is s and r.walk_unit <= i
+			unit is r.walk_unit;
+			off is r.walk_off;
+		;;
+		u32 n: s.bytes;
+		while unit < i and off < n
+			u32 c: p:off;
+			if c < 0x80
+				unit++;
+				off++;
+			;;
+			elif c < 0xE0
+				unit++;
+				off++ 2;
+			;;
+			elif c < 0xF0
+				unit++;
+				off++ 3;
+			;;
+			else
+				if unit + 1 is i
+					mid_pair is true;
+					break;
+				;;
+				unit++ 2;
+				off++ 4;
+			;;
+		;;
+		if not mid_pair
+			r.walk_str is s;
+			r.walk_unit is unit;
+			r.walk_off is off;
+		;;
+	[end: off]
+
+	# the UTF-16 unit at i, which must be in range
+	[UnitAt: ptr<JsStr> s: 0; u32 i: 0;]
+		call Flat: s;
+		if (s.flags & F_ASCII) is not 0
+			return s.data:i as u32;
+		;;
+		u32 off: (OffsetOf: s i);
+		bln second: mid_pair;
+		ptr<u8> p: s.data + off;
+		u32 c: p:0;
+		if c < 0x80 return c;
+		if c < 0xE0 return ((c & 31) << 6) | (p:1 & 63);
+		if c < 0xF0 return ((c & 15) << 12) | ((p:1 & 63) << 6) | (p:2 & 63);
+		u32 cp: (((c & 7) << 18) | ((p:1 & 63) << 12) | ((p:2 & 63) << 6) | (p:3 & 63)) - 0x10000;
+		if second return 0xDC00 + (cp & 1023);
+	[end: 0xD800 + (cp >> 10)]
+
+	# the code point at unit i; JsStrs.units_taken says how many units it took
+	u32 units_taken: 1;
+
+	[CodeAt: ptr<JsStr> s: 0; u32 i: 0;]
+		u32 u: (UnitAt: s i);
+		units_taken is 1;
+		if u >= 0xD800 and u <= 0xDBFF and i + 1 < s.len
+			u32 lo: (UnitAt: s i + 1);
+			if lo >= 0xDC00 and lo <= 0xDFFF
+				units_taken is 2;
+				return 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
+			;;
+		;;
+	[end: u]
+
+	# units from start to stop, as a new string
+	[Slice: ptr<JsStr> s: 0; u32 start: 0; u32 stop: 0;]
+		if start >= stop return JsRt.blank;
+		if start is 0 and stop is s.len return s;
+		call Flat: s;
+		if stop - start is 1
+			return (FromUnit: (UnitAt: s start));
+		;;
+		if (s.flags & F_ASCII) is not 0
+			ptr<JsStr> a: (Alloc: stop - start);
+			call Mem.Copy: a.data s.data + start stop - start;
+			a.len is stop - start;
+			a.flags is a.flags | F_ASCII;
+			return a;
+		;;
+		u32 from: (OffsetOf: s start);
+		bln from_mid: mid_pair;
+		u32 upto: (OffsetOf: s stop);
+		bln upto_mid: mid_pair;
+		if not from_mid and not upto_mid
+			return (New: s.data + from upto - from);
+		;;
+		WlBuf b;
+		if from_mid
+			call BufAddUnit: addr b (UnitAt: s start);
+			from is from + 4;
+		;;
+		if upto > from
+			call b.AddN: s.data + from upto - from;
+		;;
+		if upto_mid
+			call BufAddUnit: addr b (UnitAt: s stop - 1);
+		;;
+		ptr<JsStr> mixed: (New: b.data b.len);
+		call b.Free;
+	[end: mixed]
+
+	# UTF-16 order: -1, 0 or 1
+	[Compare: ptr<JsStr> a: 0; ptr<JsStr> b: 0;]
+		if a is b return 0;
+		call Flat: a;
+		call Flat: b;
+		if (a.flags & b.flags & F_ASCII) is not 0
+			u32 n: a.bytes;
+			if b.bytes < n
+				n is b.bytes;
+			;;
+			ptr<u8> pa: a.data;
+			ptr<u8> pb: b.data;
+			while u32 i: 0; i < n; i++;
+				if pa:i is not pb:i
+					if pa:i < pb:i return -1;
+					return 1;
+				;;
+			;;
+			if a.bytes is b.bytes return 0;
+			if a.bytes < b.bytes return -1;
+			return 1;
+		;;
+		u32 m: a.len;
+		if b.len < m
+			m is b.len;
+		;;
+		while u32 j: 0; j < m; j++;
+			u32 ua: (UnitAt: a j);
+			u32 ub: (UnitAt: b j);
+			if ua is not ub
+				if ua < ub return -1;
+				return 1;
+			;;
+		;;
+		if a.len is b.len return 0;
+		if a.len < b.len return -1;
+	[end: 1]
+
+	# the first place at or after from where needle is, or -1
+	[IndexOf: ptr<JsStr> s: 0; ptr<JsStr> needle: 0; u32 from: 0;]
+		call Flat: s;
+		call Flat: needle;
+		if from > s.len return -1;
+		if needle.bytes is 0 return from as int;
+		if needle.bytes > s.bytes return -1;
+		u32 off: from;
+		bln ascii: (s.flags & F_ASCII) is not 0;
+		if not ascii
+			off is (OffsetOf: s from);
+			if mid_pair
+				off is off + 4;
+			;;
+		;;
+		ptr<u8> p: s.data;
+		ptr<u8> q: needle.data;
+		u32 last: s.bytes - needle.bytes;
+		u32 first: q:0;
+		u32 need: needle.bytes;
+		while off <= last
+			if p:off is first and (Mem.Equal: p + off q need)
+				if ascii return off as int;
+				return (UnitsBefore: s off) as int;
+			;;
+			off++;
+		;;
+	[end: -1]
+
+	# how many UTF-16 units come before byte off
+	[UnitsBefore: ptr<JsStr> s: 0; u32 off: 0;]
+		ptr<u8> p: s.data;
+		u32 units: 0;
+		while u32 i: 0; i < off; i++;
+			u32 c: p:i;
+			if (c & 0xC0) is not 0x80
+				units++;
+				if c >= 0xF0
+					units++;
+				;;
+			;;
+		;;
+	[end: units]
+}

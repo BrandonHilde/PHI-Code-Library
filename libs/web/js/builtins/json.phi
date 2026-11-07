@@ -1,0 +1,702 @@
+# JSON.parse and JSON.stringify. Neither is gc_safe, so nothing needs rooting; both recurse on what the page
+# wrote, one level per level of nesting, with WlStack.Check, so a very deep document is a RangeError.
+
+struct.JsJsonOut
+{
+	WlBuf text;
+	WlBuf gap;
+	WlBuf indent;
+	u64 replacer;
+	ptr<JsObj> keep_keys;      # the replacer's array of keys, or 0
+	ptr<JsObj> stack;          # the objects being written, to find cycles
+}
+
+phi.JsJson:Library
+{
+	# ---- the parser's state: a parse can't be re-entered, as it runs no JS until it's finished
+	ptr<u8> src: 0;
+	u32 src_len: 0;
+	u32 pos: 0;
+
+	[Init]
+		ptr<JsObj> j: (JsObjs.NewObject);
+		call JsObjs.DefineZ: JsRt.r.global 'JSON' (JsV.Obj: j) JsObjs.WC;
+		call JsObjs.DefineValue: j JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'JSON') JsObjs.C;
+		call Js.DefineNative: j 'parse' addr Parse 2;
+		call Js.DefineNative: j 'stringify' addr Stringify 3;
+	[end]
+
+	[Parse: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsStrs.Flat: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		src is s.data;
+		src_len is s.bytes;
+		pos is 0;
+		call SkipSpace;
+		u64 v: (Value);
+		call SkipSpace;
+		if pos < src_len
+			call Fail;
+		;;
+		u64 reviver: (Js.Arg: args argc 1);
+		if (JsOps.IsCallable: reviver)
+			ptr<JsObj> root: (JsObjs.NewObject);
+			call JsObjs.CreateData: root (JsObjs.KeyOfStr: JsRt.blank) v;
+			return (Revive: root (JsV.Str: JsRt.blank) reviver);
+		;;
+	[end: v]
+
+	[Fail]
+		if pos >= src_len
+			call JsErr.Syntax: 'Unexpected end of JSON input';
+		;;
+		call JsErr.Syntax: ('Unexpected token in JSON at position ' pos);
+	[end]
+
+	[SkipSpace]
+		while pos < src_len
+			u32 c: src:pos;
+			if c is not 32 and c is not 10 and c is not 13 and c is not 9
+				return;
+			;;
+			pos++;
+		;;
+	[end]
+
+	[Value]
+		if pos >= src_len
+			call Fail;
+		;;
+		u32 c: src:pos;
+		when c
+			is '{'
+				return (ObjectValue);
+			;;
+			is '['
+				return (ArrayValue);
+			;;
+			is '"'
+				return (JsV.Str: (StringValue));
+			;;
+			is 't'
+				call Word: 'true' 4;
+				return JsV.TRUE;
+			;;
+			is 'f'
+				call Word: 'false' 5;
+				return JsV.FALSE;
+			;;
+			is 'n'
+				call Word: 'null' 4;
+				return JsV.NULL;
+			;;
+		;;
+	[end: (NumberValue)]
+
+	[Word: ptr<u8> w: 0; u32 n: 0;]
+		while u32 i: 0; i < n; i++;
+			if pos >= src_len or src:pos is not w:i
+				call Fail;
+			;;
+			pos++;
+		;;
+	[end]
+
+	[NumberValue]
+		u32 start: pos;
+		bln neg: false;
+		if pos < src_len and src:pos is '-'
+			neg is true;
+			pos++;
+		;;
+		if pos >= src_len
+			call Fail;
+		;;
+		u32 first: pos;
+		if src:pos is '0'
+			pos++;
+		;;
+		elif src:pos >= '1' and src:pos <= '9'
+			while pos < src_len and src:pos >= '0' and src:pos <= '9'
+				pos++;
+			;;
+		;;
+		else
+			call Fail;
+		;;
+		if pos < src_len and src:pos is '.'
+			pos++;
+			if pos >= src_len or src:pos < '0' or src:pos > '9'
+				call Fail;
+			;;
+			while pos < src_len and src:pos >= '0' and src:pos <= '9'
+				pos++;
+			;;
+		;;
+		if pos < src_len and (src:pos is 'e' or src:pos is 'E')
+			pos++;
+			if pos < src_len and (src:pos is '+' or src:pos is '-')
+				pos++;
+			;;
+			if pos >= src_len or src:pos < '0' or src:pos > '9'
+				call Fail;
+			;;
+			while pos < src_len and src:pos >= '0' and src:pos <= '9'
+				pos++;
+			;;
+		;;
+		f64 x: (WlNum.Parse: src + first pos - first);
+		if neg
+			x is x * -1.0;
+		;;
+	[end: (JsV.Num: x)]
+
+	[Hex4]
+		if pos + 4 > src_len
+			pos is src_len;
+			call Fail;
+		;;
+		u32 v: 0;
+		while int i: 0; i < 4; i++;
+			int d: (WlText.HexValue: src:pos);
+			if d < 0
+				call Fail;
+			;;
+			v is v * 16 + d as u32;
+			pos++;
+		;;
+	[end: v]
+
+	# with no escapes the bytes can be taken as they are, which is nearly always
+	[StringValue]
+		pos++;
+		u32 start: pos;
+		while pos < src_len
+			u32 c: src:pos;
+			if c is '"'
+				ptr<JsStr> plain: (JsStrs.New: src + start pos - start);
+				pos++;
+				return plain;
+			;;
+			if c is 92
+				break;
+			;;
+			if c < 32
+				call Fail;
+			;;
+			pos++;
+		;;
+		if pos >= src_len
+			call Fail;
+		;;
+		WlBuf b;
+		call b.AddN: src + start pos - start;
+		while true
+			if pos >= src_len
+				call b.Free;
+				call Fail;
+			;;
+			u32 ch: src:pos;
+			if ch is '"'
+				pos++;
+				break;
+			;;
+			if ch < 32
+				call b.Free;
+				call Fail;
+			;;
+			if ch is not 92
+				call b.Add: ch as u8;
+				pos++;
+				continue;
+			;;
+			pos++;
+			if pos >= src_len
+				call b.Free;
+				call Fail;
+			;;
+			u32 e: src:pos;
+			pos++;
+			when e
+				is '"' '/'
+					call b.Add: e as u8;
+				;;
+				is 92
+					call b.Add: 92;
+				;;
+				is 'b'
+					call b.Add: 8;
+				;;
+				is 'f'
+					call b.Add: 12;
+				;;
+				is 'n'
+					call b.Add: 10;
+				;;
+				is 'r'
+					call b.Add: 13;
+				;;
+				is 't'
+					call b.Add: 9;
+				;;
+				is 'u'
+					call JsStrs.BufAddUnit: addr b (Hex4);
+				;;
+				else
+					pos--;
+					call b.Free;
+					call Fail;
+				;;
+			;;
+		;;
+		ptr<JsStr> s: (JsStrs.New: b.data b.len);
+		call b.Free;
+	[end: s]
+
+	[ArrayValue]
+		call WlStack.Check;
+		pos++;
+		ptr<JsObj> a: (JsObjs.NewArray: 0);
+		call SkipSpace;
+		if pos < src_len and src:pos is ']'
+			pos++;
+			return (JsV.Obj: a);
+		;;
+		while true
+			call SkipSpace;
+			call JsObjs.ArrayPush: a (Value);
+			call SkipSpace;
+			if pos >= src_len
+				call Fail;
+			;;
+			u32 c: src:pos;
+			pos++;
+			if c is ']' break;
+			if c is not ','
+				pos--;
+				call Fail;
+			;;
+		;;
+	[end: (JsV.Obj: a)]
+
+	[ObjectValue]
+		call WlStack.Check;
+		pos++;
+		ptr<JsObj> o: (JsObjs.NewObject);
+		call SkipSpace;
+		if pos < src_len and src:pos is '}'
+			pos++;
+			return (JsV.Obj: o);
+		;;
+		while true
+			call SkipSpace;
+			if pos >= src_len or src:pos is not '"'
+				call Fail;
+			;;
+			ptr<JsStr> name: (StringValue);
+			call SkipSpace;
+			if pos >= src_len or src:pos is not ':'
+				call Fail;
+			;;
+			pos++;
+			call SkipSpace;
+			u64 v: (Value);
+			call JsObjs.CreateData: o (JsObjs.KeyOfStr: name) v;
+			call SkipSpace;
+			if pos >= src_len
+				call Fail;
+			;;
+			u32 c: src:pos;
+			pos++;
+			if c is '}' break;
+			if c is not ','
+				pos--;
+				call Fail;
+			;;
+		;;
+	[end: (JsV.Obj: o)]
+
+	# InternalizeJSONProperty
+	[Revive: ptr<JsObj> holder: 0; u64 name: 0; u64 reviver: 0;]
+		call WlStack.Check;
+		u64 hv: (JsV.Obj: holder);
+		u64 k: (JsObjs.KeyOf: name);
+		u64 v: (JsObjs.Get: holder k hv);
+		if (JsV.IsObj: v)
+			ptr<JsObj> o: (JsV.AsObj: v);
+			if (JsOps.IsArray: v)
+				f64 len: (JsArrayBuiltins.LengthOf: o);
+				f64 i: 0.0;
+				while i < len
+					call ReviveOne: o (JsV.Str: (JsOps.NumToStr: i)) reviver;
+					i is i + 1.0;
+				;;
+			;;
+			else
+				ptr<JsObj> keys: (EnumerableKeys: o);
+				while u32 j: 0; j < keys.length; j++;
+					call ReviveOne: o keys.elems:j reviver;
+				;;
+			;;
+		;;
+	[end: (JsVm.Call2: reviver hv name v)]
+
+	[ReviveOne: ptr<JsObj> o: 0; u64 name: 0; u64 reviver: 0;]
+		u64 nv: (Revive: o name reviver);
+		u64 k: (JsObjs.KeyOf: name);
+		if nv is JsV.UNDEF
+			call JsObjs.Delete: o k;
+		;;
+		else
+			call JsObjs.CreateData: o k nv;
+		;;
+	[end]
+
+	# own enumerable string keys, in order
+	[EnumerableKeys: ptr<JsObj> o: 0;]
+		ptr<JsObj> all: (JsObjs.OwnKeys: o);
+		ptr<JsObj> kept: (JsObjs.NewArray: all.length);
+		JsDesc d;
+		while u32 i: 0; i < all.length; i++;
+			u64 kv: all.elems:i;
+			if (JsV.IsStr: kv)
+				if (JsObjs.GetOwn: o (JsObjs.KeyOf: kv) addr d) and (d.flags & JsObjs.E) is not 0
+					call JsObjs.ArrayPush: kept kv;
+				;;
+			;;
+		;;
+	[end: kept]
+
+	# ---- stringify ----
+
+	[Stringify: ptr<u64> args: 0; int argc: 0;]
+		JsJsonOut w;
+		w.replacer is JsV.UNDEF;
+		u64 rep: (Js.Arg: args argc 1);
+		if (JsOps.IsCallable: rep)
+			w.replacer is rep;
+		;;
+		elif (JsOps.IsArray: rep)
+			w.keep_keys is (ReplacerKeys: (JsV.AsObj: rep));
+		;;
+		u64 space: (Js.Arg: args argc 2);
+		if (JsV.IsObj: space)
+			ptr<JsObj> sb: (JsV.AsObj: space);
+			if sb.kind is JsGc.K_BOXED
+				if (JsV.IsNum: sb.slot)
+					space is (JsV.Num: (JsOps.ToNumber: space));
+				;;
+				elif (JsV.IsStr: sb.slot)
+					space is (JsV.Str: (JsOps.ToStr: space));
+				;;
+			;;
+		;;
+		if (JsV.IsNum: space)
+			f64 n: (JsOps.ToInteger: space);
+			if n > 10.0
+				n is 10.0;
+			;;
+			while int i: 0; (i as f64) < n; i++;
+				call w.gap.Add: 32;
+			;;
+		;;
+		elif (JsV.IsStr: space)
+			ptr<JsStr> gs: (JsStrs.Flat: (JsV.AsStr: space));
+			u32 take: gs.len;
+			if take > 10
+				take is 10;
+			;;
+			ptr<JsStr> cut: (JsStrs.Flat: (JsStrs.Slice: gs 0 take));
+			call w.gap.AddN: cut.data cut.bytes;
+		;;
+		w.stack is (JsObjs.NewArray: 8);
+		ptr<JsObj> wrapper: (JsObjs.NewObject);
+		u64 first: (Js.Arg: args argc 0);
+		call JsObjs.CreateData: wrapper (JsObjs.KeyOfStr: JsRt.blank) first;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		bln wrote: false;
+		if call wrote is Property: addr w (JsV.Obj: wrapper) (JsV.Str: JsRt.blank) throws err
+			call w.text.Free;
+			call w.gap.Free;
+			call w.indent.Free;
+			call Js.Rethrow: addr t err;
+		;;
+		u64 result: JsV.UNDEF;
+		if wrote
+			result is (JsV.Str: (JsStrs.New: w.text.data w.text.len));
+		;;
+		call w.text.Free;
+		call w.gap.Free;
+		call w.indent.Free;
+	[end: result]
+
+	[ReplacerKeys: ptr<JsObj> a: 0;]
+		ptr<JsObj> kept: (JsObjs.NewArray: 0);
+		u64 av: (JsV.Obj: a);
+		f64 len: (JsArrayBuiltins.LengthOf: a);
+		f64 i: 0.0;
+		while i < len
+			u64 v: (JsObjs.Get: a (JsArrayBuiltins.IndexKey: i) av);
+			u64 name: JsV.UNDEF;
+			if (JsV.IsStr: v)
+				name is v;
+			;;
+			elif (JsV.IsNum: v)
+				name is (JsV.Str: (JsOps.ToStr: v));
+			;;
+			elif (JsV.IsObj: v)
+				ptr<JsObj> vo: (JsV.AsObj: v);
+				if vo.kind is JsGc.K_BOXED and ((JsV.IsStr: vo.slot) or (JsV.IsNum: vo.slot))
+					name is (JsV.Str: (JsOps.ToStr: v));
+				;;
+			;;
+			if name is not JsV.UNDEF
+				bln dup: false;
+				while u32 j: 0; j < kept.length; j++;
+					if (JsStrs.Eq: (JsV.AsStr: kept.elems:j) (JsV.AsStr: name))
+						dup is true;
+						break;
+					;;
+				;;
+				if not dup
+					call JsObjs.ArrayPush: kept name;
+				;;
+			;;
+			i is i + 1.0;
+		;;
+	[end: kept]
+
+	# SerializeJSONProperty; false if the value isn't written at all
+	[Property: ptr<JsJsonOut> w: 0; u64 holder: 0; u64 name: 0;]
+		u64 v: (JsObjs.GetV: holder (JsObjs.KeyOf: name));
+		if (JsV.IsObj: v)
+			u64 tj: (JsObjs.GetAtom: (JsV.AsObj: v) (JsStrs.InternZ: 'toJSON') as ptr<u8> v);
+			if (JsOps.IsCallable: tj)
+				v is (JsVm.Call1: tj v name);
+			;;
+		;;
+		if w.replacer is not JsV.UNDEF
+			v is (JsVm.Call2: w.replacer holder name v);
+		;;
+		if (JsV.IsObj: v)
+			ptr<JsObj> o: (JsV.AsObj: v);
+			if o.kind is JsGc.K_BOXED
+				if (JsV.IsNum: o.slot)
+					v is (JsV.Num: (JsOps.ToNumber: v));
+				;;
+				elif (JsV.IsStr: o.slot)
+					v is (JsV.Str: (JsOps.ToStr: v));
+				;;
+				elif (JsV.IsBool: o.slot)
+					v is o.slot;
+				;;
+			;;
+		;;
+		if v is JsV.NULL
+			call w.text.AddZ: 'null';
+			return true;
+		;;
+		if v is JsV.TRUE
+			call w.text.AddZ: 'true';
+			return true;
+		;;
+		if v is JsV.FALSE
+			call w.text.AddZ: 'false';
+			return true;
+		;;
+		if (JsV.IsStr: v)
+			call Quote: addr w.text (JsV.AsStr: v);
+			return true;
+		;;
+		if (JsV.IsNum: v)
+			f64 x: (JsV.AsNum: v);
+			if x is x and (WlNum.IsFinite: x)
+				call Js.TextOf: v addr w.text;
+			;;
+			else
+				call w.text.AddZ: 'null';
+			;;
+			return true;
+		;;
+		if (JsV.IsObj: v) and not (JsOps.IsCallable: v)
+			if (JsOps.IsArray: v)
+				call WriteArray: w v;
+			;;
+			else
+				call WriteObject: w v;
+			;;
+			return true;
+		;;
+	[end: false]
+
+	[Enter: ptr<JsJsonOut> w: 0; u64 v: 0;]
+		call WlStack.Check;
+		ptr<JsObj> st: w.stack;
+		while u32 i: 0; i < st.length; i++;
+			if st.elems:i is v
+				call JsErr.Type: 'Converting circular structure to JSON';
+			;;
+		;;
+		call JsObjs.ArrayPush: st v;
+	[end]
+
+	[Leave: ptr<JsJsonOut> w: 0;]
+		ptr<JsObj> st: w.stack;
+		st.elem_len is st.elem_len - 1;
+		st.length is st.length - 1;
+	[end]
+
+	[NewLine: ptr<JsJsonOut> w: 0;]
+		call w.text.Add: 10;
+		call w.text.AddN: w.indent.data w.indent.len;
+	[end]
+
+	[WriteObject: ptr<JsJsonOut> w: 0; u64 v: 0;]
+		call Enter: w v;
+		ptr<JsObj> o: (JsV.AsObj: v);
+		ptr<JsObj> keys: w.keep_keys;
+		if keys is 0
+			keys is (EnumerableKeys: o);
+		;;
+		u32 outer: w.indent.len;
+		call w.indent.AddN: w.gap.data w.gap.len;
+		call w.text.Add: '{';
+		bln any: false;
+		while u32 i: 0; i < keys.length; i++;
+			u64 name: keys.elems:i;
+			# what's written so far stays if this one turns out to be skipped
+			u32 mark: w.text.len;
+			if any
+				call w.text.Add: ',';
+			;;
+			if w.gap.len > 0
+				call NewLine: w;
+			;;
+			call Quote: addr w.text (JsV.AsStr: name);
+			call w.text.Add: ':';
+			if w.gap.len > 0
+				call w.text.Add: 32;
+			;;
+			if (Property: w v name)
+				any is true;
+			;;
+			else
+				w.text.len is mark;
+				w.text.data:mark is 0;
+			;;
+		;;
+		w.indent.len is outer;
+		if w.indent.data is not 0
+			w.indent.data:outer is 0;
+		;;
+		if any and w.gap.len > 0
+			call NewLine: w;
+		;;
+		call w.text.Add: '}';
+		call Leave: w;
+	[end]
+
+	[WriteArray: ptr<JsJsonOut> w: 0; u64 v: 0;]
+		call Enter: w v;
+		ptr<JsObj> o: (JsV.AsObj: v);
+		f64 len: (JsArrayBuiltins.LengthOf: o);
+		u32 outer: w.indent.len;
+		call w.indent.AddN: w.gap.data w.gap.len;
+		call w.text.Add: '[';
+		f64 i: 0.0;
+		while i < len
+			call Js.Checkpoint;
+			if i > 0.0
+				call w.text.Add: ',';
+			;;
+			if w.gap.len > 0
+				call NewLine: w;
+			;;
+			if not (Property: w v (JsV.Str: (JsOps.NumToStr: i)))
+				call w.text.AddZ: 'null';
+			;;
+			i is i + 1.0;
+		;;
+		w.indent.len is outer;
+		if w.indent.data is not 0
+			w.indent.data:outer is 0;
+		;;
+		if len > 0.0 and w.gap.len > 0
+			call NewLine: w;
+		;;
+		call w.text.Add: ']';
+		call Leave: w;
+	[end]
+
+	# QuoteJSONString: a lone surrogate comes out as \uXXXX, so what's written is always good UTF-8
+	[Quote: ptr<WlBuf> b: 0; ptr<JsStr> s: 0;]
+		call JsStrs.Flat: s;
+		call b.Add: '"';
+		ptr<u8> p: s.data;
+		u32 n: s.bytes;
+		u32 i: 0;
+		u32 run: 0;
+		while i < n
+			u32 c: p:i;
+			if c >= 32 and c is not '"' and c is not 92 and c < 0xED
+				i++;
+				continue;
+			;;
+			if c > 0xED
+				i++;
+				continue;
+			;;
+			if c is 0xED
+				if i + 2 < n and p:(i + 1) >= 0xA0
+					call b.AddN: p + run i - run;
+					u32 unit: 0xD000 | ((p:(i + 1) & 63) << 6) | (p:(i + 2) & 63);
+					call AddU: b unit;
+					i++ 3;
+					run is i;
+					continue;
+				;;
+				i++;
+				continue;
+			;;
+			call b.AddN: p + run i - run;
+			i++;
+			run is i;
+			when c
+				is '"'
+					call b.AddZ: '\\"';
+				;;
+				is 92
+					call b.AddZ: '\\\\';
+				;;
+				is 8
+					call b.AddZ: '\\b';
+				;;
+				is 12
+					call b.AddZ: '\\f';
+				;;
+				is 10
+					call b.AddZ: '\\n';
+				;;
+				is 13
+					call b.AddZ: '\\r';
+				;;
+				is 9
+					call b.AddZ: '\\t';
+				;;
+				else
+					call AddU: b c;
+				;;
+			;;
+		;;
+		call b.AddN: p + run n - run;
+		call b.Add: '"';
+	[end]
+
+	[AddU: ptr<WlBuf> b: 0; u32 unit: 0;]
+		call b.AddZ: '\\u';
+		call b.Add: (WlNum.DigitChar: (unit >> 12) & 15) as u8;
+		call b.Add: (WlNum.DigitChar: (unit >> 8) & 15) as u8;
+		call b.Add: (WlNum.DigitChar: (unit >> 4) & 15) as u8;
+		call b.Add: (WlNum.DigitChar: unit & 15) as u8;
+	[end]
+}

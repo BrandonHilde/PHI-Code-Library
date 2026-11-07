@@ -1,0 +1,702 @@
+# The rest of String. Anything taking a pattern hands over to its Symbol.match, .replace and so on, which is
+# how RegExp comes in; text is by UTF-16 units, as JS sees it, through JsStrs.
+
+phi.JsStringMore:Library
+{
+	const u32 SEARCH_INCLUDES: 0;
+	const u32 SEARCH_STARTS: 1;
+	const u32 SEARCH_ENDS: 2;
+
+	[Init]
+		ptr<JsObj> p: JsRt.P.string;
+		ptr<JsProp> cp: (JsObjs.Find: p JsRt.A.constructor as ptr<u8>);
+		ptr<JsObj> c: (JsV.AsObj: cp.value);
+		call Js.DefineNative: c 'fromCodePoint' addr FromCodePoint 1;
+		call Js.DefineNative: c 'raw' addr Raw 1;
+		call Js.DefineNative: p 'at' addr At 1;
+		call Js.DefineNative: p 'codePointAt' addr CodePointAt 1;
+		call Js.DefineNative: p 'concat' addr Concat 1;
+		call Js.DefineNative: p 'lastIndexOf' addr LastIndexOf 1;
+		call Js.DefineNative: p 'localeCompare' addr LocaleCompare 1;
+		call Js.DefineNative: p 'normalize' addr Normalize 0;
+		call Js.DefineNative: p 'repeat' addr Repeat 1;
+		call Js.DefineNative: p 'substring' addr Substring 2;
+		call Js.DefineNative: p 'substr' addr Substr 2;
+		call Js.DefineNative: p 'isWellFormed' addr IsWellFormed 0;
+		call Js.DefineNative: p 'toWellFormed' addr ToWellFormed 0;
+		ptr<JsNativeFn> f: 0;
+		f is (Js.DefineNative: p 'includes' addr SearchFn 1);
+		f.magic is SEARCH_INCLUDES;
+		f is (Js.DefineNative: p 'startsWith' addr SearchFn 1);
+		f.magic is SEARCH_STARTS;
+		f is (Js.DefineNative: p 'endsWith' addr SearchFn 1);
+		f.magic is SEARCH_ENDS;
+		f is (Js.DefineNative: p 'padStart' addr Pad 1);
+		f.magic is 0;
+		f is (Js.DefineNative: p 'padEnd' addr Pad 1);
+		f.magic is 1;
+		f is (Js.DefineNative: p 'trim' addr TrimFn 0);
+		f.magic is 3;
+		ptr<JsNativeFn> ts: (Js.DefineNative: p 'trimStart' addr TrimFn 0);
+		ts.magic is 1;
+		ptr<JsNativeFn> te: (Js.DefineNative: p 'trimEnd' addr TrimFn 0);
+		te.magic is 2;
+		call JsObjs.DefineZ: p 'trimLeft' (JsV.Obj: ts as ptr<JsObj>) JsObjs.WC;
+		call JsObjs.DefineZ: p 'trimRight' (JsV.Obj: te as ptr<JsObj>) JsObjs.WC;
+		f is (Js.DefineNative: p 'toLowerCase' addr ChangeCase 0);
+		f.magic is 0;
+		f is (Js.DefineNative: p 'toLocaleLowerCase' addr ChangeCase 0);
+		f.magic is 0;
+		f is (Js.DefineNative: p 'toUpperCase' addr ChangeCase 0);
+		f.magic is 1;
+		f is (Js.DefineNative: p 'toLocaleUpperCase' addr ChangeCase 0);
+		f.magic is 1;
+		# by pattern
+		f is (Js.DefineNative: p 'match' addr ByPattern 1);
+		f.magic is 0;
+		f is (Js.DefineNative: p 'matchAll' addr ByPattern 1);
+		f.magic is 1;
+		f is (Js.DefineNative: p 'search' addr ByPattern 1);
+		f.magic is 2;
+		call Js.DefineNativeSafe: p 'replace' addr Replace 2;
+		ptr<JsNativeFn> ra: (Js.DefineNativeSafe: p 'replaceAll' addr Replace 2);
+		ra.magic is 1;
+		call Js.DefineNative: p 'split' addr Split 2;
+	[end]
+
+	[This: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if t is JsV.UNDEF or t is JsV.NULL
+			call JsErr.Type: 'String.prototype method called on null or undefined';
+		;;
+	[end: (JsOps.ToStr: t)]
+
+	# the units from..upto of a string, added as UTF-8
+	[AddUnits: ptr<WlBuf> b: 0; ptr<JsStr> s: 0; u32 from: 0; u32 upto: 0;]
+		if from >= upto return;
+		ptr<JsStr> piece: (JsStrs.Flat: (JsStrs.Slice: s from upto));
+		call b.AddN: piece.data piece.bytes;
+	[end]
+
+	[FromCodePoint: ptr<u64> args: 0; int argc: 0;]
+		WlBuf b;
+		while int i: 0; i < argc; i++;
+			f64 x: (JsOps.ToNumber: args:i);
+			if x is not x or x < 0.0 or x > 1114111.0 or (Float.Floor: x) is not x
+				call b.Free;
+				call JsErr.Range: 'Invalid code point';
+			;;
+			u32 cp: x as u32;
+			if cp >= 0xD800 and cp <= 0xDFFF
+				call JsStrs.BufAddUnit: addr b cp;
+			;;
+			else
+				call b.AddCode: cp;
+			;;
+		;;
+		u64 r: (JsV.Str: (JsStrs.FromBuf: addr b));
+		call b.Free;
+	[end: r]
+
+	[Raw: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> cooked: (JsOps.ToObject: (Js.Arg: args argc 0));
+		u64 rawv: (JsObjs.GetV: (JsV.Obj: cooked) (JsObjs.KeyZ: 'raw'));
+		ptr<JsObj> raw: (JsOps.ToObject: rawv);
+		f64 len: (JsArrayBuiltins.LengthOf: raw);
+		WlBuf b;
+		f64 i: 0.0;
+		while i < len
+			call Js.Checkpoint;
+			call Js.TextOf: (JsObjs.Get: raw (JsArrayBuiltins.IndexKey: i) (JsV.Obj: raw)) addr b;
+			if i + 1.0 < len and (i as int) + 1 < argc
+				call Js.TextOf: args:((i as int) + 1) addr b;
+			;;
+			i is i + 1.0;
+		;;
+		u64 r: (JsV.Str: (JsStrs.FromBuf: addr b));
+		call b.Free;
+	[end: r]
+
+	[At: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (This: args);
+		f64 rel: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		f64 k: rel;
+		if rel < 0.0
+			k is (s.len as f64) + rel;
+		;;
+		if k < 0.0 or k >= (s.len as f64)
+			return JsV.UNDEF;
+		;;
+	[end: (JsV.Str: (JsStrs.FromUnit: (JsStrs.UnitAt: s k as u32)))]
+
+	[CodePointAt: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (This: args);
+		f64 i: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		if i < 0.0 or i >= (s.len as f64)
+			return JsV.UNDEF;
+		;;
+	[end: (JsV.Uint: (JsStrs.CodeAt: s i as u32))]
+
+	[Concat: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (This: args);
+		while int i: 0; i < argc; i++;
+			s is (JsStrs.Concat: s (JsOps.ToStr: args:i));
+		;;
+	[end: (JsV.Str: s)]
+
+	[LastIndexOf: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (This: args);
+		ptr<JsStr> needle: (JsOps.ToStr: (Js.Arg: args argc 0));
+		f64 num: (JsOps.ToNumber: (Js.Arg: args argc 1));
+		f64 pos: 4294967295.0;
+		if num is num
+			pos is (JsOps.ToInteger: (JsV.Num: num));
+		;;
+		if needle.len > s.len
+			return (JsV.Int: -1);
+		;;
+		f64 most: (s.len - needle.len) as f64;
+		if pos > most
+			pos is most;
+		;;
+		if pos < 0.0
+			pos is 0.0;
+		;;
+		int i: pos as int;
+		u32 m: needle.len;
+		while i >= 0
+			bln same: true;
+			while u32 j: 0; j < m; j++;
+				if (JsStrs.UnitAt: s (i as u32) + j) is not (JsStrs.UnitAt: needle j)
+					same is false;
+					break;
+				;;
+			;;
+			if same
+				return (JsV.Int: i);
+			;;
+			i--;
+		;;
+	[end: (JsV.Int: -1)]
+
+	[LocaleCompare: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (This: args);
+		ptr<JsStr> other: (JsOps.ToStr: (Js.Arg: args argc 0));
+	[end: (JsV.Int: (JsStrs.Compare: s other))]
+
+	# There are no normalization tables here, so text comes back as it was, which is right for text already in
+	# that form: nearly all of it. A bad form name is still an error.
+	[Normalize: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (This: args);
+		u64 fv: (Js.Arg: args argc 0);
+		if fv is not JsV.UNDEF
+			ptr<JsStr> form: (JsOps.ToStr: fv);
+			if not (JsStrs.EqZ: form 'NFC') and not (JsStrs.EqZ: form 'NFD') and not (JsStrs.EqZ: form 'NFKC') and not (JsStrs.EqZ: form 'NFKD')
+				call JsErr.Range: 'The normalization form should be one of NFC, NFD, NFKC, NFKD';
+			;;
+		;;
+	[end: (JsV.Str: s)]
+
+	[Repeat: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsStrs.Flat: (This: args));
+		f64 n: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		if n < 0.0 or not (WlNum.IsFinite: n)
+			call JsErr.Range: 'Invalid count value';
+		;;
+		if n is 0.0 or s.bytes is 0
+			return (JsV.Str: JsRt.blank);
+		;;
+		if (s.bytes as f64) * n >= (JsStrs.MAX_BYTES as f64)
+			call JsErr.Range: 'Invalid string length';
+		;;
+		WlBuf b;
+		call b.Reserve: s.bytes * (n as u32);
+		while u32 i: 0; i < n as u32; i++;
+			call b.AddN: s.data s.bytes;
+		;;
+		u64 r: (JsV.Str: (JsStrs.FromBuf: addr b));
+		call b.Free;
+	[end: r]
+
+	[Substring: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (This: args);
+		f64 len: s.len as f64;
+		f64 a: (Clamp: (JsOps.ToInteger: (Js.Arg: args argc 0)) len);
+		f64 b: len;
+		if (Js.Arg: args argc 1) is not JsV.UNDEF
+			b is (Clamp: (JsOps.ToInteger: args:1) len);
+		;;
+		if a > b
+			f64 swap: a;
+			a is b;
+			b is swap;
+		;;
+	[end: (JsV.Str: (JsStrs.Slice: s a as u32 b as u32))]
+
+	[Clamp: f64 x: 0.0; f64 most: 0.0;]
+		if x < 0.0 return 0.0;
+		if x > most return most;
+	[end: x]
+
+	[Substr: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (This: args);
+		f64 len: s.len as f64;
+		f64 from: (JsOps.RelativeIndex: (Js.Arg: args argc 0) len 0.0);
+		f64 count: len - from;
+		if (Js.Arg: args argc 1) is not JsV.UNDEF
+			count is (JsOps.ToInteger: args:1);
+		;;
+		if count <= 0.0
+			return (JsV.Str: JsRt.blank);
+		;;
+		f64 upto: from + count;
+		if upto > len
+			upto is len;
+		;;
+	[end: (JsV.Str: (JsStrs.Slice: s from as u32 upto as u32))]
+
+	[IsLone: ptr<JsStr> s: 0; u32 i: 0;]
+		u32 cp: (JsStrs.CodeAt: s i);
+	[end: cp >= 0xD800 and cp <= 0xDFFF]
+
+	[IsWellFormed: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsStrs.Flat: (This: args));
+		if (s.flags & JsStrs.F_ASCII) is not 0
+			return JsV.TRUE;
+		;;
+		u32 i: 0;
+		while i < s.len
+			if (IsLone: s i)
+				return JsV.FALSE;
+			;;
+			i++ JsStrs.units_taken;
+		;;
+	[end: JsV.TRUE]
+
+	[ToWellFormed: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsStrs.Flat: (This: args));
+		if (s.flags & JsStrs.F_ASCII) is not 0
+			return (JsV.Str: s);
+		;;
+		WlBuf b;
+		u32 i: 0;
+		while i < s.len
+			u32 cp: (JsStrs.CodeAt: s i);
+			if cp >= 0xD800 and cp <= 0xDFFF
+				cp is 0xFFFD;
+			;;
+			call b.AddCode: cp;
+			i++ JsStrs.units_taken;
+		;;
+		u64 r: (JsV.Str: (JsStrs.FromBuf: addr b));
+		call b.Free;
+	[end: r]
+
+	# includes, startsWith, endsWith
+	[SearchFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u32 kind: self.magic;
+		ptr<JsStr> s: (This: args);
+		u64 nv: (Js.Arg: args argc 0);
+		if (JsRegExp.LooksLikeRe: nv)
+			call JsErr.Type: 'First argument must not be a regular expression';
+		;;
+		ptr<JsStr> needle: (JsOps.ToStr: nv);
+		f64 len: s.len as f64;
+		f64 pos: 0.0;
+		if kind is SEARCH_ENDS
+			pos is len;
+		;;
+		if (Js.Arg: args argc 1) is not JsV.UNDEF
+			pos is (Clamp: (JsOps.ToInteger: args:1) len);
+		;;
+		if kind is SEARCH_INCLUDES
+			return (JsV.Bool: (JsStrs.IndexOf: s needle pos as u32) >= 0);
+		;;
+		f64 start: pos;
+		if kind is SEARCH_ENDS
+			start is pos - (needle.len as f64);
+		;;
+		if start < 0.0 or start + (needle.len as f64) > len
+			return JsV.FALSE;
+		;;
+		u32 st: start as u32;
+		while u32 i: 0; i < needle.len; i++;
+			if (JsStrs.UnitAt: s st + i) is not (JsStrs.UnitAt: needle i)
+				return JsV.FALSE;
+			;;
+		;;
+	[end: JsV.TRUE]
+
+	[Pad: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		bln at_end: self.magic is 1;
+		ptr<JsStr> s: (This: args);
+		f64 want: (JsOps.ToLength: (Js.Arg: args argc 0));
+		if want <= (s.len as f64)
+			return (JsV.Str: s);
+		;;
+		ptr<JsStr> filler: 0;
+		if (Js.Arg: args argc 1) is JsV.UNDEF
+			filler is (JsV.AsStr: (Js.NewStringZ: ' '));
+		;;
+		else
+			filler is (JsOps.ToStr: args:1);
+		;;
+		if filler.len is 0
+			return (JsV.Str: s);
+		;;
+		if want >= (JsStrs.MAX_BYTES as f64)
+			call JsErr.Range: 'Invalid string length';
+		;;
+		u32 need: (want as u32) - s.len;
+		call JsStrs.Flat: s;
+		WlBuf b;
+		if at_end
+			call b.AddN: s.data s.bytes;
+		;;
+		u32 wrote: 0;
+		while wrote + filler.len <= need
+			call JsStrs.Flat: filler;
+			call b.AddN: filler.data filler.bytes;
+			wrote is wrote + filler.len;
+		;;
+		if wrote < need
+			call AddUnits: addr b filler 0 need - wrote;
+		;;
+		if not at_end
+			call b.AddN: s.data s.bytes;
+		;;
+		u64 r: (JsV.Str: (JsStrs.FromBuf: addr b));
+		call b.Free;
+	[end: r]
+
+	[TrimFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<JsStr> s: (This: args);
+		call JsOps.Trim: s (self.magic & 1) is not 0 (self.magic & 2) is not 0;
+		if JsOps.trim_start is 0 and JsOps.trim_len is s.bytes
+			return (JsV.Str: s);
+		;;
+	[end: (JsV.Str: (JsStrs.New: s.data + JsOps.trim_start JsOps.trim_len))]
+
+	[IsCased: u32 c: 0;]
+	[end: (JsCase.Lower: c) is not c or (JsCase.Upper: c) is not c]
+
+	[ChangeCase: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		bln upper: self.magic is 1;
+		ptr<JsStr> s: (JsStrs.Flat: (This: args));
+		WlBuf b;
+		if (s.flags & JsStrs.F_ASCII) is not 0
+			call b.Reserve: s.bytes;
+			ptr<u8> p: s.data;
+			while u32 i: 0; i < s.bytes; i++;
+				u32 c: p:i;
+				if upper
+					if c >= 97 and c <= 122
+						c is c - 32;
+					;;
+				;;
+				elif c >= 65 and c <= 90
+					c is c + 32;
+				;;
+				call b.Add: c as u8;
+			;;
+		;;
+		else
+			u32 at_: 0;
+			while at_ < s.len
+				u32 cp: (JsStrs.CodeAt: s at_);
+				u32 taken: JsStrs.units_taken;
+				call AddChanged: addr b s at_ cp upper;
+				at_ is at_ + taken;
+			;;
+		;;
+		u64 r: (JsV.Str: (JsStrs.FromBuf: addr b));
+		call b.Free;
+	[end: r]
+
+	[AddChanged: ptr<WlBuf> b: 0; ptr<JsStr> s: 0; u32 at_: 0; u32 cp: 0; bln upper: false;]
+		if cp >= 0xD800 and cp <= 0xDFFF
+			call JsStrs.BufAddUnit: b cp;
+			return;
+		;;
+		ptr<u32> t: addr JsCaseData.lower_special:0;
+		u32 tn: JsCaseData.lower_special.len;
+		if upper
+			t is addr JsCaseData.upper_special:0;
+			tn is JsCaseData.upper_special.len;
+		;;
+		int sp: (JsCase.Special: t tn cp);
+		if sp >= 0
+			call b.AddCode: t:(sp + 1);
+			if t:(sp + 2) is not 0
+				call b.AddCode: t:(sp + 2);
+			;;
+			if t:(sp + 3) is not 0
+				call b.AddCode: t:(sp + 3);
+			;;
+			return;
+		;;
+		if not upper and cp is 0x3A3
+			# a capital sigma at the end of a word is the final form
+			bln before: at_ > 0 and (IsCased: (JsStrs.UnitAt: s at_ - 1));
+			bln after: at_ + 1 < s.len and (IsCased: (JsStrs.UnitAt: s at_ + 1));
+			if before and not after
+				call b.AddCode: 0x3C2;
+				return;
+			;;
+		;;
+		if upper
+			call b.AddCode: (JsCase.Upper: cp);
+		;;
+		else
+			call b.AddCode: (JsCase.Lower: cp);
+		;;
+	[end]
+
+	# match, matchAll and search: the pattern's method if it has one, or a new RegExp's
+	[ByPattern: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u32 kind: self.magic;
+		u64 t: args:(-1);
+		if t is JsV.UNDEF or t is JsV.NULL
+			call JsErr.Type: 'String.prototype method called on null or undefined';
+		;;
+		u64 pattern: (Js.Arg: args argc 0);
+		ptr<JsSym> sym: JsRt.S.match;
+		if kind is 1
+			sym is JsRt.S.matchAll;
+		;;
+		elif kind is 2
+			sym is JsRt.S.search;
+		;;
+		if (JsV.IsObj: pattern)
+			if kind is 1 and (JsRegExp.LooksLikeRe: pattern)
+				ptr<JsStr> fl: (JsOps.ToStr: (JsObjs.GetV: pattern (JsObjs.KeyZ: 'flags')));
+				if not (JsRegExp.HasFlag: fl 'g')
+					call JsErr.Type: 'String.prototype.matchAll called with a non-global RegExp argument';
+				;;
+			;;
+			u64 m: (JsOps.GetMethod: pattern sym as ptr<u8>);
+			if m is not JsV.UNDEF
+				return (JsVm.Call1: m pattern t);
+			;;
+		;;
+		ptr<JsStr> s: (JsOps.ToStr: t);
+		ptr<JsStr> ps: JsRt.blank;
+		if pattern is not JsV.UNDEF
+			ps is (JsOps.ToStr: pattern);
+		;;
+		ptr<JsStr> flags: JsRt.blank;
+		if kind is 1
+			flags is (JsV.AsStr: (Js.NewStringZ: 'g'));
+		;;
+		ptr<JsObj> re: (JsRegExp.Create: ps flags JsRt.P.regexp);
+		u64 rv: (JsV.Obj: re);
+		u64 own: (JsObjs.GetV: rv (JsV.Sym: sym));
+	[end: (JsVm.Call1: own rv (JsV.Str: s))]
+
+	# what a replacement string says, added to b. caps is an array of the captures; named is the groups object.
+	[Substitute: ptr<WlBuf> b: 0; ptr<JsStr> matched: 0; ptr<JsStr> s: 0; u32 where: 0; ptr<JsObj> caps: 0; u64 named: 0; ptr<JsStr> rep: 0;]
+		call JsStrs.Flat: rep;
+		ptr<u8> r: rep.data;
+		u32 n: rep.bytes;
+		u32 m: caps.length;
+		u32 i: 0;
+		u32 tail_from: where + matched.len;
+		while i < n
+			u32 c: r:i;
+			if c is not '$' or i + 1 >= n
+				call b.Add: c as u8;
+				i++;
+				continue;
+			;;
+			u32 d: r:(i + 1);
+			if d is '$'
+				call b.Add: '$';
+				i++ 2;
+			;;
+			elif d is '&'
+				call AddUnits: b matched 0 matched.len;
+				i++ 2;
+			;;
+			elif d is 96
+				call AddUnits: b s 0 where;
+				i++ 2;
+			;;
+			elif d is 39
+				if tail_from < s.len
+					call AddUnits: b s tail_from s.len;
+				;;
+				i++ 2;
+			;;
+			elif d >= '0' and d <= '9'
+				u32 number: d - '0';
+				u32 used: 2;
+				if i + 2 < n and r:(i + 2) >= '0' and r:(i + 2) <= '9'
+					u32 two: number * 10 + (r:(i + 2) - '0');
+					if two >= 1 and two <= m
+						number is two;
+						used is 3;
+					;;
+				;;
+				if number >= 1 and number <= m
+					u64 cv: caps.elems:(number - 1);
+					if cv is not JsV.UNDEF
+						call Js.TextOf: cv b;
+					;;
+					i++ used;
+				;;
+				else
+					call b.Add: '$';
+					i++;
+				;;
+			;;
+			elif d is '<' and named is not JsV.UNDEF
+				u32 close: i + 2;
+				while close < n and r:close is not '>'
+					close++;
+				;;
+				if close >= n
+					call b.Add: '$';
+					i++;
+				;;
+				else
+					u64 key: (JsObjs.KeyOfStr: (JsStrs.New: r + i + 2 close - (i + 2)));
+					u64 cv2: (JsObjs.GetV: named key);
+					if cv2 is not JsV.UNDEF
+						call Js.TextOf: cv2 b;
+					;;
+					i is close + 1;
+				;;
+			;;
+			else
+				call b.Add: '$';
+				i++;
+			;;
+		;;
+	[end]
+
+	[Replace: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		bln all: self.magic is 1;
+		u64 t: args:(-1);
+		if t is JsV.UNDEF or t is JsV.NULL
+			call JsErr.Type: 'String.prototype.replace called on null or undefined';
+		;;
+		u64 pattern: (Js.Arg: args argc 0);
+		u64 rep: (Js.Arg: args argc 1);
+		if (JsV.IsObj: pattern)
+			if all and (JsRegExp.LooksLikeRe: pattern)
+				ptr<JsStr> fl: (JsOps.ToStr: (JsObjs.GetV: pattern (JsObjs.KeyZ: 'flags')));
+				if not (JsRegExp.HasFlag: fl 'g')
+					call JsErr.Type: 'replaceAll must be called with a global RegExp';
+				;;
+			;;
+			u64 m: (JsOps.GetMethod: pattern JsRt.S.replace as ptr<u8>);
+			if m is not JsV.UNDEF
+				return (JsVm.Call2: m pattern t rep);
+			;;
+		;;
+		ptr<JsStr> s: (JsOps.ToStr: t);
+		call Js.Push: (JsV.Str: s);
+		ptr<JsStr> needle: (JsOps.ToStr: pattern);
+		call Js.Push: (JsV.Str: needle);
+		bln functional: (JsOps.IsCallable: rep);
+		ptr<JsStr> rep_s: JsRt.blank;
+		if not functional
+			rep_s is (JsOps.ToStr: rep);
+			call Js.Push: (JsV.Str: rep_s);
+		;;
+		ptr<JsObj> no_caps: (JsObjs.NewArray: 0);
+		call Js.Push: (JsV.Obj: no_caps);
+		WlBuf output;
+		u32 from: 0;
+		u32 search_from: 0;
+		bln any: false;
+		while true
+			int at_: (JsStrs.IndexOf: s needle search_from);
+			if at_ < 0 break;
+			any is true;
+			call AddUnits: addr output s from at_ as u32;
+			if functional
+				ptr<u64> mark: JsVm.sp;
+				call Js.Push: (JsV.Str: needle);
+				call Js.Push: (JsV.Int: at_);
+				call Js.Push: (JsV.Str: s);
+				u64 made: (Js.CallThrowing: rep JsV.UNDEF 3);
+				JsVm.sp is mark;
+				call Js.TextOf: made addr output;
+			;;
+			else
+				call Substitute: addr output needle s at_ as u32 no_caps JsV.UNDEF rep_s;
+			;;
+			from is (at_ as u32) + needle.len;
+			if not all break;
+			search_from is from;
+			if needle.len is 0
+				search_from is from + 1;
+				if search_from > s.len break;
+			;;
+		;;
+		if not any
+			call output.Free;
+			return (JsV.Str: s);
+		;;
+		call AddUnits: addr output s from s.len;
+		u64 result: (JsV.Str: (JsStrs.FromBuf: addr output));
+		call output.Free;
+	[end: result]
+
+	[Split: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if t is JsV.UNDEF or t is JsV.NULL
+			call JsErr.Type: 'String.prototype.split called on null or undefined';
+		;;
+		u64 sep: (Js.Arg: args argc 0);
+		u64 limit_v: (Js.Arg: args argc 1);
+		if (JsV.IsObj: sep)
+			u64 m: (JsOps.GetMethod: sep JsRt.S.split as ptr<u8>);
+			if m is not JsV.UNDEF
+				return (JsVm.Call2: m sep t limit_v);
+			;;
+		;;
+		ptr<JsStr> s: (JsOps.ToStr: t);
+		u32 lim: 4294967295;
+		if limit_v is not JsV.UNDEF
+			lim is (JsOps.ToUint32: limit_v);
+		;;
+		ptr<JsStr> needle: (JsOps.ToStr: sep);
+		ptr<JsObj> a: (JsObjs.NewArray: 0);
+		if lim is 0
+			return (JsV.Obj: a);
+		;;
+		if sep is JsV.UNDEF
+			call JsObjs.ArrayPush: a (JsV.Str: s);
+			return (JsV.Obj: a);
+		;;
+		if needle.len is 0
+			u32 count: s.len;
+			if count > lim
+				count is lim;
+			;;
+			while u32 i: 0; i < count; i++;
+				call JsObjs.ArrayPush: a (JsV.Str: (JsStrs.FromUnit: (JsStrs.UnitAt: s i)));
+			;;
+			return (JsV.Obj: a);
+		;;
+		u32 from: 0;
+		while true
+			int at_: (JsStrs.IndexOf: s needle from);
+			if at_ < 0 break;
+			call JsObjs.ArrayPush: a (JsV.Str: (JsStrs.Slice: s from at_ as u32));
+			if a.length is lim
+				return (JsV.Obj: a);
+			;;
+			from is (at_ as u32) + needle.len;
+		;;
+		call JsObjs.ArrayPush: a (JsV.Str: (JsStrs.Slice: s from s.len));
+	[end: (JsV.Obj: a)]
+}

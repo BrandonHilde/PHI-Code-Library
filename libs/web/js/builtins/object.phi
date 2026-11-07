@@ -1,0 +1,401 @@
+# Object: the essentials. Another file can add the rest with Js.DefineNative on the constructor.
+
+phi.JsObjectBuiltins:Library
+{
+	[Init]
+		ptr<JsObj> proto: JsRt.P.object;
+		ptr<JsNativeFn> c: (Js.DefineClass: 'Object' addr Construct 1 proto);
+		ptr<JsObj> o: c as ptr<JsObj>;
+		call Js.DefineNative: o 'create' addr Create 2;
+		call Js.DefineNative: o 'keys' addr Keys 1;
+		call Js.DefineNative: o 'getOwnPropertyNames' addr GetOwnNames 1;
+		call Js.DefineNative: o 'getOwnPropertySymbols' addr GetOwnSymbols 1;
+		call Js.DefineNative: o 'defineProperty' addr DefineProperty 3;
+		call Js.DefineNative: o 'defineProperties' addr DefineProperties 2;
+		call Js.DefineNative: o 'getPrototypeOf' addr GetPrototypeOf 1;
+		call Js.DefineNative: o 'setPrototypeOf' addr SetPrototypeOf 2;
+		call Js.DefineNative: o 'getOwnPropertyDescriptor' addr GetOwnPropertyDescriptor 2;
+		call Js.DefineNative: o 'preventExtensions' addr PreventExtensions 1;
+		call Js.DefineNative: o 'isExtensible' addr IsExtensible 1;
+		call Js.DefineNative: o 'freeze' addr Freeze 1;
+		call Js.DefineNative: o 'isFrozen' addr IsFrozen 1;
+		call Js.DefineNative: o 'seal' addr Seal 1;
+		call Js.DefineNative: o 'is' addr IsSame 2;
+		call Js.DefineNative: proto 'hasOwnProperty' addr HasOwnProperty 1;
+		call Js.DefineNative: proto 'isPrototypeOf' addr IsPrototypeOf 1;
+		call Js.DefineNative: proto 'propertyIsEnumerable' addr PropertyIsEnumerable 1;
+		call Js.DefineNative: proto 'toString' addr ToString 0;
+		call Js.DefineNative: proto 'toLocaleString' addr ToLocaleString 0;
+		call Js.DefineNative: proto 'valueOf' addr ValueOf 0;
+		call Js.DefineGetter: proto '__proto__' addr ProtoGet addr ProtoSet;
+	[end]
+
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if (JsV.IsObj: nt) and (JsV.AsObj: nt) is not (Js.CalleeOf: args) as ptr<JsObj>
+			return (JsV.Obj: (JsObjs.NewWithProto: (JsOps.ProtoFromCtor: nt JsRt.P.object)));
+		;;
+		u64 v: (Js.Arg: args argc 0);
+		if v is JsV.UNDEF or v is JsV.NULL
+			return (JsV.Obj: (JsObjs.NewObject));
+		;;
+	[end: (JsV.Obj: (JsOps.ToObject: v))]
+
+	[Create: ptr<u64> args: 0; int argc: 0;]
+		u64 p: (Js.Arg: args argc 0);
+		ptr<JsObj> proto: 0;
+		if (JsV.IsObj: p)
+			proto is (JsV.AsObj: p);
+		;;
+		elif p is not JsV.NULL
+			call JsErr.Type: 'Object prototype may only be an Object or null';
+		;;
+		ptr<JsObj> o: (JsObjs.NewWithProto: proto);
+		u64 props: (Js.Arg: args argc 1);
+		if props is not JsV.UNDEF
+			call AddProperties: o props;
+		;;
+	[end: (JsV.Obj: o)]
+
+	[Keys: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: (Js.Arg: args argc 0));
+		ptr<JsObj> all: (JsObjs.OwnKeys: o);
+		ptr<JsObj> output: (JsObjs.NewArray: all.length);
+		JsDesc d;
+		while u32 i: 0; i < all.length; i++;
+			u64 kv: all.elems:i;
+			if (JsV.IsStr: kv)
+				if (JsObjs.GetOwn: o (JsObjs.KeyOf: kv) addr d) and (d.flags & JsObjs.E) is not 0
+					call JsObjs.ArrayPush: output kv;
+				;;
+			;;
+		;;
+	[end: (JsV.Obj: output)]
+
+	[GetOwnNames: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> all: (JsObjs.OwnKeys: (JsOps.ToObject: (Js.Arg: args argc 0)));
+		ptr<JsObj> output: (JsObjs.NewArray: all.length);
+		while u32 i: 0; i < all.length; i++;
+			if (JsV.IsStr: all.elems:i)
+				call JsObjs.ArrayPush: output all.elems:i;
+			;;
+		;;
+	[end: (JsV.Obj: output)]
+
+	[GetOwnSymbols: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> all: (JsObjs.OwnKeys: (JsOps.ToObject: (Js.Arg: args argc 0)));
+		ptr<JsObj> output: (JsObjs.NewArray: 0);
+		while u32 i: 0; i < all.length; i++;
+			if (JsV.IsSym: all.elems:i)
+				call JsObjs.ArrayPush: output all.elems:i;
+			;;
+		;;
+	[end: (JsV.Obj: output)]
+
+	# reads a descriptor object into d
+	[ToDesc: u64 v: 0; ptr<JsDesc> d: 0;]
+		if not (JsV.IsObj: v)
+			call JsErr.Type: 'Property description must be an object';
+		;;
+		ptr<JsObj> o: (JsV.AsObj: v);
+		u32 f: 0;
+		d.value is JsV.UNDEF;
+		d.getter is JsV.UNDEF;
+		d.setter is JsV.UNDEF;
+		if (JsObjs.Has: o (JsV.Str: JsRt.A.enumerable))
+			f is f | JsObjs.H_E;
+			if (JsOps.ToBool: (JsObjs.GetAtom: o JsRt.A.enumerable as ptr<u8> v))
+				f is f | JsObjs.E;
+			;;
+		;;
+		if (JsObjs.Has: o (JsV.Str: JsRt.A.configurable))
+			f is f | JsObjs.H_C;
+			if (JsOps.ToBool: (JsObjs.GetAtom: o JsRt.A.configurable as ptr<u8> v))
+				f is f | JsObjs.C;
+			;;
+		;;
+		if (JsObjs.Has: o (JsV.Str: JsRt.A.value))
+			f is f | JsObjs.H_VALUE;
+			d.value is (JsObjs.GetAtom: o JsRt.A.value as ptr<u8> v);
+		;;
+		if (JsObjs.Has: o (JsV.Str: JsRt.A.writable))
+			f is f | JsObjs.H_W;
+			if (JsOps.ToBool: (JsObjs.GetAtom: o JsRt.A.writable as ptr<u8> v))
+				f is f | JsObjs.W;
+			;;
+		;;
+		if (JsObjs.Has: o (JsV.Str: JsRt.A.get))
+			f is f | JsObjs.H_GET;
+			d.getter is (JsObjs.GetAtom: o JsRt.A.get as ptr<u8> v);
+			if d.getter is not JsV.UNDEF and not (JsOps.IsCallable: d.getter)
+				call JsErr.Type: 'Getter must be a function';
+			;;
+		;;
+		if (JsObjs.Has: o (JsV.Str: JsRt.A.set))
+			f is f | JsObjs.H_SET;
+			d.setter is (JsObjs.GetAtom: o JsRt.A.set as ptr<u8> v);
+			if d.setter is not JsV.UNDEF and not (JsOps.IsCallable: d.setter)
+				call JsErr.Type: 'Setter must be a function';
+			;;
+		;;
+		if (f & (JsObjs.H_GET | JsObjs.H_SET)) is not 0 and (f & (JsObjs.H_VALUE | JsObjs.H_W)) is not 0
+			call JsErr.Type: 'Invalid property descriptor. Cannot both specify accessors and a value or writable attribute';
+		;;
+		d.flags is f;
+	[end]
+
+	# a descriptor as an object
+	[FromDesc: ptr<JsDesc> d: 0;]
+		ptr<JsObj> o: (JsObjs.NewObject);
+		u32 f: d.flags;
+		if (f & JsObjs.ACC) is not 0
+			call JsObjs.AddProp: o JsRt.A.get as ptr<u8> d.getter JsObjs.WEC;
+			call JsObjs.AddProp: o JsRt.A.set as ptr<u8> d.setter JsObjs.WEC;
+		;;
+		else
+			call JsObjs.AddProp: o JsRt.A.value as ptr<u8> d.value JsObjs.WEC;
+			call JsObjs.AddProp: o JsRt.A.writable as ptr<u8> (JsV.Bool: (f & JsObjs.W) is not 0) JsObjs.WEC;
+		;;
+		call JsObjs.AddProp: o JsRt.A.enumerable as ptr<u8> (JsV.Bool: (f & JsObjs.E) is not 0) JsObjs.WEC;
+		call JsObjs.AddProp: o JsRt.A.configurable as ptr<u8> (JsV.Bool: (f & JsObjs.C) is not 0) JsObjs.WEC;
+	[end: (JsV.Obj: o)]
+
+	[DefineProperty: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: t)
+			call JsErr.Type: 'Object.defineProperty called on non-object';
+		;;
+		u64 k: (JsObjs.KeyOf: (Js.Arg: args argc 1));
+		JsDesc d;
+		call ToDesc: (Js.Arg: args argc 2) addr d;
+		if not (JsObjs.DefineOwn: (JsV.AsObj: t) k addr d)
+			call JsErr.Type: 'Cannot redefine property';
+		;;
+	[end: t]
+
+	[AddProperties: ptr<JsObj> o: 0; u64 props: 0;]
+		ptr<JsObj> from: (JsOps.ToObject: props);
+		ptr<JsObj> keys: (JsObjs.OwnKeys: from);
+		JsDesc d;
+		JsDesc e;
+		while u32 i: 0; i < keys.length; i++;
+			u64 k: (JsObjs.KeyOf: keys.elems:i);
+			if (JsObjs.GetOwn: from k addr e) and (e.flags & JsObjs.E) is not 0
+				call ToDesc: (JsObjs.Get: from k (JsV.Obj: from)) addr d;
+				if not (JsObjs.DefineOwn: o k addr d)
+					call JsErr.Type: 'Cannot redefine property';
+				;;
+			;;
+		;;
+	[end]
+
+	[DefineProperties: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: t)
+			call JsErr.Type: 'Object.defineProperties called on non-object';
+		;;
+		call AddProperties: (JsV.AsObj: t) (Js.Arg: args argc 1);
+	[end: t]
+
+	[GetPrototypeOf: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> p: (JsObjs.ProtoOf: (JsOps.ToObject: (Js.Arg: args argc 0)));
+		if p is 0 return JsV.NULL;
+	[end: (JsV.Obj: p)]
+
+	[SetPrototypeOf: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.Arg: args argc 0);
+		u64 p: (Js.Arg: args argc 1);
+		if t is JsV.UNDEF or t is JsV.NULL
+			call JsErr.Type: 'Object.setPrototypeOf called on null or undefined';
+		;;
+		if not (JsV.IsObj: p) and p is not JsV.NULL
+			call JsErr.Type: 'Object prototype may only be an Object or null';
+		;;
+		if not (JsV.IsObj: t) return t;
+		ptr<JsObj> pp: 0;
+		if (JsV.IsObj: p)
+			pp is (JsV.AsObj: p);
+		;;
+		if not (JsObjs.SetProtoOf: (JsV.AsObj: t) pp)
+			call JsErr.Type: 'Cannot set the prototype of this object';
+		;;
+	[end: t]
+
+	[GetOwnPropertyDescriptor: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: (Js.Arg: args argc 0));
+		u64 k: (JsObjs.KeyOf: (Js.Arg: args argc 1));
+		JsDesc d;
+		if not (JsObjs.GetOwn: o k addr d) return JsV.UNDEF;
+	[end: (FromDesc: addr d)]
+
+	[PreventExtensions: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: t) return t;
+		if not (JsObjs.PreventExtensions: (JsV.AsObj: t))
+			call JsErr.Type: 'Cannot prevent extensions';
+		;;
+	[end: t]
+
+	[IsExtensible: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: t) return JsV.FALSE;
+	[end: (JsV.Bool: (JsObjs.IsExtensible: (JsV.AsObj: t)))]
+
+	# every own property, its attributes cut down
+	[Lock: ptr<JsObj> o: 0; bln freeze: false;]
+		if not (JsObjs.PreventExtensions: o)
+			call JsErr.Type: 'Cannot prevent extensions';
+		;;
+		ptr<JsObj> keys: (JsObjs.OwnKeys: o);
+		JsDesc cur;
+		JsDesc d;
+		while u32 i: 0; i < keys.length; i++;
+			u64 k: (JsObjs.KeyOf: keys.elems:i);
+			if (JsObjs.GetOwn: o k addr cur)
+				d.flags is JsObjs.H_C;
+				if freeze and (cur.flags & JsObjs.ACC) is 0
+					d.flags is JsObjs.H_C | JsObjs.H_W;
+				;;
+				if not (JsObjs.DefineOwn: o k addr d)
+					call JsErr.Type: 'Cannot freeze or seal this property';
+				;;
+			;;
+		;;
+	[end]
+
+	[Freeze: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.Arg: args argc 0);
+		if (JsV.IsObj: t)
+			call Lock: (JsV.AsObj: t) true;
+		;;
+	[end: t]
+
+	[Seal: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.Arg: args argc 0);
+		if (JsV.IsObj: t)
+			call Lock: (JsV.AsObj: t) false;
+		;;
+	[end: t]
+
+	[IsFrozen: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: t) return JsV.TRUE;
+		ptr<JsObj> o: (JsV.AsObj: t);
+		if (JsObjs.IsExtensible: o) return JsV.FALSE;
+		ptr<JsObj> keys: (JsObjs.OwnKeys: o);
+		JsDesc d;
+		while u32 i: 0; i < keys.length; i++;
+			if (JsObjs.GetOwn: o (JsObjs.KeyOf: keys.elems:i) addr d)
+				if (d.flags & JsObjs.C) is not 0 return JsV.FALSE;
+				if (d.flags & JsObjs.ACC) is 0 and (d.flags & JsObjs.W) is not 0 return JsV.FALSE;
+			;;
+		;;
+	[end: JsV.TRUE]
+
+	[IsSame: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Bool: (JsOps.SameValue: (Js.Arg: args argc 0) (Js.Arg: args argc 1)))]
+
+	[HasOwnProperty: ptr<u64> args: 0; int argc: 0;]
+		u64 k: (JsObjs.KeyOf: (Js.Arg: args argc 0));
+		ptr<JsObj> o: (JsOps.ToObject: (Js.This: args));
+	[end: (JsV.Bool: (JsObjs.HasOwn: o k))]
+
+	[IsPrototypeOf: ptr<u64> args: 0; int argc: 0;]
+		u64 v: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: v) return JsV.FALSE;
+		ptr<JsObj> self_o: (JsOps.ToObject: (Js.This: args));
+		ptr<JsObj> p: (JsObjs.ProtoOf: (JsV.AsObj: v));
+		while p is not 0
+			if p is self_o return JsV.TRUE;
+			p is (JsObjs.ProtoOf: p);
+		;;
+	[end: JsV.FALSE]
+
+	[PropertyIsEnumerable: ptr<u64> args: 0; int argc: 0;]
+		u64 k: (JsObjs.KeyOf: (Js.Arg: args argc 0));
+		ptr<JsObj> o: (JsOps.ToObject: (Js.This: args));
+		JsDesc d;
+		if not (JsObjs.GetOwn: o k addr d) return JsV.FALSE;
+	[end: (JsV.Bool: (d.flags & JsObjs.E) is not 0)]
+
+	[ToString: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.This: args);
+		if t is JsV.UNDEF
+			return (Js.NewStringZ: '[object Undefined]');
+		;;
+		if t is JsV.NULL
+			return (Js.NewStringZ: '[object Null]');
+		;;
+		ptr<JsObj> o: (JsOps.ToObject: t);
+		ptr<u8> tag: 'Object';
+		u32 k: o.kind;
+		if k is JsGc.K_ARRAY
+			tag is 'Array';
+		;;
+		elif k is JsGc.K_ARGUMENTS
+			tag is 'Arguments';
+		;;
+		elif (o.flags & JsObjs.F_CALLABLE) is not 0
+			tag is 'Function';
+		;;
+		elif k is JsGc.K_ERROR
+			tag is 'Error';
+		;;
+		elif k is JsGc.K_BOXED
+			if (JsV.IsStr: o.slot)
+				tag is 'String';
+			;;
+			elif (JsV.IsNum: o.slot)
+				tag is 'Number';
+			;;
+			elif (JsV.IsBool: o.slot)
+				tag is 'Boolean';
+			;;
+		;;
+		elif k is JsGc.K_HOST and o.cls is not 0 and o.cls.name is not 0
+			tag is o.cls.name;
+		;;
+		WlBuf b;
+		call b.AddZ: '[object ';
+		u64 st: (JsObjs.GetAtom: o JsRt.S.toStringTag as ptr<u8> (JsV.Obj: o));
+		if (JsV.IsStr: st)
+			ptr<JsStr> ss: (JsStrs.Flat: (JsV.AsStr: st));
+			call b.AddN: ss.data ss.bytes;
+		;;
+		else
+			call b.AddZ: tag;
+		;;
+		call b.Add: ']';
+		u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: r]
+
+	[ToLocaleString: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.This: args);
+		u64 m: (JsObjs.GetV: t (JsV.Str: JsRt.A.toString));
+	[end: (JsVm.Call0: m t)]
+
+	[ValueOf: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Obj: (JsOps.ToObject: (Js.This: args)))]
+
+	[ProtoGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> p: (JsObjs.ProtoOf: (JsOps.ToObject: (Js.This: args)));
+		if p is 0 return JsV.NULL;
+	[end: (JsV.Obj: p)]
+
+	[ProtoSet: ptr<u64> args: 0; int argc: 0;]
+		u64 t: (Js.This: args);
+		u64 p: (Js.Arg: args argc 0);
+		if t is JsV.UNDEF or t is JsV.NULL
+			call JsErr.Type: 'Object.prototype.__proto__ called on null or undefined';
+		;;
+		if not (JsV.IsObj: t) or (not (JsV.IsObj: p) and p is not JsV.NULL) return JsV.UNDEF;
+		ptr<JsObj> pp: 0;
+		if (JsV.IsObj: p)
+			pp is (JsV.AsObj: p);
+		;;
+		if not (JsObjs.SetProtoOf: (JsV.AsObj: t) pp)
+			call JsErr.Type: 'Cannot set the prototype of this object';
+		;;
+	[end: JsV.UNDEF]
+}

@@ -1,0 +1,1089 @@
+# The rest of Array. The ones that call a callback are gc_safe, so a page's work inside a forEach can
+# still be collected: what they hold across a call is on the value stack (see JS-INTERNALS.md).
+
+struct.JsSortState
+{
+	u64 compare;           # the page's function, or undefined
+	ptr<u64> a;
+	ptr<u64> b;
+}
+
+phi.JsArrayMore:Library
+{
+	const u32 EACH: 0;
+	const u32 MAP: 1;
+	const u32 FILTER: 2;
+	const u32 SOME: 3;
+	const u32 EVERY: 4;
+	const u32 FIND: 5;
+	const u32 FIND_INDEX: 6;
+	const u32 FIND_LAST: 7;
+	const u32 FIND_LAST_INDEX: 8;
+
+	[Init]
+		ptr<JsObj> p: JsRt.P.array;
+		call Kind: p 'forEach' EACH;
+		call Kind: p 'map' MAP;
+		call Kind: p 'filter' FILTER;
+		call Kind: p 'some' SOME;
+		call Kind: p 'every' EVERY;
+		call Kind: p 'find' FIND;
+		call Kind: p 'findIndex' FIND_INDEX;
+		call Kind: p 'findLast' FIND_LAST;
+		call Kind: p 'findLastIndex' FIND_LAST_INDEX;
+		ptr<JsNativeFn> rd: (Js.DefineNativeSafe: p 'reduce' addr Reduce 1);
+		rd.magic is 0;
+		ptr<JsNativeFn> rr: (Js.DefineNativeSafe: p 'reduceRight' addr Reduce 1);
+		rr.magic is 1;
+		call Js.DefineNativeSafe: p 'sort' addr Sort 1;
+		call Js.DefineNativeSafe: p 'toSorted' addr ToSorted 1;
+		call Js.DefineNativeSafe: p 'flatMap' addr FlatMap 1;
+		call Js.DefineNative: p 'flat' addr Flat 0;
+		call Js.DefineNative: p 'concat' addr Concat 1;
+		call Js.DefineNative: p 'reverse' addr Reverse 0;
+		call Js.DefineNative: p 'toReversed' addr ToReversed 0;
+		call Js.DefineNative: p 'with' addr WithFn 2;
+		call Js.DefineNative: p 'toSpliced' addr ToSpliced 2;
+		call Js.DefineNative: p 'shift' addr Shift 0;
+		call Js.DefineNative: p 'unshift' addr Unshift 1;
+		call Js.DefineNative: p 'splice' addr Splice 2;
+		call Js.DefineNative: p 'lastIndexOf' addr LastIndexOf 1;
+		call Js.DefineNative: p 'includes' addr Includes 1;
+		call Js.DefineNative: p 'fill' addr Fill 1;
+		call Js.DefineNative: p 'copyWithin' addr CopyWithin 2;
+		call Js.DefineNative: p 'at' addr At 1;
+		call Js.DefineNative: p 'toLocaleString' addr ToLocaleString 0;
+		ptr<JsProp> ctor: (JsObjs.Find: p JsRt.A.constructor as ptr<u8>);
+		ptr<JsObj> c: (JsV.AsObj: ctor.value);
+		call Js.DefineNative: c 'of' addr OfFn 0;
+		call Js.DefineNativeSafe: c 'from' addr From 1;
+	[end]
+
+	[Kind: ptr<JsObj> p: 0; ptr<u8> name: 0; u32 kind: 0;]
+		ptr<JsNativeFn> f: (Js.DefineNativeSafe: p name addr Iterate 1);
+		f.magic is kind;
+	[end]
+
+	[Key: f64 i: 0.0;]
+	[end: (JsArrayBuiltins.IndexKey: i)]
+
+	[Len: ptr<JsObj> o: 0;]
+	[end: (JsArrayBuiltins.LengthOf: o)]
+
+	# an array with nothing odd about it, so its elements can be moved about in memory
+	[Plain: ptr<JsObj> o: 0;]
+		if o.kind is not JsGc.K_ARRAY return false;
+		if (o.flags & (JsObjs.F_NOEXT | JsObjs.F_LEN_RO | JsObjs.F_SPARSE)) is not 0 return false;
+		if o.length is not o.elem_len return false;
+	[end: (JsVm.ProtosPlain: o)]
+
+	# ---- calling a function for each element ----
+
+	[Iterate: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u32 kind: self.magic;
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		call Js.Push: ov;
+		f64 len: (Len: o);
+		u64 f: (Js.Arg: args argc 0);
+		if not (JsOps.IsCallable: f)
+			call JsErr.Type: 'callback is not a function';
+		;;
+		u64 this_arg: (Js.Arg: args argc 1);
+		ptr<JsObj> made: 0;
+		if kind is MAP
+			made is (JsArrayBuiltins.SpeciesCreate: o len);
+			call Js.Push: (JsV.Obj: made);
+			if made.kind is JsGc.K_ARRAY and made.length is 0 and len <= 4294967295.0
+				made.length is len as u32;
+			;;
+		;;
+		elif kind is FILTER
+			made is (JsArrayBuiltins.SpeciesCreate: o 0.0);
+			call Js.Push: (JsV.Obj: made);
+		;;
+		ptr<u64> held: JsVm.sp;       # the element, kept through the call
+		call Js.Push: JsV.UNDEF;
+		f64 to: 0.0;
+		bln backward: kind is FIND_LAST or kind is FIND_LAST_INDEX;
+		bln all: kind >= FIND;        # the find family looks at holes too
+		f64 i: 0.0;
+		if backward
+			i is len - 1.0;
+		;;
+		while (backward and i >= 0.0) or (not backward and i < len)
+			call Js.Checkpoint;
+			u64 k: (Key: i);
+			if all or (JsObjs.Has: o k)
+				u64 v: (JsObjs.Get: o k ov);
+				held:0 is v;
+				u64 r: (JsVm.Call3: f this_arg v (JsV.Num: i) ov);
+				when kind
+					is MAP
+						if not (JsObjs.CreateData: made k r)
+							call JsErr.Type: 'Cannot add element to the new array';
+						;;
+					;;
+					is FILTER
+						if (JsOps.ToBool: r)
+							if not (JsObjs.CreateData: made (Key: to) held:0)
+								call JsErr.Type: 'Cannot add element to the new array';
+							;;
+							to is to + 1.0;
+						;;
+					;;
+					is SOME
+						if (JsOps.ToBool: r) return JsV.TRUE;
+					;;
+					is EVERY
+						if not (JsOps.ToBool: r) return JsV.FALSE;
+					;;
+					is FIND FIND_LAST
+						if (JsOps.ToBool: r) return held:0;
+					;;
+					is FIND_INDEX FIND_LAST_INDEX
+						if (JsOps.ToBool: r)
+							return (JsV.Num: i);
+						;;
+					;;
+				;;
+			;;
+			if backward
+				i is i - 1.0;
+			;;
+			else
+				i is i + 1.0;
+			;;
+		;;
+		when kind
+			is MAP FILTER
+				return (JsV.Obj: made);
+			;;
+			is SOME
+				return JsV.FALSE;
+			;;
+			is EVERY
+				return JsV.TRUE;
+			;;
+			is FIND_INDEX FIND_LAST_INDEX
+				return (JsV.Int: -1);
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	[Reduce: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		bln backward: self.magic is 1;
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		call Js.Push: ov;
+		f64 len: (Len: o);
+		u64 f: (Js.Arg: args argc 0);
+		if not (JsOps.IsCallable: f)
+			call JsErr.Type: 'callback is not a function';
+		;;
+		ptr<u64> acc: JsVm.sp;
+		call Js.Push: JsV.UNDEF;
+		f64 i: 0.0;
+		f64 step: 1.0;
+		if backward
+			i is len - 1.0;
+			step is -1.0;
+		;;
+		bln have: argc >= 2;
+		if have
+			acc:0 is args:1;
+		;;
+		else
+			while i >= 0.0 and i < len and not have
+				call Js.Checkpoint;
+				u64 k0: (Key: i);
+				if (JsObjs.Has: o k0)
+					acc:0 is (JsObjs.Get: o k0 ov);
+					have is true;
+				;;
+				i is i + step;
+			;;
+			if not have
+				call JsErr.Type: 'Reduce of empty array with no initial value';
+			;;
+		;;
+		while i >= 0.0 and i < len
+			call Js.Checkpoint;
+			u64 k: (Key: i);
+			if (JsObjs.Has: o k)
+				call Js.Push: acc:0;
+				call Js.Push: (JsObjs.Get: o k ov);
+				call Js.Push: (JsV.Num: i);
+				call Js.Push: ov;
+				acc:0 is (Js.CallThrowing: f JsV.UNDEF 4);
+			;;
+			i is i + step;
+		;;
+	[end: acc:0]
+
+	# ---- sort: stable, by merging runs back and forth between two arrays the collector can see ----
+
+	[Sort: ptr<u64> args: 0; int argc: 0;]
+		u64 cmp: (Js.Arg: args argc 0);
+		if cmp is not JsV.UNDEF and not (JsOps.IsCallable: cmp)
+			call JsErr.Type: 'The comparison function must be either a function or undefined';
+		;;
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		call Js.Push: ov;
+		call SortInto: o cmp;
+	[end: ov]
+
+	[ToSorted: ptr<u64> args: 0; int argc: 0;]
+		u64 cmp: (Js.Arg: args argc 0);
+		if cmp is not JsV.UNDEF and not (JsOps.IsCallable: cmp)
+			call JsErr.Type: 'The comparison function must be either a function or undefined';
+		;;
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		call Js.Push: (JsV.Obj: o);
+		ptr<JsObj> copy: (CopyAll: o);
+		call Js.Push: (JsV.Obj: copy);
+		call SortInto: copy cmp;
+	[end: (JsV.Obj: copy)]
+
+	[CopyAll: ptr<JsObj> o: 0;]
+		f64 len: (Len: o);
+		if len > 4294967295.0
+			call JsErr.Range: 'Invalid array length';
+		;;
+		ptr<JsObj> copy: (JsObjs.NewArray: 0);
+		# (on the stack before the first checkpoint, or a collection there frees it)
+		call Js.Push: (JsV.Obj: copy);
+		u64 ov: (JsV.Obj: o);
+		f64 i: 0.0;
+		while i < len
+			call Js.Checkpoint;
+			call JsObjs.ArrayPush: copy (JsObjs.Get: o (Key: i) ov);
+			i is i + 1.0;
+		;;
+	[end: copy]
+
+	[SortInto: ptr<JsObj> o: 0; u64 cmp: 0;]
+		u64 ov: (JsV.Obj: o);
+		f64 len: (Len: o);
+		ptr<JsObj> items: (JsObjs.NewArray: 0);
+		call Js.Push: (JsV.Obj: items);
+		f64 undefs: 0.0;
+		f64 i: 0.0;
+		while i < len
+			call Js.Checkpoint;
+			u64 k: (Key: i);
+			if (JsObjs.Has: o k)
+				u64 v: (JsObjs.Get: o k ov);
+				if v is JsV.UNDEF
+					undefs is undefs + 1.0;
+				;;
+				else
+					call JsObjs.ArrayPush: items v;
+				;;
+			;;
+			i is i + 1.0;
+		;;
+		u32 n: items.length;
+		ptr<JsObj> other: (JsObjs.NewArray: n);
+		call Js.Push: (JsV.Obj: other);
+		while u32 fill: 0; fill < n; fill++;
+			call JsObjs.ArrayPush: other JsV.UNDEF;
+		;;
+		call MergeSort: items other n cmp;
+		# what's sorted goes back, then the undefineds, and the rest were holes and stay holes
+		f64 to: 0.0;
+		while u32 j: 0; j < n; j++;
+			if not (JsObjs.Set: o (Key: to) items.elems:j ov)
+				call JsErr.Type: 'Cannot assign to read only property of the array';
+			;;
+			to is to + 1.0;
+		;;
+		while undefs > 0.0
+			if not (JsObjs.Set: o (Key: to) JsV.UNDEF ov)
+				call JsErr.Type: 'Cannot assign to read only property of the array';
+			;;
+			to is to + 1.0;
+			undefs is undefs - 1.0;
+		;;
+		while to < len
+			call Js.Checkpoint;
+			u64 gone: (Key: to);
+			if (JsObjs.Has: o gone)
+				if not (JsObjs.Delete: o gone)
+					call JsErr.Type: 'Cannot delete property of the array';
+				;;
+			;;
+			to is to + 1.0;
+		;;
+	[end]
+
+	# Bottom-up: the arrays are private to Sort, so their elements can't move under it, whatever the
+	# page's function does. On return the sorted values are in items.
+	[MergeSort: ptr<JsObj> items: 0; ptr<JsObj> other: 0; u32 n: 0; u64 cmp: 0;]
+		ptr<u64> from: items.elems;
+		ptr<u64> to: other.elems;
+		u32 width: 1;
+		while width < n
+			u32 lo: 0;
+			while lo < n
+				u32 mid: lo + width;
+				if mid > n
+					mid is n;
+				;;
+				u32 hi: mid + width;
+				if hi > n
+					hi is n;
+				;;
+				call Merge: from to lo mid hi cmp;
+				lo is hi;
+			;;
+			ptr<u64> swap: from;
+			from is to;
+			to is swap;
+			width is width * 2;
+		;;
+		if from is not items.elems
+			call Mem.Copy: items.elems as ptr<u8> from as ptr<u8> n * 8;
+		;;
+	[end]
+
+	[Merge: ptr<u64> from: 0; ptr<u64> to: 0; u32 lo: 0; u32 mid: 0; u32 hi: 0; u64 cmp: 0;]
+		u32 l: lo;
+		u32 r: mid;
+		u32 place: lo;
+		while l < mid and r < hi
+			if (Compare: from:l from:r cmp) <= 0.0
+				to:place is from:l;
+				l++;
+			;;
+			else
+				to:place is from:r;
+				r++;
+			;;
+			place++;
+		;;
+		while l < mid
+			to:place is from:l;
+			l++;
+			place++;
+		;;
+		while r < hi
+			to:place is from:r;
+			r++;
+			place++;
+		;;
+	[end]
+
+	[Compare: u64 a: 0; u64 b: 0; u64 cmp: 0;]
+		call Js.Checkpoint;
+		if cmp is not JsV.UNDEF
+			f64 x: (JsOps.ToNumber: (JsVm.Call2: cmp JsV.UNDEF a b));
+			if x is not x return 0.0;
+			return x;
+		;;
+		# by text, numbers as the common case handled without making any garbage first
+		if (JsV.IsInt: a) and (JsV.IsInt: b) and (JsV.AsInt: a) >= 0 and (JsV.AsInt: b) >= 0
+			return (CompareDigits: (JsV.AsInt: a) (JsV.AsInt: b));
+		;;
+		ptr<JsStr> sa: (JsOps.ToStr: a);
+		ptr<JsStr> sb: (JsOps.ToStr: b);
+		int c: (JsStrs.Compare: sa sb);
+	[end: c as f64]
+
+	# two numbers from 0 up, compared as their decimal text is
+	[CompareDigits: int a: 0; int b: 0;]
+		if a is b return 0.0;
+		int da: (DigitCount: a);
+		int db: (DigitCount: b);
+		# scale the shorter up to the longer's length, and compare those
+		i64 xa: a as i64;
+		i64 xb: b as i64;
+		int d: da;
+		while d < db
+			xa is xa * 10;
+			d++;
+		;;
+		d is db;
+		while d < da
+			xb is xb * 10;
+			d++;
+		;;
+		if xa < xb return -1.0;
+		if xa > xb return 1.0;
+		# one is the start of the other: the shorter comes first
+		if da < db return -1.0;
+	[end: 1.0]
+
+	[DigitCount: int n: 0;]
+		int d: 1;
+		while n >= 10
+			n is n / 10;
+			d++;
+		;;
+	[end: d]
+
+	# ---- the rest ----
+
+	[FlatMap: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		call Js.Push: ov;
+		f64 len: (Len: o);
+		u64 f: (Js.Arg: args argc 0);
+		if not (JsOps.IsCallable: f)
+			call JsErr.Type: 'flatMap mapper function is not callable';
+		;;
+		u64 this_arg: (Js.Arg: args argc 1);
+		ptr<JsObj> made: (JsArrayBuiltins.SpeciesCreate: o 0.0);
+		call Js.Push: (JsV.Obj: made);
+		f64 to: 0.0;
+		f64 i: 0.0;
+		while i < len
+			call Js.Checkpoint;
+			u64 k: (Key: i);
+			if (JsObjs.Has: o k)
+				u64 r: (JsVm.Call3: f this_arg (JsObjs.Get: o k ov) (JsV.Num: i) ov);
+				if (JsOps.IsArray: r)
+					ptr<u64> keep: JsVm.sp;
+					call Js.Push: r;
+					to is (FlatInto: made (JsV.AsObj: r) to 0.0);
+					JsVm.sp is keep;
+				;;
+				else
+					if not (JsObjs.CreateData: made (Key: to) r)
+						call JsErr.Type: 'Cannot add element to the new array';
+					;;
+					to is to + 1.0;
+				;;
+			;;
+			i is i + 1.0;
+		;;
+	[end: (JsV.Obj: made)]
+
+	[Flat: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		f64 depth: 1.0;
+		if (Js.Arg: args argc 0) is not JsV.UNDEF
+			depth is (JsOps.ToInteger: args:0);
+		;;
+		ptr<JsObj> made: (JsArrayBuiltins.SpeciesCreate: o 0.0);
+		call FlatInto: made o 0.0 depth;
+	[end: (JsV.Obj: made)]
+
+	[FlatInto: ptr<JsObj> made: 0; ptr<JsObj> src: 0; f64 to: 0.0; f64 depth: 0.0;]
+		call WlStack.Check;
+		u64 sv: (JsV.Obj: src);
+		f64 len: (Len: src);
+		f64 i: 0.0;
+		while i < len
+			call Js.Checkpoint;
+			u64 k: (Key: i);
+			if (JsObjs.Has: src k)
+				u64 v: (JsObjs.Get: src k sv);
+				if depth > 0.0 and (JsOps.IsArray: v)
+					to is (FlatInto: made (JsV.AsObj: v) to depth - 1.0);
+				;;
+				else
+					if not (JsObjs.CreateData: made (Key: to) v)
+						call JsErr.Type: 'Cannot add element to the new array';
+					;;
+					to is to + 1.0;
+				;;
+			;;
+			i is i + 1.0;
+		;;
+	[end: to]
+
+	[Spreadable: u64 v: 0;]
+		if not (JsV.IsObj: v) return false;
+		u64 s: (JsObjs.GetAtom: (JsV.AsObj: v) JsRt.S.isConcatSpreadable as ptr<u8> v);
+		if s is not JsV.UNDEF
+			return (JsOps.ToBool: s);
+		;;
+	[end: (JsOps.IsArray: v)]
+
+	[Concat: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		ptr<JsObj> made: (JsArrayBuiltins.SpeciesCreate: o 0.0);
+		f64 to: (ConcatOne: made (JsV.Obj: o) 0.0);
+		while int i: 0; i < argc; i++;
+			to is (ConcatOne: made args:i to);
+		;;
+		call JsArrayBuiltins.SetLength: made to;
+	[end: (JsV.Obj: made)]
+
+	[ConcatOne: ptr<JsObj> made: 0; u64 item: 0; f64 to: 0.0;]
+		if not (Spreadable: item)
+			if not (JsObjs.CreateData: made (Key: to) item)
+				call JsErr.Type: 'Cannot add element to the new array';
+			;;
+			return to + 1.0;
+		;;
+		ptr<JsObj> src: (JsV.AsObj: item);
+		f64 len: (Len: src);
+		if to + len > 9007199254740991.0
+			call JsErr.Type: 'Array too long';
+		;;
+		f64 i: 0.0;
+		while i < len
+			call Js.Checkpoint;
+			u64 k: (Key: i);
+			if (JsObjs.Has: src k)
+				if not (JsObjs.CreateData: made (Key: to) (JsObjs.Get: src k item))
+					call JsErr.Type: 'Cannot add element to the new array';
+				;;
+			;;
+			to is to + 1.0;
+			i is i + 1.0;
+		;;
+	[end: to]
+
+	[MustSet: ptr<JsObj> o: 0; u64 k: 0; u64 v: 0;]
+		if not (JsObjs.Set: o k v (JsV.Obj: o))
+			call JsErr.Type: 'Cannot assign to read only property of the array';
+		;;
+	[end]
+
+	[MustDelete: ptr<JsObj> o: 0; u64 k: 0;]
+		if not (JsObjs.Delete: o k)
+			call JsErr.Type: 'Cannot delete property of the array';
+		;;
+	[end]
+
+	[Reverse: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		f64 len: (Len: o);
+		f64 lo: 0.0;
+		f64 hi: len - 1.0;
+		while lo < hi
+			call Js.Checkpoint;
+			u64 kl: (Key: lo);
+			u64 kh: (Key: hi);
+			bln hl: (JsObjs.Has: o kl);
+			u64 vl: JsV.UNDEF;
+			if hl
+				vl is (JsObjs.Get: o kl ov);
+			;;
+			bln hh: (JsObjs.Has: o kh);
+			u64 vh: JsV.UNDEF;
+			if hh
+				vh is (JsObjs.Get: o kh ov);
+			;;
+			if hh
+				call MustSet: o kl vh;
+			;;
+			else
+				if hl
+					call MustDelete: o kl;
+				;;
+			;;
+			if hl
+				call MustSet: o kh vl;
+			;;
+			else
+				if hh
+					call MustDelete: o kh;
+				;;
+			;;
+			lo is lo + 1.0;
+			hi is hi - 1.0;
+		;;
+	[end: ov]
+
+	[ToReversed: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		f64 len: (Len: o);
+		if len > 4294967295.0
+			call JsErr.Range: 'Invalid array length';
+		;;
+		ptr<JsObj> made: (JsObjs.NewArray: 0);
+		f64 i: len - 1.0;
+		while i >= 0.0
+			call Js.Checkpoint;
+			call JsObjs.ArrayPush: made (JsObjs.Get: o (Key: i) ov);
+			i is i - 1.0;
+		;;
+	[end: (JsV.Obj: made)]
+
+	[WithFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		f64 len: (Len: o);
+		f64 rel: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		f64 at_: rel;
+		if rel < 0.0
+			at_ is len + rel;
+		;;
+		if at_ >= len or at_ < 0.0
+			call JsErr.Range: 'Invalid index for with()';
+		;;
+		ptr<JsObj> made: (CopyAll: o);
+		made.elems:(at_ as u32) is (Js.Arg: args argc 1);
+	[end: (JsV.Obj: made)]
+
+	[ToSpliced: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		f64 len: (Len: o);
+		f64 start: (JsOps.RelativeIndex: (Js.Arg: args argc 0) len 0.0);
+		f64 skip: 0.0;
+		f64 items: 0.0;
+		if argc is 1
+			skip is len - start;
+		;;
+		elif argc >= 2
+			items is (argc - 2) as f64;
+			skip is (JsOps.ToInteger: args:1);
+			if skip < 0.0
+				skip is 0.0;
+			;;
+			if skip > len - start
+				skip is len - start;
+			;;
+		;;
+		f64 total: len + items - skip;
+		if total > 9007199254740991.0
+			call JsErr.Type: 'Array too long';
+		;;
+		if total > 4294967295.0
+			call JsErr.Range: 'Invalid array length';
+		;;
+		ptr<JsObj> made: (JsObjs.NewArray: 0);
+		f64 i: 0.0;
+		while i < start
+			call Js.Checkpoint;
+			call JsObjs.ArrayPush: made (JsObjs.Get: o (Key: i) ov);
+			i is i + 1.0;
+		;;
+		while int a: 2; a < argc; a++;
+			call JsObjs.ArrayPush: made args:a;
+		;;
+		i is start + skip;
+		while i < len
+			call Js.Checkpoint;
+			call JsObjs.ArrayPush: made (JsObjs.Get: o (Key: i) ov);
+			i is i + 1.0;
+		;;
+	[end: (JsV.Obj: made)]
+
+	[Shift: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		if (Plain: o) and o.elem_len > 0
+			u64 head: o.elems:0;
+			if head is JsV.HOLE
+				head is JsV.UNDEF;
+			;;
+			u32 left: o.elem_len - 1;
+			if left > 0
+				call Mem.Move: o.elems as ptr<u8> (o.elems as ptr<u8>) + 8 left * 8;
+			;;
+			o.elem_len is left;
+			o.length is left;
+			return head;
+		;;
+		f64 len: (Len: o);
+		if len is 0.0
+			call JsArrayBuiltins.SetLength: o 0.0;
+			return JsV.UNDEF;
+		;;
+		u64 first: (JsObjs.Get: o (Key: 0.0) ov);
+		f64 i: 1.0;
+		while i < len
+			call Js.Checkpoint;
+			u64 from_k: (Key: i);
+			u64 to_k: (Key: i - 1.0);
+			if (JsObjs.Has: o from_k)
+				call MustSet: o to_k (JsObjs.Get: o from_k ov);
+			;;
+			else
+				call MustDelete: o to_k;
+			;;
+			i is i + 1.0;
+		;;
+		call MustDelete: o (Key: len - 1.0);
+		call JsArrayBuiltins.SetLength: o len - 1.0;
+	[end: first]
+
+	[Unshift: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		u32 n: argc as u32;
+		if (Plain: o)
+			u32 old_len: o.elem_len;
+			call JsObjs.ReserveElems: o old_len + n;
+			if n > 0
+				if old_len > 0
+					call Mem.Move: (o.elems as ptr<u8>) + n * 8 o.elems as ptr<u8> old_len * 8;
+				;;
+				while u32 a: 0; a < n; a++;
+					o.elems:a is args:a;
+				;;
+			;;
+			o.elem_len is old_len + n;
+			o.length is old_len + n;
+			return (JsV.Uint: o.length);
+		;;
+		f64 len: (Len: o);
+		if n > 0
+			if len + (n as f64) > 9007199254740991.0
+				call JsErr.Type: 'Array too long';
+			;;
+			f64 i: len;
+			while i > 0.0
+				call Js.Checkpoint;
+				u64 from_k: (Key: i - 1.0);
+				u64 to_k: (Key: i - 1.0 + (n as f64));
+				if (JsObjs.Has: o from_k)
+					call MustSet: o to_k (JsObjs.Get: o from_k ov);
+				;;
+				else
+					call MustDelete: o to_k;
+				;;
+				i is i - 1.0;
+			;;
+			while u32 j: 0; j < n; j++;
+				call MustSet: o (Key: j as f64) args:j;
+			;;
+		;;
+		call JsArrayBuiltins.SetLength: o len + (n as f64);
+	[end: (JsV.Num: len + (n as f64))]
+
+	[Splice: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		f64 len: (Len: o);
+		f64 start: (JsOps.RelativeIndex: (Js.Arg: args argc 0) len 0.0);
+		f64 items: 0.0;
+		f64 del: 0.0;
+		if argc is 1
+			del is len - start;
+		;;
+		elif argc >= 2
+			items is (argc - 2) as f64;
+			del is (JsOps.ToInteger: args:1);
+			if del < 0.0
+				del is 0.0;
+			;;
+			if del > len - start
+				del is len - start;
+			;;
+		;;
+		if len + items - del > 9007199254740991.0
+			call JsErr.Type: 'Array too long';
+		;;
+		ptr<JsObj> removed: (JsArrayBuiltins.SpeciesCreate: o del);
+		f64 i: 0.0;
+		while i < del
+			call Js.Checkpoint;
+			u64 from_k: (Key: start + i);
+			if (JsObjs.Has: o from_k)
+				if not (JsObjs.CreateData: removed (Key: i) (JsObjs.Get: o from_k ov))
+					call JsErr.Type: 'Cannot add element to the new array';
+				;;
+			;;
+			i is i + 1.0;
+		;;
+		call JsArrayBuiltins.SetLength: removed del;
+		# the plain case, moving the tail in one go
+		if (Plain: o)
+			u32 st: start as u32;
+			u32 dc: del as u32;
+			u32 ic: items as u32;
+			u32 old_len: o.elem_len;
+			u32 tail: old_len - st - dc;
+			u32 new_len: old_len - dc + ic;
+			call JsObjs.ReserveElems: o new_len;
+			if tail > 0 and dc is not ic
+				call Mem.Move: (o.elems as ptr<u8>) + (st + ic) * 8 (o.elems as ptr<u8>) + (st + dc) * 8 tail * 8;
+			;;
+			while u32 a: 0; a < ic; a++;
+				o.elems:(st + a) is args:(a + 2);
+			;;
+			o.elem_len is new_len;
+			o.length is new_len;
+			return (JsV.Obj: removed);
+		;;
+		if items < del
+			f64 m: start;
+			while m < len - del
+				call Js.Checkpoint;
+				u64 fk: (Key: m + del);
+				u64 tk: (Key: m + items);
+				if (JsObjs.Has: o fk)
+					call MustSet: o tk (JsObjs.Get: o fk ov);
+				;;
+				else
+					call MustDelete: o tk;
+				;;
+				m is m + 1.0;
+			;;
+			f64 e: len;
+			while e > len - del + items
+				call Js.Checkpoint;
+				call MustDelete: o (Key: e - 1.0);
+				e is e - 1.0;
+			;;
+		;;
+		elif items > del
+			f64 m2: len - del;
+			while m2 > start
+				call Js.Checkpoint;
+				u64 fk2: (Key: m2 + del - 1.0);
+				u64 tk2: (Key: m2 + items - 1.0);
+				if (JsObjs.Has: o fk2)
+					call MustSet: o tk2 (JsObjs.Get: o fk2 ov);
+				;;
+				else
+					call MustDelete: o tk2;
+				;;
+				m2 is m2 - 1.0;
+			;;
+		;;
+		f64 put: start;
+		while int b: 2; b < argc; b++;
+			call MustSet: o (Key: put) args:b;
+			put is put + 1.0;
+		;;
+		call JsArrayBuiltins.SetLength: o len - del + items;
+	[end: (JsV.Obj: removed)]
+
+	[LastIndexOf: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		f64 len: (Len: o);
+		if len is 0.0
+			return (JsV.Int: -1);
+		;;
+		f64 i: len - 1.0;
+		if argc >= 2
+			f64 from: (JsOps.ToInteger: args:1);
+			if from >= 0.0
+				if from < i
+					i is from;
+				;;
+			;;
+			else
+				i is len + from;
+			;;
+		;;
+		u64 want: (Js.Arg: args argc 0);
+		while i >= 0.0
+			call Js.Checkpoint;
+			u64 k: (Key: i);
+			if (JsObjs.Has: o k)
+				if (JsOps.StrictEq: (JsObjs.Get: o k ov) want)
+					return (JsV.Num: i);
+				;;
+			;;
+			i is i - 1.0;
+		;;
+	[end: (JsV.Int: -1)]
+
+	[Includes: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		f64 len: (Len: o);
+		if len is 0.0
+			return JsV.FALSE;
+		;;
+		f64 i: (JsOps.RelativeIndex: (Js.Arg: args argc 1) len 0.0);
+		u64 want: (Js.Arg: args argc 0);
+		while i < len
+			call Js.Checkpoint;
+			if (JsOps.SameValueZero: (JsObjs.Get: o (Key: i) ov) want)
+				return JsV.TRUE;
+			;;
+			i is i + 1.0;
+		;;
+	[end: JsV.FALSE]
+
+	[Fill: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		f64 len: (Len: o);
+		f64 i: (JsOps.RelativeIndex: (Js.Arg: args argc 1) len 0.0);
+		f64 upto: (JsOps.RelativeIndex: (Js.Arg: args argc 2) len len);
+		u64 v: (Js.Arg: args argc 0);
+		while i < upto
+			call Js.Checkpoint;
+			call MustSet: o (Key: i) v;
+			i is i + 1.0;
+		;;
+	[end: (JsV.Obj: o)]
+
+	[CopyWithin: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		f64 len: (Len: o);
+		f64 to: (JsOps.RelativeIndex: (Js.Arg: args argc 0) len 0.0);
+		f64 from: (JsOps.RelativeIndex: (Js.Arg: args argc 1) len 0.0);
+		f64 upto: (JsOps.RelativeIndex: (Js.Arg: args argc 2) len len);
+		f64 count: upto - from;
+		if len - to < count
+			count is len - to;
+		;;
+		f64 step: 1.0;
+		if from < to and to < from + count
+			step is -1.0;
+			from is from + count - 1.0;
+			to is to + count - 1.0;
+		;;
+		while count > 0.0
+			call Js.Checkpoint;
+			u64 fk: (Key: from);
+			u64 tk: (Key: to);
+			if (JsObjs.Has: o fk)
+				call MustSet: o tk (JsObjs.Get: o fk ov);
+			;;
+			else
+				call MustDelete: o tk;
+			;;
+			from is from + step;
+			to is to + step;
+			count is count - 1.0;
+		;;
+	[end: ov]
+
+	[At: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		f64 len: (Len: o);
+		f64 rel: (JsOps.ToInteger: (Js.Arg: args argc 0));
+		f64 k: rel;
+		if rel < 0.0
+			k is len + rel;
+		;;
+		if k < 0.0 or k >= len
+			return JsV.UNDEF;
+		;;
+	[end: (JsObjs.Get: o (Key: k) (JsV.Obj: o))]
+
+	[ToLocaleString: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
+		u64 ov: (JsV.Obj: o);
+		f64 len: (Len: o);
+		WlBuf output;
+		f64 i: 0.0;
+		call WlStack.Check;
+		while i < len
+			call Js.Checkpoint;
+			if i > 0.0
+				call output.Add: ',';
+			;;
+			u64 e: (JsObjs.Get: o (Key: i) ov);
+			if e is not JsV.UNDEF and e is not JsV.NULL
+				u64 m: (JsObjs.GetV: e (JsObjs.KeyZ: 'toLocaleString'));
+				call Js.TextOf: (JsVm.Call0: m e) addr output;
+			;;
+			i is i + 1.0;
+		;;
+		u64 r: (JsV.Str: (JsStrs.New: output.data output.len));
+		call output.Free;
+	[end: r]
+
+	[OfFn: ptr<u64> args: 0; int argc: 0;]
+		u64 c: args:(-1);
+		ptr<JsObj> made: 0;
+		if (JsOps.IsConstructor: c)
+			call Js.Push: (JsV.Int: argc);
+			u64 mv: (Js.Construct: c 1);
+			if not (JsV.IsObj: mv)
+				call JsErr.Type: 'Array.of constructor did not make an object';
+			;;
+			made is (JsV.AsObj: mv);
+		;;
+		else
+			made is (JsObjs.NewArray: 0);
+		;;
+		while int i: 0; i < argc; i++;
+			if not (JsObjs.CreateData: made (Key: i as f64) args:i)
+				call JsErr.Type: 'Cannot add element to the new array';
+			;;
+		;;
+		call JsArrayBuiltins.SetLength: made argc as f64;
+	[end: (JsV.Obj: made)]
+
+	[From: ptr<u64> args: 0; int argc: 0;]
+		u64 c: args:(-1);
+		u64 items: (Js.Arg: args argc 0);
+		u64 mapf: (Js.Arg: args argc 1);
+		u64 this_arg: (Js.Arg: args argc 2);
+		if mapf is not JsV.UNDEF and not (JsOps.IsCallable: mapf)
+			call JsErr.Type: 'Array.from: when provided, the second argument must be a function';
+		;;
+		u64 method_v: (JsOps.GetMethod: items JsRt.S.iterator as ptr<u8>);
+		ptr<JsObj> made: 0;
+		if method_v is not JsV.UNDEF
+			made is (Create: c -1.0);
+			call Js.Push: (JsV.Obj: made);
+			JsFromState st;
+			st.made is made;
+			st.mapf is mapf;
+			st.this_arg is this_arg;
+			call JsIter.Each: items addr FromItem addr st as ptr<u8>;
+			call JsArrayBuiltins.SetLength: made st.count as f64;
+			return (JsV.Obj: made);
+		;;
+		ptr<JsObj> src: (JsOps.ToObject: items);
+		u64 sv: (JsV.Obj: src);
+		call Js.Push: sv;
+		f64 len: (Len: src);
+		made is (Create: c len);
+		call Js.Push: (JsV.Obj: made);
+		f64 i: 0.0;
+		while i < len
+			call Js.Checkpoint;
+			u64 k: (Key: i);
+			u64 v: (JsObjs.Get: src k sv);
+			if mapf is not JsV.UNDEF
+				v is (JsVm.Call2: mapf this_arg v (JsV.Num: i));
+			;;
+			if not (JsObjs.CreateData: made k v)
+				call JsErr.Type: 'Cannot add element to the new array';
+			;;
+			i is i + 1.0;
+		;;
+		call JsArrayBuiltins.SetLength: made len;
+	[end: (JsV.Obj: made)]
+
+	[Create: u64 c: 0; f64 len: 0.0;]
+		if (JsOps.IsConstructor: c)
+			int pushed: 0;
+			if len >= 0.0
+				call Js.Push: (JsV.Num: len);
+				pushed is 1;
+			;;
+			u64 m: (Js.Construct: c pushed);
+			if not (JsV.IsObj: m)
+				call JsErr.Type: 'Array.from constructor did not make an object';
+			;;
+			return (JsV.AsObj: m);
+		;;
+		if len > 4294967295.0
+			call JsErr.Range: 'Invalid array length';
+		;;
+	[end: (JsObjs.NewArray: 0)]
+
+	[FromItem: u64 item: 0; ptr<u8> state: 0;]
+		ptr<JsFromState> st: state as ptr<JsFromState>;
+		u64 v: item;
+		if st.mapf is not JsV.UNDEF
+			v is (JsVm.Call2: st.mapf st.this_arg item (JsV.Uint: st.count));
+		;;
+		if not (JsObjs.CreateData: st.made (Key: st.count as f64) v)
+			call JsErr.Type: 'Cannot add element to the new array';
+		;;
+		st.count is st.count + 1;
+	[end]
+}
+
+struct.JsFromState
+{
+	ptr<JsObj> made;
+	u64 mapf;
+	u64 this_arg;
+	u32 count;
+}

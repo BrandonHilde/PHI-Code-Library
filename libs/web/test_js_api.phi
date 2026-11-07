@@ -1,0 +1,183 @@
+# The embedding API, as a host uses it: runtimes side by side, failures that come back as results,
+# calling in, interrupting, jobs, roots. Nothing here may stop the program.
+
+use js.js;
+
+phi.TestJsApi:Program
+{
+	call Js.Start: 900000;
+
+	# two worlds, each with its own globals
+	ptr<JsRuntime> a: (Js.New);
+	a.console_hook is addr Print;
+	call Run: 'var who = "a"; who';
+	ptr<JsRuntime> b: (Js.New);
+	b.console_hook is addr Print;
+	call Run: 'typeof who';
+	call Run: 'var who = "b"; Array.prototype.mine = 1; who';
+	call Js.Use: a;
+	call Run: 'who + [].mine';
+	call Js.Use: b;
+	call Run: 'who + [].mine';
+	call Js.Collect;
+	call Js.Use: a;
+	call Js.Collect;
+	call Run: 'who';
+	call Js.Free: b;
+	call Run: 'who + " still here"';
+
+	# failures come back; nothing gets out
+	call Run: 'var';
+	call Run: 'throw 5';
+	call Run: 'throw new RangeError("r")';
+	call Run: 'null.x';
+	call Run: 'function f(a) { if (!a) throw new TypeError("no a"); return a * 2; } 1';
+
+	# calling in
+	u64 f: (Js.GetProp: (JsV.Obj: JsRt.r.global) 'f');
+	call Js.Push: (JsV.Int: 21);
+	u64 r: (Js.Call: f JsV.UNDEF 1);
+	call Show: 'call' r;
+	r is (Js.Call: f JsV.UNDEF 0);
+	call Show: 'call with nothing' r;
+	r is (Js.Call: JsV.UNDEF JsV.UNDEF 0);
+	call Show: 'call of undefined' r;
+	call Js.Push: (Js.NewStringZ: 'first');
+	call Js.Push: (Js.NewStringZ: 'second');
+	r is (Js.Call: (Js.GetProp: (Js.NewStringZ: 'x,y') 'indexOf') (Js.NewStringZ: 'first second') 2);
+	call Show: 'with a this' r;
+	ptr<u64> mark: JsVm.sp;
+	call Run: 'var ctor = function (x) { this.x = x; }; 0';
+	call Js.Push: (JsV.Int: 7);
+	u64 made: (Js.Construct: (Js.GetProp: (JsV.Obj: JsRt.r.global) 'ctor') 1);
+	call Show: 'constructed' (Js.GetProp: made 'x');
+	log 'stack balanced ' (JsVm.sp is mark) '\n';
+
+	# making things from the host
+	ptr<JsObj> o: (Js.NewObject);
+	call Js.SetProp: (JsV.Obj: o) 'n' (JsV.Num: 1.5);
+	call Js.Define: o 'hidden' JsV.TRUE 0;
+	ptr<JsObj> arr: (Js.NewArray: 0);
+	call Js.ArrayPush: arr (Js.NewStringZ: 'caf\xC3\xA9');
+	call Js.ArrayPush: arr (Js.NewString: 'bad\xFF' 4);
+	call Js.Define: JsRt.r.global 'fromHost' (JsV.Obj: o) JsObjs.WEC;
+	call Js.Define: JsRt.r.global 'list' (JsV.Obj: arr) JsObjs.WEC;
+	call Run: 'Object.keys(fromHost).join() + fromHost.n + fromHost.hidden + list.length + list[0].length + list[1].charCodeAt(3)';
+	log 'has ' (Js.HasProp: o 'n') ' ' (Js.HasProp: o 'nope') ' deleted ' (Js.Delete: o 'n') ' ' (Js.HasProp: o 'n') '\n';
+	call Js.ArrayPush: arr (Js.NewStringZ: 'plain');
+	call Show: 'by index' (Js.GetIndex: (JsV.Obj: arr) 2);
+	call Js.SetIndex: (JsV.Obj: arr) 5 JsV.TRUE;
+	call Show: 'by key' (Js.GetKey: (JsV.Obj: arr) (Js.NewStringZ: 'length'));
+	call Js.SetKey: (JsV.Obj: o) (JsV.Int: 2) JsV.NULL;
+	call Show: 'by number' (Js.GetProp: (JsV.Obj: o) '2');
+
+	# a root keeps what nothing else holds
+	kept_slot is (Ev: '({ v: "held by a root" })');
+	call Js.AddRoot: addr kept_slot;
+	call Run: 'for (var i = 0; i < 100000; i++) ({ i: i }); 0';
+	call Js.Collect;
+	call Show: 'root' (Js.GetProp: kept_slot 'v');
+	call Js.RemoveRoot: addr kept_slot;
+	call Js.AddRootFn: addr MarkFn;
+	fn_slot is (Ev: '({ v: "held by a function" })');
+	call Js.Collect;
+	call Show: 'root function' (Js.GetProp: fn_slot 'v');
+	log 'collections ' (JsRt.r.collections > 2) '\n';
+
+	# jobs, one of which throws: the others still run
+	call Run: 'Promise.resolve().then(function () { console.log("job 1"); });';
+	call JsPromises.EnqueueCall: (Ev: '(function (x) { throw x; })') (JsV.Int: 9);
+	call Run: 'Promise.resolve().then(function () { console.log("job 2"); }); 0';
+	call Js.RunJobs;
+	log 'jobs failed ' Js.failed ' with ';
+	call Show: '' Js.exception;
+
+	# interrupting: from a native, and nothing catches it, not even a finally that keeps going
+	call Js.DefineNative: JsRt.r.global 'stopMe' addr StopMe 0;
+	call Run: 'try { stopMe(); for (;;) { } } catch (e) { console.log("caught?!"); } finally { console.log("finally?!"); }';
+	call Run: 'var n = 0; for (var i = 0; i < 3; i++) n++; n';
+	call Js.SetPollHook: addr Tired 1000;
+	call Run: 'function spin() { for (;;) { try { spin2(); } catch (e) { } } } function spin2() { for (var i = 0; i < 100; i++); } spin()';
+	call Js.SetPollHook: 0 20000;
+	log 'polled ' (polls > 3) '\n';
+	call Run: '"fine afterwards"';
+
+	# a compile that's kept, and run twice; and errors at each stage
+	ptr<u8> text: 'var count = (typeof count == "number" ? count : 0) + 1; count';
+	ptr<JsCode> c: (Js.Compile: text (WlText.LenZ: text) 'twice' false);
+	call Show: 'once' (Js.RunCode: c);
+	call Js.Push: (JsV.Cell: c as ptr<u8>);
+	call Js.Collect;
+	call Show: 'twice' (Js.RunCode: c);
+	JsVm.sp-- 8;
+	JsTryState t;
+	call Js.TryBegin: addr t;
+	if call c is Js.Compile: 'let let' 7 'bad' false throws err
+		call Show: 'compile error' (Js.GetProp: (Js.TryCatch: addr t err) 'name');
+	;;
+
+	# stress mode from the host
+	call Js.SetStress: true;
+	call Run: 'var s = ""; for (var i = 0; i < 300; i++) { s += i; var o2 = { s: s }; } o2.s.length';
+	call Js.SetStress: false;
+
+	# lots of runtimes, one after another: nothing leaks that a thousand would notice
+	call Js.Free: a;
+	while int i: 0; i < 200; i++;
+		ptr<JsRuntime> rt: (Js.New);
+		call Ev: 'var a = []; for (var i = 0; i < 100; i++) a.push({ i: i, s: "s" + i }); a';
+		call Js.Free: rt;
+	;;
+	log 'done\n';
+	exit 0;
+
+	u64 kept_slot: 0;
+	u64 fn_slot: 0;
+	int polls: 0;
+
+	[Print: ptr<u8> t: 0; u32 n: 0;]
+		log t '\n';
+	[end]
+
+	[MarkFn]
+		call Js.Mark: fn_slot;
+	[end]
+
+	[StopMe: ptr<u64> args: 0; int argc: 0;]
+		call Js.Interrupt;
+	[end: JsV.UNDEF]
+
+	[Tired]
+		polls++;
+	[end: polls % 5 is 0]
+
+	[Show: ptr<u8> what: 0; u64 v: 0;]
+		if what:0 is not 0
+			log what ': ';
+		;;
+		if Js.failed
+			log 'failed, ';
+			v is Js.exception;
+			if (JsV.IsObj: v)
+				v is (Js.GetProp: v 'message');
+			;;
+		;;
+		WlBuf b;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		if call Js.TextOf: v addr b throws err
+			call Js.TryCatchAll: addr t err;
+			call b.AddZ: 'unprintable';
+		;;
+		log b.data '\n';
+		call b.Free;
+	[end]
+
+	[Ev: ptr<u8> text: 0;]
+	[end: (Js.Eval: text (WlText.LenZ: text) 'api')]
+
+	[Run: ptr<u8> text: 0;]
+		u64 r: (Js.Eval: text (WlText.LenZ: text) 'api');
+		call Show: 'eval' r;
+	[end]
+}

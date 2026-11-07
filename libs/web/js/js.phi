@@ -1,0 +1,598 @@
+# The JavaScript engine's front door. Everything a host or a builtin needs is here or named in
+# docs/JS-INTERNALS.md, which says how to use it. `use js.js;` brings in the whole engine.
+
+use memory.mem;
+use core.alloc;
+use core.text;
+use core.buf;
+use core.arena;
+use core.stack;
+use core.num;
+use js.value;
+use js.jsstring;
+use js.gc;
+use js.runtime;
+use js.jsobject;
+use js.ops;
+use js.unicode;
+use js.jslexer;
+use js.jsparser;
+use js.scope;
+use js.opcodes;
+use js.compiler;
+use js.vm;
+use js.builtins.core;
+use js.builtins.object;
+use js.builtins.function;
+use js.builtins.array;
+use js.builtins.string;
+use js.builtins.number;
+use js.builtins.symbol;
+use js.builtins.error;
+use js.builtins.generator;
+use js.builtins.promise;
+use js.builtins.iter;
+use js.casemap;
+use js.builtins.math;
+use js.builtins.arrayx;
+use js.builtins.stringx;
+use js.builtins.collections;
+use js.builtins.json;
+use js.builtins.globals;
+use js.builtins.regexp;
+use js.builtins.proxy;
+use js.builtins.date;
+use js.builtins.typed;
+
+# what Js.TryBegin keeps, so a native can catch what a call throws: see JS-INTERNALS.md
+struct.JsTryState
+{
+	ptr<u64> sp;
+	int no_gc;
+}
+
+# double precision, round to nearest, every exception masked: see Js.Start
+asm.JsSetFpu
+{
+	fldcw [{fpu_control}]
+	ret
+}
+
+x64.JsSetFpu
+{
+	fldcw [rel {fpu_control}]
+	ret
+}
+
+phi.Js:Library
+{
+	u16 fpu_control: 0x027F;
+
+	# What Weblib.Start does that the engine needs, for a program with the engine alone (its tests):
+	# the stack budget, and the x87's precision, without which 0.1 + 0.2 can differ in the last bit.
+	# With all of weblib, call Weblib.Start instead.
+	[Start: u32 stack_bytes: 48000;]
+		call WlStack.Used;
+		WlStack.budget is stack_bytes;
+		call JsSetFpu;
+	[end]
+
+	u64 exception: 0;         # after a call that failed: what was thrown
+	bln failed: false;        # whether the last Eval, Call or RunJobs left an exception
+	WlArena arena;            # the syntax tree of what's being compiled
+
+	# ---- runtimes ----
+
+	# A new runtime, its builtins ready. It becomes the current one.
+	[New]
+		call SaveCurrent;
+		ptr<JsRuntime> rt: (JsRt.Create);
+		call JsBuiltins.Init;
+	[end: rt]
+
+	[SaveCurrent]
+		ptr<JsRuntime> rt: JsRt.r;
+		if rt is 0 return;
+		rt.saved_sp is JsVm.sp;
+		rt.saved_fr is JsVm.fr;
+		rt.saved_pc is JsVm.pc;
+		rt.saved_bp is JsVm.bp;
+		rt.saved_k is JsVm.K;
+		rt.saved_fuel is JsVm.fuel;
+	[end]
+
+	# Makes rt the current runtime. Not while JS of another runtime is running.
+	[Use: ptr<JsRuntime> rt: 0;]
+		if rt is JsRt.r return;
+		call SaveCurrent;
+		call JsRt.Load: rt;
+		JsVm.sp is rt.saved_sp;
+		JsVm.fr is rt.saved_fr;
+		JsVm.pc is rt.saved_pc;
+		JsVm.bp is rt.saved_bp;
+		JsVm.K is rt.saved_k;
+		JsVm.fuel is rt.saved_fuel;
+		JsVm.nt is JsV.UNDEF;
+		JsGc.no_gc is 0;
+		if rt.saved_fr.code is not 0
+			JsVm.I is rt.saved_fr.code.ins;
+		;;
+	[end]
+
+	# Everything in the runtime goes. It mustn't be used again.
+	[Free: ptr<JsRuntime> rt: 0;]
+		ptr<JsRuntime> was: JsRt.r;
+		if was is not rt
+			call Use: rt;
+		;;
+		call JsGc.FreeAll;
+		call JsRegExp.ForgetInput;
+		if rt.intern is not 0
+			free rt.intern;
+		;;
+		if rt.unit_strs is not 0
+			free rt.unit_strs;
+		;;
+		if rt.mark_stack is not 0
+			free rt.mark_stack;
+		;;
+		if rt.flat_stack is not 0
+			free rt.flat_stack;
+		;;
+		if rt.weak_list is not 0
+			free rt.weak_list;
+		;;
+		if rt.root_slots is not 0
+			free rt.root_slots;
+		;;
+		if rt.root_fns is not 0
+			free rt.root_fns;
+		;;
+		if rt.jobs is not 0
+			free rt.jobs;
+		;;
+		free rt.stack;
+		free rt.frames;
+		free rt;
+		JsRt.r is 0;
+		if was is not rt and was is not 0
+			call JsRt.Load: was;
+			JsVm.sp is was.saved_sp;
+			JsVm.fr is was.saved_fr;
+			JsVm.pc is was.saved_pc;
+			JsVm.bp is was.saved_bp;
+			JsVm.K is was.saved_k;
+			JsVm.fuel is was.saved_fuel;
+			if was.saved_fr.code is not 0
+				JsVm.I is was.saved_fr.code.ins;
+			;;
+		;;
+	[end]
+
+	# ---- running code ----
+
+	# Compiles a script: a JsCode (a GC cell, which nothing holds yet), or an exception by PHI throw.
+	[Compile: ptr<u8> src: 0; u32 len: 0; ptr<u8> name: 0; bln is_eval: false;]
+		ptr<JsRuntime> r: JsRt.r;
+		ptr<JsSource> so: (JsGc.New: sizeof JsSource JsGc.K_SOURCE) as ptr<JsSource>;
+		so.text is (WlText.Dup: src len);
+		so.len is len;
+		call JsGc.Account: len;
+		if name is not 0
+			so.name is (JsStrs.NewZ: name);
+		;;
+		JsParse.arena is addr arena;
+		JsCompile.arena is addr arena;
+		JsCompile.source is so;
+		call JsOp.Start;
+		ptr<JsCode> c: 0;
+		if call c is CompileInArena: so.text len is_eval addr arena throws err
+			call arena.Free;
+			call CompileError: err;
+		;;
+		call arena.Free;
+	[end: c]
+
+	# the same for eval's code, which may start strict
+	[CompileEval: ptr<u8> src: 0; u32 len: 0; bln strict: false;]
+		starts_strict is strict;
+		ptr<JsCode> c: (Compile: src len 0 true);
+	[end: c]
+
+	bln starts_strict: false;
+
+	[CompileInArena: ptr<u8> src: 0; u32 len: 0; bln is_eval: false; ptr<WlArena> arena: 0;]
+		call JsLex.Begin: src len;
+		bln strict: starts_strict;
+		starts_strict is false;
+		ptr<JsNode> tree: (JsParse.Script: is_eval strict);
+		call JsScopes.Program: tree arena;
+	[end: (JsCompile.Program: tree)]
+
+	# what went wrong compiling: a SyntaxError, if it isn't one already
+	[CompileError: Error err;]
+		ptr<JsRuntime> r: JsRt.r;
+		if r.has_exception
+			throw 'js';
+		;;
+		if err.text is 'too much recursion'
+			call JsErr.Syntax: 'Source nested too deeply';
+		;;
+		call JsVm.TakeError: err;
+		throw 'js';
+	[end]
+
+	# runs a compiled script with this = the global object
+	[RunCode: ptr<JsCode> code: 0;]
+		ptr<JsFn> f: (JsObjs.Alloc: sizeof JsFn JsGc.K_FUNCTION JsRt.P.function) as ptr<JsFn>;
+		f.o.flags is (JsObjs.F_CALLABLE | JsObjs.F_LAZY | JsObjs.F_SPECIAL) as u16;
+		f.code is code;
+	[end: (JsVm.Call0: (JsV.Obj: f as ptr<JsObj>) (JsV.Obj: JsRt.r.global))]
+
+	# Runs a script: its completion value, or undefined with Js.failed set and Js.exception holding
+	# what was thrown. Nothing can get past this: a PHI error in a native comes out as an InternalError.
+	[Eval: ptr<u8> src: 0; u32 len: 0; ptr<u8> name: 0;]
+		u64 result: JsV.UNDEF;
+		failed is false;
+		# if memory's short, make room first: compiling isn't at a safepoint
+		if JsRt.r.allocated > JsRt.r.threshold
+			call JsGc.Collect;
+		;;
+		JsTryState t;
+		call TryBegin: addr t;
+		if call result is EvalThrowing: src len name throws err
+			exception is (TryCatchAll: addr t err);
+			failed is true;
+			return JsV.UNDEF;
+		;;
+	[end: result]
+
+	[EvalThrowing: ptr<u8> src: 0; u32 len: 0; ptr<u8> name: 0;]
+		ptr<JsCode> code: (Compile: src len name false);
+	[end: (RunCode: code)]
+
+	# Calls a function: Js.Push each argument first, then this. Fails as Eval does.
+	[Call: u64 fn: 0; u64 this_val: 0; int argc: 0;]
+		failed is false;
+		u64 result: JsV.UNDEF;
+		JsTryState t;
+		t.sp is JsVm.sp - (argc as u32) * 8;
+		t.no_gc is JsGc.no_gc;
+		if call result is CallThrowing: fn this_val argc throws err
+			exception is (TryCatchAll: addr t err);
+			failed is true;
+			return JsV.UNDEF;
+		;;
+	[end: result]
+
+	# the same, for natives: an exception just carries on up
+	[CallThrowing: u64 fn: 0; u64 this_val: 0; int argc: 0;]
+		u32 n: argc as u32;
+		call JsVm.CheckStack: 2;
+		ptr<u64> args: JsVm.sp - n * 8;
+		call Mem.Move: (args + 16) as ptr<u8> args as ptr<u8> n * 8;
+		args:0 is fn;
+		args:1 is this_val;
+		JsVm.sp++ 16;
+	[end: (JsVm.Invoke: n)]
+
+	[Push: u64 v: 0;]
+		call JsVm.CheckStack: 1;
+		JsVm.sp:0 is v;
+		JsVm.sp++ 8;
+	[end]
+
+	# new fn(args...): Js.Push them first
+	[Construct: u64 fn: 0; int argc: 0;]
+		u32 n: argc as u32;
+		call JsVm.CheckStack: 2;
+		ptr<u64> args: JsVm.sp - n * 8;
+		call Mem.Move: (args + 16) as ptr<u8> args as ptr<u8> n * 8;
+		args:0 is fn;
+		args:1 is JsV.UNDEF;
+		JsVm.sp++ 16;
+	[end: (JsVm.InvokeNew: n fn)]
+
+	# the promise jobs, until there are none. An exception out of one sets Js.failed and the next runs.
+	[RunJobs]
+		failed is false;
+		call JsPromises.RunJobs;
+	[end]
+
+	# For a native's long loop: a safepoint of sorts. An interrupt stops it here, the poll hook gets asked,
+	# and if the native is gc_safe the collector may run, so what it holds must be rooted.
+	[Checkpoint]
+		JsVm.fuel--;
+		if JsVm.fuel <= 0
+			call JsVm.Poll;
+		;;
+	[end]
+
+	# Stops the running script at its next safepoint, however it's written: no catch sees it.
+	[Interrupt]
+		JsRt.r.interrupted is true;
+		JsVm.fuel is 0;
+	[end]
+
+	[SetPollHook: method<:bln> hook: 0; int every: 20000;]
+		JsRt.r.poll_hook is hook;
+		JsRt.r.fuel_period is every;
+		JsVm.fuel is every;
+	[end]
+
+	# ---- catching, for a native ----
+
+	# Before a call that may throw:
+	#   JsTryState t;
+	#   call Js.TryBegin: addr t;
+	#   if call r is Something: throws err
+	#       u64 thrown: (Js.TryCatch: addr t err);
+	#   ;;
+	[TryBegin: ptr<JsTryState> t: 0;]
+		t.sp is JsVm.sp;
+		t.no_gc is JsGc.no_gc;
+	[end]
+
+	# After a catch: the exception thrown, cleared, and everything as it was at TryBegin. An interrupt
+	# isn't for catching: it carries on up.
+	[TryCatch: ptr<JsTryState> t: 0; Error err;]
+		call JsVm.TakeError: err;
+		ptr<JsRuntime> r: JsRt.r;
+		JsGc.no_gc is t.no_gc;
+		JsVm.sp is t.sp;
+		if r.uncatchable
+			throw 'js';
+		;;
+		u64 v: r.exception;
+		r.has_exception is false;
+		r.exception is JsV.UNDEF;
+	[end: v]
+
+	# caught only to clean up: everything as it was at TryBegin, and it carries on up
+	[Rethrow: ptr<JsTryState> t: 0; Error err;]
+		call JsVm.TakeError: err;
+		JsGc.no_gc is t.no_gc;
+		JsVm.sp is t.sp;
+		throw 'js';
+	[end]
+
+	# the same at the outermost level, where even an interrupt stops
+	[TryCatchAll: ptr<JsTryState> t: 0; Error err;]
+		call JsVm.TakeError: err;
+		ptr<JsRuntime> r: JsRt.r;
+		JsGc.no_gc is t.no_gc;
+		JsVm.sp is t.sp;
+		r.uncatchable is false;
+		u64 v: r.exception;
+		r.has_exception is false;
+		r.exception is JsV.UNDEF;
+	[end: v]
+
+	# ---- reading arguments ----
+
+	[Arg: ptr<u64> args: 0; int argc: 0; int i: 0;]
+		if i < argc return args:i;
+	[end: JsV.UNDEF]
+
+	[This: ptr<u64> args: 0;]
+	[end: args:(-1)]
+
+	# the function object being called
+	[CalleeOf: ptr<u64> args: 0;]
+		u64 v: args:(-2);
+	[end: (JsV.AsObj: v) as ptr<JsNativeFn>]
+
+	# new.target, or undefined if called without new. Read it first thing.
+	[NewTarget]
+	[end: JsVm.nt]
+
+	# ---- making things ----
+
+	[NewObject]
+	[end: (JsObjs.NewObject)]
+
+	[NewObjectWith: ptr<JsObj> proto: 0;]
+	[end: (JsObjs.NewWithProto: proto)]
+
+	[NewArray: u32 room: 0;]
+	[end: (JsObjs.NewArray: room)]
+
+	[ArrayPush: ptr<JsObj> a: 0; u64 v: 0;]
+		call JsObjs.ArrayPush: a v;
+	[end]
+
+	# text from anywhere: what isn't good UTF-8 becomes U+FFFD
+	[NewString: ptr<u8> text: 0; u32 n: 0;]
+	[end: (JsV.Str: (JsStrs.FromUtf8: text n))]
+
+	[NewStringZ: ptr<u8> text: 0;]
+	[end: (JsV.Str: (JsStrs.FromUtf8: text (WlText.LenZ: text)))]
+
+	# the text of a value as WTF-8, added to a buffer (converting it as ToString does)
+	[TextOf: u64 v: 0; ptr<WlBuf> b: 0;]
+		ptr<JsStr> s: (JsStrs.Flat: (JsOps.ToStr: v));
+		call b.AddN: s.data s.bytes;
+	[end]
+
+	# ---- properties, by name in the program (which must be ASCII or UTF-8) ----
+
+	[GetProp: u64 o: 0; ptr<u8> name: 0;]
+	[end: (JsObjs.GetV: o (JsObjs.KeyZ: name))]
+
+	[SetProp: u64 o: 0; ptr<u8> name: 0; u64 v: 0;]
+		if not (JsObjs.SetV: o (JsObjs.KeyZ: name) v)
+			call JsErr.Type: 'Cannot assign to read only property';
+		;;
+	[end]
+
+	# ... and by any value as the key
+	[GetKey: u64 o: 0; u64 key: 0;]
+	[end: (JsObjs.GetV: o (JsObjs.KeyOf: key))]
+
+	[SetKey: u64 o: 0; u64 key: 0; u64 v: 0;]
+		if not (JsObjs.SetV: o (JsObjs.KeyOf: key) v)
+			call JsErr.Type: 'Cannot assign to read only property';
+		;;
+	[end]
+
+	[GetIndex: u64 o: 0; u32 i: 0;]
+	[end: (JsObjs.GetV: o JsV.INT_BASE | i)]
+
+	[SetIndex: u64 o: 0; u32 i: 0; u64 v: 0;]
+		if not (JsObjs.SetV: o JsV.INT_BASE | i v)
+			call JsErr.Type: 'Cannot assign to read only property';
+		;;
+	[end]
+
+	[HasProp: ptr<JsObj> o: 0; ptr<u8> name: 0;]
+	[end: (JsObjs.Has: o (JsObjs.KeyZ: name))]
+
+	[Delete: ptr<JsObj> o: 0; ptr<u8> name: 0;]
+	[end: (JsObjs.Delete: o (JsObjs.KeyZ: name))]
+
+	# a value property with flags (JsObjs.WEC, JsObjs.WC ...), however it was before
+	[Define: ptr<JsObj> o: 0; ptr<u8> name: 0; u64 v: 0; u32 flags: 7;]
+		call JsObjs.DefineZ: o name v flags;
+	[end]
+
+	# a native as a method: writable, configurable, not enumerable
+	[DefineNative: ptr<JsObj> o: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> fn: 0; int nargs: 0;]
+		ptr<JsNativeFn> f: (JsObjs.NewNative: fn name nargs false);
+		call JsObjs.DefineZ: o name (JsV.Obj: f as ptr<JsObj>) JsObjs.WC;
+	[end: f]
+
+	# the same for one that keeps everything on the value stack, so the GC can run while it's in JS
+	[DefineNativeSafe: ptr<JsObj> o: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> fn: 0; int nargs: 0;]
+		ptr<JsNativeFn> f: (JsObjs.NewNative: fn name nargs true);
+		call JsObjs.DefineZ: o name (JsV.Obj: f as ptr<JsObj>) JsObjs.WC;
+	[end: f]
+
+	# a property that's a native getter (and setter, or 0): configurable, not enumerable
+	[DefineGetter: ptr<JsObj> o: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> getter: 0; method<ptr<u64> int: u64> setter: 0;]
+		call AccessorOn: o (JsStrs.InternZ: name) as ptr<u8> name getter setter;
+	[end]
+
+	# the same under a symbol key; name is how its functions call it: '[Symbol.species]'
+	[DefineSymbolGetter: ptr<JsObj> o: 0; ptr<JsSym> sym: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> getter: 0; method<ptr<u64> int: u64> setter: 0;]
+		call AccessorOn: o sym as ptr<u8> name getter setter;
+	[end]
+
+	[AccessorOn: ptr<JsObj> o: 0; ptr<u8> key: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> getter: 0; method<ptr<u64> int: u64> setter: 0;]
+		u64 gv: (AccessorFn: getter 'get ' name 0);
+		u64 sv: JsV.UNDEF;
+		if setter is not 0
+			sv is (AccessorFn: setter 'set ' name 1);
+		;;
+		call JsObjs.DefineGetter: o key gv sv JsObjs.C;
+	[end]
+
+	[AccessorFn: method<ptr<u64> int: u64> fn: 0; ptr<u8> prefix: 0; ptr<u8> name: 0; int nargs: 0;]
+		ptr<JsNativeFn> f: (JsObjs.NewNative: fn 0 nargs false);
+		ptr<JsObj> fo: f as ptr<JsObj>;
+		call JsObjs.Materialize: fo;
+		WlBuf b;
+		call b.AddZ: prefix;
+		call b.AddZ: name;
+		call JsObjs.DefineValue: fo JsRt.A.name as ptr<u8> (JsV.Str: (JsStrs.New: b.data b.len)) JsObjs.C;
+		call b.Free;
+	[end: (JsV.Obj: fo)]
+
+	# A native under a symbol key, as Symbol.iterator is
+	[DefineSymbolNative: ptr<JsObj> o: 0; ptr<JsSym> sym: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> fn: 0; int nargs: 0;]
+		ptr<JsNativeFn> f: (JsObjs.NewNative: fn name nargs false);
+		call JsObjs.DefineValue: o sym as ptr<u8> (JsV.Obj: f as ptr<JsObj>) JsObjs.WC;
+	[end: f]
+
+	# A builtin class: a constructor native (flagged so `new` works) and its prototype object, linked
+	# both ways. The constructor goes on the global object under its name.
+	[DefineClass: ptr<u8> name: 0; method<ptr<u64> int: u64> ctor: 0; int nargs: 0; ptr<JsObj> proto: 0;]
+		ptr<JsNativeFn> f: (JsObjs.NewNative: ctor name nargs false);
+		f.o.flags is f.o.flags | JsObjs.F_CTOR as u16;
+		call JsObjs.Materialize: f as ptr<JsObj>;
+		call JsObjs.AddProp: f as ptr<JsObj> JsRt.A.prototype as ptr<u8> (JsV.Obj: proto) 0;
+		call JsObjs.DefineValue: proto JsRt.A.constructor as ptr<u8> (JsV.Obj: f as ptr<JsObj>) JsObjs.WC;
+		call JsObjs.DefineZ: JsRt.r.global name (JsV.Obj: f as ptr<JsObj>) JsObjs.WC;
+	[end: f]
+
+	# ---- the collector ----
+
+	# a collection now, unless a native that isn't gc_safe is running (then nothing happens)
+	[Collect]
+		call JsGc.Collect;
+	[end]
+
+	# how many bytes may stay alive after a collection; past that, script gets a RangeError at its
+	# next safepoint, until it lets go of enough. 1.5 GB to start with; 32-bit PHI programs on Windows
+	# run out at 128 MB, which comes out as the same RangeError.
+	[SetMemoryLimit: u32 bytes: 0;]
+		JsRt.r.memory_limit is bytes;
+	[end]
+
+	# stress mode: a collection at every safepoint
+	[SetStress: bln on: true;]
+		JsRt.r.stress is on;
+		if on
+			JsVm.fuel is 0;
+		;;
+	[end]
+
+	# the collector keeps what's in this slot alive, for as long as it's registered
+	[AddRoot: ptr<u64> slot: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		if r.root_count >= r.root_cap
+			u32 room: r.root_cap * 2 + 8;
+			ptr<ptr<u64>> grown: new ptr<u64>[room];
+			if grown is 0
+				throw 'out of memory';
+			;;
+			if r.root_slots is not 0
+				call Mem.Copy: grown as ptr<u8> r.root_slots as ptr<u8> r.root_count * sizeof ptr<u8>;
+				free r.root_slots;
+			;;
+			r.root_slots is grown;
+			r.root_cap is room;
+		;;
+		r.root_slots:(r.root_count) is slot;
+		r.root_count is r.root_count + 1;
+	[end]
+
+	[RemoveRoot: ptr<u64> slot: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		while u32 i: 0; i < r.root_count; i++;
+			if r.root_slots:i is slot
+				r.root_count is r.root_count - 1;
+				r.root_slots:i is r.root_slots:(r.root_count);
+				return;
+			;;
+		;;
+	[end]
+
+	# fn runs in every collection, and calls Js.Mark for what it holds
+	[AddRootFn: method<> fn: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		if r.root_fn_count >= r.root_fn_cap
+			u32 room: r.root_fn_cap * 2 + 8;
+			ptr<JsRootFn> grown: new JsRootFn[room];
+			if grown is 0
+				throw 'out of memory';
+			;;
+			if r.root_fns is not 0
+				call Mem.Copy: grown as ptr<u8> r.root_fns as ptr<u8> r.root_fn_count * sizeof JsRootFn;
+				free r.root_fns;
+			;;
+			r.root_fns is grown;
+			r.root_fn_cap is room;
+		;;
+		r.root_fns:(r.root_fn_count).fn is fn;
+		r.root_fn_count is r.root_fn_count + 1;
+	[end]
+
+	# in a trace hook or a root function: keeps a value alive
+	[Mark: u64 v: 0;]
+		call JsGc.Mark: v;
+	[end]
+
+	# in a weak hook: whether the collection found this alive so far
+	[IsMarked: u64 v: 0;]
+	[end: (JsGc.IsMarked: v)]
+}

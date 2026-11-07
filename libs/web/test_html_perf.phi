@@ -1,0 +1,188 @@
+# Pathological documents must not take quadratic time or run off the stack. Each shape is parsed at
+# one size and at four times that, and serialized, and everything is freed. With -v it prints the
+# times, which is how to see the growth; the expected output only has what doesn't vary. (If a shape
+# went quadratic this test would run out of phi test's time.)
+#
+#   phi test . -f test_html_perf --target windows64
+#   phi run test_html_perf.phi --target windows64 -- -v
+use weblib;
+use html.parser;
+
+phi.TestHtmlPerf:Program
+{
+	bln verbose: false;
+	WlBuf input;
+	WlBuf output;
+
+	call Weblib.Start: 900000;
+	ptr<u8> args: (OS.Arguments);
+	if args is not 0 and args:0 is '-'
+		verbose is true;
+	;;
+	call Shape: 'nested div' 1 '<div>' 0;
+	call Shape: 'nested span' 2 '<span>' 0;
+	call Shape: 'nested unknown' 3 '<x>' 0;
+	call Shape: 'nested table' 4 '<table>' 0;
+	call Shape: 'nested svg' 5 '<svg>' 0;
+	call Shape: 'paragraphs' 6 '<p>x' 0;
+	call Shape: 'unclosed b, unique' 7 '<b a=#>' 0;
+	call Shape: 'unclosed a' 8 '<a>' 0;
+	call Shape: 'text and refs' 9 'x&amp;y ' 0;
+	call Shape: 'end tags nothing matches' 10 '</y>' 0;
+	call Shape: 'deep, then end tags' 11 '<x>' 0;
+	call Shape: 'p in button, then divs' 12 '<div>' 0;
+	call Shape: 'deep, then list items' 13 '<li></li>' 0;
+	call Shape: 'deep svg, then end tags' 14 '</y>' 0;
+	call Shape: 'deep, then tables' 15 '<table></table>' 0;
+	call Shape: 'misnested formatting' 16 '<b><div></b>' 0;
+	call Shape: 'many cells' 17 '<td>x' 0;
+	call Shape: 'reopened formatting' 18 '<p>x</p>' 0;
+	call Shape: 'attributes on one tag' 19 ' a#' 0;
+	call Shape: 'attributes on two html tags' 20 ' a#' 0;
+	call Shape: 'many options' 21 '<option>x' 0;
+	call Shape: 'long comment' 22 '<!-- x ' 0;
+	call Shape: 'foster parented text' 23 'x<b>' 0;
+	call Shape: 'templates' 24 '<template>' 0;
+	# deep enough that anything recursive would have run off the stack long ago
+	call Once: 1 '<div>' 300000;
+	log 'three hundred thousand deep: ' last_nodes ' nodes\n';
+	# as deep as memory allows, only when asked since the targets differ: the 32-bit heap gives out
+	# first, and that must be an ordinary failure, with what was built still good
+	if verbose
+		call input.Clear;
+		call AddMany: '<div>' 3000000;
+		int started: (OS.GetTicks);
+		ptr<HtmlParser> p: (HtmlParser.New: 0);
+		call p.Feed: input.data input.len;
+		call p.Finish;
+		log 'three million deep: ' p.doc.node_count ' nodes, failed ' p.failed ' [' p.error '] in ' (OS.GetTicks) - started ' ms\n';
+		ptr<DomDocument> d: p.doc;
+		call p.Free;
+		call output.Free;
+		log 'serialize ' (Html.Serialize: d.root output) ' ' output.len ' bytes\n';
+		call Dom.FreeDocument: d;
+	;;
+	log 'done\n';
+	exit 0;
+
+	# what goes before the repeated piece, and after it
+	[Prefix: u32 which: 0;]
+		when which
+			is 11
+				call input.AddZ: '<x>';
+				call AddMany: '<x>' 50000;
+			;;
+			is 12
+				call input.AddZ: '<p><button>';
+			;;
+			is 13
+				call input.AddZ: '<li><ul>';
+				call AddMany: '<div>' 50000;
+			;;
+			is 14
+				call input.AddZ: '<svg>';
+				call AddMany: '<x>' 50000;
+			;;
+			is 15
+				call AddMany: '<x>' 50000;
+			;;
+			is 16
+				call AddMany: '<div>' 20000;
+			;;
+			is 17
+				call input.AddZ: '<table><tr>';
+			;;
+			is 18
+				call AddMany: '<b a=1><b a=2><b a=3><b a=4><b a=5><b a=6><b a=7><b a=8>' 20;
+			;;
+			is 19 20
+				call input.AddZ: '<html';
+			;;
+			is 21
+				call input.AddZ: '<select><button><selectedcontent></button>';
+			;;
+			is 23
+				call input.AddZ: '<table>';
+			;;
+		;;
+	[end]
+
+	[Suffix: u32 which: 0;]
+		when which
+			is 19
+				call input.AddZ: '>';
+			;;
+			is 20
+				call input.AddZ: '><html';
+			;;
+		;;
+	[end]
+
+	[AddMany: ptr<u8> piece: 0; u32 times: 0;]
+		u32 n: (WlText.LenZ: piece);
+		while u32 i: 0; i < times; i++;
+			call input.AddN: piece n;
+		;;
+	[end]
+
+	# the piece, with # as a number that changes
+	[AddPieces: ptr<u8> piece: 0; u32 times: 0;]
+		u32 n: (WlText.LenZ: piece);
+		bln has_number: false;
+		while u32 k: 0; k < n; k++;
+			if piece:k is '#'
+				has_number is true;
+			;;
+		;;
+		if has_number is false
+			call AddMany: piece times;
+			return;
+		;;
+		while u32 i: 0; i < times; i++;
+			while u32 j: 0; j < n; j++;
+				if piece:j is '#'
+					call input.AddInt: i as int;
+				;;
+				else
+					call input.Add: piece:j;
+				;;
+			;;
+		;;
+	[end]
+
+	[Once: u32 which: 0; ptr<u8> piece: 0; u32 times: 0;]
+		call input.Clear;
+		call Prefix: which;
+		call AddPieces: piece times;
+		call Suffix: which;
+		if which is 20
+			# the second tag has them too
+			call AddPieces: piece times;
+			call input.AddZ: '>';
+		;;
+		int before: (OS.GetTicks);
+		ptr<DomDocument> d: (Html.Parse: input.data input.len);
+		int parsed: (OS.GetTicks);
+		call output.Clear;
+		call Html.Serialize: d.root output;
+		int written: (OS.GetTicks);
+		u32 nodes: d.node_count;
+		call Dom.FreeDocument: d;
+		int freed: (OS.GetTicks);
+		if verbose
+			log '  ' input.len ' bytes ' nodes ' nodes: parse ' parsed - before ' ms, serialize ' written - parsed ' ms, free ' freed - written ' ms\n';
+		;;
+		last_nodes is nodes;
+	[end]
+
+	u32 last_nodes: 0;
+
+	[Shape: ptr<u8> label: 0; u32 which: 0; ptr<u8> piece: 0; u32 unused: 0;]
+		if verbose
+			log label '\n';
+		;;
+		call Once: which piece 25000;
+		call Once: which piece 100000;
+		log label ': ' last_nodes ' nodes\n';
+	[end]
+}

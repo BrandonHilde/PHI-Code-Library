@@ -1,0 +1,219 @@
+# Function.prototype, and the constructors that compile source text.
+
+phi.JsFunctionBuiltins:Library
+{
+	[Init]
+		ptr<JsObj> proto: JsRt.P.function;
+		ptr<JsNativeFn> ctor: (Js.DefineClass: 'Function' addr Construct 1 proto);
+		ctor.magic is 0;
+		call Js.DefineNativeSafe: proto 'call' addr Call 1;
+		call Js.DefineNativeSafe: proto 'apply' addr Apply 2;
+		call Js.DefineNative: proto 'bind' addr Bind 1;
+		call Js.DefineNative: proto 'toString' addr ToString 0;
+		ptr<JsNativeFn> hi: (JsObjs.NewNative: addr HasInstance '[Symbol.hasInstance]' 1 false);
+		call JsObjs.DefineValue: proto JsRt.S.hasInstance as ptr<u8> (JsV.Obj: hi as ptr<JsObj>) 0;
+		# %ThrowTypeError%, which arguments.callee and friends use in strict code
+		ptr<JsNativeFn> tte: (JsObjs.NewNative: addr ThrowTypeError 0 0 false);
+		call JsObjs.Materialize: tte as ptr<JsObj>;
+		ptr<JsObj> to: tte as ptr<JsObj>;
+		call JsObjs.DefineValue: to JsRt.A.length as ptr<u8> JsV.INT_BASE 0;
+		call JsObjs.DefineValue: to JsRt.A.name as ptr<u8> (JsV.Str: JsRt.blank) 0;
+		to.flags is to.flags | JsObjs.F_NOEXT as u16;
+		JsRt.P.throw_type_error is to;
+		call JsObjs.DefineGetter: proto JsRt.A.caller as ptr<u8> (JsV.Obj: to) (JsV.Obj: to) JsObjs.C;
+		call JsObjs.DefineGetter: proto JsRt.A.arguments as ptr<u8> (JsV.Obj: to) (JsV.Obj: to) JsObjs.C;
+	[end]
+
+	[ThrowTypeError: ptr<u64> args: 0; int argc: 0;]
+		call JsErr.Type: 'caller, callee and arguments are not available on strict functions';
+	[end: JsV.UNDEF]
+
+	# f.call(this, a, b): the arguments are on the stack already: only f and this need arranging
+	[Call: ptr<u64> args: 0; int argc: 0;]
+		u64 f: args:(-1);
+		if not (JsOps.IsCallable: f)
+			call JsErr.Type: 'Function.prototype.call was called on something that is not a function';
+		;;
+		call JsVm.CheckStack: 2;
+		ptr<u64> sp0: JsVm.sp;
+		sp0:0 is f;
+		sp0:1 is (Js.Arg: args argc 0);
+		JsVm.sp is sp0 + 16;
+		u32 n: 0;
+		if argc > 1
+			n is (argc - 1) as u32;
+			call JsVm.CheckStack: n;
+			while u32 i: 0; i < n; i++;
+				JsVm.sp:0 is args:(i + 1);
+				JsVm.sp++ 8;
+			;;
+		;;
+	[end: (JsVm.Invoke: n)]
+
+	[Apply: ptr<u64> args: 0; int argc: 0;]
+		u64 f: args:(-1);
+		if not (JsOps.IsCallable: f)
+			call JsErr.Type: 'Function.prototype.apply was called on something that is not a function';
+		;;
+		call JsVm.CheckStack: 2;
+		JsVm.sp:0 is f;
+		JsVm.sp:1 is (Js.Arg: args argc 0);
+		JsVm.sp++ 16;
+		u64 list: (Js.Arg: args argc 1);
+		u32 n: 0;
+		if list is not JsV.UNDEF and list is not JsV.NULL
+			n is (JsOps.PushArrayLike: list);
+		;;
+	[end: (JsVm.Invoke: n)]
+
+	[Bind: ptr<u64> args: 0; int argc: 0;]
+		u64 target: args:(-1);
+		if not (JsOps.IsCallable: target)
+			call JsErr.Type: 'Bind must be called on a function';
+		;;
+		ptr<JsObj> to: (JsV.AsObj: target);
+		ptr<JsBoundFn> b: (JsObjs.Alloc: sizeof JsBoundFn JsGc.K_BOUND (JsObjs.ProtoOf: to)) as ptr<JsBoundFn>;
+		ptr<JsObj> bo: b as ptr<JsObj>;
+		bo.flags is JsObjs.F_CALLABLE as u16;
+		b.target is target;
+		b.this_val is (Js.Arg: args argc 0);
+		if argc > 1
+			u32 n: (argc - 1) as u32;
+			b.args is new u64[n];
+			if b.args is 0
+				throw 'out of memory';
+			;;
+			b.argc is n;
+			while u32 i: 0; i < n; i++;
+				b.args:i is args:(i + 1);
+			;;
+		;;
+		# its length and name
+		f64 len: 0.0;
+		if (JsObjs.HasOwn: to (JsV.Str: JsRt.A.length))
+			u64 lv: (JsObjs.GetAtom: to JsRt.A.length as ptr<u8> target);
+			if (JsV.IsNum: lv)
+				f64 x: (JsV.AsNum: lv);
+				if x is x
+					if not (WlNum.IsFinite: x)
+						if x > 0.0
+							len is x;
+						;;
+					;;
+					else
+						len is (Float.Trunc: x) - (b.argc as f64);
+						if len < 0.0
+							len is 0.0;
+						;;
+					;;
+				;;
+			;;
+		;;
+		call JsObjs.AddProp: bo JsRt.A.length as ptr<u8> (JsV.Num: len) JsObjs.C;
+		u64 nv: (JsObjs.GetAtom: to JsRt.A.name as ptr<u8> target);
+		WlBuf nm;
+		call nm.AddZ: 'bound ';
+		if (JsV.IsStr: nv)
+			ptr<JsStr> ns: (JsStrs.Flat: (JsV.AsStr: nv));
+			call nm.AddN: ns.data ns.bytes;
+		;;
+		call JsObjs.AddProp: bo JsRt.A.name as ptr<u8> (JsV.Str: (JsStrs.New: nm.data nm.len)) JsObjs.C;
+		call nm.Free;
+	[end: (JsV.Obj: bo)]
+
+	[ToString: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.kind is JsGc.K_FUNCTION
+				ptr<JsFn> f: o as ptr<JsFn>;
+				ptr<JsCode> c: f.code;
+				if c.src is not 0 and c.src_stop > c.src_start
+					return (JsV.Str: (JsStrs.FromUtf8: c.src.text + c.src_start c.src_stop - c.src_start));
+				;;
+			;;
+			if (o.flags & JsObjs.F_CALLABLE) is not 0
+				WlBuf b;
+				call b.AddZ: 'function ';
+				if o.kind is JsGc.K_NATIVE
+					ptr<JsNativeFn> n: o as ptr<JsNativeFn>;
+					if n.name is not 0
+						# [Symbol.iterator] is not a valid function name: leave it out if it can't be one
+						if n.name:0 is not 91
+							call b.AddZ: n.name;
+						;;
+					;;
+				;;
+				call b.AddZ: '() { [native code] }';
+				u64 r: (JsV.Str: (JsStrs.New: b.data b.len));
+				call b.Free;
+				return r;
+			;;
+		;;
+		call JsErr.Type: 'Function.prototype.toString requires that this be a function';
+	[end: JsV.UNDEF]
+
+	[HasInstance: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Bool: (JsOps.OrdinaryHasInstance: args:(-1) (Js.Arg: args argc 0)))]
+
+	# Function(a, b, 'body'), and with a prefix: the generator and async kinds
+	[MakeFunction: ptr<u64> args: 0; int argc: 0; ptr<u8> prefix: 0;]
+		WlBuf params;
+		WlBuf text;
+		int n_params: argc - 1;
+		while int i: 0; i < n_params; i++;
+			if i > 0
+				call params.Add: ',';
+			;;
+			call Js.TextOf: args:i addr params;
+		;;
+		WlBuf body;
+		if argc > 0
+			call Js.TextOf: args:(argc - 1) addr body;
+		;;
+		call params.Reserve: 0;
+		call body.Reserve: 0;
+		# each part must parse by itself, so neither can close the other's bracket
+		call text.AddZ: '(';
+		call text.AddZ: prefix;
+		call text.AddZ: ' anonymous(\n) {\n';
+		call text.AddN: body.data body.len;
+		call text.AddZ: '\n})';
+		ptr<JsCode> check: (Js.Compile: text.data text.len 0 true);
+		call text.Clear;
+		call text.AddZ: '(';
+		call text.AddZ: prefix;
+		call text.AddZ: ' anonymous(';
+		call text.AddN: params.data params.len;
+		call text.AddZ: '\n) {\n\n})';
+		check is (Js.Compile: text.data text.len 0 true);
+		call text.Clear;
+		call text.AddZ: '(';
+		call text.AddZ: prefix;
+		call text.AddZ: ' anonymous(';
+		call text.AddN: params.data params.len;
+		call text.AddZ: '\n) {\n';
+		call text.AddN: body.data body.len;
+		call text.AddZ: '\n})';
+		ptr<JsCode> code: (Js.Compile: text.data text.len 0 true);
+		call params.Free;
+		call body.Free;
+		call text.Free;
+		u64 fv: (Js.RunCode: code);
+		# its source doesn't include the parentheses that were only for parsing
+	[end: fv]
+
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		u64 f: (MakeFunction: args argc 'function');
+		call FixProto: f nt JsRt.P.function;
+	[end: f]
+
+	[FixProto: u64 f: 0; u64 nt: 0; ptr<JsObj> fallback: 0;]
+		if (JsV.IsObj: nt)
+			ptr<JsObj> p: (JsOps.ProtoFromCtor: nt fallback);
+			ptr<JsObj> fo: (JsV.AsObj: f);
+			fo.proto is p;
+		;;
+	[end]
+}

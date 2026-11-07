@@ -1,0 +1,1041 @@
+# Map, Set, WeakMap, WeakSet, WeakRef and FinalizationRegistry.
+#
+# A table keeps its entries in the order they were added, with a hash chain through them. Deleting leaves a
+# hole, and the table is squeezed when it grows. An iterator must carry on correctly through all that, so
+# each entry has a number that only goes up: an iterator remembers the last number it saw, and if the table
+# has been squeezed since, finds its place again by binary search.
+
+struct.JsMapEntry
+{
+	u64 key;               # JsV.HOLE once it's deleted
+	u64 value;
+	u32 hash;
+	u32 next;              # the next in its bucket's chain, plus 1; 0 at the end
+	u32 seq;
+}
+
+struct.JsMapData
+{
+	ptr<JsMapEntry> entries;
+	ptr<u32> buckets;      # the first entry of each bucket's chain, plus 1
+	u32 used;              # entries in use, holes included
+	u32 live;
+	u32 cap;
+	u32 bucket_mask;
+	u32 gen;               # goes up when entries move
+	u32 next_seq;
+}
+
+struct.JsMapIter
+{
+	u64 map;               # undefined once it's finished
+	u32 pos;
+	u32 gen;
+	u32 last_seq;
+	u32 kind;              # 0 keys, 1 values, 2 entries
+	bln started;
+}
+
+struct.JsWeakRefData
+{
+	u64 target;
+}
+
+phi.JsCollections:Library
+{
+	ptr<JsClass> map_class: 0;
+	ptr<JsClass> set_class: 0;
+	ptr<JsClass> weakmap_class: 0;
+	ptr<JsClass> weakset_class: 0;
+	ptr<JsClass> weakref_class: 0;
+	ptr<JsClass> registry_class: 0;
+	ptr<JsClass> map_iter_class: 0;
+	ptr<JsClass> set_iter_class: 0;
+
+	const u32 MAX_ENTRIES: 60000000;
+
+	[Init]
+		if map_class is 0
+			map_class is (JsObjs.NewClass: 'Map');
+			map_class.trace is addr TraceTable;
+			map_class.finalize is addr FreeTable;
+			set_class is (JsObjs.NewClass: 'Set');
+			set_class.trace is addr TraceTable;
+			set_class.finalize is addr FreeTable;
+			weakmap_class is (JsObjs.NewClass: 'WeakMap');
+			weakmap_class.finalize is addr FreeTable;
+			weakmap_class.ephemeron is addr EphemeronTable;
+			weakmap_class.weak_clear is addr ClearDeadKeys;
+			weakset_class is (JsObjs.NewClass: 'WeakSet');
+			weakset_class.finalize is addr FreeTable;
+			weakset_class.weak_clear is addr ClearDeadKeys;
+			weakref_class is (JsObjs.NewClass: 'WeakRef');
+			weakref_class.finalize is addr FreeWeakRef;
+			weakref_class.weak_clear is addr ClearWeakRef;
+			registry_class is (JsObjs.NewClass: 'FinalizationRegistry');
+			map_iter_class is (JsObjs.NewClass: 'Map Iterator');
+			map_iter_class.trace is addr TraceIter;
+			map_iter_class.finalize is addr FreeIter;
+			set_iter_class is (JsObjs.NewClass: 'Set Iterator');
+			set_iter_class.trace is addr TraceIter;
+			set_iter_class.finalize is addr FreeIter;
+		;;
+		ptr<JsObj> mp: (JsObjs.NewObject);
+		JsRt.P.map is mp;
+		ptr<JsNativeFn> mc: (Js.DefineClass: 'Map' addr MapCtor 0 mp);
+		call Js.DefineSymbolGetter: mc as ptr<JsObj> JsRt.S.species '[Symbol.species]' addr JsArrayBuiltins.Species 0;
+		call On: mp 'get' addr MapGet 1 ON_MAP;
+		call Js.DefineNative: mp 'set' addr MapSet 2;
+		call On: mp 'has' addr Has 1 ON_MAP;
+		call On: mp 'delete' addr Delete 1 ON_MAP;
+		call On: mp 'clear' addr Clear 0 ON_MAP;
+		call SizeOn: mp ON_MAP;
+		call SafeOn: mp 'forEach' addr ForEach 1 ON_MAP;
+		ptr<JsNativeFn> me: (Js.DefineNative: mp 'entries' addr MapEntries 0);
+		call Js.DefineNative: mp 'keys' addr MapKeys 0;
+		call Js.DefineNative: mp 'values' addr MapValues 0;
+		call JsObjs.DefineValue: mp JsRt.S.iterator as ptr<u8> (JsV.Obj: me as ptr<JsObj>) JsObjs.WC;
+		call JsObjs.DefineValue: mp JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'Map') JsObjs.C;
+
+		ptr<JsObj> sp: (JsObjs.NewObject);
+		JsRt.P.set is sp;
+		ptr<JsNativeFn> sc: (Js.DefineClass: 'Set' addr SetCtor 0 sp);
+		call Js.DefineSymbolGetter: sc as ptr<JsObj> JsRt.S.species '[Symbol.species]' addr JsArrayBuiltins.Species 0;
+		call Js.DefineNative: sp 'add' addr SetAdd 1;
+		call On: sp 'has' addr Has 1 ON_SET;
+		call On: sp 'delete' addr Delete 1 ON_SET;
+		call On: sp 'clear' addr Clear 0 ON_SET;
+		call SizeOn: sp ON_SET;
+		call SafeOn: sp 'forEach' addr ForEach 1 ON_SET;
+		call Js.DefineNative: sp 'entries' addr SetEntries 0;
+		ptr<JsNativeFn> sv: (Js.DefineNative: sp 'values' addr SetValues 0);
+		call JsObjs.DefineZ: sp 'keys' (JsV.Obj: sv as ptr<JsObj>) JsObjs.WC;
+		call JsObjs.DefineValue: sp JsRt.S.iterator as ptr<u8> (JsV.Obj: sv as ptr<JsObj>) JsObjs.WC;
+		call JsObjs.DefineValue: sp JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'Set') JsObjs.C;
+		call SetOp: sp 'union' SET_UNION;
+		call SetOp: sp 'intersection' SET_INTERSECTION;
+		call SetOp: sp 'difference' SET_DIFFERENCE;
+		call SetOp: sp 'symmetricDifference' SET_SYMMETRIC;
+		call SetOp: sp 'isSubsetOf' SET_SUBSET;
+		call SetOp: sp 'isSupersetOf' SET_SUPERSET;
+		call SetOp: sp 'isDisjointFrom' SET_DISJOINT;
+		ptr<JsNativeFn> gb1: (Js.DefineNativeSafe: mc as ptr<JsObj> 'groupBy' addr GroupBy 2);
+		gb1.magic is 1;
+		ptr<JsProp> oc_prop: (JsObjs.Find: JsRt.P.object JsRt.A.constructor as ptr<u8>);
+		ptr<JsNativeFn> gb0: (Js.DefineNativeSafe: (JsV.AsObj: oc_prop.value) 'groupBy' addr GroupBy 2);
+		gb0.magic is 0;
+
+		ptr<JsObj> wm: (JsObjs.NewObject);
+		JsRt.P.weakmap is wm;
+		call Js.DefineClass: 'WeakMap' addr WeakMapCtor 0 wm;
+		call On: wm 'get' addr MapGet 1 ON_WEAKMAP;
+		call Js.DefineNative: wm 'set' addr WeakMapSet 2;
+		call On: wm 'has' addr Has 1 ON_WEAKMAP;
+		call On: wm 'delete' addr Delete 1 ON_WEAKMAP;
+		call JsObjs.DefineValue: wm JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'WeakMap') JsObjs.C;
+
+		ptr<JsObj> ws: (JsObjs.NewObject);
+		JsRt.P.weakset is ws;
+		call Js.DefineClass: 'WeakSet' addr WeakSetCtor 0 ws;
+		call Js.DefineNative: ws 'add' addr WeakSetAdd 1;
+		call On: ws 'has' addr Has 1 ON_WEAKSET;
+		call On: ws 'delete' addr Delete 1 ON_WEAKSET;
+		call JsObjs.DefineValue: ws JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'WeakSet') JsObjs.C;
+
+		ptr<JsObj> wr: (JsObjs.NewObject);
+		JsRt.P.weakref is wr;
+		call Js.DefineClass: 'WeakRef' addr WeakRefCtor 1 wr;
+		call Js.DefineNative: wr 'deref' addr WeakRefDeref 0;
+		call JsObjs.DefineValue: wr JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'WeakRef') JsObjs.C;
+
+		ptr<JsObj> fr: (JsObjs.NewObject);
+		call Js.DefineClass: 'FinalizationRegistry' addr RegistryCtor 1 fr;
+		call Js.DefineNative: fr 'register' addr RegistryNothing 2;
+		call Js.DefineNative: fr 'unregister' addr RegistryNothing 1;
+		call JsObjs.DefineValue: fr JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'FinalizationRegistry') JsObjs.C;
+
+		ptr<JsObj> mip: (JsObjs.NewWithProto: JsRt.P.iterator);
+		JsRt.P.map_iterator is mip;
+		call Js.DefineNative: mip 'next' addr IterNext 0;
+		call JsObjs.DefineValue: mip JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'Map Iterator') JsObjs.C;
+		ptr<JsObj> sip: (JsObjs.NewWithProto: JsRt.P.iterator);
+		JsRt.P.set_iterator is sip;
+		call Js.DefineNative: sip 'next' addr IterNext 0;
+		call JsObjs.DefineValue: sip JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'Set Iterator') JsObjs.C;
+	[end]
+
+	# ---- the table ----
+
+	[NewTable]
+		ptr<JsMapData> t: new JsMapData;
+		if t is 0
+			throw 'out of memory';
+		;;
+		t.next_seq is 1;
+	[end: t]
+
+	[TraceTable: ptr<JsObj> o: 0;]
+		ptr<JsMapData> t: o.data as ptr<JsMapData>;
+		while u32 i: 0; i < t.used; i++;
+			ptr<JsMapEntry> e: t.entries + i * sizeof JsMapEntry;
+			call Js.Mark: e.key;
+			call Js.Mark: e.value;
+		;;
+	[end]
+
+	[FreeTable: ptr<JsObj> o: 0;]
+		ptr<JsMapData> t: o.data as ptr<JsMapData>;
+		if t.entries is not 0
+			free t.entries;
+		;;
+		if t.buckets is not 0
+			free t.buckets;
+		;;
+		free t;
+	[end]
+
+	# marks the value of each entry whose key is alive
+	[EphemeronTable: ptr<JsObj> o: 0;]
+		ptr<JsMapData> t: o.data as ptr<JsMapData>;
+		int marked: 0;
+		while u32 i: 0; i < t.used; i++;
+			ptr<JsMapEntry> e: t.entries + i * sizeof JsMapEntry;
+			if e.key is not JsV.HOLE and (Js.IsMarked: e.key) and not (Js.IsMarked: e.value)
+				call Js.Mark: e.value;
+				marked++;
+			;;
+		;;
+	[end: marked]
+
+	[ClearDeadKeys: ptr<JsObj> o: 0;]
+		ptr<JsMapData> t: o.data as ptr<JsMapData>;
+		while u32 i: 0; i < t.used; i++;
+			ptr<JsMapEntry> e: t.entries + i * sizeof JsMapEntry;
+			if e.key is not JsV.HOLE and not (Js.IsMarked: e.key)
+				call RemoveEntry: t i;
+			;;
+		;;
+	[end]
+
+	# a number that's a whole number is always an int value here, and -0 is 0, so equal keys have equal bits,
+	# except strings, which go by their text
+	[Normal: u64 k: 0;]
+		if (JsV.IsNum: k)
+			f64 x: (JsV.AsNum: k);
+			if x is 0.0
+				return JsV.INT_BASE;
+			;;
+			return (JsV.Num: x);
+		;;
+	[end: k]
+
+	[HashOf: u64 k: 0;]
+		if (JsV.IsStr: k)
+			return (JsStrs.Hash: (JsV.AsStr: k));
+		;;
+		u32 lo: k as u32;
+		u32 hi: (k >> 32) as u32;
+		u32 h: (lo ^ (hi * 31)) * 0x9E3779B1;
+	[end: h ^ (h >> 15)]
+
+	[SameKey: u64 a: 0; u64 b: 0;]
+		if a is b return true;
+		if (JsV.IsStr: a) and (JsV.IsStr: b)
+			return (JsStrs.Eq: (JsV.AsStr: a) (JsV.AsStr: b));
+		;;
+	[end: false]
+
+	# the entry's place, plus 1; 0 if it isn't there
+	[Find: ptr<JsMapData> t: 0; u64 k: 0; u32 h: 0;]
+		if t.buckets is 0 return 0;
+		u32 at_: t.buckets:(h & t.bucket_mask);
+		while at_ is not 0
+			ptr<JsMapEntry> e: t.entries + (at_ - 1) * sizeof JsMapEntry;
+			if e.hash is h and (SameKey: e.key k)
+				return at_;
+			;;
+			at_ is e.next;
+		;;
+	[end: 0]
+
+	[Put: ptr<JsMapData> t: 0; u64 k: 0; u64 v: 0;]
+		k is (Normal: k);
+		u32 h: (HashOf: k);
+		u32 found: (Find: t k h);
+		if found is not 0
+			ptr<JsMapEntry> old: t.entries + (found - 1) * sizeof JsMapEntry;
+			old.value is v;
+			return;
+		;;
+		if t.used >= t.cap
+			call Rebuild: t;
+		;;
+		u32 place: t.used;
+		ptr<JsMapEntry> e: t.entries + place * sizeof JsMapEntry;
+		e.key is k;
+		e.value is v;
+		e.hash is h;
+		e.seq is t.next_seq;
+		t.next_seq is t.next_seq + 1;
+		u32 b: h & t.bucket_mask;
+		e.next is t.buckets:b;
+		t.buckets:b is place + 1;
+		t.used is place + 1;
+		t.live is t.live + 1;
+		call JsGc.Account: sizeof JsMapEntry;
+	[end]
+
+	# room for more: bigger if it's more than half alive, and the holes squeezed out either way
+	[Rebuild: ptr<JsMapData> t: 0;]
+		u32 room: t.cap;
+		if t.live * 2 >= t.cap
+			room is t.cap * 2;
+		;;
+		if room < 8
+			room is 8;
+		;;
+		if room > MAX_ENTRIES
+			call JsErr.Range: 'Map or Set too large';
+		;;
+		ptr<JsMapEntry> grown: new JsMapEntry[room];
+		if grown is 0
+			throw 'out of memory';
+		;;
+		u32 nb: 8;
+		while nb < room
+			nb is nb * 2;
+		;;
+		ptr<u32> nbuckets: new u32[nb];
+		if nbuckets is 0
+			free grown;
+			throw 'out of memory';
+		;;
+		u32 mask: nb - 1;
+		u32 kept: 0;
+		while u32 i: 0; i < t.used; i++;
+			ptr<JsMapEntry> e: t.entries + i * sizeof JsMapEntry;
+			if e.key is not JsV.HOLE
+				ptr<JsMapEntry> d: grown + kept * sizeof JsMapEntry;
+				d.key is e.key;
+				d.value is e.value;
+				d.hash is e.hash;
+				d.seq is e.seq;
+				u32 b: e.hash & mask;
+				d.next is nbuckets:b;
+				nbuckets:b is kept + 1;
+				kept++;
+			;;
+		;;
+		if t.entries is not 0
+			free t.entries;
+		;;
+		if t.buckets is not 0
+			free t.buckets;
+		;;
+		t.entries is grown;
+		t.buckets is nbuckets;
+		t.bucket_mask is mask;
+		t.used is kept;
+		t.cap is room;
+		t.gen is t.gen + 1;
+	[end]
+
+	# takes it off its chain and leaves a hole
+	[RemoveEntry: ptr<JsMapData> t: 0; u32 place: 0;]
+		ptr<JsMapEntry> e: t.entries + place * sizeof JsMapEntry;
+		u32 b: e.hash & t.bucket_mask;
+		u32 at_: t.buckets:b;
+		if at_ is place + 1
+			t.buckets:b is e.next;
+		;;
+		else
+			while at_ is not 0
+				ptr<JsMapEntry> c: t.entries + (at_ - 1) * sizeof JsMapEntry;
+				if c.next is place + 1
+					c.next is e.next;
+					break;
+				;;
+				at_ is c.next;
+			;;
+		;;
+		e.key is JsV.HOLE;
+		e.value is JsV.UNDEF;
+		t.live is t.live - 1;
+	[end]
+
+	const u32 ON_MAP: 1;
+	const u32 ON_SET: 2;
+	const u32 ON_WEAKMAP: 3;
+	const u32 ON_WEAKSET: 4;
+
+	# `this`'s table, checked to be the class this method belongs to, which its magic says
+	[This: ptr<u64> args: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<JsClass> cl: map_class;
+		when self.magic
+			is ON_SET
+				cl is set_class;
+			;;
+			is ON_WEAKMAP
+				cl is weakmap_class;
+			;;
+			is ON_WEAKSET
+				cl is weakset_class;
+			;;
+		;;
+	[end: (ThisOf: args cl)]
+
+	[On: ptr<JsObj> proto: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> fn: 0; int nargs: 0; u32 kind: 0;]
+		ptr<JsNativeFn> f: (Js.DefineNative: proto name fn nargs);
+		f.magic is kind;
+	[end]
+
+	[SafeOn: ptr<JsObj> proto: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> fn: 0; int nargs: 0; u32 kind: 0;]
+		ptr<JsNativeFn> f: (Js.DefineNativeSafe: proto name fn nargs);
+		f.magic is kind;
+	[end]
+
+	# a getter that knows its class the same way
+	[SizeOn: ptr<JsObj> proto: 0; u32 kind: 0;]
+		call Js.DefineGetter: proto 'size' addr Size 0;
+		JsDesc d;
+		if (JsObjs.GetOwn: proto (JsObjs.KeyZ: 'size') addr d)
+			ptr<JsNativeFn> g: (JsV.AsObj: d.getter) as ptr<JsNativeFn>;
+			g.magic is kind;
+		;;
+	[end]
+
+	[ThisOf: ptr<u64> args: 0; ptr<JsClass> cl: 0;]
+		u64 v: args:(-1);
+		if (JsV.IsObj: v)
+			ptr<JsObj> o: (JsV.AsObj: v);
+			if o.cls is cl
+				return o.data as ptr<JsMapData>;
+			;;
+		;;
+		call JsErr.Type: ('Method called on an incompatible receiver, not a ' cl.name);
+	[end: 0 as ptr<JsMapData>]
+
+	# new.target's prototype, a new table, and the entries of an iterable through its adder
+	[Make: u64 nt: 0; ptr<JsClass> cl: 0; ptr<JsObj> fallback: 0;]
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: ('Constructor ' cl.name ' requires new');
+		;;
+		ptr<JsObj> proto: (JsOps.ProtoFromCtor: nt fallback);
+		ptr<JsMapData> t: (NewTable);
+		ptr<JsObj> o: (JsObjs.NewHost: cl proto t as ptr<u8>);
+	[end: o]
+
+	[MapCtor: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (Make: (Js.NewTarget) map_class JsRt.P.map);
+		call FillEntries: o (Js.Arg: args argc 0) 'set';
+	[end: (JsV.Obj: o)]
+
+	[WeakMapCtor: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (Make: (Js.NewTarget) weakmap_class JsRt.P.weakmap);
+		call FillEntries: o (Js.Arg: args argc 0) 'set';
+	[end: (JsV.Obj: o)]
+
+	[SetCtor: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (Make: (Js.NewTarget) set_class JsRt.P.set);
+		call FillItems: o (Js.Arg: args argc 0);
+	[end: (JsV.Obj: o)]
+
+	[WeakSetCtor: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsObj> o: (Make: (Js.NewTarget) weakset_class JsRt.P.weakset);
+		call FillItems: o (Js.Arg: args argc 0);
+	[end: (JsV.Obj: o)]
+
+	[FillEntries: ptr<JsObj> o: 0; u64 iterable: 0; ptr<u8> adder_name: 0;]
+		if iterable is JsV.UNDEF or iterable is JsV.NULL return;
+		u64 ov: (JsV.Obj: o);
+		u64 adder: (JsObjs.GetV: ov (JsObjs.KeyZ: adder_name));
+		if not (JsOps.IsCallable: adder)
+			call JsErr.Type: 'The adder of this collection is not a function';
+		;;
+		JsFillState st;
+		st.target is ov;
+		st.adder is adder;
+		call JsIter.Each: iterable addr EntryItem addr st as ptr<u8>;
+	[end]
+
+	[EntryItem: u64 item: 0; ptr<u8> state: 0;]
+		ptr<JsFillState> st: state as ptr<JsFillState>;
+		if not (JsV.IsObj: item)
+			call JsErr.Type: 'Iterator value is not an entry object';
+		;;
+		u64 k: (JsObjs.GetIndex: (JsV.AsObj: item) 0 item);
+		u64 v: (JsObjs.GetIndex: (JsV.AsObj: item) 1 item);
+		call JsVm.Call2: st.adder st.target k v;
+	[end]
+
+	[FillItems: ptr<JsObj> o: 0; u64 iterable: 0;]
+		if iterable is JsV.UNDEF or iterable is JsV.NULL return;
+		u64 ov: (JsV.Obj: o);
+		u64 adder: (JsObjs.GetV: ov (JsObjs.KeyZ: 'add'));
+		if not (JsOps.IsCallable: adder)
+			call JsErr.Type: 'The adder of this collection is not a function';
+		;;
+		JsFillState st;
+		st.target is ov;
+		st.adder is adder;
+		call JsIter.Each: iterable addr SetItem addr st as ptr<u8>;
+	[end]
+
+	[SetItem: u64 item: 0; ptr<u8> state: 0;]
+		ptr<JsFillState> st: state as ptr<JsFillState>;
+		call JsVm.Call1: st.adder st.target item;
+	[end]
+
+	[MapGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsMapData> t: (This: args);
+		u64 k: (Normal: (Js.Arg: args argc 0));
+		u32 found: (Find: t k (HashOf: k));
+		if found is 0
+			return JsV.UNDEF;
+		;;
+		ptr<JsMapEntry> e: t.entries + (found - 1) * sizeof JsMapEntry;
+	[end: e.value]
+
+	[MapSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsMapData> t: (ThisOf: args map_class);
+		call Put: t (Js.Arg: args argc 0) (Js.Arg: args argc 1);
+	[end: args:(-1)]
+
+	[SetAdd: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsMapData> t: (ThisOf: args set_class);
+		call Put: t (Js.Arg: args argc 0) JsV.UNDEF;
+	[end: args:(-1)]
+
+	[WeakKey: u64 k: 0;]
+		if not (JsV.IsObj: k) and not (JsV.IsSym: k)
+			call JsErr.Type: 'Invalid value used as a weak key';
+		;;
+	[end]
+
+	[WeakMapSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsMapData> t: (ThisOf: args weakmap_class);
+		call WeakKey: (Js.Arg: args argc 0);
+		call Put: t args:0 (Js.Arg: args argc 1);
+	[end: args:(-1)]
+
+	[WeakSetAdd: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsMapData> t: (ThisOf: args weakset_class);
+		call WeakKey: (Js.Arg: args argc 0);
+		call Put: t args:0 JsV.UNDEF;
+	[end: args:(-1)]
+
+	[Has: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsMapData> t: (This: args);
+		u64 k: (Normal: (Js.Arg: args argc 0));
+	[end: (JsV.Bool: (Find: t k (HashOf: k)) is not 0)]
+
+	[Delete: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsMapData> t: (This: args);
+		u64 k: (Normal: (Js.Arg: args argc 0));
+		u32 found: (Find: t k (HashOf: k));
+		if found is 0
+			return JsV.FALSE;
+		;;
+		call RemoveEntry: t found - 1;
+	[end: JsV.TRUE]
+
+	[Clear: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsMapData> t: (This: args);
+		if t.buckets is not 0
+			call Mem.Fill: t.buckets as ptr<u8> 0 (t.bucket_mask + 1) * 4;
+		;;
+		while u32 i: 0; i < t.used; i++;
+			ptr<JsMapEntry> e: t.entries + i * sizeof JsMapEntry;
+			e.key is JsV.HOLE;
+			e.value is JsV.UNDEF;
+		;;
+		t.used is 0;
+		t.live is 0;
+		t.gen is t.gen + 1;
+	[end: JsV.UNDEF]
+
+	[Size: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsMapData> t: (This: args);
+	[end: (JsV.Uint: t.live)]
+
+	# the place of the first entry with a number above seq
+	[AfterSeq: ptr<JsMapData> t: 0; u32 seq: 0;]
+		u32 lo: 0;
+		u32 hi: t.used;
+		while lo < hi
+			u32 mid: (lo + hi) / 2;
+			ptr<JsMapEntry> e: t.entries + mid * sizeof JsMapEntry;
+			if e.seq <= seq
+				lo is mid + 1;
+			;;
+			else
+				hi is mid;
+			;;
+		;;
+	[end: lo]
+
+	[ForEach: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsMapData> t: (This: args);
+		u64 self: args:(-1);
+		u64 f: (Js.Arg: args argc 0);
+		if not (JsOps.IsCallable: f)
+			call JsErr.Type: 'callback is not a function';
+		;;
+		u64 this_arg: (Js.Arg: args argc 1);
+		ptr<JsObj> so: (JsV.AsObj: self);
+		bln is_set: so.cls is set_class;
+		u32 pos: 0;
+		u32 gen: t.gen;
+		u32 last: 0;
+		while true
+			call Js.Checkpoint;
+			if gen is not t.gen
+				pos is (AfterSeq: t last);
+				gen is t.gen;
+			;;
+			if pos >= t.used break;
+			ptr<JsMapEntry> e: t.entries + pos * sizeof JsMapEntry;
+			pos++;
+			if e.key is not JsV.HOLE
+				last is e.seq;
+				u64 k: e.key;
+				u64 v: e.value;
+				if is_set
+					v is k;
+				;;
+				call JsVm.Call3: f this_arg v k self;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	# ---- iterators ----
+
+	[TraceIter: ptr<JsObj> o: 0;]
+		ptr<JsMapIter> it: o.data as ptr<JsMapIter>;
+		call Js.Mark: it.map;
+	[end]
+
+	[FreeIter: ptr<JsObj> o: 0;]
+		free o.data;
+	[end]
+
+	[NewIter: u64 map: 0; u32 kind: 0; bln is_set: false;]
+		ptr<JsMapIter> it: new JsMapIter;
+		if it is 0
+			throw 'out of memory';
+		;;
+		it.map is map;
+		it.kind is kind;
+		ptr<JsObj> mo: (JsV.AsObj: map);
+		ptr<JsMapData> t: mo.data as ptr<JsMapData>;
+		it.gen is t.gen;
+		ptr<JsObj> o: 0;
+		if is_set
+			o is (JsObjs.NewHost: set_iter_class JsRt.P.set_iterator it as ptr<u8>);
+		;;
+		else
+			o is (JsObjs.NewHost: map_iter_class JsRt.P.map_iterator it as ptr<u8>);
+		;;
+	[end: (JsV.Obj: o)]
+
+	[MapEntries: ptr<u64> args: 0; int argc: 0;]
+		call ThisOf: args map_class;
+	[end: (NewIter: args:(-1) 2 false)]
+
+	[MapKeys: ptr<u64> args: 0; int argc: 0;]
+		call ThisOf: args map_class;
+	[end: (NewIter: args:(-1) 0 false)]
+
+	[MapValues: ptr<u64> args: 0; int argc: 0;]
+		call ThisOf: args map_class;
+	[end: (NewIter: args:(-1) 1 false)]
+
+	[SetEntries: ptr<u64> args: 0; int argc: 0;]
+		call ThisOf: args set_class;
+	[end: (NewIter: args:(-1) 2 true)]
+
+	[SetValues: ptr<u64> args: 0; int argc: 0;]
+		call ThisOf: args set_class;
+	[end: (NewIter: args:(-1) 1 true)]
+
+	[IterNext: ptr<u64> args: 0; int argc: 0;]
+		u64 self: args:(-1);
+		if not (JsV.IsObj: self)
+			call JsErr.Type: 'next method called on an incompatible receiver';
+		;;
+		ptr<JsObj> io: (JsV.AsObj: self);
+		if io.cls is not map_iter_class and io.cls is not set_iter_class
+			call JsErr.Type: 'next method called on an incompatible receiver';
+		;;
+		ptr<JsMapIter> it: io.data as ptr<JsMapIter>;
+		if it.map is JsV.UNDEF
+			return (JsBuiltins.IterResult: JsV.UNDEF true);
+		;;
+		ptr<JsObj> mo: (JsV.AsObj: it.map);
+		ptr<JsMapData> t: mo.data as ptr<JsMapData>;
+		bln is_set: mo.cls is set_class;
+		if it.gen is not t.gen
+			it.pos is (AfterSeq: t it.last_seq);
+			it.gen is t.gen;
+		;;
+		while it.pos < t.used
+			ptr<JsMapEntry> e: t.entries + it.pos * sizeof JsMapEntry;
+			it.pos is it.pos + 1;
+			if e.key is not JsV.HOLE
+				it.last_seq is e.seq;
+				u64 k: e.key;
+				u64 v: e.value;
+				if is_set
+					v is k;
+				;;
+				if it.kind is 0
+					return (JsBuiltins.IterResult: k false);
+				;;
+				if it.kind is 1
+					return (JsBuiltins.IterResult: v false);
+				;;
+				ptr<JsObj> pair: (JsObjs.NewArray: 2);
+				call JsObjs.ArrayPush: pair k;
+				call JsObjs.ArrayPush: pair v;
+				return (JsBuiltins.IterResult: (JsV.Obj: pair) false);
+			;;
+		;;
+		it.map is JsV.UNDEF;
+	[end: (JsBuiltins.IterResult: JsV.UNDEF true)]
+
+	# ---- Set's operations with another set-like, and groupBy ----
+
+	const u32 SET_UNION: 0;
+	const u32 SET_INTERSECTION: 1;
+	const u32 SET_DIFFERENCE: 2;
+	const u32 SET_SYMMETRIC: 3;
+	const u32 SET_SUBSET: 4;
+	const u32 SET_SUPERSET: 5;
+	const u32 SET_DISJOINT: 6;
+
+	[SetOp: ptr<JsObj> sp: 0; ptr<u8> name: 0; u32 op: 0;]
+		ptr<JsNativeFn> f: (Js.DefineNative: sp name addr SetMethod 1);
+		f.magic is op;
+	[end]
+
+	# GetSetRecord: size must be a number, has and keys functions
+	[SetLike: u64 other: 0; ptr<f64> size_out: 0; ptr<u64> has_out: 0; ptr<u64> keys_out: 0;]
+		if not (JsV.IsObj: other)
+			call JsErr.Type: 'The argument must be a set-like object';
+		;;
+		f64 raw: (JsOps.ToNumber: (JsObjs.GetV: other (JsObjs.KeyZ: 'size')));
+		if raw is not raw
+			call JsErr.Type: 'The size of a set-like must be a number';
+		;;
+		f64 sz: (JsOps.ToInteger: (JsV.Num: raw));
+		if sz < 0.0
+			call JsErr.Range: 'The size of a set-like must not be negative';
+		;;
+		size_out:0 is sz;
+		has_out:0 is (JsObjs.GetV: other (JsObjs.KeyZ: 'has'));
+		if not (JsOps.IsCallable: has_out:0)
+			call JsErr.Type: 'The has of a set-like must be a function';
+		;;
+		keys_out:0 is (JsObjs.GetV: other (JsObjs.KeyZ: 'keys'));
+		if not (JsOps.IsCallable: keys_out:0)
+			call JsErr.Type: 'The keys of a set-like must be a function';
+		;;
+	[end]
+
+	[CopyOf: ptr<JsMapData> t: 0;]
+		ptr<JsMapData> c: (NewTable);
+		while u32 i: 0; i < t.used; i++;
+			ptr<JsMapEntry> e: t.entries + i * sizeof JsMapEntry;
+			if e.key is not JsV.HOLE
+				call Put: c e.key JsV.UNDEF;
+			;;
+		;;
+	[end: c]
+
+	[Wrap: ptr<JsMapData> t: 0;]
+	[end: (JsV.Obj: (JsObjs.NewHost: set_class JsRt.P.set t as ptr<u8>))]
+
+	# calls next() on a set-like's iterator until done: what it gives, into this table, or tested against it
+	[SetMethod: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u32 op: self.magic;
+		ptr<JsMapData> t: (ThisOf: args set_class);
+		u64 other: (Js.Arg: args argc 0);
+		f64 size: 0.0;
+		u64 has_fn: 0;
+		u64 keys_fn: 0;
+		call SetLike: other addr size addr has_fn addr keys_fn;
+		f64 mine: t.live as f64;
+		# by looking each of ours up in theirs
+		bln by_has: op is SET_SUBSET or ((op is SET_INTERSECTION or op is SET_DIFFERENCE or op is SET_DISJOINT) and mine <= size);
+		if op is SET_SUPERSET
+			by_has is false;
+		;;
+		if op is SET_SUBSET and mine > size
+			return JsV.FALSE;
+		;;
+		if op is SET_SUPERSET and mine < size
+			return JsV.FALSE;
+		;;
+		ptr<JsMapData> result: 0;
+		if op is SET_UNION or op is SET_DIFFERENCE or op is SET_SYMMETRIC
+			result is (CopyOf: t);
+		;;
+		elif op is SET_INTERSECTION
+			result is (NewTable);
+		;;
+		if by_has
+			u32 pos: 0;
+			u32 gen: t.gen;
+			u32 last: 0;
+			while true
+				if gen is not t.gen
+					pos is (AfterSeq: t last);
+					gen is t.gen;
+				;;
+				if pos >= t.used break;
+				ptr<JsMapEntry> e: t.entries + pos * sizeof JsMapEntry;
+				pos++;
+				if e.key is not JsV.HOLE
+					last is e.seq;
+					u64 k: e.key;
+					bln in_other: (JsOps.ToBool: (JsVm.Call1: has_fn other k));
+					when op
+						is SET_SUBSET
+							if not in_other
+								return JsV.FALSE;
+							;;
+						;;
+						is SET_DISJOINT
+							if in_other
+								return JsV.FALSE;
+							;;
+						;;
+						is SET_INTERSECTION
+							if in_other
+								call Put: result k JsV.UNDEF;
+							;;
+						;;
+						is SET_DIFFERENCE
+							if in_other
+								call Take: result k;
+							;;
+						;;
+					;;
+				;;
+			;;
+		;;
+		else
+			u64 it: (JsVm.Call0: keys_fn other);
+			if not (JsV.IsObj: it)
+				call JsErr.Type: 'The keys iterator of a set-like must be an object';
+			;;
+			u64 next_fn: (JsObjs.GetV: it (JsV.Str: JsRt.A.next));
+			ptr<JsMapData> seen: 0;
+			if op is SET_SYMMETRIC
+				seen is (CopyOf: t);
+			;;
+			while true
+				u64 r: (JsVm.Call0: next_fn it);
+				if not (JsV.IsObj: r)
+					call JsErr.Type: 'Iterator result is not an object';
+				;;
+				if (JsOps.ToBool: (JsObjs.GetV: r (JsV.Str: JsRt.A.done))) break;
+				u64 v: (Normal: (JsObjs.GetV: r (JsV.Str: JsRt.A.value)));
+				bln in_mine: (Find: t v (HashOf: v)) is not 0;
+				when op
+					is SET_UNION
+						call Put: result v JsV.UNDEF;
+					;;
+					is SET_INTERSECTION
+						if in_mine
+							call Put: result v JsV.UNDEF;
+						;;
+					;;
+					is SET_DIFFERENCE
+						call Take: result v;
+					;;
+					is SET_SYMMETRIC
+						if in_mine
+							call Take: result v;
+						;;
+						elif (Find: result v (HashOf: v)) is 0
+							call Put: result v JsV.UNDEF;
+						;;
+					;;
+					is SET_SUPERSET
+						if not in_mine
+							u64 cl: (JsObjs.GetV: it (JsObjs.KeyZ: 'return'));
+							if (JsOps.IsCallable: cl)
+								call JsVm.Call0: cl it;
+							;;
+							return JsV.FALSE;
+						;;
+					;;
+					is SET_DISJOINT
+						if in_mine
+							u64 cl2: (JsObjs.GetV: it (JsObjs.KeyZ: 'return'));
+							if (JsOps.IsCallable: cl2)
+								call JsVm.Call0: cl2 it;
+							;;
+							return JsV.FALSE;
+						;;
+					;;
+				;;
+			;;
+			if seen is not 0
+				if seen.entries is not 0
+					free seen.entries;
+				;;
+				if seen.buckets is not 0
+					free seen.buckets;
+				;;
+				free seen;
+			;;
+		;;
+		if op is SET_SUBSET or op is SET_SUPERSET or op is SET_DISJOINT
+			return JsV.TRUE;
+		;;
+	[end: (Wrap: result)]
+
+	[Take: ptr<JsMapData> t: 0; u64 k: 0;]
+		u64 n: (Normal: k);
+		u32 found: (Find: t n (HashOf: n));
+		if found is not 0
+			call RemoveEntry: t found - 1;
+		;;
+	[end]
+
+	# Object.groupBy (magic 0) and Map.groupBy (magic 1)
+	[GroupBy: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		bln to_map: self.magic is 1;
+		u64 items: (Js.Arg: args argc 0);
+		u64 f: (Js.Arg: args argc 1);
+		if items is JsV.UNDEF or items is JsV.NULL
+			call JsErr.Type: 'groupBy: the items are not iterable';
+		;;
+		if not (JsOps.IsCallable: f)
+			call JsErr.Type: 'groupBy: the callback is not a function';
+		;;
+		ptr<JsObj> o: 0;
+		if to_map
+			o is (Make: (JsV.Obj: JsRt.P.map as ptr<JsObj>) map_class JsRt.P.map);
+		;;
+		else
+			o is (JsObjs.NewWithProto: 0);
+		;;
+		call Js.Push: (JsV.Obj: o);
+		JsGroupState st;
+		st.target is o;
+		st.fn is f;
+		st.to_map is to_map;
+		call JsIter.Each: items addr GroupItem addr st as ptr<u8>;
+	[end: (JsV.Obj: o)]
+
+	[GroupItem: u64 item: 0; ptr<u8> state: 0;]
+		ptr<JsGroupState> st: state as ptr<JsGroupState>;
+		ptr<u64> held: JsVm.sp;
+		call Js.Push: item;
+		u64 key: (JsVm.Call2: st.fn JsV.UNDEF item (JsV.Num: st.count));
+		st.count is st.count + 1.0;
+		ptr<JsObj> list: 0;
+		if st.to_map
+			ptr<JsMapData> t: st.target.data as ptr<JsMapData>;
+			u64 n: (Normal: key);
+			u32 found: (Find: t n (HashOf: n));
+			if found is 0
+				list is (JsObjs.NewArray: 0);
+				call Put: t n (JsV.Obj: list);
+			;;
+			else
+				ptr<JsMapEntry> e: t.entries + (found - 1) * sizeof JsMapEntry;
+				list is (JsV.AsObj: e.value);
+			;;
+		;;
+		else
+			u64 k: (JsObjs.KeyOf: key);
+			u64 cur: (JsObjs.Get: st.target k (JsV.Obj: st.target));
+			if cur is JsV.UNDEF
+				list is (JsObjs.NewArray: 0);
+				call JsObjs.CreateData: st.target k (JsV.Obj: list);
+			;;
+			else
+				list is (JsV.AsObj: cur);
+			;;
+		;;
+		call JsObjs.ArrayPush: list held:0;
+		JsVm.sp is held;
+	[end]
+
+	# ---- WeakRef, and a FinalizationRegistry that never finds anything to report, as the spec allows ----
+
+	[WeakRefCtor: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'Constructor WeakRef requires new';
+		;;
+		u64 target: (Js.Arg: args argc 0);
+		call WeakKey: target;
+		ptr<JsObj> proto: (JsOps.ProtoFromCtor: nt JsRt.P.weakref);
+		ptr<JsWeakRefData> d: new JsWeakRefData;
+		if d is 0
+			throw 'out of memory';
+		;;
+		d.target is target;
+		ptr<JsObj> o: (JsObjs.NewHost: weakref_class proto d as ptr<u8>);
+	[end: (JsV.Obj: o)]
+
+	[WeakRefDeref: ptr<u64> args: 0; int argc: 0;]
+		u64 v: args:(-1);
+		if not (JsV.IsObj: v)
+			call JsErr.Type: 'WeakRef.prototype.deref called on an incompatible receiver';
+		;;
+		ptr<JsObj> o: (JsV.AsObj: v);
+		if o.cls is not weakref_class
+			call JsErr.Type: 'WeakRef.prototype.deref called on an incompatible receiver';
+		;;
+		ptr<JsWeakRefData> d: o.data as ptr<JsWeakRefData>;
+	[end: d.target]
+
+	[ClearWeakRef: ptr<JsObj> o: 0;]
+		ptr<JsWeakRefData> d: o.data as ptr<JsWeakRefData>;
+		if not (Js.IsMarked: d.target)
+			d.target is JsV.UNDEF;
+		;;
+	[end]
+
+	[FreeWeakRef: ptr<JsObj> o: 0;]
+		free o.data;
+	[end]
+
+	[RegistryCtor: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'Constructor FinalizationRegistry requires new';
+		;;
+		if not (JsOps.IsCallable: (Js.Arg: args argc 0))
+			call JsErr.Type: 'FinalizationRegistry: cleanup must be callable';
+		;;
+		ptr<JsObj> proto: (JsOps.ProtoFromCtor: nt JsRt.P.object);
+		ptr<JsObj> o: (JsObjs.NewHost: registry_class proto 0);
+	[end: (JsV.Obj: o)]
+
+	[RegistryNothing: ptr<u64> args: 0; int argc: 0;]
+	[end: JsV.UNDEF]
+}
+
+struct.JsGroupState
+{
+	ptr<JsObj> target;
+	u64 fn;
+	f64 count;
+	bln to_map;
+}
+
+struct.JsFillState
+{
+	u64 target;
+	u64 adder;
+}

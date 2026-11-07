@@ -1,0 +1,39 @@
+10
+2 true false 10
+function function true true false
+1
+TypeError
+false 0
+1
+TypeError
+same value is allowed
+vy false
+TypeError
+true undefined true
+false 1
+TypeError
+1 undefined true
+TypeError
+TypeError
+1 2
+TypeError
+undefined false
+1 true
+1
+__proto__
+__proto__
+TypeError
+true
+undefined undefined
+object
+number
+1 undefined
+6 false true
+RangeError
+RangeError
+2
+2 undefined
+4294967295 last
+4294967295
+2 2
+getter getter,2

@@ -1,0 +1,3239 @@
+# The VM: a stack machine. All its registers are class variables, which cost the same to reach as a
+# method's own (PHI keeps neither in CPU registers across a loop like this) and mean any helper can
+# see the current state, so nothing has to be synchronized before calling one and an exception
+# handler always knows where it was. Run has only a few locals and stays small, as it nests.
+#
+# A frame's slots on the value stack:   [function][this][arg 0 ...][locals ...][expression stack ...]
+#                                                         ^ bp                                  sp ^
+#
+# JS calling JS pushes a JsFrame and carries on in the same Run. A native calling JS goes through
+# Invoke, which is one more Run, inside its own catch. A JS exception that a native or a helper
+# raises is a PHI throw, which that catch receives; Unwind then finds the handler in the frames, and
+# Run carries on from there.
+
+struct.JsFrame
+{
+	ptr<u32> pc;           # (while it isn't the running one)
+	ptr<u64> bp;
+	ptr<u64> ret;          # the slot of the function: where the result goes
+	ptr<JsFn> fn;
+	ptr<JsCode> code;
+	ptr<JsScope> scope;
+	ptr<JsGen> gen;        # the generator or async function it's running
+	u64 new_target;
+	u32 argc;
+	u32 flags;             # JsVm.FF_...
+}
+
+# a generator's or async function's suspended frame
+struct.JsGen
+{
+	ptr<JsCell> gc_next;
+	u8 kind;
+	u8 mark;
+	u16 gc_flags;
+	u32 size;
+	ptr<JsFn> fn;
+	ptr<JsScope> scope;
+	ptr<u64> stack;        # the frame's slots, from its function on
+	ptr<JsObj> object;     # the generator object, if there is one
+	ptr<JsObj> queue;      # an async generator's waiting requests
+	u64 promise;           # an async function's result
+	u64 new_target;
+	u32 stack_len;         # in values
+	u32 bp_off;
+	u32 pc_off;
+	u32 argc;
+	u32 state;             # JsVm.GS_...
+	u32 mode;              # how it was last resumed: JsVm.RM_...
+	bln raw_yield;         # what was yielded is already a result object (yield*)
+	bln is_async_gen;
+}
+
+phi.JsVm:Library
+{
+	const u32 FF_ENTRY: 1;       # Run stops when this frame returns
+	const u32 FF_CONSTRUCT: 2;
+
+	const u32 GS_START: 0;
+	const u32 GS_YIELD: 1;
+	const u32 GS_RUNNING: 2;
+	const u32 GS_DONE: 3;
+	const u32 GS_AWAITING_RETURN: 4;
+
+	const u32 RM_NEXT: 0;
+	const u32 RM_THROW: 1;
+	const u32 RM_RETURN: 2;
+
+	# the registers
+	ptr<u32> pc: 0;
+	ptr<u64> sp: 0;
+	ptr<u64> bp: 0;
+	ptr<u64> K: 0;
+	ptr<u32> I: 0;
+	ptr<JsFrame> fr: 0;
+	int fuel: 0;              # counts down at safepoints: at zero, Poll sees what's wanted
+	u64 nt: 0;                # new.target, for the native being called
+	u64 leave_value: 0;       # what Run gives back when Slow says to stop
+
+	bln last_done: false;     # (from ResumeGen) the generator finished: its result is the return value
+
+	f64 x: 0.0;
+	f64 y: 0.0;
+
+	# ---- safepoints ----
+
+	# called at a safepoint with fuel at zero: everything live is on the stack or in a frame
+	[Poll]
+		ptr<JsRuntime> r: JsRt.r;
+		if r.interrupted
+			r.interrupted is false;
+			call ThrowInterrupt;
+		;;
+		if r.poll_hook is not 0
+			if (r.poll_hook)
+				call ThrowInterrupt;
+			;;
+		;;
+		if r.stress or r.allocated > r.threshold
+			call JsGc.Collect;
+			if r.live > r.memory_limit
+				fuel is r.fuel_period;
+				if r.stress
+					fuel is 0;
+				;;
+				call JsErr.Throw: r.oom_error;
+			;;
+		;;
+		if r.stress
+			fuel is 0;
+			return;
+		;;
+		fuel is r.fuel_period;
+	[end]
+
+	[ThrowInterrupt]
+		ptr<JsRuntime> r: JsRt.r;
+		fuel is r.fuel_period;
+		r.uncatchable is true;
+		call JsErr.Internal: 'script interrupted';
+	[end]
+
+	# ---- limits ----
+
+	[CheckStack: u32 values: 0;]
+		if values > JsRt.STACK_SLOTS or sp + values * 8 >= JsRt.r.stack_limit
+			call JsErr.Range: 'Maximum call stack size exceeded';
+		;;
+	[end]
+
+	# ---- entering and leaving frames ----
+
+	# Enters a JS function; the stack has [fn this args...]. pc and friends now belong to it.
+	[Enter: ptr<JsFn> f: 0; u32 argc: 0; u32 flags: 0; u64 new_target: 0;]
+		ptr<JsCode> code: f.code;
+		ptr<JsFrame> nf: fr + sizeof JsFrame;
+		u32 np: code.nparams;
+		if nf >= JsRt.r.frame_limit or sp + (code.nlocals + code.max_stack + np + 4) * 8 >= JsRt.r.stack_limit
+			call JsErr.Range: 'Maximum call stack size exceeded';
+		;;
+		ptr<u64> args: sp - argc * 8;
+		ptr<u64> ret: args - 16;
+		u32 passed: argc;
+		if argc < np
+			while argc < np
+				sp:0 is JsV.UNDEF;
+				sp++ 8;
+				argc++;
+			;;
+		;;
+		elif argc > np
+			if (code.flags & JsCodes.F_NEEDS_ARGS) is 0
+				sp is args + np * 8;
+			;;
+			else
+				# all that was passed stays where it is; a new base goes above it
+				ptr<u64> nb: sp + 16;
+				sp:0 is ret:0;
+				sp:1 is ret:1;
+				while u32 i: 0; i < np; i++;
+					nb:i is args:i;
+				;;
+				args is nb;
+				sp is nb + np * 8;
+			;;
+		;;
+		fr.pc is pc;
+		fr is nf;
+		nf.bp is args;
+		nf.ret is ret;
+		nf.fn is f;
+		nf.code is code;
+		nf.scope is f.scope;
+		nf.gen is 0;
+		nf.new_target is new_target;
+		nf.argc is passed;
+		nf.flags is flags;
+		bp is args;
+		K is code.consts;
+		I is code.ins;
+		pc is code.ins;
+		# locals start undefined
+		ptr<u64> stop_at: args + code.nlocals * 8;
+		ptr<u64> w: sp;
+		while w < stop_at
+			w:0 is JsV.UNDEF;
+			w++ 8;
+		;;
+		sp is w;
+	[end]
+
+	# pops the running frame, leaving its value in `v` to the caller: true if Run must stop
+	[DoReturn: u64 v: 0;]
+		ptr<JsFrame> f: fr;
+		sp is f.ret;
+		fr is f - sizeof JsFrame;
+		ptr<JsFrame> c: fr;
+		pc is c.pc;
+		bp is c.bp;
+		if c.code is not 0
+			K is c.code.consts;
+			I is c.code.ins;
+		;;
+		if (f.flags & FF_ENTRY) is not 0
+			leave_value is v;
+			return true;
+		;;
+		sp:0 is v;
+		sp++ 8;
+	[end: false]
+
+	# Run's RET, with its special cases
+	[RetSlow]
+		u64 v: sp:(-1);
+		ptr<JsFrame> f: fr;
+		if (f.flags & FF_CONSTRUCT) is not 0 and not (JsV.IsObj: v)
+			v is bp:(-1);
+		;;
+	[end: (DoReturn: v)]
+
+	# ---- calling, from Run ----
+
+	# [fn this args...] -> [result], for anything that isn't a plain JS function
+	[CallOther: u32 argc: 0;]
+		ptr<u64> args: sp - argc * 8;
+		u64 fv: args:(-2);
+		if (fv >> 48) as u32 is not JsV.TAG_OBJ
+			call NotCallable: fv;
+		;;
+		ptr<JsObj> o: (JsV.AsObj: fv);
+		u32 k: o.kind;
+		if k is JsGc.K_NATIVE
+			call CallNative: o as ptr<JsNativeFn> argc;
+			return;
+		;;
+		if k is JsGc.K_FUNCTION
+			# only a class constructor comes here this way
+			call JsErr.Type: 'Class constructor cannot be invoked without new';
+		;;
+		if k is JsGc.K_BOUND
+			call SpreadBound: o as ptr<JsBoundFn> argc;
+			# [target boundthis boundargs args...], and do it again: a JS target gets a frame of its own
+			ptr<JsBoundFn> bf: o as ptr<JsBoundFn>;
+			u32 total: argc + bf.argc;
+			u64 r: (Invoke: total);
+			sp:0 is r;
+			sp++ 8;
+			return;
+		;;
+		if (o.flags & JsObjs.F_CALLABLE) is not 0 and o.cls is not 0 and o.cls.call_fn is not 0
+			u64 hr: (o.cls.call_fn: o args (argc as int));
+			sp is args - 16;
+			sp:0 is hr;
+			sp++ 8;
+			return;
+		;;
+		call NotCallable: fv;
+	[end]
+
+	[NotCallable: u64 v: 0;]
+		WlBuf b;
+		call DescribeCallee: addr b;
+		call b.AddZ: ' is not a function';
+		call JsErr.Type: b.data;
+	[end]
+
+	# What the current call instruction is calling, by the name the compiler noted for it
+	[DescribeCallee: ptr<WlBuf> b: 0;]
+		ptr<JsCode> co: fr.code;
+		if co is not 0 and co.ncalls > 0
+			u32 at_ins: ((pc as u64 - co.ins as u64) as u32 / 4) - 1;
+			u32 lo: 0;
+			u32 hi: co.ncalls;
+			while lo < hi
+				u32 mid: (lo + hi) / 2;
+				u32 v: co.calls:(mid * 2);
+				if v is at_ins
+					ptr<JsStr> s: (JsStrs.Flat: (JsV.AsStr: co.consts:(co.calls:(mid * 2 + 1))));
+					call b.AddN: s.data s.bytes;
+					return;
+				;;
+				if v < at_ins
+					lo is mid + 1;
+				;;
+				else
+					hi is mid;
+				;;
+			;;
+		;;
+		call b.AddZ: 'value';
+	[end]
+
+	# puts a bound function's target, this and arguments in place on the stack
+	[SpreadBound: ptr<JsBoundFn> bf: 0; u32 argc: 0;]
+		ptr<u64> args: sp - argc * 8;
+		u32 extra: bf.argc;
+		call CheckStack: extra + 8;
+		if extra > 0
+			call Mem.Move: (args + extra * 8) as ptr<u8> args as ptr<u8> argc * 8;
+			while u32 i: 0; i < extra; i++;
+				args:i is bf.args:i;
+			;;
+			sp is sp + extra * 8;
+		;;
+		args:(-2) is bf.target;
+		args:(-1) is bf.this_val;
+	[end]
+
+	[CallNative: ptr<JsNativeFn> n: 0; u32 argc: 0;]
+		ptr<u64> args: sp - argc * 8;
+		nt is JsV.UNDEF;
+		u64 r: 0;
+		if n.gc_safe
+			r is (n.fn: args argc as int);
+		;;
+		else
+			JsGc.no_gc++;
+			r is (n.fn: args argc as int);
+			JsGc.no_gc--;
+		;;
+		sp is args - 16;
+		sp:0 is r;
+		sp++ 8;
+	[end]
+
+	# Calls what's on the stack, [fn this args...], from a native or helper: it comes back with the
+	# result, and the stack without them. Exceptions go up as PHI throws.
+	[Invoke: u32 argc: 0;]
+		ptr<u64> args: sp - argc * 8;
+		ptr<u64> base: args - 16;
+		while true
+			u64 fv: base:0;
+			if (fv >> 48) as u32 is not JsV.TAG_OBJ
+				call NotCallable: fv;
+			;;
+			ptr<JsObj> o: (JsV.AsObj: fv);
+			u32 k: o.kind;
+			if k is JsGc.K_FUNCTION
+				ptr<JsFn> f: o as ptr<JsFn>;
+				if (f.code.flags & JsCodes.F_CLASS_CTOR) is not 0
+					call JsErr.Type: 'Class constructor cannot be invoked without new';
+				;;
+				if (WlStack.Used) as u32 > WlStack.budget
+					call JsErr.Range: 'Maximum call stack size exceeded';
+				;;
+				call Enter: f argc FF_ENTRY JsV.UNDEF;
+				return (RunLoop);
+			;;
+			if k is JsGc.K_NATIVE
+				call WlStack.Check;
+				call CallNative: o as ptr<JsNativeFn> argc;
+				sp-- 8;
+				return sp:0;
+			;;
+			if k is JsGc.K_BOUND
+				ptr<JsBoundFn> bf: o as ptr<JsBoundFn>;
+				call SpreadBound: bf argc;
+				argc is argc + bf.argc;
+				continue;
+			;;
+			if (o.flags & JsObjs.F_CALLABLE) is not 0 and o.cls is not 0 and o.cls.call_fn is not 0
+				call WlStack.Check;
+				u64 hr: (o.cls.call_fn: o base + 16 argc as int);
+				sp is base;
+				return hr;
+			;;
+			call NotCallable: fv;
+		;;
+	[end: 0 as u64]
+
+	[Call0: u64 f: 0; u64 this_val: 0;]
+		call CheckStack: 2;
+		sp:0 is f;
+		sp:1 is this_val;
+		sp++ 16;
+	[end: (Invoke: 0)]
+
+	[Call1: u64 f: 0; u64 this_val: 0; u64 a: 0;]
+		call CheckStack: 3;
+		sp:0 is f;
+		sp:1 is this_val;
+		sp:2 is a;
+		sp++ 24;
+	[end: (Invoke: 1)]
+
+	[Call2: u64 f: 0; u64 this_val: 0; u64 a: 0; u64 b: 0;]
+		call CheckStack: 4;
+		sp:0 is f;
+		sp:1 is this_val;
+		sp:2 is a;
+		sp:3 is b;
+		sp++ 32;
+	[end: (Invoke: 2)]
+
+	[Call3: u64 f: 0; u64 this_val: 0; u64 a: 0; u64 b: 0; u64 c: 0;]
+		call CheckStack: 5;
+		sp:0 is f;
+		sp:1 is this_val;
+		sp:2 is a;
+		sp:3 is b;
+		sp:4 is c;
+		sp++ 40;
+	[end: (Invoke: 3)]
+
+	# ---- constructing ----
+
+	# [ctor unused args...] -> pushes a frame (true) or leaves [result] (false). nt_v: new.target.
+	[Construct: u32 argc: 0; u64 nt_v: 0; u32 flags: 0;]
+		ptr<u64> args: sp - argc * 8;
+		ptr<u64> base: args - 16;
+		while true
+			u64 cv: base:0;
+			if not (JsOps.IsConstructor: cv)
+				WlBuf b;
+				call DescribeCallee: addr b;
+				call b.AddZ: ' is not a constructor';
+				call JsErr.Type: b.data;
+			;;
+			ptr<JsObj> o: (JsV.AsObj: cv);
+			u32 k: o.kind;
+			if k is JsGc.K_FUNCTION
+				ptr<JsFn> f: o as ptr<JsFn>;
+				if (f.code.flags & JsCodes.F_DERIVED) is not 0
+					base:1 is JsV.HOLE;
+				;;
+				else
+					# (the proto getter may run JS: new.target is still in a frame or on the stack)
+					base:1 is nt_v;
+					ptr<JsObj> proto: (JsOps.ProtoFromCtor: nt_v JsRt.P.object);
+					base:1 is (JsV.Obj: (JsObjs.NewWithProto: proto));
+				;;
+				call Enter: f argc FF_CONSTRUCT | flags nt_v;
+				return true;
+			;;
+			if k is JsGc.K_NATIVE
+				ptr<JsNativeFn> n: o as ptr<JsNativeFn>;
+				nt is nt_v;
+				base:1 is nt_v;
+				u64 r: 0;
+				if n.gc_safe
+					r is (n.fn: args argc as int);
+				;;
+				else
+					JsGc.no_gc++;
+					r is (n.fn: args argc as int);
+					JsGc.no_gc--;
+				;;
+				nt is JsV.UNDEF;
+				sp is base;
+				sp:0 is r;
+				sp++ 8;
+				return false;
+			;;
+			if k is JsGc.K_BOUND
+				ptr<JsBoundFn> bf: o as ptr<JsBoundFn>;
+				call SpreadBound: bf argc;
+				argc is argc + bf.argc;
+				args is sp - argc * 8;
+				if nt_v is cv
+					nt_v is bf.target;
+				;;
+				continue;
+			;;
+			# a host's
+			u64 hr: (o.cls.construct: o args (argc as int) nt_v);
+			sp is base;
+			sp:0 is hr;
+			sp++ 8;
+			return false;
+		;;
+	[end: false]
+
+	# new, from a native or helper: [ctor unused args...] -> the result
+	[InvokeNew: u32 argc: 0; u64 nt_v: 0;]
+		if (WlStack.Used) as u32 > WlStack.budget
+			call JsErr.Range: 'Maximum call stack size exceeded';
+		;;
+		if (Construct: argc nt_v FF_ENTRY)
+			return (RunLoop);
+		;;
+		sp-- 8;
+	[end: sp:0]
+
+	# ---- the loop around Run, where exceptions land ----
+
+	[RunLoop]
+		ptr<JsFrame> entry: fr;
+		int saved_no_gc: JsGc.no_gc;
+		u64 result: 0;
+		while true
+			if call result is Run throws err
+				call TakeError: err;
+				JsGc.no_gc is saved_no_gc;
+				if not (Unwind: entry)
+					throw 'js';
+				;;
+				continue;
+			;;
+			return result;
+		;;
+	[end: 0 as u64]
+
+	# makes whatever was thrown a JS exception
+	[TakeError: Error err;]
+		ptr<JsRuntime> r: JsRt.r;
+		if r.has_exception return;
+		if err.text is 'too much recursion'
+			call MakeException: JsRt.P.range_error 'Maximum call stack size exceeded';
+			return;
+		;;
+		if err.kind is ErrorKind.MEMORY or (WlText.EqZ: addr err.text 13 'out of memory')
+			call JsGc.HeapFull;
+			r.exception is r.oom_error;
+			r.has_exception is true;
+			return;
+		;;
+		call MakeException: JsRt.P.internal_error err.message;
+	[end]
+
+	[MakeException: ptr<JsObj> proto: 0; ptr<u8> msg: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		# with too little memory left to say what went wrong, that's what went wrong
+		u64 made: 0;
+		if call made is MakeError: proto msg throws err
+			made is r.oom_error;
+		;;
+		r.exception is made;
+		r.has_exception is true;
+	[end]
+
+	[MakeError: ptr<JsObj> proto: 0; ptr<u8> msg: 0;]
+	[end: (JsV.Obj: (JsErr.Make: proto msg))]
+
+	# Finds a handler for the exception, popping frames down to entry. True: Run can carry on from
+	# it. False: nothing here handles it; entry's gone too, and it goes on up.
+	[Unwind: ptr<JsFrame> entry: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		while true
+			ptr<JsFrame> f: fr;
+			ptr<JsCode> co: f.code;
+			if not r.uncatchable
+				u32 at_ins: ((pc as u64 - co.ins as u64) as u32 / 4) - 1;
+				ptr<JsTry> t: co.tries;
+				u32 n: co.ntries;
+				while u32 i: 0; i < n; i++;
+					if at_ins >= t:i.start and at_ins < t:i.stop
+						pc is co.ins + t:i.handler * 4;
+						bp is f.bp;
+						sp is bp + co.nlocals * 8;
+						sp:0 is r.exception;
+						sp++ 8;
+						r.has_exception is false;
+						r.exception is JsV.UNDEF;
+						return true;
+					;;
+				;;
+			;;
+			if f.gen is not 0
+				f.gen.state is GS_DONE;
+			;;
+			# this frame's done
+			sp is f.ret;
+			fr is f - sizeof JsFrame;
+			ptr<JsFrame> c: fr;
+			pc is c.pc;
+			bp is c.bp;
+			if c.code is not 0
+				K is c.code.consts;
+				I is c.code.ins;
+			;;
+			if f is entry return false;
+		;;
+	[end: false]
+
+	# ---- the loop ----
+
+	[Run]
+		u32 ins: 0;
+		u32 op: 0;
+		ptr<u32> s: 0;
+		int ia: 0;
+		int ib: 0;
+		ptr<u64> p: 0;
+		ptr<JsObj> o: 0;
+		ptr<JsFn> fnp: 0;
+		u64 va: 0;
+		while true
+			ins is pc:0;
+			pc++ 4;
+			op is ins & 0xFF;
+			if op < 16
+				when op
+					is JsOp.GETLOC
+						sp:0 is bp:(ins >> 8);
+						sp++ 8;
+					;;
+					is JsOp.SETLOC
+						sp-- 8;
+						bp:(ins >> 8) is sp:0;
+					;;
+					is JsOp.JF
+						sp-- 8;
+						s is sp as ptr<u32>;
+						if s:1 is JsV.HI_SPECIAL
+							if s:0 is not JsV.LO_TRUE
+								pc is I + (ins >> 8) * 4;
+							;;
+						;;
+						elif not (JsOps.ToBool: sp:0)
+							pc is I + (ins >> 8) * 4;
+						;;
+					;;
+					is JsOp.LT
+						s is sp as ptr<u32>;
+						if s:(-1) is JsV.HI_INT and s:(-3) is JsV.HI_INT
+							sp-- 8;
+							s:(-3) is JsV.HI_SPECIAL;
+							if (s:(-4) as int) < (s:(-2) as int)
+								s:(-4) is JsV.LO_TRUE;
+							;;
+							else
+								s:(-4) is JsV.LO_FALSE;
+							;;
+						;;
+						else
+							call CompareSlow: JsOp.LT;
+						;;
+					;;
+					is JsOp.INT
+						ia is ins as int;
+						s is sp as ptr<u32>;
+						s:0 is (ia >> 8) as u32;
+						s:1 is JsV.HI_INT;
+						sp++ 8;
+					;;
+					is JsOp.ADD
+						s is sp as ptr<u32>;
+						if s:(-1) is JsV.HI_INT and s:(-3) is JsV.HI_INT
+							ia is s:(-4) as int;
+							ib is s:(-2) as int;
+							op is (ia + ib) as u32;
+							# overflow only when both signs differ from the result's
+							if (((ia as u32) ^ op) & ((ib as u32) ^ op)) >> 31 is 0
+								s:(-4) is op;
+								sp-- 8;
+							;;
+							else
+								call AddGeneral;
+							;;
+						;;
+						else
+							call AddGeneral;
+						;;
+					;;
+					is JsOp.LOOP
+						pc is I + (ins >> 8) * 4;
+						fuel--;
+						if fuel <= 0
+							call Poll;
+						;;
+					;;
+					is JsOp.INCLOC
+						s is (bp + (ins >> 8) * 8) as ptr<u32>;
+						if s:1 is JsV.HI_INT and s:0 is not 0x7FFFFFFF
+							s:0 is s:0 + 1;
+						;;
+						else
+							call IncLocSlow: ins >> 8;
+						;;
+					;;
+					is JsOp.GETFIELD
+						s is sp as ptr<u32>;
+						if (s:(-1) >> 16) is JsV.TAG_OBJ
+							p is sp - 8;
+							o is (p:0 & JsV.PTR_MASK) as ptr<JsObj>;
+							p:0 is (JsObjs.GetAtom: o (K:(ins >> 8) & JsV.PTR_MASK) as ptr<u8> p:0);
+						;;
+						else
+							call GetFieldSlow: K:(ins >> 8);
+						;;
+					;;
+					is JsOp.CALL
+						p is sp - ((ins >> 8) + 2) * 8;
+						s is p as ptr<u32>;
+						if (s:1 >> 16) is JsV.TAG_OBJ
+							o is (p:0 & JsV.PTR_MASK) as ptr<JsObj>;
+							if o.kind is JsGc.K_FUNCTION
+								fnp is o as ptr<JsFn>;
+								if (fnp.code.flags & JsCodes.F_CLASS_CTOR) is 0
+									call Enter: fnp ins >> 8 0 JsV.UNDEF;
+									fuel--;
+									if fuel <= 0
+										call Poll;
+									;;
+									continue;
+								;;
+							;;
+							elif o.kind is JsGc.K_NATIVE
+								call CallNative: o as ptr<JsNativeFn> ins >> 8;
+								continue;
+							;;
+						;;
+						call CallOther: ins >> 8;
+					;;
+					is JsOp.RET
+						if fr.flags is 0
+							va is sp:(-1);
+							sp is fr.ret;
+							sp:0 is va;
+							sp++ 8;
+							fr is fr - sizeof JsFrame;
+							pc is fr.pc;
+							bp is fr.bp;
+							K is fr.code.consts;
+							I is fr.code.ins;
+						;;
+						elif (RetSlow)
+							return leave_value;
+						;;
+					;;
+					is JsOp.GETELEM
+						s is sp as ptr<u32>;
+						if s:(-1) is JsV.HI_INT and (s:(-3) >> 16) is JsV.TAG_OBJ
+							p is sp - 16;
+							o is (p:0 & JsV.PTR_MASK) as ptr<JsObj>;
+							if s:(-2) < o.elem_len and (o.kind is JsGc.K_ARRAY or o.kind is JsGc.K_OBJECT)
+								va is o.elems:(s:(-2));
+								if va is not JsV.HOLE
+									p:0 is va;
+									sp-- 8;
+									continue;
+								;;
+							;;
+						;;
+						call GetElemSlow;
+					;;
+					is JsOp.JMP
+						pc is I + (ins >> 8) * 4;
+					;;
+					is JsOp.CONST
+						sp:0 is K:(ins >> 8);
+						sp++ 8;
+					;;
+					is JsOp.SUB
+						s is sp as ptr<u32>;
+						if s:(-1) is JsV.HI_INT and s:(-3) is JsV.HI_INT
+							ia is s:(-4) as int;
+							ib is s:(-2) as int;
+							op is (ia - ib) as u32;
+							if (((ia as u32) ^ (ib as u32)) & ((ia as u32) ^ op)) >> 31 is 0
+								s:(-4) is op;
+								sp-- 8;
+							;;
+							else
+								call ArithSlow: JsOp.SUB;
+							;;
+						;;
+						else
+							call ArithSlow: JsOp.SUB;
+						;;
+					;;
+					is JsOp.UNDEF
+						sp:0 is JsV.UNDEF;
+						sp++ 8;
+					;;
+				;;
+			;;
+			elif op < 32
+				when op
+					is JsOp.POP
+						sp-- 8;
+					;;
+					is JsOp.SETFIELD
+						call SetField: K:(ins >> 8);
+					;;
+					is JsOp.SETELEM
+						s is sp as ptr<u32>;
+						if s:(-3) is JsV.HI_INT and (s:(-5) >> 16) is JsV.TAG_OBJ
+							p is sp - 24;
+							o is (p:0 & JsV.PTR_MASK) as ptr<JsObj>;
+							if s:(-4) < o.elem_len and o.kind is JsGc.K_ARRAY
+								ptr<u64> slot: o.elems + s:(-4) * 8;
+								if slot:0 is not JsV.HOLE
+									slot:0 is sp:(-1);
+									p:0 is sp:(-1);
+									sp is p + 8;
+									continue;
+								;;
+							;;
+						;;
+						call SetElemSlow;
+					;;
+					is JsOp.METHOD
+						va is sp:(-1);
+						if (va >> 48) as u32 is JsV.TAG_OBJ
+							sp:(-1) is (JsObjs.GetAtom: (va & JsV.PTR_MASK) as ptr<JsObj> (K:(ins >> 8) & JsV.PTR_MASK) as ptr<u8> va);
+						;;
+						else
+							call GetFieldSlow: K:(ins >> 8);
+						;;
+						sp:0 is va;
+						sp++ 8;
+					;;
+					is JsOp.DUP
+						sp:0 is sp:(-1);
+						sp++ 8;
+					;;
+					is JsOp.JT
+						sp-- 8;
+						s is sp as ptr<u32>;
+						if s:1 is JsV.HI_SPECIAL
+							if s:0 is JsV.LO_TRUE
+								pc is I + (ins >> 8) * 4;
+							;;
+						;;
+						elif (JsOps.ToBool: sp:0)
+							pc is I + (ins >> 8) * 4;
+						;;
+					;;
+					is JsOp.SEQ
+						s is sp as ptr<u32>;
+						if s:(-1) is JsV.HI_INT and s:(-3) is JsV.HI_INT
+							ia is (s:(-2) is s:(-4)) as int;
+						;;
+						else
+							ia is (JsOps.StrictEq: sp:(-2) sp:(-1)) as int;
+							s is sp as ptr<u32>;
+						;;
+						sp-- 8;
+						s:(-3) is JsV.HI_SPECIAL;
+						s:(-4) is (ia as u32) + JsV.LO_FALSE;
+					;;
+					is JsOp.SNE
+						s is sp as ptr<u32>;
+						if s:(-1) is JsV.HI_INT and s:(-3) is JsV.HI_INT
+							ia is (s:(-2) is not s:(-4)) as int;
+						;;
+						else
+							ia is 1 - (JsOps.StrictEq: sp:(-2) sp:(-1)) as int;
+							s is sp as ptr<u32>;
+						;;
+						sp-- 8;
+						s:(-3) is JsV.HI_SPECIAL;
+						s:(-4) is (ia as u32) + JsV.LO_FALSE;
+					;;
+					is JsOp.GETVAR
+						ptr<JsScope> sc: fr.scope;
+						op is ins >> 24;
+						while op > 0
+							sc is sc.parent;
+							op--;
+						;;
+						sp:0 is sc.slots:((ins >> 8) & 0xFFFF);
+						sp++ 8;
+					;;
+					is JsOp.SETVAR
+						ptr<JsScope> sw: fr.scope;
+						op is ins >> 24;
+						while op > 0
+							sw is sw.parent;
+							op--;
+						;;
+						sp-- 8;
+						sw.slots:((ins >> 8) & 0xFFFF) is sp:0;
+					;;
+					is JsOp.THIS
+						sp:0 is bp:(-1);
+						sp++ 8;
+					;;
+					is JsOp.MUL
+						s is sp as ptr<u32>;
+						if s:(-1) is JsV.HI_INT and s:(-3) is JsV.HI_INT
+							ia is s:(-4) as int;
+							ib is s:(-2) as int;
+							if ia > 0 and ib > 0 and ia < 32768 and ib < 32768
+								s:(-4) is (ia * ib) as u32;
+								sp-- 8;
+								continue;
+							;;
+						;;
+						call ArithSlow: JsOp.MUL;
+					;;
+					is JsOp.LE JsOp.GT
+						s is sp as ptr<u32>;
+						if s:(-1) is JsV.HI_INT and s:(-3) is JsV.HI_INT
+							ia is s:(-4) as int;
+							ib is s:(-2) as int;
+							if op is JsOp.LE
+								ia is (ia <= ib) as int;
+							;;
+							else
+								ia is (ia > ib) as int;
+							;;
+							sp-- 8;
+							s:(-3) is JsV.HI_SPECIAL;
+							s:(-4) is (ia as u32) + JsV.LO_FALSE;
+						;;
+						else
+							call CompareSlow: op;
+						;;
+					;;
+					is JsOp.BAND
+						s is sp as ptr<u32>;
+						if s:(-1) is JsV.HI_INT and s:(-3) is JsV.HI_INT
+							s:(-4) is s:(-4) & s:(-2);
+							sp-- 8;
+						;;
+						else
+							call BitOp: JsOp.BAND;
+						;;
+					;;
+					is JsOp.BOR
+						s is sp as ptr<u32>;
+						if s:(-1) is JsV.HI_INT and s:(-3) is JsV.HI_INT
+							s:(-4) is s:(-4) | s:(-2);
+							sp-- 8;
+						;;
+						else
+							call BitOp: JsOp.BOR;
+						;;
+					;;
+				;;
+			;;
+			elif op < JsOp.SLOW
+				if (Mid: op ins)
+					return leave_value;
+				;;
+			;;
+			elif (Slow: op ins)
+				return leave_value;
+			;;
+		;;
+	[end: 0 as u64]
+
+	# ---- the slower paths of the hot instructions ----
+
+	[IncLocSlow: u32 slot: 0;]
+		# (like x = x + 1, for what isn't a small int)
+		bp:slot is (JsV.Num: (JsOps.ToNumber: bp:slot) + 1.0);
+	[end]
+
+	[AddGeneral]
+		ptr<u32> s: sp as ptr<u32>;
+		u32 ta: s:(-3) >> 16;
+		u32 tb: s:(-1) >> 16;
+		if (ta < JsV.TAG_SPECIAL or ta is JsV.TAG_INT) and (tb < JsV.TAG_SPECIAL or tb is JsV.TAG_INT)
+			ptr<u64> st: sp - 16;
+			x is (JsV.AsNum: st:0);
+			y is (JsV.AsNum: st:1);
+			x is x + y;
+			st:0 is (JsV.Double: x);
+			sp-- 8;
+			return;
+		;;
+		if ta is JsV.TAG_STR and tb is JsV.TAG_STR
+			ptr<u64> st2: sp - 16;
+			st2:0 is (JsV.Str: (JsStrs.Concat: (JsV.AsStr: st2:0) (JsV.AsStr: st2:1)));
+			sp-- 8;
+			return;
+		;;
+		u64 r: (JsOps.Add: sp:(-2) sp:(-1));
+		sp-- 8;
+		sp:(-1) is r;
+	[end]
+
+	# [a b] -> [a op b], for -, *, /, %, **, in every other case
+	[ArithSlow: u32 op: 0;]
+		ptr<u64> st: sp - 16;
+		# ToNumeric, left then right, each may run JS
+		if not (JsV.IsNum: st:0)
+			st:0 is (JsV.Num: (JsOps.ToNumber: st:0));
+		;;
+		if not (JsV.IsNum: st:1)
+			st:1 is (JsV.Num: (JsOps.ToNumber: st:1));
+		;;
+		x is (JsV.AsNum: st:0);
+		y is (JsV.AsNum: st:1);
+		when op
+			is JsOp.SUB
+				x is x - y;
+			;;
+			is JsOp.MUL
+				x is x * y;
+			;;
+			is JsOp.DIV
+				x is x / y;
+			;;
+			is JsOp.MOD
+				x is (FMod: x y);
+			;;
+			is JsOp.EXP
+				x is (JsMathCore.Pow: x y);
+			;;
+		;;
+		st:0 is (JsV.Num: x);
+		sp-- 8;
+	[end]
+
+	# JS's %: the sign of the left, NaN where it should be, -0 kept
+	[FMod: f64 a: 0.0; f64 b: 0.0;]
+		if a is not a or b is not b or b is 0.0 or not (WlNum.IsFinite: a)
+			return (WlNum.FromBits: JsV.NAN);
+		;;
+		if not (WlNum.IsFinite: b) return a;
+		if a is 0.0 return a;
+		f64 m: a % b;
+		if m is 0.0 and a < 0.0
+			return (WlNum.FromBits: 0x8000000000000000);
+		;;
+	[end: m]
+
+	[CompareSlow: u32 op: 0;]
+		ptr<u64> st: sp - 16;
+		ptr<u32> s: st as ptr<u32>;
+		u32 ta: s:1 >> 16;
+		u32 tb: s:3 >> 16;
+		if (ta < JsV.TAG_SPECIAL or ta is JsV.TAG_INT) and (tb < JsV.TAG_SPECIAL or tb is JsV.TAG_INT)
+			x is (JsV.AsNum: st:0);
+			y is (JsV.AsNum: st:1);
+			bln nb: false;
+			when op
+				is JsOp.LT
+					nb is x < y;
+				;;
+				is JsOp.LE
+					nb is x <= y;
+				;;
+				is JsOp.GT
+					nb is x > y;
+				;;
+				else
+					nb is x >= y;
+				;;
+			;;
+			st:0 is (JsV.Bool: nb);
+			sp-- 8;
+			return;
+		;;
+		# operands go to primitives left to right, whichever way round the compare is
+		st:0 is (JsOps.ToPrimitive: st:0 JsOps.HINT_NUMBER);
+		st:1 is (JsOps.ToPrimitive: st:1 JsOps.HINT_NUMBER);
+		int r: 0;
+		bln result: false;
+		when op
+			is JsOp.LT
+				r is (JsOps.LessPrim: st:0 st:1);
+				result is (r is 1);
+			;;
+			is JsOp.GT
+				r is (JsOps.LessPrim: st:1 st:0);
+				result is (r is 1);
+			;;
+			is JsOp.LE
+				r is (JsOps.LessPrim: st:1 st:0);
+				result is (r is 0);
+			;;
+			else
+				r is (JsOps.LessPrim: st:0 st:1);
+				result is (r is 0);
+			;;
+		;;
+		st:0 is (JsV.Bool: result);
+		sp-- 8;
+	[end]
+
+	[NilError: u64 target: 0; u64 key: 0;]
+		WlBuf b;
+		call b.AddZ: 'Cannot read properties of ';
+		if target is JsV.NULL
+			call b.AddZ: 'null';
+		;;
+		else
+			call b.AddZ: 'undefined';
+		;;
+		if (JsV.IsStr: key)
+			ptr<JsStr> ks: (JsStrs.Flat: (JsV.AsStr: key));
+			call b.AddZ: ' (reading ';
+			call b.AddN: ks.data ks.bytes;
+			call b.Add: ')';
+		;;
+		call JsErr.Type: b.data;
+	[end]
+
+	[GetFieldSlow: u64 key: 0;]
+		u64 target: sp:(-1);
+		if target is JsV.UNDEF or target is JsV.NULL
+			call NilError: target key;
+		;;
+		sp:(-1) is (JsObjs.GetV: target key);
+	[end]
+
+	[GetElemSlow]
+		u64 target: sp:(-2);
+		u64 key: sp:(-1);
+		if target is JsV.UNDEF or target is JsV.NULL
+			call NilError: target JsV.UNDEF;
+		;;
+		if (JsV.IsStr: target) and (JsV.IsInt: key)
+			ptr<JsStr> s: (JsV.AsStr: target);
+			u32 i: key as u32;
+			if i < s.len
+				sp:(-2) is (JsV.Str: (JsStrs.FromUnit: (JsStrs.UnitAt: s i)));
+				sp-- 8;
+				return;
+			;;
+		;;
+		u64 k: (JsObjs.KeyOf: key);
+		sp:(-1) is k;
+		u64 r: (JsObjs.GetV: target k);
+		sp-- 8;
+		sp:(-1) is r;
+	[end]
+
+	[StrictSetFailed]
+		if (fr.code.flags & JsCodes.F_STRICT) is not 0
+			call JsErr.Type: 'Cannot assign to read only property';
+		;;
+	[end]
+
+	# [o v] -> [v]
+	[SetField: u64 key: 0;]
+		u64 target: sp:(-2);
+		u64 v: sp:(-1);
+		if (target >> 48) as u32 is JsV.TAG_OBJ
+			ptr<JsObj> o: (target & JsV.PTR_MASK) as ptr<JsObj>;
+			if not (JsObjs.SetAtom: o (key & JsV.PTR_MASK) as ptr<u8> v)
+				call StrictSetFailed;
+			;;
+		;;
+		else
+			if target is JsV.UNDEF or target is JsV.NULL
+				call JsErr.Type: 'Cannot set properties of undefined or null';
+			;;
+			if not (JsObjs.SetV: target key v)
+				call StrictSetFailed;
+			;;
+		;;
+		sp-- 8;
+		sp:(-1) is v;
+	[end]
+
+	# [o k v] -> [v]
+	[SetElemSlow]
+		u64 target: sp:(-3);
+		if target is JsV.UNDEF or target is JsV.NULL
+			call JsErr.Type: 'Cannot set properties of undefined or null';
+		;;
+		u64 k: (JsObjs.KeyOf: sp:(-2));
+		sp:(-2) is k;
+		u64 v: sp:(-1);
+		bln ok: false;
+		if (target >> 48) as u32 is JsV.TAG_OBJ
+			ptr<JsObj> o: (JsV.AsObj: target);
+			# appending to a plain array, the commonest slow path
+			if o.kind is JsGc.K_ARRAY and (k >> 48) as u32 is JsV.TAG_INT and (k as u32) is o.length and (k as u32) is o.elem_len and (o.flags & (JsObjs.F_NOEXT | JsObjs.F_LEN_RO | JsObjs.F_SPARSE)) is 0 and (ProtosPlain: o)
+				call JsObjs.ArrayPush: o v;
+				ok is true;
+			;;
+			else
+				ok is (JsObjs.Set: o k v target);
+			;;
+		;;
+		else
+			ok is (JsObjs.SetV: target k v);
+		;;
+		if not ok
+			call StrictSetFailed;
+		;;
+		sp-- 16;
+		sp:(-1) is v;
+	[end]
+
+	# no prototype of this array has elements or hooks that an append would meet
+	[ProtosPlain: ptr<JsObj> o: 0;]
+		ptr<JsObj> p: o.proto;
+		while p is not 0
+			if p.elem_len is not 0 or (p.flags & (JsObjs.F_SPARSE | JsObjs.F_HOOKS)) is not 0 or p.kind is JsGc.K_BOXED
+				return false;
+			;;
+			p is p.proto;
+		;;
+	[end: true]
+
+	[BitOp: u32 op: 0;]
+		ptr<u64> st: sp - 16;
+		int a: 0;
+		int b: 0;
+		if not (JsV.IsNum: st:0)
+			st:0 is (JsV.Num: (JsOps.ToNumber: st:0));
+		;;
+		if not (JsV.IsNum: st:1)
+			st:1 is (JsV.Num: (JsOps.ToNumber: st:1));
+		;;
+		a is (JsOps.ToInt32: st:0);
+		b is (JsOps.ToInt32: st:1);
+		int r: 0;
+		when op
+			is JsOp.BAND
+				r is a & b;
+			;;
+			is JsOp.BOR
+				r is a | b;
+			;;
+			is JsOp.BXOR
+				r is a ^ b;
+			;;
+			is JsOp.SHL
+				r is ((a as u32) << ((b as u32) & 31)) as int;
+			;;
+			is JsOp.SAR
+				r is a >> (b & 31);
+			;;
+			else
+				u32 u: (a as u32) >> ((b as u32) & 31);
+				st:0 is (JsV.Uint: u);
+				sp-- 8;
+				return;
+			;;
+		;;
+		st:0 is (JsV.Int: r);
+		sp-- 8;
+	[end]
+
+	# ---- the less hot instructions, still common enough to be next ----
+
+	[Mid: u32 op: 0; u32 ins: 0;]
+		if op < 50
+			when op
+				is JsOp.LENGTH
+					call GetLength;
+				;;
+				is JsOp.GETGLOBAL
+					call GetGlobal: K:(ins >> 8);
+				;;
+				is JsOp.SETGLOBAL
+					call SetGlobal: K:(ins >> 8) false;
+				;;
+				is JsOp.TRUE
+					sp:0 is JsV.TRUE;
+					sp++ 8;
+				;;
+				is JsOp.FALSE
+					sp:0 is JsV.FALSE;
+					sp++ 8;
+				;;
+				is JsOp.NULL
+					sp:0 is JsV.NULL;
+					sp++ 8;
+				;;
+				is JsOp.GE
+					ptr<u32> g: sp as ptr<u32>;
+					if g:(-1) is JsV.HI_INT and g:(-3) is JsV.HI_INT
+						int ga: (g:(-4) as int >= g:(-2) as int) as int;
+						sp-- 8;
+						g:(-3) is JsV.HI_SPECIAL;
+						g:(-4) is (ga as u32) + JsV.LO_FALSE;
+					;;
+					else
+						call CompareSlow: JsOp.GE;
+					;;
+				;;
+				is JsOp.NOT
+					int nb: (JsOps.ToBool: sp:(-1)) as int;
+					sp:(-1) is JsV.FALSE;
+					if nb is 0
+						sp:(-1) is JsV.TRUE;
+					;;
+				;;
+				is JsOp.BXOR JsOp.SHL JsOp.SAR JsOp.SHR
+					ptr<u32> s: sp as ptr<u32>;
+					if s:(-1) is JsV.HI_INT and s:(-3) is JsV.HI_INT
+						u32 a: s:(-4);
+						u32 b: s:(-2);
+						if op is JsOp.BXOR
+							s:(-4) is a ^ b;
+							sp-- 8;
+							return false;
+						;;
+						if op is JsOp.SHL
+							s:(-4) is a << (b & 31);
+							sp-- 8;
+							return false;
+						;;
+						if op is JsOp.SAR
+							s:(-4) is ((a as int) >> ((b & 31) as int)) as u32;
+							sp-- 8;
+							return false;
+						;;
+					;;
+					call BitOp: op;
+				;;
+				is JsOp.DIV
+					call ArithSlow: JsOp.DIV;
+				;;
+				is JsOp.MOD
+					ptr<u32> m: sp as ptr<u32>;
+					if m:(-1) is JsV.HI_INT and m:(-3) is JsV.HI_INT
+						int ia: m:(-4) as int;
+						int ib: m:(-2) as int;
+						if ia >= 0 and ib > 0
+							m:(-4) is (ia % ib) as u32;
+							sp-- 8;
+							return false;
+						;;
+					;;
+					call ArithSlow: JsOp.MOD;
+				;;
+				is JsOp.NEW
+					call Construct: ins >> 8 sp:(-1 - ((ins >> 8) as int) - 1) 0;
+				;;
+				is JsOp.CLOSURE
+					call MakeClosure: ins >> 8;
+				;;
+				is JsOp.NEWOBJ
+					sp:0 is (JsV.Obj: (JsObjs.NewObject));
+					sp++ 8;
+				;;
+				is JsOp.INITFIELD
+					call InitField: K:(ins >> 8);
+				;;
+			;;
+			return false;
+		;;
+		when op
+			is JsOp.GETLOC_C
+				u64 lv: bp:(ins >> 8);
+				if lv is JsV.HOLE
+					call Uninitialized;
+				;;
+				sp:0 is lv;
+				sp++ 8;
+			;;
+			is JsOp.GETVAR_C
+				call GetVarChecked: ins >> 8;
+			;;
+			is JsOp.FOROF_NEXT
+				call ForOfNext: ins >> 8;
+			;;
+			is JsOp.PUSH_SCOPE
+				call PushScope: ins >> 8;
+			;;
+			is JsOp.POP_SCOPE
+				fr.scope is fr.scope.parent;
+			;;
+			is JsOp.NEWARR
+				sp:0 is (JsV.Obj: (JsObjs.NewArray: ins >> 8));
+				sp++ 8;
+			;;
+			is JsOp.APPEND
+				sp-- 8;
+				call JsObjs.ArrayPush: (JsV.AsObj: sp:(-1)) sp:0;
+			;;
+			is JsOp.NEG
+				u64 nv: sp:(-1);
+				if not (JsV.IsNum: nv)
+					nv is (JsV.Num: (JsOps.ToNumber: nv));
+				;;
+				sp:(-1) is (JsV.Num: (JsV.AsNum: nv) * -1.0);
+			;;
+			is JsOp.INC JsOp.DEC
+				u64 uv: sp:(-1);
+				if (uv >> 48) as u32 is JsV.TAG_INT
+					int iv: uv as int;
+					if op is JsOp.INC and iv is not 2147483647
+						sp:(-1) is (JsV.Int: iv + 1);
+						return false;
+					;;
+					if op is JsOp.DEC and iv is not (-2147483647 - 1)
+						sp:(-1) is (JsV.Int: iv - 1);
+						return false;
+					;;
+				;;
+				f64 fv: (JsOps.ToNumber: uv);
+				if op is JsOp.INC
+					sp:(-1) is (JsV.Num: fv + 1.0);
+				;;
+				else
+					sp:(-1) is (JsV.Num: fv - 1.0);
+				;;
+			;;
+			is JsOp.TONUM
+				if not (JsV.IsNum: sp:(-1))
+					sp:(-1) is (JsV.Num: (JsOps.ToNumber: sp:(-1)));
+				;;
+			;;
+			is JsOp.EQ
+				bln eq: (JsOps.LooseEq: sp:(-2) sp:(-1));
+				sp-- 8;
+				sp:(-1) is (JsV.Bool: eq);
+			;;
+			is JsOp.NE
+				bln ne: (JsOps.LooseEq: sp:(-2) sp:(-1));
+				sp-- 8;
+				sp:(-1) is (JsV.Bool: not ne);
+			;;
+			is JsOp.JF_KEEP
+				if not (JsOps.ToBool: sp:(-1))
+					pc is I + (ins >> 8) * 4;
+				;;
+				else
+					sp-- 8;
+				;;
+			;;
+			is JsOp.JT_KEEP
+				if (JsOps.ToBool: sp:(-1))
+					pc is I + (ins >> 8) * 4;
+				;;
+				else
+					sp-- 8;
+				;;
+			;;
+			is JsOp.SWAP
+				u64 t: sp:(-1);
+				sp:(-1) is sp:(-2);
+				sp:(-2) is t;
+			;;
+			is JsOp.ROT3
+				u64 t3: sp:(-1);
+				sp:(-1) is sp:(-2);
+				sp:(-2) is sp:(-3);
+				sp:(-3) is t3;
+			;;
+			is JsOp.DUP2
+				sp:0 is sp:(-2);
+				sp:1 is sp:(-1);
+				sp++ 16;
+			;;
+			is JsOp.TYPEOF
+				sp:(-1) is (JsV.Str: (JsOps.TypeOf: sp:(-1)));
+			;;
+		;;
+	[end: false]
+
+	[Uninitialized]
+		call JsErr.Reference: 'Cannot access a variable before initialization';
+	[end]
+
+	[GetLength]
+		u64 v: sp:(-1);
+		u32 tag: (v >> 48) as u32;
+		if tag is JsV.TAG_OBJ
+			ptr<JsObj> o: (v & JsV.PTR_MASK) as ptr<JsObj>;
+			if o.kind is JsGc.K_ARRAY
+				sp:(-1) is (JsV.Uint: o.length);
+				return;
+			;;
+			sp:(-1) is (JsObjs.GetAtom: o JsRt.A.length as ptr<u8> v);
+			return;
+		;;
+		if tag is JsV.TAG_STR
+			ptr<JsStr> s: (v & JsV.PTR_MASK) as ptr<JsStr>;
+			sp:(-1) is (JsV.Int: s.len as int);
+			return;
+		;;
+		call GetFieldSlow: (JsV.Str: JsRt.A.length);
+	[end]
+
+	[GetVarChecked: u32 a: 0;]
+		ptr<JsScope> sc: fr.scope;
+		u32 hops: a >> 16;
+		while hops > 0
+			sc is sc.parent;
+			hops--;
+		;;
+		u64 v: sc.slots:(a & 0xFFFF);
+		if v is JsV.HOLE
+			call Uninitialized;
+		;;
+		sp:0 is v;
+		sp++ 8;
+	[end]
+
+	[PushScope: u32 n: 0;]
+		ptr<JsScope> sc: (JsGc.New: sizeof JsScope + n * 8 JsGc.K_SCOPE) as ptr<JsScope>;
+		sc.parent is fr.scope;
+		sc.count is n;
+		ptr<u64> sl: (sc as ptr<u8>) + sizeof JsScope;
+		sc.slots is sl;
+		while u32 i: 0; i < n; i++;
+			sl:i is JsV.HOLE;
+		;;
+		fr.scope is sc;
+	[end]
+
+	[MakeClosure: u32 ki: 0;]
+		ptr<JsCode> code: (JsV.AsPtr: K:ki) as ptr<JsCode>;
+		u32 cf: code.flags;
+		ptr<JsObj> proto: JsRt.P.function;
+		if (cf & (JsCodes.F_GENERATOR | JsCodes.F_ASYNC)) is not 0
+			if (cf & JsCodes.F_GENERATOR) is 0
+				proto is JsRt.P.async_function;
+			;;
+			elif (cf & JsCodes.F_ASYNC) is 0
+				proto is JsRt.P.generator_function;
+			;;
+			else
+				proto is JsRt.P.async_generator_function;
+			;;
+		;;
+		ptr<JsFn> f: (JsObjs.Alloc: sizeof JsFn JsGc.K_FUNCTION proto) as ptr<JsFn>;
+		f.o.flags is (JsObjs.F_CALLABLE | JsObjs.F_LAZY | JsObjs.F_SPECIAL) as u16;
+		f.code is code;
+		f.scope is fr.scope;
+		if (cf & JsCodes.F_ARROW) is not 0
+			# super in an arrow is its surroundings'
+			f.home is fr.fn.home;
+		;;
+		sp:0 is (JsV.Obj: f as ptr<JsObj>);
+		sp++ 8;
+	[end]
+
+	# [o v] -> [o]
+	[InitField: u64 key: 0;]
+		ptr<JsObj> o: (JsV.AsObj: sp:(-2));
+		ptr<u8> kp: (key & JsV.PTR_MASK) as ptr<u8>;
+		ptr<JsProp> p: (JsObjs.Find: o kp);
+		if p is 0
+			call JsObjs.AddProp: o kp sp:(-1) JsObjs.WEC;
+		;;
+		else
+			call JsObjs.DefineValue: o kp sp:(-1) JsObjs.WEC;
+		;;
+		sp-- 8;
+	[end]
+
+	# ---- globals ----
+
+	[NotDefined: u64 key: 0;]
+		WlBuf b;
+		ptr<JsStr> ks: (JsStrs.Flat: (JsV.AsStr: key));
+		call b.AddN: ks.data ks.bytes;
+		call b.AddZ: ' is not defined';
+		call JsErr.Reference: b.data;
+	[end]
+
+	[GetGlobal: u64 key: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		ptr<u8> kp: (key & JsV.PTR_MASK) as ptr<u8>;
+		if r.global_lex.count > 0
+			ptr<JsProp> lp: (JsObjs.Find: r.global_lex kp);
+			if lp is not 0
+				if lp.value is JsV.HOLE
+					call Uninitialized;
+				;;
+				sp:0 is lp.value;
+				sp++ 8;
+				return;
+			;;
+		;;
+		ptr<JsObj> g: r.global;
+		ptr<JsProp> p: (JsObjs.Find: g kp);
+		if p is not 0 and (p.flags & JsObjs.ACC) is 0
+			sp:0 is p.value;
+			sp++ 8;
+			return;
+		;;
+		if p is 0 and not (JsObjs.Has: g key)
+			call NotDefined: key;
+		;;
+		u64 v: (JsObjs.GetAtom: g kp (JsV.Obj: g));
+		sp:0 is v;
+		sp++ 8;
+	[end]
+
+	# [v] -> []
+	[SetGlobal: u64 key: 0; bln strict: false;]
+		ptr<JsRuntime> r: JsRt.r;
+		ptr<u8> kp: (key & JsV.PTR_MASK) as ptr<u8>;
+		if r.global_lex.count > 0
+			ptr<JsProp> lp: (JsObjs.Find: r.global_lex kp);
+			if lp is not 0
+				if lp.value is JsV.HOLE
+					call Uninitialized;
+				;;
+				if (lp.flags & JsObjs.W) is 0
+					call JsErr.Type: 'Assignment to constant variable.';
+				;;
+				sp-- 8;
+				lp.value is sp:0;
+				return;
+			;;
+		;;
+		ptr<JsObj> g: r.global;
+		if strict and not (JsObjs.Has: g key)
+			call NotDefined: key;
+		;;
+		if not (JsObjs.Set: g key sp:(-1) (JsV.Obj: g)) and strict
+			call JsErr.Type: 'Cannot assign to read only global';
+		;;
+		sp-- 8;
+	[end]
+
+	# ---- iterators ----
+
+	# [iterable] -> stored: iterator in slot, its next in slot + 1
+	[GetIter: u32 slot: 0;]
+		u64 v: sp:(-1);
+		u64 m: JsV.UNDEF;
+		if v is JsV.UNDEF or v is JsV.NULL
+			call JsErr.Type: 'value is not iterable';
+		;;
+		m is (JsObjs.GetV: v (JsV.Sym: JsRt.S.iterator));
+		if not (JsOps.IsCallable: m)
+			call JsErr.Type: 'value is not iterable';
+		;;
+		u64 it: (Call0: m v);
+		if not (JsV.IsObj: it)
+			call JsErr.Type: 'Result of the Symbol.iterator method is not an object';
+		;;
+		bp:slot is it;
+		bp:(slot + 1) is (JsObjs.GetAtom: (JsV.AsObj: it) JsRt.A.next as ptr<u8> it);
+		sp-- 8;
+	[end]
+
+	# Pushes the next value. With a jump in the next word: at the end, jumps, pushing nothing. With
+	# 0 there: pushes undefined at the end, and from then on (destructuring). The iterator's slot
+	# becomes undefined once it's done or has thrown, so nothing closes it later.
+	[ForOfNext: u32 slot: 0;]
+		u32 target: pc:0;
+		pc++ 4;
+		u64 it: bp:slot;
+		if it is JsV.UNDEF
+			if target is 0
+				sp:0 is JsV.UNDEF;
+				sp++ 8;
+				return;
+			;;
+			pc is I + target * 4;
+			return;
+		;;
+		u64 nx: bp:(slot + 1);
+		# the array iterator, untouched: no result objects
+		if (nx & JsV.PTR_MASK) as ptr<JsObj> is JsRt.P.array_iter_next and (JsV.IsObj: it)
+			ptr<JsObj> io: (JsV.AsObj: it);
+			if io.cls is JsBuiltins.array_iter_class
+				ptr<JsArrayIter> ai: io.data as ptr<JsArrayIter>;
+				if ai.kind is 1 and (JsV.IsObj: ai.target)
+					ptr<JsObj> arr: (JsV.AsObj: ai.target);
+					if arr.kind is JsGc.K_ARRAY
+						u32 ix: ai.index;
+						if ix >= arr.length
+							bp:slot is JsV.UNDEF;
+							ai.target is JsV.UNDEF;
+							if target is 0
+								sp:0 is JsV.UNDEF;
+								sp++ 8;
+								return;
+							;;
+							pc is I + target * 4;
+							return;
+						;;
+						ai.index is ix + 1;
+						if ix < arr.elem_len and arr.elems:ix is not JsV.HOLE
+							sp:0 is arr.elems:ix;
+						;;
+						else
+							sp:0 is (JsObjs.GetIndex: arr ix ai.target);
+						;;
+						sp++ 8;
+						return;
+					;;
+				;;
+			;;
+		;;
+		bp:slot is JsV.UNDEF;
+		u64 result: (Call0: nx it);
+		if not (JsV.IsObj: result)
+			call JsErr.Type: 'Iterator result is not an object';
+		;;
+		ptr<JsObj> ro: (JsV.AsObj: result);
+		bln done_now: (JsOps.ToBool: (JsObjs.GetAtom: ro JsRt.A.done as ptr<u8> result));
+		if done_now
+			if target is 0
+				sp:0 is JsV.UNDEF;
+				sp++ 8;
+				return;
+			;;
+			pc is I + target * 4;
+			return;
+		;;
+		u64 value: (JsObjs.GetAtom: ro JsRt.A.value as ptr<u8> result);
+		bp:slot is it;
+		sp:0 is value;
+		sp++ 8;
+	[end]
+
+	# a normal way out of a loop: return() is called, and what it does counts
+	[IterClose: u32 a: 0;]
+		bln is_async: (a & JsCompile.ASYNC_BIT) is not 0;
+		u32 slot: a & 0x7FFFFF;
+		u64 it: bp:slot;
+		if it is JsV.UNDEF
+			if is_async
+				sp:0 is JsV.HOLE;
+				sp++ 8;
+			;;
+			return;
+		;;
+		bp:slot is JsV.UNDEF;
+		u64 m: (JsObjs.GetAtom: (JsV.AsObj: it) JsRt.A.return_ as ptr<u8> it);
+		if m is JsV.UNDEF or m is JsV.NULL
+			if is_async
+				sp:0 is JsV.HOLE;
+				sp++ 8;
+			;;
+			return;
+		;;
+		if not (JsOps.IsCallable: m)
+			call JsErr.Type: 'iterator.return is not a function';
+		;;
+		u64 r: (Call0: m it);
+		if is_async
+			sp:0 is r;
+			sp++ 8;
+			return;
+		;;
+		if not (JsV.IsObj: r)
+			call JsErr.Type: 'iterator.return() did not return an object';
+		;;
+	[end]
+
+	# an exception's on its way out of the loop: return() is called, and its failure ignored
+	[IterCloseSilent: u32 a: 0;]
+		bln is_async: (a & JsCompile.ASYNC_BIT) is not 0;
+		u32 slot: a & 0x7FFFFF;
+		u64 it: bp:slot;
+		u64 result: JsV.UNDEF;
+		if it is not JsV.UNDEF
+			bp:slot is JsV.UNDEF;
+			JsTryState t;
+			call Js.TryBegin: addr t;
+			if call result is CloseCall: it throws err
+				# (ignored: the first exception is the one that counts)
+				call Js.TryCatch: addr t err;
+				result is JsV.UNDEF;
+			;;
+		;;
+		if is_async
+			sp:0 is result;
+			sp++ 8;
+		;;
+	[end]
+
+	[CloseCall: u64 it: 0;]
+		u64 m: (JsObjs.GetAtom: (JsV.AsObj: it) JsRt.A.return_ as ptr<u8> it);
+		if m is JsV.UNDEF or m is JsV.NULL return JsV.UNDEF;
+		if not (JsOps.IsCallable: m) return JsV.UNDEF;
+	[end: (Call0: m it)]
+
+	[IterRest: u32 slot: 0;]
+		ptr<JsObj> a: (JsObjs.NewArray: 0);
+		sp:0 is (JsV.Obj: a);
+		sp++ 8;
+		while bp:slot is not JsV.UNDEF
+			# a jump past this that lands on it: done
+			u64 it: bp:slot;
+			bp:slot is JsV.UNDEF;
+			u64 result: (Call0: bp:(slot + 1) it);
+			if not (JsV.IsObj: result)
+				call JsErr.Type: 'Iterator result is not an object';
+			;;
+			ptr<JsObj> ro: (JsV.AsObj: result);
+			if (JsOps.ToBool: (JsObjs.GetAtom: ro JsRt.A.done as ptr<u8> result))
+				break;
+			;;
+			u64 value: (JsObjs.GetAtom: ro JsRt.A.value as ptr<u8> result);
+			bp:slot is it;
+			call JsObjs.ArrayPush: a value;
+		;;
+	[end]
+
+	# [array iterable] -> [array]
+	[AppendSpread]
+		ptr<JsObj> a: (JsV.AsObj: sp:(-2));
+		u64 v: sp:(-1);
+		# a plain array with the usual iterator can be copied straight
+		if (JsV.IsObj: v)
+			ptr<JsObj> src: (JsV.AsObj: v);
+			if src.kind is JsGc.K_ARRAY and (src.flags & JsObjs.F_SPARSE) is 0 and src.elem_len is src.length and src.proto is JsRt.P.array and (JsBuiltins.ArrayIterPristine) and (JsObjs.Find: src JsRt.S.iterator as ptr<u8>) is 0
+				u32 n: src.elem_len;
+				while u32 i: 0; i < n; i++;
+					u64 e: src.elems:i;
+					if e is JsV.HOLE
+						e is JsV.UNDEF;
+					;;
+					call JsObjs.ArrayPush: a e;
+				;;
+				sp-- 8;
+				return;
+			;;
+		;;
+		# the general way: slots for the iterator go on the stack
+		call GetIterValues: v;
+		# [array iterable iterator next]
+		while true
+			u64 result: (Call0: sp:(-1) sp:(-2));
+			if not (JsV.IsObj: result)
+				call JsErr.Type: 'Iterator result is not an object';
+			;;
+			ptr<JsObj> ro: (JsV.AsObj: result);
+			if (JsOps.ToBool: (JsObjs.GetAtom: ro JsRt.A.done as ptr<u8> result))
+				break;
+			;;
+			u64 value: (JsObjs.GetAtom: ro JsRt.A.value as ptr<u8> result);
+			call JsObjs.ArrayPush: a value;
+		;;
+		sp-- 24;
+	[end]
+
+	# pushes an iterable's iterator and its next
+	[GetIterValues: u64 v: 0;]
+		if v is JsV.UNDEF or v is JsV.NULL
+			call JsErr.Type: 'value is not iterable';
+		;;
+		u64 m: (JsObjs.GetV: v (JsV.Sym: JsRt.S.iterator));
+		if not (JsOps.IsCallable: m)
+			call JsErr.Type: 'value is not iterable';
+		;;
+		u64 it: (Call0: m v);
+		if not (JsV.IsObj: it)
+			call JsErr.Type: 'Result of the Symbol.iterator method is not an object';
+		;;
+		call CheckStack: 2;
+		sp:0 is it;
+		sp:1 is (JsObjs.GetAtom: (JsV.AsObj: it) JsRt.A.next as ptr<u8> it);
+		sp++ 16;
+	[end]
+
+	# ---- for-in ----
+
+	# [object] -> keys array in slot, its place in slot + 1, the object in slot + 2
+	[ForInStart: u32 slot: 0;]
+		u64 v: sp:(-1);
+		if v is JsV.UNDEF or v is JsV.NULL
+			bp:slot is (JsV.Obj: (JsObjs.NewArray: 0));
+			bp:(slot + 1) is JsV.INT_BASE;
+			bp:(slot + 2) is JsV.UNDEF;
+			sp-- 8;
+			return;
+		;;
+		ptr<JsObj> o: (JsOps.ToObject: v);
+		bp:(slot + 2) is (JsV.Obj: o);
+		JsGc.no_gc++;
+		ptr<JsObj> keys: (JsObjs.ForInKeys: o);
+		JsGc.no_gc--;
+		bp:slot is (JsV.Obj: keys);
+		bp:(slot + 1) is JsV.INT_BASE;
+		sp-- 8;
+	[end]
+
+	[ForInNext: u32 slot: 0;]
+		u32 target: pc:0;
+		pc++ 4;
+		ptr<JsObj> keys: (JsV.AsObj: bp:slot);
+		while true
+			u32 i: bp:(slot + 1) as u32;
+			if i >= keys.length
+				pc is I + target * 4;
+				return;
+			;;
+			bp:(slot + 1) is JsV.INT_BASE | (i + 1);
+			u64 kv: keys.elems:i;
+			# a key deleted since the loop started isn't visited
+			u64 k: (JsObjs.KeyOfStr: (JsV.AsStr: kv));
+			if (JsObjs.Has: (JsV.AsObj: bp:(slot + 2)) k)
+				sp:0 is kv;
+				sp++ 8;
+				return;
+			;;
+		;;
+	[end]
+
+	# ---- generators ----
+
+	[TraceGen: ptr<JsGen> g: 0;]
+		call JsGc.MarkCell: g.fn as ptr<JsCell>;
+		call JsGc.MarkCell: g.scope as ptr<JsCell>;
+		call JsGc.MarkCell: g.object as ptr<JsCell>;
+		call JsGc.MarkCell: g.queue as ptr<JsCell>;
+		call JsGc.Mark: g.promise;
+		call JsGc.Mark: g.new_target;
+		call JsGc.MarkValues: g.stack g.stack_len;
+	[end]
+
+	[FreeGen: ptr<JsGen> g: 0;]
+		if g.stack is not 0
+			free g.stack;
+		;;
+	[end]
+
+	[NewGen]
+		ptr<JsGen> g: (JsGc.New: sizeof JsGen JsGc.K_GEN) as ptr<JsGen>;
+		g.promise is JsV.UNDEF;
+		g.new_target is JsV.UNDEF;
+		g.fn is fr.fn;
+		g.state is GS_RUNNING;
+		fr.gen is g;
+	[end: g]
+
+	# copies the running frame's slots to the heap
+	[SaveFrame: ptr<JsGen> g: 0;]
+		ptr<JsFrame> f: fr;
+		u32 n: ((sp as u64 - f.ret as u64) as u32) / 8;
+		if n > g.stack_len or g.stack is 0
+			if g.stack is not 0
+				free g.stack;
+			;;
+			g.stack is new u64[n + 8];
+			if g.stack is 0
+				throw 'out of memory';
+			;;
+			call JsGc.Account: (n + 8) * 8;
+		;;
+		call Mem.Copy: g.stack as ptr<u8> f.ret as ptr<u8> n * 8;
+		g.stack_len is n;
+		g.bp_off is ((f.bp as u64 - f.ret as u64) as u32) / 8;
+		g.pc_off is (pc as u64 - f.code.ins as u64) as u32;
+		g.scope is f.scope;
+		g.argc is f.argc;
+		g.new_target is f.new_target;
+	[end]
+
+	# Runs a suspended frame on from where it stopped, and comes back when it yields, awaits or
+	# finishes, with what it gave.
+	[ResumeGen: ptr<JsGen> g: 0; u32 mode: 0; u64 value: 0;]
+		if (WlStack.Used) as u32 > WlStack.budget
+			call JsErr.Range: 'Maximum call stack size exceeded';
+		;;
+		ptr<JsFn> f: g.fn;
+		ptr<JsCode> code: f.code;
+		ptr<JsFrame> nf: fr + sizeof JsFrame;
+		if nf >= JsRt.r.frame_limit or sp + (g.stack_len + code.max_stack + 4) * 8 >= JsRt.r.stack_limit
+			call JsErr.Range: 'Maximum call stack size exceeded';
+		;;
+		ptr<u64> ret: sp;
+		call Mem.Copy: ret as ptr<u8> g.stack as ptr<u8> g.stack_len * 8;
+		fr.pc is pc;
+		fr is nf;
+		nf.ret is ret;
+		nf.bp is ret + g.bp_off * 8;
+		nf.fn is f;
+		nf.code is code;
+		nf.scope is g.scope;
+		nf.gen is g;
+		nf.new_target is g.new_target;
+		nf.argc is g.argc;
+		nf.flags is FF_ENTRY;
+		bp is nf.bp;
+		K is code.consts;
+		I is code.ins;
+		pc is (code.ins as ptr<u8>) + g.pc_off;
+		sp is ret + g.stack_len * 8;
+		bln first: g.state is GS_START;
+		g.state is GS_RUNNING;
+		g.mode is mode;
+		if not first
+			sp:0 is value;
+			sp++ 8;
+		;;
+		last_done is false;
+	[end: (RunLoop)]
+
+	# ---- the rest of the instructions ----
+
+	# whether to leave Run, with leave_value
+	[Slow: u32 op: 0; u32 ins: 0;]
+		u32 a: ins >> 8;
+		if op < 100
+			return (Slow1: op a);
+		;;
+		if op < 126
+			return (Slow2: op a);
+		;;
+	[end: (Slow3: op a)]
+
+	[Slow1: u32 op: 0; u32 a: 0;]
+		when op
+			is JsOp.SETLOC_C
+				if bp:a is JsV.HOLE
+					call Uninitialized;
+				;;
+				sp-- 8;
+				bp:a is sp:0;
+			;;
+			is JsOp.HOLELOC
+				bp:a is JsV.HOLE;
+			;;
+			is JsOp.SETVAR_C
+				ptr<JsScope> sc: fr.scope;
+				u32 hops: a >> 16;
+				while hops > 0
+					sc is sc.parent;
+					hops--;
+				;;
+				if sc.slots:(a & 0xFFFF) is JsV.HOLE
+					call Uninitialized;
+				;;
+				sp-- 8;
+				sc.slots:(a & 0xFFFF) is sp:0;
+			;;
+			is JsOp.TYPEOF_GLOBAL
+				call TypeofGlobal: K:a;
+			;;
+			is JsOp.SETGLOBAL_S
+				call SetGlobal: K:a true;
+			;;
+			is JsOp.INITLEX
+				ptr<JsRuntime> r: JsRt.r;
+				ptr<JsProp> lp: (JsObjs.Find: r.global_lex (K:a & JsV.PTR_MASK) as ptr<u8>);
+				sp-- 8;
+				if lp is not 0
+					lp.value is sp:0;
+				;;
+			;;
+			is JsOp.COPY_SCOPE
+				call CopyScope;
+			;;
+			is JsOp.SAVE_SCOPE
+				bp:a is (JsV.Cell: fr.scope as ptr<u8>);
+				if fr.scope is 0
+					bp:a is JsV.UNDEF;
+				;;
+			;;
+			is JsOp.RESTORE_SCOPE
+				if bp:a is JsV.UNDEF
+					fr.scope is 0;
+				;;
+				else
+					fr.scope is (JsV.AsPtr: bp:a) as ptr<JsScope>;
+				;;
+			;;
+			is JsOp.APPEND_HOLE
+				ptr<JsObj> ha: (JsV.AsObj: sp:(-1));
+				call JsObjs.ArrayPush: ha JsV.HOLE;
+			;;
+			is JsOp.APPEND_SPREAD
+				call AppendSpread;
+			;;
+			is JsOp.INITELEM
+				# [o k v] -> [o]
+				ptr<JsObj> o: (JsV.AsObj: sp:(-3));
+				call JsObjs.CreateData: o (JsObjs.KeyOf: sp:(-2)) sp:(-1);
+				sp-- 16;
+			;;
+			is JsOp.INITPROTO
+				u64 pv: sp:(-1);
+				if (JsV.IsObj: pv)
+					call JsObjs.SetProtoOf: (JsV.AsObj: sp:(-2)) (JsV.AsObj: pv);
+				;;
+				elif pv is JsV.NULL
+					call JsObjs.SetProtoOf: (JsV.AsObj: sp:(-2)) 0;
+				;;
+				sp-- 8;
+			;;
+			is JsOp.COPYPROPS
+				call CopyDataProps: sp:(-2) sp:(-1) 0 0;
+				sp-- 8;
+			;;
+			is JsOp.COPYREST
+				# [src k1 ... kn] -> [new object]
+				ptr<u64> keys: sp - a * 8;
+				u64 src: keys:(-1);
+				ptr<JsObj> made: (JsObjs.NewObject);
+				sp:0 is (JsV.Obj: made);
+				sp++ 8;
+				if src is JsV.UNDEF or src is JsV.NULL
+					call JsErr.Type: 'Cannot destructure undefined or null';
+				;;
+				call CopyDataProps: (JsV.Obj: made) src keys a;
+				u64 result: sp:(-1);
+				sp is keys;
+				sp:(-1) is result;
+			;;
+			is JsOp.DEF_METHOD
+				call DefMethod: a;
+			;;
+			is JsOp.DEF_ACCESSOR
+				call DefAccessor: a;
+			;;
+			is JsOp.SETNAME
+				call SetFnName: sp:(-1) sp:(-2) 0;
+			;;
+			is JsOp.TOKEY
+				if a is 1 and (sp:(-2) is JsV.UNDEF or sp:(-2) is JsV.NULL)
+					call NilError: sp:(-2) JsV.UNDEF;
+				;;
+				u64 tk: (JsObjs.KeyOf: sp:(-1));
+				# a small index stays the int it is, which the quick paths like
+				if (tk >> 48) as u32 is JsV.TAG_INT and (tk as int) >= 0
+					sp:(-1) is tk;
+				;;
+				else
+					sp:(-1) is (JsObjs.KeyToValue: tk);
+				;;
+			;;
+			is JsOp.PLUS
+				if not (JsV.IsNum: sp:(-1))
+					sp:(-1) is (JsV.Num: (JsOps.ToNumber: sp:(-1)));
+				;;
+			;;
+			is JsOp.BITNOT
+				sp:(-1) is (JsV.Int: ~(JsOps.ToInt32: sp:(-1)));
+			;;
+			is JsOp.EXP
+				call ArithSlow: JsOp.EXP;
+			;;
+			is JsOp.IN
+				if not (JsV.IsObj: sp:(-1))
+					call JsErr.Type: 'Cannot use in operator to search for a key in a non-object';
+				;;
+				u64 ik: (JsObjs.KeyOf: sp:(-2));
+				bln ihas: (JsObjs.Has: (JsV.AsObj: sp:(-1)) ik);
+				sp-- 8;
+				sp:(-1) is (JsV.Bool: ihas);
+			;;
+			is JsOp.INSTANCEOF
+				bln iof: (JsOps.InstanceOf: sp:(-2) sp:(-1));
+				sp-- 8;
+				sp:(-1) is (JsV.Bool: iof);
+			;;
+			is JsOp.DELFIELD
+				call DeleteKey: K:a;
+			;;
+			is JsOp.DELELEM
+				u64 dk: (JsObjs.KeyOf: sp:(-1));
+				sp-- 8;
+				call DeleteKey: dk;
+			;;
+			is JsOp.DELGLOBAL
+				bln gd: (JsObjs.Delete: JsRt.r.global (K:a));
+				if (JsObjs.Find: JsRt.r.global_lex (K:a & JsV.PTR_MASK) as ptr<u8>) is not 0
+					gd is false;
+				;;
+				sp:0 is (JsV.Bool: gd);
+				sp++ 8;
+			;;
+			is JsOp.ROT4
+				u64 t: sp:(-1);
+				sp:(-1) is sp:(-2);
+				sp:(-2) is sp:(-3);
+				sp:(-3) is sp:(-4);
+				sp:(-4) is t;
+			;;
+			is JsOp.TOSTR
+				if not (JsV.IsStr: sp:(-1))
+					sp:(-1) is (JsV.Str: (JsOps.ToStr: sp:(-1)));
+				;;
+			;;
+			is JsOp.STRCAT
+				sp:(-2) is (JsV.Str: (JsStrs.Concat: (JsV.AsStr: sp:(-2)) (JsV.AsStr: sp:(-1))));
+				sp-- 8;
+			;;
+			is JsOp.REGEX
+				call MakeRegex: a;
+			;;
+		;;
+	[end: false]
+
+	[TypeofGlobal: u64 key: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		ptr<u8> kp: (key & JsV.PTR_MASK) as ptr<u8>;
+		ptr<JsProp> lp: (JsObjs.Find: r.global_lex kp);
+		if lp is not 0
+			if lp.value is JsV.HOLE
+				call Uninitialized;
+			;;
+			sp:0 is (JsV.Str: (JsOps.TypeOf: lp.value));
+			sp++ 8;
+			return;
+		;;
+		u64 v: (JsObjs.GetAtom: r.global kp (JsV.Obj: r.global));
+		sp:0 is (JsV.Str: (JsOps.TypeOf: v));
+		sp++ 8;
+	[end]
+
+	[CopyScope]
+		ptr<JsScope> old: fr.scope;
+		call PushScope: old.count;
+		ptr<JsScope> sc: fr.scope;
+		sc.parent is old.parent;
+		call Mem.Copy: sc.slots as ptr<u8> old.slots as ptr<u8> old.count * 8;
+	[end]
+
+	# adds src's own enumerable properties to target, leaving out n excluded keys (values)
+	[CopyDataProps: u64 target: 0; u64 src: 0; ptr<u64> excluded: 0; u32 n: 0;]
+		if src is JsV.UNDEF or src is JsV.NULL return;
+		JsGc.no_gc++;
+		ptr<JsObj> from: (JsOps.ToObject: src);
+		ptr<JsObj> keys: (JsObjs.OwnKeys: from);
+		ptr<JsObj> to: (JsV.AsObj: target);
+		JsDesc d;
+		while u32 i: 0; i < keys.length; i++;
+			u64 kv: (JsObjs.GetIndex: keys i (JsV.Obj: keys));
+			u64 k: (JsObjs.KeyOf: kv);
+			bln skip: false;
+			while u32 j: 0; j < n; j++;
+				if (JsObjs.KeyOf: excluded:j) is k
+					skip is true;
+					break;
+				;;
+			;;
+			if skip
+				continue;
+			;;
+			if (JsObjs.GetOwn: from k addr d) and (d.flags & JsObjs.E) is not 0
+				u64 v: (JsObjs.Get: from k src);
+				call JsObjs.CreateData: to k v;
+			;;
+		;;
+		JsGc.no_gc--;
+	[end]
+
+	# sets a function's name from a key, with a prefix: 1 get, 2 set
+	[SetFnName: u64 fv: 0; u64 key: 0; u32 prefix: 0;]
+		if not (JsV.IsObj: fv) return;
+		ptr<JsObj> f: (JsV.AsObj: fv);
+		WlBuf b;
+		if prefix is 1
+			call b.AddZ: 'get ';
+		;;
+		elif prefix is 2
+			call b.AddZ: 'set ';
+		;;
+		if (JsV.IsSym: key)
+			ptr<JsSym> sy: (JsV.AsSym: key);
+			if sy.desc is not 0
+				call b.Add: '[';
+				ptr<JsStr> ds: (JsStrs.Flat: sy.desc);
+				call b.AddN: ds.data ds.bytes;
+				call b.Add: ']';
+			;;
+		;;
+		else
+			ptr<JsStr> ks: (JsStrs.Flat: (JsOps.ToStr: key));
+			call b.AddN: ks.data ks.bytes;
+		;;
+		ptr<JsStr> nm: (JsStrs.New: b.data b.len);
+		call b.Free;
+		call JsObjs.DefineValue: f JsRt.A.name as ptr<u8> (JsV.Str: nm) JsObjs.C;
+	[end]
+
+	# [o k fn] -> [o]; a: 4 enumerable, 8 name from the key
+	[DefMethod: u32 a: 0;]
+		ptr<JsObj> o: (JsV.AsObj: sp:(-3));
+		u64 fv: sp:(-1);
+		ptr<JsFn> f: (JsV.AsObj: fv) as ptr<JsFn>;
+		f.home is o;
+		if (a & 8) is not 0
+			call SetFnName: fv sp:(-2) 0;
+		;;
+		JsDesc d;
+		d.value is fv;
+		d.flags is JsObjs.H_VALUE | JsObjs.H_W | JsObjs.H_E | JsObjs.H_C | JsObjs.W | JsObjs.C;
+		if (a & 4) is not 0
+			d.flags is d.flags | JsObjs.E;
+		;;
+		if not (JsObjs.DefineOwn: o (JsObjs.KeyOf: sp:(-2)) addr d)
+			call JsErr.Type: 'Cannot redefine property';
+		;;
+		sp-- 16;
+	[end]
+
+	# [o k fn] -> [o]; a: 1 getter or 2 setter, 4 enumerable, 8 name from the key
+	[DefAccessor: u32 a: 0;]
+		ptr<JsObj> o: (JsV.AsObj: sp:(-3));
+		u64 fv: sp:(-1);
+		ptr<JsFn> f: (JsV.AsObj: fv) as ptr<JsFn>;
+		f.home is o;
+		if (a & 8) is not 0
+			call SetFnName: fv sp:(-2) a & 3;
+		;;
+		JsDesc d;
+		d.flags is JsObjs.H_E | JsObjs.H_C | JsObjs.C;
+		if (a & 4) is not 0
+			d.flags is d.flags | JsObjs.E;
+		;;
+		if (a & 1) is not 0
+			d.getter is fv;
+			d.flags is d.flags | JsObjs.H_GET;
+		;;
+		else
+			d.setter is fv;
+			d.flags is d.flags | JsObjs.H_SET;
+		;;
+		if not (JsObjs.DefineOwn: o (JsObjs.KeyOf: sp:(-2)) addr d)
+			call JsErr.Type: 'Cannot redefine property';
+		;;
+		sp-- 16;
+	[end]
+
+	# [o] -> [bool]
+	[DeleteKey: u64 k: 0;]
+		u64 v: sp:(-1);
+		if v is JsV.UNDEF or v is JsV.NULL
+			call JsErr.Type: 'Cannot convert undefined or null to object';
+		;;
+		ptr<JsObj> o: (JsOps.ToObject: v);
+		if (k >> 48) as u32 is JsV.TAG_STR
+			k is (JsObjs.KeyOf: k);
+		;;
+		bln ok: (JsObjs.Delete: o k);
+		if not ok and (fr.code.flags & JsCodes.F_STRICT) is not 0
+			call JsErr.Type: 'Cannot delete property';
+		;;
+		sp:(-1) is (JsV.Bool: ok);
+	[end]
+
+	[MakeRegex: u32 ki: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		if r.regexp_hook is 0
+			call JsErr.Syntax: 'Regular expressions are not available';
+		;;
+		u64 v: (r.regexp_hook: (JsV.AsStr: K:ki) (JsV.AsStr: K:(ki + 1)));
+		sp:0 is v;
+		sp++ 8;
+	[end]
+
+	[Slow2: u32 op: 0; u32 a: 0;]
+		when op
+			is JsOp.CALL_SPREAD
+				# [f this array] -> [result]
+				ptr<JsObj> ar: (JsV.AsObj: sp:(-1));
+				sp-- 8;
+				u32 n: (PushArrayElems: ar);
+				return (CallAny: n);
+			;;
+			is JsOp.NEW_SPREAD
+				ptr<JsObj> nr: (JsV.AsObj: sp:(-1));
+				sp-- 8;
+				u32 nn: (PushArrayElems: nr);
+				ptr<u64> nb: sp - (nn + 2) * 8;
+				call Construct: nn nb:0 0;
+			;;
+			is JsOp.SUPER_CALL
+				call SuperCall: a;
+			;;
+			is JsOp.SUPER_SPREAD
+				ptr<JsObj> sr: (JsV.AsObj: sp:(-1));
+				sp-- 8;
+				u32 sn: (PushArrayElems: sr);
+				call SuperCall: sn;
+			;;
+			is JsOp.DEFAULT_SUPER
+				# [func nt]: every argument passed, as they came
+				u32 dn: fr.argc;
+				ptr<u64> from: fr.ret + 16;
+				call CheckStack: dn + 4;
+				while u32 i: 0; i < dn; i++;
+					sp:0 is from:i;
+					sp++ 8;
+				;;
+				call SuperCall: dn;
+			;;
+			is JsOp.GETSUPER
+				# [this key] -> [value]
+				ptr<JsObj> home: fr.fn.home;
+				if home is 0
+					call JsErr.Reference: 'super is not available here';
+				;;
+				ptr<JsObj> sp_proto: (JsObjs.ProtoOf: home);
+				if sp_proto is 0
+					call JsErr.Type: 'Cannot read properties of null (reading super)';
+				;;
+				u64 skey: (JsObjs.KeyOf: sp:(-1));
+				sp:(-1) is skey;
+				u64 sv: (JsObjs.Get: sp_proto skey sp:(-2));
+				sp-- 8;
+				sp:(-1) is sv;
+			;;
+			is JsOp.SETSUPER
+				# [this key value] -> [value]
+				ptr<JsObj> home2: fr.fn.home;
+				ptr<JsObj> sp2: (JsObjs.ProtoOf: home2);
+				if sp2 is 0
+					call JsErr.Type: 'Cannot set properties of null (setting super)';
+				;;
+				u64 skey2: (JsObjs.KeyOf: sp:(-2));
+				sp:(-2) is skey2;
+				if not (JsObjs.Set: sp2 skey2 sp:(-1) sp:(-3))
+					call StrictSetFailed;
+				;;
+				u64 sw: sp:(-1);
+				sp-- 16;
+				sp:(-1) is sw;
+			;;
+			is JsOp.CALLEE
+				sp:0 is (JsV.Obj: fr.fn as ptr<JsObj>);
+				sp++ 8;
+			;;
+			is JsOp.NEWTARGET
+				sp:0 is fr.new_target;
+				sp++ 8;
+			;;
+			is JsOp.HOME
+				sp:0 is (JsV.Obj: fr.fn.home);
+				sp++ 8;
+			;;
+			is JsOp.THROW
+				sp-- 8;
+				call JsErr.Throw: sp:0;
+			;;
+			is JsOp.THROW_CONST
+				if a is 1
+					call JsErr.Reference: 'Unsupported reference to super';
+				;;
+				call JsErr.Type: 'Assignment to constant variable.';
+			;;
+			is JsOp.THROW_INIT
+				sp-- 8;
+				if sp:0 is not JsV.HOLE
+					call JsErr.Reference: 'Super constructor may only be called once';
+				;;
+			;;
+			is JsOp.INVALID_ASSIGN
+				call JsErr.Reference: 'Invalid left-hand side in assignment';
+			;;
+			is JsOp.JNOTUNDEF
+				if sp:(-1) is not JsV.UNDEF
+					pc is I + a * 4;
+				;;
+				else
+					sp-- 8;
+				;;
+			;;
+			is JsOp.JNOTNIL
+				if sp:(-1) is not JsV.UNDEF and sp:(-1) is not JsV.NULL
+					pc is I + a * 4;
+				;;
+				else
+					sp-- 8;
+				;;
+			;;
+			is JsOp.JNIL_POP
+				if sp:(-1) is JsV.UNDEF or sp:(-1) is JsV.NULL
+					sp-- 8;
+					pc is I + a * 4;
+				;;
+			;;
+			is JsOp.GETITER
+				call GetIter: a;
+			;;
+			is JsOp.ITER_CLOSE
+				call IterClose: a;
+			;;
+			is JsOp.ITER_CLOSE_SILENT
+				call IterCloseSilent: a;
+			;;
+			is JsOp.GETITER_ASYNC
+				call JsAsyncGen.GetAsyncIter: a;
+			;;
+			is JsOp.CALLNEXT
+				u64 cr: (Call0: bp:(a + 1) bp:a);
+				sp:0 is cr;
+				sp++ 8;
+			;;
+			is JsOp.ITER_CHECK
+				u64 iv: sp:(-1);
+				if a is 1
+					# after closing: there may have been no return method to call
+					sp-- 8;
+					if iv is JsV.HOLE
+						return false;
+					;;
+				;;
+				if not (JsV.IsObj: iv)
+					call JsErr.Type: 'Iterator result is not an object';
+				;;
+			;;
+			is JsOp.ITER_REST
+				call IterRest: a;
+			;;
+			is JsOp.FORIN_START
+				call ForInStart: a;
+			;;
+			is JsOp.FORIN_NEXT
+				call ForInNext: a;
+			;;
+			is JsOp.COERCIBLE
+				if sp:(-1) is JsV.UNDEF or sp:(-1) is JsV.NULL
+					call JsErr.Type: 'Cannot destructure undefined or null';
+				;;
+			;;
+		;;
+	[end: false]
+
+	# a call, for spread: [fn this args...]; if it's a JS function, a frame goes on and Run carries on
+	[CallAny: u32 argc: 0;]
+		ptr<u64> base: sp - (argc + 2) * 8;
+		u64 fv: base:0;
+		if (fv >> 48) as u32 is JsV.TAG_OBJ
+			ptr<JsObj> o: (JsV.AsObj: fv);
+			if o.kind is JsGc.K_FUNCTION
+				ptr<JsFn> f: o as ptr<JsFn>;
+				if (f.code.flags & JsCodes.F_CLASS_CTOR) is 0
+					call Enter: f argc 0 JsV.UNDEF;
+					return false;
+				;;
+			;;
+		;;
+		call CallOther: argc;
+	[end: false]
+
+	[PushArrayElems: ptr<JsObj> a: 0;]
+		u32 n: a.length;
+		if n > 200000
+			call JsErr.Range: 'Too many arguments';
+		;;
+		call CheckStack: n + 8;
+		while u32 i: 0; i < n; i++;
+			u64 e: JsV.UNDEF;
+			if i < a.elem_len
+				e is a.elems:i;
+				if e is JsV.HOLE
+					e is JsV.UNDEF;
+				;;
+			;;
+			sp:0 is e;
+			sp++ 8;
+		;;
+	[end: n]
+
+	# [func nt args...] -> a frame for the parent constructor, or [result]
+	[SuperCall: u32 argc: 0;]
+		ptr<u64> base: sp - (argc + 2) * 8;
+		ptr<JsObj> func: (JsV.AsObj: base:0);
+		u64 nt_v: base:1;
+		ptr<JsObj> parent: (JsObjs.ProtoOf: func);
+		if parent is 0 or not (JsOps.IsConstructor: (JsV.Obj: parent))
+			call JsErr.Type: 'Super constructor is not a constructor';
+		;;
+		base:0 is (JsV.Obj: parent);
+		call Construct: argc nt_v 0;
+	[end]
+
+	[Slow3: u32 op: 0; u32 a: 0;]
+		when op
+			is JsOp.INITIAL_YIELD
+				return (InitialYield);
+			;;
+			is JsOp.YIELD
+				ptr<JsGen> g: fr.gen;
+				sp-- 8;
+				u64 yv: sp:0;
+				call SaveFrame: g;
+				g.state is GS_YIELD;
+				g.raw_yield is false;
+				return (DoReturn: yv);
+			;;
+			is JsOp.RESUME
+				ptr<JsGen> rg: fr.gen;
+				u32 m: rg.mode;
+				rg.mode is RM_NEXT;
+				if m is RM_NEXT
+					pc is I + a * 4;
+				;;
+				elif m is RM_THROW
+					sp-- 8;
+					call JsErr.Throw: sp:0;
+				;;
+			;;
+			is JsOp.DELEGATE_STEP
+				call DelegateStep: a;
+			;;
+			is JsOp.ASYNC_DELEGATE_DONE
+				return (DelegateDone: a);
+			;;
+			is JsOp.AWAIT
+				return (JsAsyncGen.Await);
+			;;
+			is JsOp.STRICT_EVAL
+				JsBuiltins.eval_strict is true;
+			;;
+			is JsOp.AWAIT_CHECK
+				ptr<JsGen> ag: fr.gen;
+				u32 am: ag.mode;
+				ag.mode is RM_NEXT;
+				if am is RM_THROW
+					sp-- 8;
+					call JsErr.Throw: sp:0;
+				;;
+			;;
+			is JsOp.ASYNC_ENTER
+				call JsAsyncGen.Enter;
+			;;
+			is JsOp.ASYNC_RET
+				return (JsAsyncGen.Return);
+			;;
+			is JsOp.ASYNC_THROW
+				return (JsAsyncGen.Fail);
+			;;
+			is JsOp.ASYNC_GEN_YIELD
+				return (JsAsyncGen.Yield);
+			;;
+			is JsOp.GEN_RET
+				if fr.gen.is_async_gen
+					return (JsAsyncGen.OpGenReturn);
+				;;
+				sp-- 8;
+				fr.gen.state is GS_DONE;
+				last_done is true;
+				return (DoReturn: sp:0);
+			;;
+			is JsOp.CLASS
+				call MakeClass: a;
+			;;
+			is JsOp.SET_FIELDS
+				call SetFields: a;
+			;;
+			is JsOp.SET_HOME
+				ptr<JsFn> hf: (JsV.AsObj: sp:(-1)) as ptr<JsFn>;
+				hf.home is (JsV.AsObj: sp:(-2));
+			;;
+			is JsOp.RUN_FIELDS
+				# [this func] -> [this]
+				ptr<JsFn> cf: (JsV.AsObj: sp:(-1)) as ptr<JsFn>;
+				sp-- 8;
+				if cf.fields is not 0
+					call Call0: (JsV.Obj: cf.fields as ptr<JsObj>) sp:(-1);
+				;;
+			;;
+			is JsOp.RUN_FIELDS_SELF
+				if fr.fn.fields is not 0
+					call Call0: (JsV.Obj: fr.fn.fields as ptr<JsObj>) bp:(-1);
+				;;
+			;;
+			is JsOp.NEW_PRIVATE
+				ptr<JsSym> ps: (JsObjs.NewSymbol: (JsV.AsStr: K:a));
+				ps.flags is JsStrs.SYM_PRIVATE as u16;
+				sp:0 is (JsV.Sym: ps);
+				sp++ 8;
+			;;
+			is JsOp.GET_PRIVATE
+				call GetPrivate;
+			;;
+			is JsOp.SET_PRIVATE
+				call SetPrivate;
+			;;
+			is JsOp.DEF_PRIVATE
+				# [o sym v] -> [o]
+				ptr<JsObj> po: (JsV.AsObj: sp:(-3));
+				ptr<u8> pk: (JsV.AsPtr: sp:(-2));
+				if (JsObjs.Find: po pk) is not 0
+					call JsErr.Type: 'Cannot initialize a private field twice on the same object';
+				;;
+				if (po.flags & JsObjs.F_NOEXT) is not 0
+					call JsErr.Type: 'Cannot define a private field on a non-extensible object';
+				;;
+				call JsObjs.AddProp: po pk sp:(-1) JsObjs.W;
+				sp-- 16;
+			;;
+			is JsOp.DEF_PRIVATE_METHOD
+				# [o sym fn] -> [o]
+				ptr<JsObj> mo: (JsV.AsObj: sp:(-3));
+				ptr<u8> mk: (JsV.AsPtr: sp:(-2));
+				if (JsObjs.Find: mo mk) is not 0
+					call JsErr.Type: 'Cannot initialize a private method twice on the same object';
+				;;
+				if (mo.flags & JsObjs.F_NOEXT) is not 0
+					call JsErr.Type: 'Cannot define a private method on a non-extensible object';
+				;;
+				ptr<JsFn> mf: (JsV.AsObj: sp:(-1)) as ptr<JsFn>;
+				if mf.home is 0
+					mf.home is mo;
+				;;
+				call JsObjs.AddProp: mo mk sp:(-1) 0;
+				sp-- 16;
+			;;
+			is JsOp.DEF_PRIVATE_ACC
+				call DefPrivateAccessor: a;
+			;;
+			is JsOp.HAS_PRIVATE
+				# [o sym] -> [bool]
+				if not (JsV.IsObj: sp:(-2))
+					call JsErr.Type: 'Cannot use in operator to search for a private field in a non-object';
+				;;
+				bln ph: (JsObjs.Find: (JsV.AsObj: sp:(-2)) (JsV.AsPtr: sp:(-1))) is not 0;
+				sp-- 8;
+				sp:(-1) is (JsV.Bool: ph);
+			;;
+			is JsOp.DEFFIELD
+				# [this key value] -> [this]
+				ptr<JsObj> to: (JsV.AsObj: sp:(-3));
+				if not (JsObjs.CreateData: to (JsObjs.KeyOf: sp:(-2)) sp:(-1))
+					call JsErr.Type: 'Cannot define class field';
+				;;
+				sp-- 16;
+			;;
+			is JsOp.ARGUMENTS
+				call MakeArguments: a;
+			;;
+			is JsOp.REST
+				ptr<JsFrame> rf: fr;
+				ptr<JsObj> ra: (JsObjs.NewArray: 0);
+				ptr<u64> argv: rf.ret + 16;
+				u32 passed: rf.argc;
+				while u32 i: a; i < passed; i++;
+					call JsObjs.ArrayPush: ra argv:i;
+				;;
+				sp:0 is (JsV.Obj: ra);
+				sp++ 8;
+			;;
+			is JsOp.COERCE_THIS
+				u64 tv: bp:(-1);
+				if not (JsV.IsObj: tv)
+					if tv is JsV.UNDEF or tv is JsV.NULL
+						bp:(-1) is (JsV.Obj: JsRt.r.global);
+					;;
+					else
+						bp:(-1) is (JsV.Obj: (JsOps.ToObject: tv));
+					;;
+				;;
+			;;
+			is JsOp.DECL_GLOBALS
+				call DeclareGlobals: (JsV.AsObj: K:(a >> 1)) (a & 1) is 1;
+			;;
+			is JsOp.DEFGLOBAL_FN
+				call DefineGlobalFn: K:(a & 0x7FFFFF) (a >> 23) is 1;
+			;;
+			is JsOp.ANNEX_GLOBAL
+				sp-- 8;
+				call JsObjs.Set: JsRt.r.global K:a sp:0 (JsV.Obj: JsRt.r.global);
+			;;
+			is JsOp.DERIVED_RET
+				u64 dv: sp:(-1);
+				if (JsV.IsObj: dv)
+					pc is I + a * 4;
+				;;
+				elif dv is JsV.UNDEF
+					sp-- 8;
+				;;
+				else
+					call JsErr.Type: 'Derived constructors may only return object or undefined';
+				;;
+			;;
+			is JsOp.GET_METHOD_ELEM
+				# [o k] -> [fn o]
+				u64 mo2: sp:(-2);
+				if mo2 is JsV.UNDEF or mo2 is JsV.NULL
+					call NilError: mo2 JsV.UNDEF;
+				;;
+				u64 mk2: (JsObjs.KeyOf: sp:(-1));
+				sp:(-1) is mk2;
+				u64 mv: (JsObjs.GetV: mo2 mk2);
+				sp:(-2) is mv;
+				sp:(-1) is mo2;
+			;;
+			else
+				call JsErr.Internal: 'unknown instruction';
+			;;
+		;;
+	[end: false]
+
+	# [received or nothing] for a generator's first step: the frame goes to the heap, and the caller
+	# gets the generator object
+	[InitialYield]
+		ptr<JsFn> f: fr.fn;
+		bln is_async: (f.code.flags & JsCodes.F_ASYNC) is not 0;
+		ptr<JsObj> fallback: JsRt.P.generator;
+		if is_async
+			fallback is JsRt.P.async_generator;
+		;;
+		u64 fv: (JsV.Obj: f as ptr<JsObj>);
+		ptr<JsObj> proto: (JsOps.ProtoFromCtor: fv fallback);
+		ptr<JsObj> go: (JsObjs.Alloc: sizeof JsObj JsGc.K_GENERATOR proto);
+		ptr<JsGen> g: (NewGen);
+		g.object is go;
+		g.is_async_gen is is_async;
+		go.data is g as ptr<u8>;
+		call SaveFrame: g;
+		g.state is GS_START;
+	[end: (DoReturn: (JsV.Obj: go))]
+
+	# the next, throw or return that the delegate gets: [received] -> [result]
+	[DelegateStep: u32 slot: 0;]
+		u32 target: pc:0;
+		pc++ 4;
+		ptr<JsGen> g: fr.gen;
+		u32 m: g.mode;
+		u64 it: bp:slot;
+		u64 received: sp:(-1);
+		g.mode is RM_NEXT;
+		# (an await may come between this and DelegateDone)
+		bp:(slot + 2) is JsV.INT_BASE | m;
+		if m is RM_NEXT
+			sp:(-1) is (Call1: bp:(slot + 1) it received);
+			return;
+		;;
+		ptr<JsObj> io: (JsV.AsObj: it);
+		if m is RM_THROW
+			u64 tm: (JsOps.GetMethod: it JsRt.A.throw_ as ptr<u8>);
+			if tm is not JsV.UNDEF
+				sp:(-1) is (Call1: tm it received);
+				return;
+			;;
+			# no way to tell it: close it, and that's an error
+			u64 cm: (JsOps.GetMethod: it JsRt.A.return_ as ptr<u8>);
+			if cm is not JsV.UNDEF
+				u64 cr: (Call0: cm it);
+				if g.is_async_gen is false and not (JsV.IsObj: cr)
+					call JsErr.Type: 'iterator.return() did not return an object';
+				;;
+			;;
+			call JsErr.Type: 'The iterator does not provide a throw method';
+		;;
+		u64 rm: (JsOps.GetMethod: it JsRt.A.return_ as ptr<u8>);
+		if rm is JsV.UNDEF
+			pc is I + target * 4;
+			return;
+		;;
+		sp:(-1) is (Call1: rm it received);
+	[end]
+
+	# [result]; words after: where to go if done, where if done by return(). Otherwise it yields.
+	[DelegateDone: u32 a: 0;]
+		u32 is_async: a & 1;
+		u32 slot: a >> 1;
+		u32 finished: pc:0;
+		u32 returned: pc:1;
+		pc++ 8;
+		u64 result: sp:(-1);
+		ptr<JsGen> g: fr.gen;
+		ptr<JsObj> ro: (JsV.AsObj: result);
+		if (JsOps.ToBool: (JsObjs.GetAtom: ro JsRt.A.done as ptr<u8> result))
+			sp:(-1) is (JsObjs.GetAtom: ro JsRt.A.value as ptr<u8> result);
+			if (bp:(slot + 2) as u32) is RM_RETURN
+				pc is I + returned * 4;
+				return false;
+			;;
+			pc is I + finished * 4;
+			return false;
+		;;
+		if is_async is not 0
+			return (JsAsyncGen.YieldDelegate: result);
+		;;
+		sp-- 8;
+		call SaveFrame: g;
+		g.state is GS_YIELD;
+		g.raw_yield is true;
+	[end: (DoReturn: result)]
+
+	# [heritage] -> [constructor prototype]
+	[MakeClass: u32 ki: 0;]
+		u64 parent: sp:(-1);
+		ptr<JsObj> proto_parent: JsRt.P.object;
+		ptr<JsObj> ctor_parent: JsRt.P.function;
+		if parent is JsV.NULL
+			proto_parent is 0;
+		;;
+		elif parent is not JsV.HOLE
+			if not (JsOps.IsConstructor: parent)
+				call JsErr.Type: 'Class extends value is not a constructor or null';
+			;;
+			ptr<JsObj> po: (JsV.AsObj: parent);
+			u64 pp: (JsObjs.GetAtom: po JsRt.A.prototype as ptr<u8> parent);
+			if (JsV.IsObj: pp)
+				proto_parent is (JsV.AsObj: pp);
+			;;
+			elif pp is JsV.NULL
+				proto_parent is 0;
+			;;
+			else
+				call JsErr.Type: 'Class extends value does not have a valid prototype property';
+			;;
+			ctor_parent is po;
+		;;
+		ptr<JsObj> proto: (JsObjs.NewWithProto: proto_parent);
+		ptr<JsCode> code: (JsV.AsPtr: K:ki) as ptr<JsCode>;
+		ptr<JsFn> f: (JsObjs.Alloc: sizeof JsFn JsGc.K_FUNCTION ctor_parent) as ptr<JsFn>;
+		f.o.flags is (JsObjs.F_CALLABLE | JsObjs.F_LAZY | JsObjs.F_SPECIAL | JsObjs.F_CLASS) as u16;
+		f.code is code;
+		f.scope is fr.scope;
+		f.home is proto;
+		call JsObjs.Materialize: f as ptr<JsObj>;
+		call JsObjs.AddProp: f as ptr<JsObj> JsRt.A.prototype as ptr<u8> (JsV.Obj: proto) 0;
+		call JsObjs.AddProp: proto JsRt.A.constructor as ptr<u8> (JsV.Obj: f as ptr<JsObj>) JsObjs.WC;
+		sp:(-1) is (JsV.Obj: f as ptr<JsObj>);
+		sp:0 is (JsV.Obj: proto);
+		sp++ 8;
+	[end]
+
+	[SetFields: u32 a: 0;]
+		ptr<JsFn> fn_v: (JsV.AsObj: sp:(-1)) as ptr<JsFn>;
+		if a is 1
+			# [prototype constructor function] -> [prototype constructor]
+			ptr<JsFn> ctor: (JsV.AsObj: sp:(-2)) as ptr<JsFn>;
+			fn_v.home is (JsV.AsObj: sp:(-3));
+			ctor.fields is fn_v;
+			sp-- 8;
+			return;
+		;;
+		# [constructor constructor function] -> [constructor]: the static part, run now
+		fn_v.home is (JsV.AsObj: sp:(-2));
+		call Call0: sp:(-1) sp:(-2);
+		sp-- 16;
+	[end]
+
+	# [o sym] -> [value]
+	[GetPrivate]
+		u64 ov: sp:(-2);
+		if not (JsV.IsObj: ov)
+			call JsErr.Type: 'Cannot read a private member from a non-object';
+		;;
+		ptr<JsObj> o: (JsV.AsObj: ov);
+		ptr<JsProp> p: (JsObjs.Find: o (JsV.AsPtr: sp:(-1)));
+		if p is 0
+			call JsErr.Type: 'Cannot read a private member from an object whose class did not declare it';
+		;;
+		if (p.flags & JsObjs.ACC) is not 0
+			ptr<JsAccessor> ac: (JsV.AsPtr: p.value) as ptr<JsAccessor>;
+			if ac.getter is JsV.UNDEF
+				call JsErr.Type: 'A private accessor was defined without a getter';
+			;;
+			u64 gv: (Call0: ac.getter ov);
+			sp-- 8;
+			sp:(-1) is gv;
+			return;
+		;;
+		u64 v: p.value;
+		sp-- 8;
+		sp:(-1) is v;
+	[end]
+
+	# [o sym value] -> [value]
+	[SetPrivate]
+		u64 ov: sp:(-3);
+		if not (JsV.IsObj: ov)
+			call JsErr.Type: 'Cannot write a private member to a non-object';
+		;;
+		ptr<JsObj> o: (JsV.AsObj: ov);
+		ptr<JsProp> p: (JsObjs.Find: o (JsV.AsPtr: sp:(-2)));
+		if p is 0
+			call JsErr.Type: 'Cannot write a private member to an object whose class did not declare it';
+		;;
+		u64 v: sp:(-1);
+		if (p.flags & JsObjs.ACC) is not 0
+			ptr<JsAccessor> ac: (JsV.AsPtr: p.value) as ptr<JsAccessor>;
+			if ac.setter is JsV.UNDEF
+				call JsErr.Type: 'A private accessor was defined without a setter';
+			;;
+			call Call1: ac.setter ov v;
+		;;
+		else
+			if (p.flags & JsObjs.W) is 0
+				call JsErr.Type: 'Private method is not writable';
+			;;
+			p.value is v;
+		;;
+		sp-- 16;
+		sp:(-1) is v;
+	[end]
+
+	# [o sym fn] -> [o]: a: 1 getter, 2 setter
+	[DefPrivateAccessor: u32 a: 0;]
+		ptr<JsObj> o: (JsV.AsObj: sp:(-3));
+		ptr<u8> k: (JsV.AsPtr: sp:(-2));
+		u64 fv: sp:(-1);
+		ptr<JsFn> mf: (JsV.AsObj: fv) as ptr<JsFn>;
+		if mf.home is 0
+			mf.home is o;
+		;;
+		ptr<JsProp> p: (JsObjs.Find: o k);
+		if p is 0
+			if (o.flags & JsObjs.F_NOEXT) is not 0
+				call JsErr.Type: 'Cannot define a private accessor on a non-extensible object';
+			;;
+			u64 getter: JsV.UNDEF;
+			u64 setter: JsV.UNDEF;
+			if a is 1
+				getter is fv;
+			;;
+			else
+				setter is fv;
+			;;
+			call JsObjs.AddProp: o k (JsV.Cell: (JsObjs.NewAccessor: getter setter) as ptr<u8>) JsObjs.ACC;
+		;;
+		else
+			if (p.flags & JsObjs.ACC) is 0
+				call JsErr.Type: 'Cannot initialize a private accessor twice';
+			;;
+			ptr<JsAccessor> ac: (JsV.AsPtr: p.value) as ptr<JsAccessor>;
+			if (a is 1 and ac.getter is not JsV.UNDEF) or (a is 2 and ac.setter is not JsV.UNDEF)
+				call JsErr.Type: 'Cannot initialize a private accessor twice';
+			;;
+			if a is 1
+				ac.getter is fv;
+			;;
+			else
+				ac.setter is fv;
+			;;
+		;;
+		sp-- 16;
+	[end]
+
+	# `arguments`, mapped to the scope's parameters if a is 1
+	[MakeArguments: u32 a: 0;]
+		ptr<JsFrame> f: fr;
+		ptr<JsCode> code: f.code;
+		ptr<JsObj> o: (JsObjs.Alloc: sizeof JsObj JsGc.K_ARGUMENTS JsRt.P.object);
+		u32 passed: f.argc;
+		ptr<u64> argv: f.ret + 16;
+		call JsObjs.ReserveElems: o passed + 1;
+		bln mapped: a is 1;
+		while u32 i: 0; i < passed; i++;
+			if mapped and i < code.nparams and (i >= 32 or (code.mapped_skip & ((1 as u32) << i)) is 0)
+				o.elems:i is JsObjs.MAPPED;
+			;;
+			else
+				o.elems:i is argv:i;
+			;;
+		;;
+		o.elem_len is passed;
+		if mapped
+			o.data is f.scope as ptr<u8>;
+		;;
+		call JsObjs.AddProp: o JsRt.A.length as ptr<u8> (JsV.Int: passed as int) JsObjs.WC;
+		if (code.flags & JsCodes.F_STRICT) is not 0 or not mapped and (code.flags & JsCodes.F_STRICT) is not 0
+			u64 tte: (JsV.Obj: JsRt.P.throw_type_error);
+			call JsObjs.DefineGetter: o JsRt.A.callee as ptr<u8> tte tte 0;
+		;;
+		elif a is 2
+			u64 tt2: (JsV.Obj: JsRt.P.throw_type_error);
+			call JsObjs.DefineGetter: o JsRt.A.callee as ptr<u8> tt2 tt2 0;
+		;;
+		else
+			call JsObjs.AddProp: o JsRt.A.callee as ptr<u8> (JsV.Obj: f.fn as ptr<JsObj>) JsObjs.WC;
+		;;
+		call JsObjs.AddProp: o JsRt.S.iterator as ptr<u8> (JsV.Obj: JsRt.P.array_values) JsObjs.WC;
+		sp:0 is (JsV.Obj: o);
+		sp++ 8;
+	[end]
+
+	# a script's declarations: checks them all first, then makes them. The list holds name, kind pairs.
+	[DeclareGlobals: ptr<JsObj> list: 0; bln is_eval: false;]
+		ptr<JsRuntime> r: JsRt.r;
+		ptr<JsObj> g: r.global;
+		ptr<JsObj> lex: r.global_lex;
+		JsDesc d;
+		u32 n: list.length;
+		u32 i: 0;
+		while i < n
+			ptr<JsStr> name: (JsV.AsStr: list.elems:i);
+			u32 k: list.elems:(i + 1) as u32;
+			u64 key: (JsV.Str: name);
+			bln lexical: k is JsScopes.V_LET or k is JsScopes.V_CONST or k is JsScopes.V_CLASS;
+			bln on_global: (JsObjs.GetOwn: g (JsObjs.KeyOfStr: name) addr d);
+			if (JsObjs.Find: lex name as ptr<u8>) is not 0
+				call RedeclareError: name;
+			;;
+			if lexical and on_global and (d.flags & JsObjs.C) is 0
+				call RedeclareError: name;
+			;;
+			if k is JsScopes.V_FUNC
+				if on_global and (d.flags & JsObjs.C) is 0
+					if (d.flags & JsObjs.ACC) is not 0 or (d.flags & (JsObjs.W | JsObjs.E)) is not (JsObjs.W | JsObjs.E)
+						call JsErr.Type: 'Cannot declare a global function';
+					;;
+				;;
+				if not on_global and not (JsObjs.IsExtensible: g)
+					call JsErr.Type: 'Cannot declare a global function';
+				;;
+			;;
+			if k is JsScopes.V_VAR and not on_global and not (JsObjs.IsExtensible: g)
+				call JsErr.Type: 'Cannot declare a global variable';
+			;;
+			i++ 2;
+		;;
+		i is 0;
+		u32 conf: 0;
+		if is_eval
+			conf is JsObjs.C;
+		;;
+		while i < n
+			ptr<JsStr> name2: (JsV.AsStr: list.elems:i);
+			u32 k2: list.elems:(i + 1) as u32;
+			u64 ck: (JsObjs.KeyOfStr: name2);
+			if k2 is JsScopes.V_LET or k2 is JsScopes.V_CLASS
+				call JsObjs.AddProp: lex name2 as ptr<u8> JsV.HOLE JsObjs.W;
+			;;
+			elif k2 is JsScopes.V_CONST
+				call JsObjs.AddProp: lex name2 as ptr<u8> JsV.HOLE 0;
+			;;
+			elif k2 is JsScopes.V_VAR or k2 is JsScopes.V_FUNC
+				if not (JsObjs.GetOwn: g ck addr d)
+					d.value is JsV.UNDEF;
+					d.flags is JsObjs.H_VALUE | JsObjs.H_W | JsObjs.H_E | JsObjs.H_C | JsObjs.W | JsObjs.E | conf;
+					call JsObjs.DefineOwn: g ck addr d;
+				;;
+			;;
+			i++ 2;
+		;;
+	[end]
+
+	[RedeclareError: ptr<JsStr> name: 0;]
+		WlBuf b;
+		call b.AddZ: 'Identifier ';
+		call JsStrs.Flat: name;
+		call b.AddN: name.data name.bytes;
+		call b.AddZ: ' has already been declared';
+		call JsErr.Syntax: b.data;
+	[end]
+
+	# [fn] -> []
+	[DefineGlobalFn: u64 key: 0; bln is_eval: false;]
+		ptr<JsObj> g: JsRt.r.global;
+		u64 k: (JsObjs.KeyOf: key);
+		JsDesc d;
+		bln have: (JsObjs.GetOwn: g k addr d);
+		if have and (d.flags & JsObjs.C) is 0
+			d.value is sp:(-1);
+			d.flags is JsObjs.H_VALUE;
+			call JsObjs.DefineOwn: g k addr d;
+		;;
+		else
+			u32 fl: JsObjs.H_VALUE | JsObjs.H_W | JsObjs.H_E | JsObjs.H_C | JsObjs.W | JsObjs.E;
+			# (an eval's functions can be deleted; a script's can't)
+			if is_eval
+				fl is fl | JsObjs.C;
+			;;
+			d.value is sp:(-1);
+			d.flags is fl;
+			call JsObjs.DefineOwn: g k addr d;
+		;;
+		sp-- 8;
+	[end]
+}
+
+# a to the power b, both finite and a above 0, on the x87
+asm.JsPowX87
+{
+	fld qword [{pow_b}]
+	fld qword [{pow_a}]
+	fyl2x
+	fld st0
+	frndint
+	fsub st1, st0
+	fxch st1
+	f2xm1
+	fld1
+	faddp st1, st0
+	fscale
+	fstp st1
+	fstp qword [{pow_result}]
+	ret
+}
+
+x64.JsPowX87
+{
+	fld qword [rel {pow_b}]
+	fld qword [rel {pow_a}]
+	fyl2x
+	fld st0
+	frndint
+	fsub st1, st0
+	fxch st1
+	f2xm1
+	fld1
+	faddp st1, st0
+	fscale
+	fstp st1
+	fstp qword [rel {pow_result}]
+	ret
+}
+
+# number helpers that weren't worth a file of their own
+phi.JsMathCore:Library
+{
+	# x ** y, as JS defines it (the same as Math.pow)
+	[Pow: f64 x: 0.0; f64 y: 0.0;]
+		if y is not y
+			return (WlNum.FromBits: JsV.NAN);
+		;;
+		if y is 0.0 return 1.0;
+		f64 ax: (Float.Abs: x);
+		if x is not x
+			return (WlNum.FromBits: JsV.NAN);
+		;;
+		if not (WlNum.IsFinite: y)
+			if ax is 1.0
+				return (WlNum.FromBits: JsV.NAN);
+			;;
+			bln big: ax > 1.0;
+			if y > 0.0
+				if big return y;
+				return 0.0;
+			;;
+			if big return 0.0;
+			return 0.0 - y;
+		;;
+		bln y_int: (Float.Floor: y) is y;
+		bln y_odd: y_int and (Float.Abs: y) < 9007199254740992.0 and ((Float.Abs: y) % 2.0) is 1.0;
+		if x is 0.0 or not (WlNum.IsFinite: x)
+			bln neg_zero_or_inf: (WlNum.IsNegative: x);
+			bln give_big: (x is 0.0 and y < 0.0) or (x is not 0.0 and y > 0.0);
+			f64 mag: 0.0;
+			if give_big
+				mag is (WlNum.FromBits: 0x7FF0000000000000);
+			;;
+			if neg_zero_or_inf and y_odd
+				return mag * -1.0;
+			;;
+			return mag;
+		;;
+		if x < 0.0 and not y_int
+			return (WlNum.FromBits: JsV.NAN);
+		;;
+		# whole powers by repeated squaring, the rest by exp(y ln x)
+		f64 result: 0.0;
+		if y_int and (Float.Abs: y) <= 1024.0
+			f64 base_v: ax;
+			int e: (Float.Abs: y) as int;
+			result is 1.0;
+			while e > 0
+				if (e & 1) is 1
+					result is result * base_v;
+				;;
+				base_v is base_v * base_v;
+				e is e >> 1;
+			;;
+			if y < 0.0
+				result is 1.0 / result;
+			;;
+		;;
+		else
+			result is (PowFrac: ax y);
+		;;
+		if x < 0.0 and y_odd
+			return result * -1.0;
+		;;
+	[end: result]
+
+	[PowFrac: f64 a: 0.0; f64 b: 0.0;]
+		pow_a is a;
+		pow_b is b;
+		call JsPowX87;
+	[end: pow_result]
+
+	f64 pow_a: 0.0;
+	f64 pow_b: 0.0;
+	f64 pow_result: 0.0;
+}

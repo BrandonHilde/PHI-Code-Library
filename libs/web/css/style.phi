@@ -1,0 +1,543 @@
+# The computed style: what a layout engine reads, on node.style.
+#
+# Longhands are grouped (the box, margins, fonts, backgrounds...), and a style is a pointer per
+# group. A group is shared until something writes to it: by default an inherited group is the
+# parent's and any other is the one all-initial group, so an element with no margin or background
+# of its own costs nothing for them. On top of that the cascade shares whole styles between
+# elements that matched the same rules under the same parent (css/cascade.phi).
+#
+#   ptr<CssComputed> s: (Css.StyleOf: node);          # never 0: a text node gets its parent's
+#   if (s.Display) is CssK.NONE ...
+#   f64 width: (s.Len: CssP.WIDTH containing_width -1.0);   # px; the last is what auto gives
+#   u32 rgba: (s.Color: CssP.BACKGROUND_COLOR);       # currentcolor resolved
+#
+# See Css (css/css.phi) for the list of getters, in one place.
+
+use memory.mem;
+use core.text;
+use core.buf;
+use core.atoms;
+use css.tables;
+use css.values;
+use css.calc;
+use css.selector;
+
+# custom properties: each element that sets some has a map of what it set, in front of its parent's
+struct.CssVarMap
+{
+	u32 refs;
+	u32 count;
+	u32 depth;              # how many maps are behind this one
+	ptr<CssVarMap> parent;
+	ptr<ptr<WlAtom>> names; # sorted by address
+	ptr<u32> values;        # CssCx numbers, 0 for the guaranteed-invalid value
+}
+
+struct.CssPseudoSet
+{
+	ptr<CssComputed> styles[10];    # by CssSel.PE_*
+}
+
+struct.CssComputed
+{
+	u32 refs;
+	f32 font_px;            # font-size, computed
+	u32 current_color;      # color, computed: 0xRRGGBBAA
+	ptr<u8> g[18];
+	ptr<CssVarMap> vars;
+	ptr<CssPseudoSet> pseudo;
+
+	# the longhand's value, as computed
+	[Val: u32 prop: 0;]
+		ptr<CssPropInfo> info: addr CssProps.info:prop;
+		ptr<u8> group: g:(info.group);
+	[end: (group + 8 + info.slot * 8) as ptr<CssVal>]
+
+	# its keyword; 0 if it isn't one
+	[Kw: u32 prop: 0;]
+		ptr<CssVal> v: (Val: prop);
+		if v.kind is CssV.KW as u8 return v.code as u32;
+	[end: 0 as u32]
+
+	[Is: u32 prop: 0; u32 kw: 0;]
+		ptr<CssVal> v: (Val: prop);
+	[end: v.kind is CssV.KW as u8 and v.code is kw as u16]
+
+	# a length or percentage in px, percentages being of base; `otherwise` for anything else (auto)
+	[Len: u32 prop: 0; f64 base: 0.0; f64 otherwise: 0.0;]
+		ptr<CssVal> v: (Val: prop);
+		u32 kind: v.kind;
+		if kind is CssV.LEN return (v.Num);
+		if kind is CssV.PCT return (v.Num) * base / 100.0;
+		if kind is CssV.CALC return (CssCalc.Resolve: v base);
+		if kind is CssV.LIST
+			# two-value corners and the like: the first
+			ptr<CssVal> first: (CssV.Items: v);
+			kind is first.kind;
+			if kind is CssV.LEN return (first.Num);
+			if kind is CssV.PCT return (first.Num) * base / 100.0;
+			if kind is CssV.CALC return (CssCalc.Resolve: first base);
+		;;
+	[end: otherwise]
+
+	# whether it depends on what percentages are of (a percentage, or a calc() with one)
+	[IsPercent: u32 prop: 0;]
+		ptr<CssVal> v: (Val: prop);
+	[end: v.kind is CssV.PCT as u8 or v.kind is CssV.CALC as u8]
+
+	[IsAuto: u32 prop: 0;]
+		ptr<CssVal> v: (Val: prop);
+	[end: v.kind is CssV.KW as u8 and v.code is CssK.AUTO as u16]
+
+	# a plain number; otherwise if it isn't one
+	[Num: u32 prop: 0; f64 otherwise: 0.0;]
+		ptr<CssVal> v: (Val: prop);
+		if v.kind is CssV.NUM as u8 return (v.Num);
+		if v.kind is CssV.INT as u8
+			f64 x: v.bits as int;
+			return x;
+		;;
+		if v.kind is CssV.PCT as u8 return (v.Num) / 100.0;
+	[end: otherwise]
+
+	[Int: u32 prop: 0; int otherwise: 0;]
+		ptr<CssVal> v: (Val: prop);
+		if v.kind is CssV.INT as u8 return v.bits as int;
+	[end: otherwise]
+
+	# a color property, with currentcolor worked out: 0xRRGGBBAA
+	[Color: u32 prop: 0;]
+		ptr<CssVal> v: (Val: prop);
+		if v.kind is CssV.COLOR as u8 return v.bits;
+	[end: current_color]
+
+	# text of a STR, URL or IDENT value (the first, in a list); 0 if it hasn't any
+	[Text: u32 prop: 0;]
+		ptr<CssVal> v: (Val: prop);
+		if v.kind is CssV.LIST as u8
+			v is (CssV.Items: v);
+		;;
+		if v.kind is CssV.STR as u8 or v.kind is CssV.URL as u8 or v.kind is CssV.IDENT as u8
+			return (CssV.Text: v);
+		;;
+	[end: 0 as ptr<u8>]
+
+	# ---- the ones a layout engine asks for all the time
+
+	[Display]
+	[end: (Kw: CssP.DISPLAY)]
+
+	[Position]
+	[end: (Kw: CssP.POSITION)]
+
+	[Float]
+	[end: (Kw: CssP.FLOAT)]
+
+	[Clear]
+	[end: (Kw: CssP.CLEAR)]
+
+	[BoxSizing]
+	[end: (Kw: CssP.BOX_SIZING)]
+
+	[OverflowX]
+	[end: (Kw: CssP.OVERFLOW_X)]
+
+	[OverflowY]
+	[end: (Kw: CssP.OVERFLOW_Y)]
+
+	[Visibility]
+	[end: (Kw: CssP.VISIBILITY)]
+
+	[FontPx]
+		f64 v: font_px;
+	[end: v]
+
+	# 400 is normal, 700 is bold
+	[FontWeight]
+	[end: (Num: CssP.FONT_WEIGHT 400.0)]
+
+	[FontStyle]
+		ptr<CssVal> v: (Val: CssP.FONT_STYLE);
+		if v.kind is CssV.LIST as u8
+			v is (CssV.Items: v);
+		;;
+		if v.kind is CssV.KW as u8 return v.code as u32;
+	[end: CssK.NORMAL as u32]
+
+	# line-height in px: normal gives 1.2 times the font's size
+	[LineHeightPx]
+		ptr<CssVal> v: (Val: CssP.LINE_HEIGHT);
+		f64 size: font_px;
+		if v.kind is CssV.NUM as u8 return (v.Num) * size;
+		if v.kind is CssV.LEN as u8 return (v.Num);
+	[end: size * 1.2]
+
+	[TextAlign]
+	[end: (Kw: CssP.TEXT_ALIGN)]
+
+	[WhiteSpace]
+	[end: (Kw: CssP.WHITE_SPACE)]
+
+	[TextColor]
+		u32 c: current_color;
+	[end: c]
+
+	[Opacity]
+	[end: (Num: CssP.OPACITY 1.0)]
+
+	[BackgroundColor]
+	[end: (Color: CssP.BACKGROUND_COLOR)]
+
+	# z-index: its value, or 0 when (ZIndexAuto)
+	[ZIndex]
+	[end: (Int: CssP.Z_INDEX 0)]
+
+	[ZIndexAuto]
+	[end: (IsAuto: CssP.Z_INDEX)]
+
+	[MarginTop: f64 base: 0.0;]
+	[end: (Len: CssP.MARGIN_TOP base 0.0)]
+
+	[MarginRight: f64 base: 0.0;]
+	[end: (Len: CssP.MARGIN_RIGHT base 0.0)]
+
+	[MarginBottom: f64 base: 0.0;]
+	[end: (Len: CssP.MARGIN_BOTTOM base 0.0)]
+
+	[MarginLeft: f64 base: 0.0;]
+	[end: (Len: CssP.MARGIN_LEFT base 0.0)]
+
+	[PaddingTop: f64 base: 0.0;]
+	[end: (Len: CssP.PADDING_TOP base 0.0)]
+
+	[PaddingRight: f64 base: 0.0;]
+	[end: (Len: CssP.PADDING_RIGHT base 0.0)]
+
+	[PaddingBottom: f64 base: 0.0;]
+	[end: (Len: CssP.PADDING_BOTTOM base 0.0)]
+
+	[PaddingLeft: f64 base: 0.0;]
+	[end: (Len: CssP.PADDING_LEFT base 0.0)]
+
+	# border widths are 0 when the side's style is none, as computed values are
+	[BorderTop]
+	[end: (Len: CssP.BORDER_TOP_WIDTH 0.0 0.0)]
+
+	[BorderRight]
+	[end: (Len: CssP.BORDER_RIGHT_WIDTH 0.0 0.0)]
+
+	[BorderBottom]
+	[end: (Len: CssP.BORDER_BOTTOM_WIDTH 0.0 0.0)]
+
+	[BorderLeft]
+	[end: (Len: CssP.BORDER_LEFT_WIDTH 0.0 0.0)]
+
+	[Width: f64 base: 0.0; f64 otherwise: 0.0;]
+	[end: (Len: CssP.WIDTH base otherwise)]
+
+	[Height: f64 base: 0.0; f64 otherwise: 0.0;]
+	[end: (Len: CssP.HEIGHT base otherwise)]
+
+	[MinWidth: f64 base: 0.0;]
+	[end: (Len: CssP.MIN_WIDTH base 0.0)]
+
+	[MinHeight: f64 base: 0.0;]
+	[end: (Len: CssP.MIN_HEIGHT base 0.0)]
+
+	# none gives what you say
+	[MaxWidth: f64 base: 0.0; f64 otherwise: 0.0;]
+	[end: (Len: CssP.MAX_WIDTH base otherwise)]
+
+	[MaxHeight: f64 base: 0.0; f64 otherwise: 0.0;]
+	[end: (Len: CssP.MAX_HEIGHT base otherwise)]
+
+	[Top: f64 base: 0.0; f64 otherwise: 0.0;]
+	[end: (Len: CssP.TOP base otherwise)]
+
+	[Right: f64 base: 0.0; f64 otherwise: 0.0;]
+	[end: (Len: CssP.RIGHT base otherwise)]
+
+	[Bottom: f64 base: 0.0; f64 otherwise: 0.0;]
+	[end: (Len: CssP.BOTTOM base otherwise)]
+
+	[Left: f64 base: 0.0; f64 otherwise: 0.0;]
+	[end: (Len: CssP.LEFT base otherwise)]
+
+	[BorderTopStyle]
+	[end: (Kw: CssP.BORDER_TOP_STYLE)]
+
+	[BorderRightStyle]
+	[end: (Kw: CssP.BORDER_RIGHT_STYLE)]
+
+	[BorderBottomStyle]
+	[end: (Kw: CssP.BORDER_BOTTOM_STYLE)]
+
+	[BorderLeftStyle]
+	[end: (Kw: CssP.BORDER_LEFT_STYLE)]
+
+	[BorderTopColor]
+	[end: (Color: CssP.BORDER_TOP_COLOR)]
+
+	[BorderRightColor]
+	[end: (Color: CssP.BORDER_RIGHT_COLOR)]
+
+	[BorderBottomColor]
+	[end: (Color: CssP.BORDER_BOTTOM_COLOR)]
+
+	[BorderLeftColor]
+	[end: (Color: CssP.BORDER_LEFT_COLOR)]
+
+	[FlexDirection]
+	[end: (Kw: CssP.FLEX_DIRECTION)]
+
+	[FlexWrap]
+	[end: (Kw: CssP.FLEX_WRAP)]
+
+	[FlexGrow]
+	[end: (Num: CssP.FLEX_GROW 0.0)]
+
+	[FlexShrink]
+	[end: (Num: CssP.FLEX_SHRINK 1.0)]
+
+	[Order]
+	[end: (Int: CssP.ORDER 0)]
+
+	# their first word, which is enough unless it says safe, unsafe, first or last
+	[JustifyContent]
+	[end: (FirstKw: CssP.JUSTIFY_CONTENT)]
+
+	[AlignItems]
+	[end: (FirstKw: CssP.ALIGN_ITEMS)]
+
+	[AlignSelf]
+	[end: (FirstKw: CssP.ALIGN_SELF)]
+
+	[AlignContent]
+	[end: (FirstKw: CssP.ALIGN_CONTENT)]
+
+	[TextTransform]
+	[end: (Kw: CssP.TEXT_TRANSFORM)]
+
+	[WordBreak]
+	[end: (Kw: CssP.WORD_BREAK)]
+
+	[OverflowWrap]
+	[end: (Kw: CssP.OVERFLOW_WRAP)]
+
+	[Direction]
+	[end: (Kw: CssP.DIRECTION)]
+
+	[ListStyleType]
+	[end: (Kw: CssP.LIST_STYLE_TYPE)]
+
+	[ListStylePosition]
+	[end: (Kw: CssP.LIST_STYLE_POSITION)]
+
+	[Cursor]
+		ptr<CssVal> v: (Val: CssP.CURSOR);
+		if v.kind is CssV.LIST as u8
+			ptr<CssVal> items: (CssV.Items: v);
+			v is addr items:(CssV.item_count - 1);
+		;;
+		if v.kind is CssV.KW as u8 return v.code as u32;
+	[end: CssK.AUTO as u32]
+
+	# vertical-align's keyword (0 if it's a length: then Len, of the line-height)
+	[VerticalAlign]
+	[end: (Kw: CssP.VERTICAL_ALIGN)]
+
+	[LetterSpacing: f64 base: 0.0;]
+	[end: (Len: CssP.LETTER_SPACING base 0.0)]
+
+	[WordSpacing: f64 base: 0.0;]
+	[end: (Len: CssP.WORD_SPACING base 0.0)]
+
+	[TextIndent: f64 base: 0.0;]
+	[end: (Len: CssP.TEXT_INDENT base 0.0)]
+
+	# whether a keyword is among a property's words: (s.HasWord: CssP.TEXT_DECORATION_LINE CssK.UNDERLINE)
+	[HasWord: u32 prop: 0; u32 kw: 0;]
+		ptr<CssVal> v: (Val: prop);
+		ptr<CssVal> items: (CssV.Items: v);
+		u32 n: CssV.item_count;
+		while u32 i: 0; i < n; i++;
+			if items:i.kind is CssV.KW as u8 and items:i.code is kw as u16 return true;
+		;;
+	[end: false]
+
+	[FirstKw: u32 prop: 0;]
+		ptr<CssVal> v: (Val: prop);
+		ptr<CssVal> items: (CssV.Items: v);
+		if items:0.kind is CssV.KW as u8 return items:0.code as u32;
+	[end: 0 as u32]
+
+	# font-family, one name at a time: 0 past the last
+	[FontFamily: u32 index: 0;]
+		ptr<CssVal> v: (Val: CssP.FONT_FAMILY);
+		ptr<CssVal> items: (CssV.Items: v);
+		u32 n: CssV.item_count;
+		u32 seen: 0;
+		while u32 i: 0; i < n; i++;
+			if items:i.kind is CssV.STR as u8 or items:i.kind is CssV.IDENT as u8
+				if seen is index return (CssV.Text: addr items:i);
+				seen++;
+			;;
+		;;
+	[end: 0 as ptr<u8>]
+
+	# the url() of the first background layer that has one; 0 if none does
+	[BackgroundUrl]
+		ptr<CssVal> v: (Val: CssP.BACKGROUND_IMAGE);
+		ptr<CssVal> items: (CssV.Items: v);
+		u32 n: CssV.item_count;
+		while u32 i: 0; i < n; i++;
+			if items:i.kind is CssV.URL as u8 return (CssV.Text: addr items:i);
+		;;
+	[end: 0 as ptr<u8>]
+
+	# a list property's items: (s.Items: CssP.TRANSFORM), with their count in CssV.item_count;
+	# a FUNC item's bits say how many of the items after it are inside it, a SEP is a comma or slash
+	[Items: u32 prop: 0;]
+	[end: (CssV.Items: (Val: prop))]
+
+	# one of the pseudo-element styles (CssSel.PE_BEFORE ...): 0 if nothing matched it
+	[Pseudo: u32 which: 0;]
+		if pseudo is 0 or which > CssSel.PE_COUNT return 0;
+		ptr<CssPseudoSet> set: pseudo;
+	[end: set.styles:which]
+}
+
+# keeping them, and letting them go
+phi.CssStyles:Library
+{
+	# the groups whose properties inherit
+	ptr<u8> group_inherits: 0;
+	ptr<CssComputed> initial: 0;
+
+	[NewGroup: u32 g: 0;]
+		u32 count: CssProps.group_slots:g;
+		ptr<u8> p: new u8[8 + count * 8];
+		if p is 0
+			throw 'out of memory for a style';
+		;;
+		ptr<u32> head: p as ptr<u32>;
+		head:0 is 1;
+		head:1 is count;
+	[end: p]
+
+	[RetainGroup: ptr<u8> p: 0;]
+		ptr<u32> head: p as ptr<u32>;
+		head:0 is head:0 + 1;
+	[end]
+
+	[ReleaseGroup: ptr<u8> p: 0;]
+		ptr<u32> head: p as ptr<u32>;
+		head:0 is head:0 - 1;
+		if head:0 > 0 return;
+		u32 count: head:1;
+		ptr<CssVal> vals: (p + 8) as ptr<CssVal>;
+		while u32 i: 0; i < count; i++;
+			if vals:i.kind >= CssV.FIRST_CX as u8
+				call CssCxs.Release: vals:i.bits;
+			;;
+		;;
+		free p;
+	[end]
+
+	# a copy of a group that no one else has
+	[CloneGroup: ptr<u8> p: 0;]
+		ptr<u32> head: p as ptr<u32>;
+		u32 count: head:1;
+		ptr<u8> c: new u8[8 + count * 8];
+		if c is 0
+			throw 'out of memory for a style';
+		;;
+		call Mem.Copy: c p 8 + count * 8;
+		ptr<u32> chead: c as ptr<u32>;
+		chead:0 is 1;
+		ptr<CssVal> vals: (c + 8) as ptr<CssVal>;
+		while u32 i: 0; i < count; i++;
+			if vals:i.kind >= CssV.FIRST_CX as u8
+				call CssCxs.Retain: vals:i.bits;
+			;;
+		;;
+	[end: c]
+
+	[Retain: ptr<CssComputed> s: 0;]
+		if s is not 0
+			s.refs++;
+		;;
+	[end]
+
+	[Release: ptr<CssComputed> s: 0;]
+		if s is 0 return;
+		s.refs--;
+		if s.refs > 0 return;
+		while u32 i: 0; i < CssP.GROUPS; i++;
+			if s.g:i is not 0
+				call ReleaseGroup: s.g:i;
+			;;
+		;;
+		call ReleaseVars: s.vars;
+		if s.pseudo is not 0
+			ptr<CssPseudoSet> set: s.pseudo;
+			while u32 k: 0; k <= CssSel.PE_COUNT; k++;
+				call Release: set.styles:k;
+			;;
+			free set;
+		;;
+		free s;
+	[end]
+
+	[RetainVars: ptr<CssVarMap> m: 0;]
+		if m is not 0
+			m.refs++;
+		;;
+	[end]
+
+	# in a loop: a long chain of maps is let go without recursion
+	[ReleaseVars: ptr<CssVarMap> m: 0;]
+		while m is not 0
+			m.refs--;
+			if m.refs > 0 return;
+			ptr<CssVarMap> up: m.parent;
+			while u32 i: 0; i < m.count; i++;
+				call CssCxs.Release: m.values:i;
+			;;
+			if m.names is not 0
+				free m.names;
+			;;
+			if m.values is not 0
+				free m.values;
+			;;
+			free m;
+			m is up;
+		;;
+	[end]
+
+	# a custom property's CssCx through the chain of maps: its number, 0 for invalid or absent
+	[FindVar: ptr<CssVarMap> m: 0; ptr<WlAtom> name: 0;]
+		found is false;
+		while m is not 0
+			u32 low: 0;
+			u32 high: m.count;
+			while low < high
+				u32 mid: (low + high) / 2;
+				ptr<WlAtom> have: m.names:mid;
+				if have is name
+					found is true;
+					return m.values:mid;
+				;;
+				if (have as u64) < (name as u64)
+					low is mid + 1;
+				;;
+				else
+					high is mid;
+				;;
+			;;
+			m is m.parent;
+		;;
+	[end: 0 as u32]
+
+	bln found: false;
+}

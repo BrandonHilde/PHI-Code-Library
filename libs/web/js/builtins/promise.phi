@@ -1,0 +1,1036 @@
+# Promise, complete, with its job queue; and async functions and async generators on top of it.
+
+struct.JsPromiseObj
+{
+	JsObj o;
+	u64 result;
+	ptr<JsReaction> reactions;
+	ptr<JsReaction> reactions_tail;
+	u32 state;             # JsPromises.PENDING, FULFILLED, REJECTED
+	bln handled;
+}
+
+# what's to happen when a promise settles
+struct.JsReaction
+{
+	ptr<JsCell> gc_next;
+	u8 kind;
+	u8 mark;
+	u16 gc_flags;
+	u32 size;
+	ptr<JsReaction> next;
+	ptr<JsGen> gen;        # an await's generator: resumed with the result
+	u64 on_fulfilled;
+	u64 on_rejected;
+	u64 promise;           # the promise (or anything) a then() made
+	u64 resolve;           # its resolving functions, unless the promise is our own (undefined)
+	u64 reject;
+	u32 what;              # JsPromises.R_...
+}
+
+struct.JsJob
+{
+	u64 a;
+	u64 b;
+	u64 c;
+	u32 kind;
+}
+
+phi.JsPromises:Library
+{
+	const u32 PENDING: 0;
+	const u32 FULFILLED: 1;
+	const u32 REJECTED: 2;
+
+	const u32 R_THEN: 0;
+	const u32 R_AWAIT: 1;
+	const u32 R_ASYNC_RETURN: 2;   # an async generator's return() waiting for its value
+
+	const u32 J_REACTION: 0;
+	const u32 J_THENABLE: 1;
+	const u32 J_CALL: 2;
+
+	# ---- the collector's part ----
+
+	[TraceData: ptr<JsObj> o: 0;]
+		ptr<JsPromiseObj> p: o as ptr<JsPromiseObj>;
+		call JsGc.Mark: p.result;
+		call JsGc.MarkCell: p.reactions as ptr<JsCell>;
+	[end]
+
+	[TraceReaction: ptr<JsReaction> r: 0;]
+		call JsGc.MarkCell: r.next as ptr<JsCell>;
+		call JsGc.MarkCell: r.gen as ptr<JsCell>;
+		call JsGc.Mark: r.on_fulfilled;
+		call JsGc.Mark: r.on_rejected;
+		call JsGc.Mark: r.promise;
+		call JsGc.Mark: r.resolve;
+		call JsGc.Mark: r.reject;
+	[end]
+
+	[MarkJobs]
+		ptr<JsRuntime> r: JsRt.r;
+		u32 i: r.job_head;
+		while u32 n: 0; n < r.job_count; n++;
+			ptr<JsJob> j: r.jobs + i * sizeof JsJob;
+			call JsGc.Mark: j.a;
+			call JsGc.Mark: j.b;
+			call JsGc.Mark: j.c;
+			i is (i + 1) & (r.job_cap - 1);
+		;;
+	[end]
+
+	# ---- the job queue ----
+
+	[Enqueue: u32 kind: 0; u64 a: 0; u64 b: 0; u64 c: 0;]
+		ptr<JsRuntime> r: JsRt.r;
+		if r.job_count >= r.job_cap
+			u32 room: r.job_cap * 2;
+			if room is 0
+				room is 64;
+			;;
+			ptr<JsJob> grown: new JsJob[room];
+			if grown is 0
+				throw 'out of memory';
+			;;
+			while u32 k: 0; k < r.job_count; k++;
+				ptr<JsJob> from: r.jobs + ((r.job_head + k) & (r.job_cap - 1)) * sizeof JsJob;
+				ptr<JsJob> to: grown + k * sizeof JsJob;
+				to.a is from.a;
+				to.b is from.b;
+				to.c is from.c;
+				to.kind is from.kind;
+			;;
+			if r.jobs is not 0
+				free r.jobs;
+			;;
+			r.jobs is grown;
+			r.job_cap is room;
+			r.job_head is 0;
+		;;
+		ptr<JsJob> j: r.jobs + ((r.job_head + r.job_count) & (r.job_cap - 1)) * sizeof JsJob;
+		j.kind is kind;
+		j.a is a;
+		j.b is b;
+		j.c is c;
+		r.job_count is r.job_count + 1;
+	[end]
+
+	# a function to call as a job, with one argument (queueMicrotask's way in)
+	[EnqueueCall: u64 fn: 0; u64 arg: 0;]
+		call Enqueue: J_CALL fn arg JsV.UNDEF;
+	[end]
+
+	[RunJobs]
+		ptr<JsRuntime> r: JsRt.r;
+		while r.job_count > 0
+			ptr<JsJob> j: r.jobs + r.job_head * sizeof JsJob;
+			u32 kind: j.kind;
+			u64 a: j.a;
+			u64 b: j.b;
+			u64 c: j.c;
+			r.job_head is (r.job_head + 1) & (r.job_cap - 1);
+			r.job_count is r.job_count - 1;
+			# (while it runs, these are held on the stack)
+			call JsVm.CheckStack: 4;
+			ptr<u64> mark: JsVm.sp;
+			mark:0 is a;
+			mark:1 is b;
+			mark:2 is c;
+			JsVm.sp is mark + 24;
+			JsTryState t;
+			call Js.TryBegin: addr t;
+			if call RunOne: kind a b c throws err
+				Js.exception is (Js.TryCatchAll: addr t err);
+				Js.failed is true;
+			;;
+			JsVm.sp is mark;
+		;;
+	[end]
+
+	[RunOne: u32 kind: 0; u64 a: 0; u64 b: 0; u64 c: 0;]
+		if kind is J_REACTION
+			call RunReaction: (JsV.AsPtr: a) as ptr<JsReaction> b c as u32;
+		;;
+		elif kind is J_THENABLE
+			call RunThenable: a b c;
+		;;
+		else
+			call JsVm.Call1: a JsV.UNDEF b;
+		;;
+	[end]
+
+	[RunReaction: ptr<JsReaction> r: 0; u64 arg: 0; u32 state: 0;]
+		if r.what is R_AWAIT
+			ptr<JsGen> g: r.gen;
+			u32 mode: JsVm.RM_NEXT;
+			if state is REJECTED
+				mode is JsVm.RM_THROW;
+			;;
+			call JsVm.ResumeGen: g mode arg;
+			if g.is_async_gen
+				call JsAsyncGen.Drain: g;
+			;;
+			return;
+		;;
+		if r.what is R_ASYNC_RETURN
+			call JsAsyncGen.ReturnSettled: r.gen state arg;
+			return;
+		;;
+		u64 handler: r.on_fulfilled;
+		if state is REJECTED
+			handler is r.on_rejected;
+		;;
+		u64 result: arg;
+		bln threw: state is REJECTED;
+		if handler is not JsV.UNDEF
+			threw is false;
+			JsTryState t;
+			call Js.TryBegin: addr t;
+			if call result is JsVm.Call1: handler JsV.UNDEF arg throws err
+				result is (Js.TryCatch: addr t err);
+				threw is true;
+			;;
+		;;
+		if r.promise is JsV.UNDEF return;
+		if threw
+			call RejectCap: r result;
+			return;
+		;;
+		call ResolveCap: r result;
+	[end]
+
+	[ResolveCap: ptr<JsReaction> r: 0; u64 v: 0;]
+		if r.resolve is JsV.UNDEF
+			call Resolve: (JsV.AsObj: r.promise) as ptr<JsPromiseObj> v;
+			return;
+		;;
+		call JsVm.Call1: r.resolve JsV.UNDEF v;
+	[end]
+
+	[RejectCap: ptr<JsReaction> r: 0; u64 v: 0;]
+		if r.reject is JsV.UNDEF
+			call Reject: (JsV.AsObj: r.promise) as ptr<JsPromiseObj> v;
+			return;
+		;;
+		call JsVm.Call1: r.reject JsV.UNDEF v;
+	[end]
+
+	[RunThenable: u64 promise: 0; u64 thenable: 0; u64 then_fn: 0;]
+		ptr<JsPromiseObj> p: (JsV.AsObj: promise) as ptr<JsPromiseObj>;
+		u64 res: 0;
+		u64 rej: 0;
+		call MakeResolvers: p addr res addr rej;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		if call JsVm.Call2: then_fn thenable res rej throws err
+			u64 thrown: (Js.TryCatch: addr t err);
+			call JsVm.Call1: rej JsV.UNDEF thrown;
+		;;
+	[end]
+
+	# ---- a promise's states ----
+
+	[New: ptr<JsObj> proto: 0;]
+		ptr<JsPromiseObj> p: (JsObjs.Alloc: sizeof JsPromiseObj JsGc.K_PROMISE proto) as ptr<JsPromiseObj>;
+		p.result is JsV.UNDEF;
+	[end: p]
+
+	[IsPromise: u64 v: 0;]
+		if not (JsV.IsObj: v) return false;
+		ptr<JsObj> o: (JsV.AsObj: v);
+	[end: o.kind is JsGc.K_PROMISE]
+
+	[Settle: ptr<JsPromiseObj> p: 0; u32 state: 0; u64 v: 0;]
+		p.state is state;
+		p.result is v;
+		ptr<JsReaction> r: p.reactions;
+		p.reactions is 0;
+		p.reactions_tail is 0;
+		while r is not 0
+			ptr<JsReaction> following: r.next;
+			r.next is 0;
+			call Enqueue: J_REACTION (JsV.Cell: r as ptr<u8>) v JsV.INT_BASE | state;
+			r is following;
+		;;
+	[end]
+
+	[Fulfill: ptr<JsPromiseObj> p: 0; u64 v: 0;]
+		call Settle: p FULFILLED v;
+	[end]
+
+	[Reject: ptr<JsPromiseObj> p: 0; u64 v: 0;]
+		ptr<JsRuntime> rt: JsRt.r;
+		if not p.handled and rt.reject_hook is not 0
+			call rt.reject_hook: (JsV.Obj: p as ptr<JsObj>) v 0;
+		;;
+		call Settle: p REJECTED v;
+	[end]
+
+	# the promise resolve function's algorithm
+	[Resolve: ptr<JsPromiseObj> p: 0; u64 v: 0;]
+		if not (JsV.IsObj: v)
+			call Fulfill: p v;
+			return;
+		;;
+		if (JsV.AsObj: v) is p as ptr<JsObj>
+			call Reject: p (JsV.Obj: (JsErr.Make: JsRt.P.type_error 'A promise cannot be resolved with itself'));
+			return;
+		;;
+		u64 then_fn: JsV.UNDEF;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		if call then_fn is JsObjs.GetAtom: (JsV.AsObj: v) JsRt.A.then as ptr<u8> v throws err
+			call Reject: p (Js.TryCatch: addr t err);
+			return;
+		;;
+		if not (JsOps.IsCallable: then_fn)
+			call Fulfill: p v;
+			return;
+		;;
+		call Enqueue: J_THENABLE (JsV.Obj: p as ptr<JsObj>) v then_fn;
+	[end]
+
+	[MakeResolvers: ptr<JsPromiseObj> p: 0; ptr<u64> res: 0; ptr<u64> rej: 0;]
+		ptr<JsObj> flag: (JsObjs.NewWithProto: 0);
+		ptr<JsNativeFn> a: (JsObjs.NewNative: addr ResolveFn 0 1 false);
+		a.data is (JsV.Obj: p as ptr<JsObj>);
+		a.data2 is (JsV.Obj: flag);
+		ptr<JsNativeFn> b: (JsObjs.NewNative: addr RejectFn 0 1 false);
+		b.data is (JsV.Obj: p as ptr<JsObj>);
+		b.data2 is (JsV.Obj: flag);
+		res:0 is (JsV.Obj: a as ptr<JsObj>);
+		rej:0 is (JsV.Obj: b as ptr<JsObj>);
+	[end]
+
+	[ResolveFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> f: (Js.CalleeOf: args);
+		ptr<JsObj> flag: (JsV.AsObj: f.data2);
+		if flag.slot is JsV.TRUE return JsV.UNDEF;
+		flag.slot is JsV.TRUE;
+		call Resolve: (JsV.AsObj: f.data) as ptr<JsPromiseObj> (Js.Arg: args argc 0);
+	[end: JsV.UNDEF]
+
+	[RejectFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> f: (Js.CalleeOf: args);
+		ptr<JsObj> flag: (JsV.AsObj: f.data2);
+		if flag.slot is JsV.TRUE return JsV.UNDEF;
+		flag.slot is JsV.TRUE;
+		call Reject: (JsV.AsObj: f.data) as ptr<JsPromiseObj> (Js.Arg: args argc 0);
+	[end: JsV.UNDEF]
+
+	# ---- the constructor and its helpers ----
+
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'Promise constructor cannot be invoked without new';
+		;;
+		u64 exec: (Js.Arg: args argc 0);
+		if not (JsOps.IsCallable: exec)
+			call JsErr.Type: 'Promise resolver is not a function';
+		;;
+		ptr<JsPromiseObj> p: (New: (JsOps.ProtoFromCtor: nt JsRt.P.promise));
+		u64 res: 0;
+		u64 rej: 0;
+		call MakeResolvers: p addr res addr rej;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		if call JsVm.Call2: exec JsV.UNDEF res rej throws err
+			u64 thrown: (Js.TryCatch: addr t err);
+			call JsVm.Call1: rej JsV.UNDEF thrown;
+		;;
+	[end: (JsV.Obj: p as ptr<JsObj>)]
+
+	# NewPromiseCapability: into output.promise, output.resolve, output.reject. For %Promise% itself no
+	# functions are made: resolve stays undefined, and ResolveCap goes straight to the promise.
+	[NewCapability: u64 c: 0; ptr<JsReaction> output: 0;]
+		if (JsV.IsObj: c) and (JsV.AsObj: c) is JsRt.P.promise_ctor
+			output.promise is (JsV.Obj: (New: JsRt.P.promise) as ptr<JsObj>);
+			output.resolve is JsV.UNDEF;
+			output.reject is JsV.UNDEF;
+			return;
+		;;
+		if not (JsOps.IsConstructor: c)
+			call JsErr.Type: 'Promise capability needs a constructor';
+		;;
+		ptr<JsObj> holder: (JsObjs.NewArray: 2);
+		call JsObjs.ArrayPush: holder JsV.UNDEF;
+		call JsObjs.ArrayPush: holder JsV.UNDEF;
+		ptr<JsNativeFn> exec: (JsObjs.NewNative: addr CapabilityExecutor 0 2 false);
+		exec.data is (JsV.Obj: holder);
+		call Js.Push: (JsV.Obj: exec as ptr<JsObj>);
+		u64 promise: (Js.Construct: c 1);
+		if not (JsOps.IsCallable: holder.elems:0) or not (JsOps.IsCallable: holder.elems:1)
+			call JsErr.Type: 'Promise capability resolver is not callable';
+		;;
+		output.promise is promise;
+		output.resolve is holder.elems:0;
+		output.reject is holder.elems:1;
+	[end]
+
+	[CapabilityExecutor: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> f: (Js.CalleeOf: args);
+		ptr<JsObj> holder: (JsV.AsObj: f.data);
+		if holder.elems:0 is not JsV.UNDEF or holder.elems:1 is not JsV.UNDEF
+			call JsErr.Type: 'Promise executor has already been invoked';
+		;;
+		holder.elems:0 is (Js.Arg: args argc 0);
+		holder.elems:1 is (Js.Arg: args argc 1);
+	[end: JsV.UNDEF]
+
+	[NewReaction]
+		ptr<JsReaction> r: (JsGc.New: sizeof JsReaction JsGc.K_REACTION) as ptr<JsReaction>;
+		r.on_fulfilled is JsV.UNDEF;
+		r.on_rejected is JsV.UNDEF;
+		r.promise is JsV.UNDEF;
+		r.resolve is JsV.UNDEF;
+		r.reject is JsV.UNDEF;
+	[end: r]
+
+	# PerformPromiseThen, with the reaction made: it goes on the list, or to the queue if it's settled
+	[Attach: ptr<JsPromiseObj> p: 0; ptr<JsReaction> r: 0;]
+		if p.state is PENDING
+			if p.reactions_tail is 0
+				p.reactions is r;
+			;;
+			else
+				p.reactions_tail.next is r;
+			;;
+			p.reactions_tail is r;
+		;;
+		else
+			if p.state is REJECTED and not p.handled
+				ptr<JsRuntime> rt: JsRt.r;
+				if rt.reject_hook is not 0
+					call rt.reject_hook: (JsV.Obj: p as ptr<JsObj>) p.result 1;
+				;;
+			;;
+			call Enqueue: J_REACTION (JsV.Cell: r as ptr<u8>) p.result JsV.INT_BASE | p.state;
+		;;
+		p.handled is true;
+	[end]
+
+	# PromiseResolve(C, x)
+	[PromiseResolve: u64 c: 0; u64 x: 0;]
+		if (IsPromise: x)
+			u64 xc: (JsObjs.GetAtom: (JsV.AsObj: x) JsRt.A.constructor as ptr<u8> x);
+			if (JsOps.SameValue: xc c) return x;
+		;;
+		ptr<JsReaction> cap: (NewReaction);
+		call NewCapability: c cap;
+		call ResolveCap: cap x;
+	[end: cap.promise]
+
+	[ThisPromise: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if not (IsPromise: t)
+			call JsErr.Type: 'Promise.prototype.then called on something that is not a promise';
+		;;
+	[end: (JsV.AsObj: t) as ptr<JsPromiseObj>]
+
+	# ---- Promise.prototype ----
+
+	[Then: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsPromiseObj> p: (ThisPromise: args);
+		u64 ctor: (JsOps.Species: args:(-1) (JsV.Obj: JsRt.P.promise_ctor));
+		ptr<JsReaction> r: (NewReaction);
+		call NewCapability: ctor r;
+		u64 f: (Js.Arg: args argc 0);
+		u64 g: (Js.Arg: args argc 1);
+		if (JsOps.IsCallable: f)
+			r.on_fulfilled is f;
+		;;
+		if (JsOps.IsCallable: g)
+			r.on_rejected is g;
+		;;
+		call Attach: p r;
+	[end: r.promise]
+
+	[Catch: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		u64 m: (JsObjs.GetV: t (JsV.Str: JsRt.A.then));
+	[end: (JsVm.Call2: m t JsV.UNDEF (Js.Arg: args argc 0))]
+
+	[Finally: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if not (JsV.IsObj: t)
+			call JsErr.Type: 'Promise.prototype.finally called on a non-object';
+		;;
+		u64 ctor: (JsOps.Species: t (JsV.Obj: JsRt.P.promise_ctor));
+		u64 on: (Js.Arg: args argc 0);
+		u64 f1: on;
+		u64 f2: on;
+		if (JsOps.IsCallable: on)
+			ptr<JsNativeFn> a: (JsObjs.NewNative: addr ThenFinally 0 1 false);
+			a.data is on;
+			a.data2 is ctor;
+			ptr<JsNativeFn> b: (JsObjs.NewNative: addr CatchFinally 0 1 false);
+			b.data is on;
+			b.data2 is ctor;
+			f1 is (JsV.Obj: a as ptr<JsObj>);
+			f2 is (JsV.Obj: b as ptr<JsObj>);
+		;;
+		u64 m: (JsObjs.GetV: t (JsV.Str: JsRt.A.then));
+	[end: (JsVm.Call2: m t f1 f2)]
+
+	[ThenFinally: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> f: (Js.CalleeOf: args);
+		u64 r: (JsVm.Call0: f.data JsV.UNDEF);
+		u64 p: (PromiseResolve: f.data2 r);
+		ptr<JsNativeFn> thunk: (JsObjs.NewNative: addr ValueThunk 0 0 false);
+		thunk.data is (Js.Arg: args argc 0);
+		u64 m: (JsObjs.GetV: p (JsV.Str: JsRt.A.then));
+	[end: (JsVm.Call1: m p (JsV.Obj: thunk as ptr<JsObj>))]
+
+	[CatchFinally: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> f: (Js.CalleeOf: args);
+		u64 r: (JsVm.Call0: f.data JsV.UNDEF);
+		u64 p: (PromiseResolve: f.data2 r);
+		ptr<JsNativeFn> thrower: (JsObjs.NewNative: addr Thrower 0 0 false);
+		thrower.data is (Js.Arg: args argc 0);
+		u64 m: (JsObjs.GetV: p (JsV.Str: JsRt.A.then));
+	[end: (JsVm.Call1: m p (JsV.Obj: thrower as ptr<JsObj>))]
+
+	[ValueThunk: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> f: (Js.CalleeOf: args);
+	[end: f.data]
+
+	[Thrower: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> f: (Js.CalleeOf: args);
+		call JsErr.Throw: f.data;
+	[end: JsV.UNDEF]
+
+	# ---- Promise's statics ----
+
+	[StaticResolve: ptr<u64> args: 0; int argc: 0;]
+		u64 c: args:(-1);
+		if not (JsV.IsObj: c)
+			call JsErr.Type: 'Promise.resolve called on a non-object';
+		;;
+	[end: (PromiseResolve: c (Js.Arg: args argc 0))]
+
+	[StaticReject: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsReaction> cap: (NewReaction);
+		call NewCapability: args:(-1) cap;
+		call RejectCap: cap (Js.Arg: args argc 0);
+	[end: cap.promise]
+
+	# all, allSettled, any and race, which differ little. A shared context array holds:
+	# 0 the values, 1 how many are still to come, 2 the capability's promise, 3 resolve, 4 reject
+	const u32 C_ALL: 0;
+	const u32 C_ALL_SETTLED: 1;
+	const u32 C_ANY: 2;
+	const u32 C_RACE: 3;
+
+	[StaticAll: ptr<u64> args: 0; int argc: 0;]
+	[end: (Combinator: args argc C_ALL)]
+
+	[StaticAllSettled: ptr<u64> args: 0; int argc: 0;]
+	[end: (Combinator: args argc C_ALL_SETTLED)]
+
+	[StaticAny: ptr<u64> args: 0; int argc: 0;]
+	[end: (Combinator: args argc C_ANY)]
+
+	[StaticRace: ptr<u64> args: 0; int argc: 0;]
+	[end: (Combinator: args argc C_RACE)]
+
+	[Combinator: ptr<u64> args: 0; int argc: 0; u32 kind: 0;]
+		u64 c: args:(-1);
+		ptr<JsReaction> cap: (NewReaction);
+		call NewCapability: c cap;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		u64 result: 0;
+		if call result is CombinatorBody: c (Js.Arg: args argc 0) cap kind throws err
+			u64 thrown: (Js.TryCatch: addr t err);
+			call RejectCap: cap thrown;
+			return cap.promise;
+		;;
+	[end: result]
+
+	[CombinatorBody: u64 c: 0; u64 iterable: 0; ptr<JsReaction> cap: 0; u32 kind: 0;]
+		u64 resolve_fn: (JsObjs.GetV: c (JsV.Str: JsRt.A.resolve));
+		if not (JsOps.IsCallable: resolve_fn)
+			call JsErr.Type: 'Promise resolve is not callable';
+		;;
+		ptr<JsObj> ctx: (JsObjs.NewArray: 5);
+		ptr<JsObj> values: (JsObjs.NewArray: 0);
+		call JsObjs.ArrayPush: ctx (JsV.Obj: values);
+		call JsObjs.ArrayPush: ctx (JsV.Int: 1);
+		call JsObjs.ArrayPush: ctx cap.promise;
+		# the capability's functions, whichever way it was made
+		call MakeCapFunctions: cap;
+		call JsObjs.ArrayPush: ctx cap.resolve;
+		call JsObjs.ArrayPush: ctx cap.reject;
+		call JsVm.GetIterValues: iterable;
+		# [iterator next] are on the stack now; slots go undefined as the iterator finishes
+		ptr<u64> st: JsVm.sp - 16;
+		u32 index: 0;
+		bln iter_live: true;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		u64 ignored: 0;
+		if call ignored is CombinatorLoop: c resolve_fn ctx values cap kind st addr iter_live throws err
+			u64 thrown: (Js.TryCatch: addr t err);
+			if iter_live
+				JsTryState t2;
+				call Js.TryBegin: addr t2;
+				if call JsVm.CloseCall: st:0 throws err2
+					call Js.TryCatch: addr t2 err2;
+				;;
+			;;
+			call JsErr.Throw: thrown;
+		;;
+	[end: cap.promise]
+
+	[CombinatorLoop: u64 c: 0; u64 resolve_fn: 0; ptr<JsObj> ctx: 0; ptr<JsObj> values: 0; ptr<JsReaction> cap: 0; u32 kind: 0; ptr<u64> st: 0; ptr<bln> iter_live: 0;]
+		u32 index: 0;
+		while true
+			iter_live:0 is false;
+			u64 r: (JsVm.Call0: st:1 st:0);
+			if not (JsV.IsObj: r)
+				call JsErr.Type: 'Iterator result is not an object';
+			;;
+			ptr<JsObj> ro: (JsV.AsObj: r);
+			if (JsOps.ToBool: (JsObjs.GetAtom: ro JsRt.A.done as ptr<u8> r))
+				break;
+			;;
+			u64 item: (JsObjs.GetAtom: ro JsRt.A.value as ptr<u8> r);
+			iter_live:0 is true;
+			if kind is not C_RACE
+				call JsObjs.ArrayPush: values JsV.UNDEF;
+			;;
+			u64 next_p: (JsVm.Call1: resolve_fn c item);
+			u64 on_ok: cap.resolve;
+			u64 on_bad: cap.reject;
+			if kind is not C_RACE
+				ctx.elems:1 is (JsV.Int: (ctx.elems:1 as int) + 1);
+				ptr<JsObj> flag: (JsObjs.NewWithProto: 0);
+				if kind is C_ALL or kind is C_ALL_SETTLED
+					on_ok is (Element: ctx index kind flag false);
+				;;
+				if kind is C_ALL_SETTLED
+					on_bad is (Element: ctx index kind flag true);
+				;;
+				if kind is C_ANY
+					on_bad is (Element: ctx index kind flag true);
+				;;
+			;;
+			u64 then_m: (JsObjs.GetV: next_p (JsV.Str: JsRt.A.then));
+			call JsVm.Call2: then_m next_p on_ok on_bad;
+			index++;
+		;;
+		if kind is not C_RACE
+			call CountDown: ctx kind;
+		;;
+	[end: JsV.UNDEF]
+
+	# one element's function: stores its value, and finishes the whole when it's the last
+	[Element: ptr<JsObj> ctx: 0; u32 index: 0; u32 kind: 0; ptr<JsObj> flag: 0; bln rejected: false;]
+		ptr<JsNativeFn> f: (JsObjs.NewNative: addr ElementFn 0 1 false);
+		f.data is (JsV.Obj: ctx);
+		f.data2 is (JsV.Obj: flag);
+		u32 bits: kind;
+		if rejected
+			bits is bits | 16;
+		;;
+		# its place in the values, and which kind of function it is
+		f.magic is index | (bits << 24);
+	[end: (JsV.Obj: f as ptr<JsObj>)]
+
+	[ElementFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> f: (Js.CalleeOf: args);
+		ptr<JsObj> flag: (JsV.AsObj: f.data2);
+		if flag.slot is JsV.TRUE return JsV.UNDEF;
+		flag.slot is JsV.TRUE;
+		ptr<JsObj> ctx: (JsV.AsObj: f.data);
+		ptr<JsObj> values: (JsV.AsObj: ctx.elems:0);
+		u32 bits: f.magic >> 24;
+		u32 kind: bits & 15;
+		bln rejected: (bits & 16) is not 0;
+		u64 v: (Js.Arg: args argc 0);
+		if kind is C_ALL_SETTLED
+			ptr<JsObj> o: (JsObjs.NewObject);
+			if rejected
+				call JsObjs.DefineZ: o 'status' (Js.NewStringZ: 'rejected') JsObjs.WEC;
+				call JsObjs.DefineZ: o 'reason' v JsObjs.WEC;
+			;;
+			else
+				call JsObjs.DefineZ: o 'status' (Js.NewStringZ: 'fulfilled') JsObjs.WEC;
+				call JsObjs.DefineZ: o 'value' v JsObjs.WEC;
+			;;
+			v is (JsV.Obj: o);
+		;;
+		values.elems:(f.magic & 0xFFFFFF) is v;
+		call CountDown: ctx kind;
+	[end: JsV.UNDEF]
+
+	[CountDown: ptr<JsObj> ctx: 0; u32 kind: 0;]
+		int left: (ctx.elems:1 as int) - 1;
+		ctx.elems:1 is (JsV.Int: left);
+		if left is not 0 return;
+		u64 values: ctx.elems:0;
+		if kind is C_ANY
+			ptr<JsObj> e: (JsErr.Make: JsRt.P.aggregate_error 'All promises were rejected');
+			call JsObjs.AddProp: e JsRt.A.errors as ptr<u8> values JsObjs.WC;
+			call JsVm.Call1: ctx.elems:4 JsV.UNDEF (JsV.Obj: e);
+			return;
+		;;
+		call JsVm.Call1: ctx.elems:3 JsV.UNDEF values;
+	[end]
+
+	# a capability for %Promise% doesn't have its functions until something needs them
+	[MakeCapFunctions: ptr<JsReaction> cap: 0;]
+		if cap.resolve is not JsV.UNDEF return;
+		u64 res: 0;
+		u64 rej: 0;
+		call MakeResolvers: (JsV.AsObj: cap.promise) as ptr<JsPromiseObj> addr res addr rej;
+		cap.resolve is res;
+		cap.reject is rej;
+	[end]
+
+	[Init]
+		ptr<JsObj> proto: (JsObjs.NewObject);
+		JsRt.P.promise is proto;
+		ptr<JsNativeFn> c: (Js.DefineClass: 'Promise' addr Construct 1 proto);
+		ptr<JsObj> co: c as ptr<JsObj>;
+		JsRt.P.promise_ctor is co;
+		call Js.DefineNative: proto 'then' addr Then 2;
+		call Js.DefineNative: proto 'catch' addr Catch 1;
+		call Js.DefineNative: proto 'finally' addr Finally 1;
+		call JsObjs.DefineValue: proto JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'Promise') JsObjs.C;
+		call Js.DefineNative: co 'resolve' addr StaticResolve 1;
+		call Js.DefineNative: co 'reject' addr StaticReject 1;
+		call Js.DefineNative: co 'all' addr StaticAll 1;
+		call Js.DefineNative: co 'allSettled' addr StaticAllSettled 1;
+		call Js.DefineNative: co 'any' addr StaticAny 1;
+		call Js.DefineNative: co 'race' addr StaticRace 1;
+		call Js.DefineSymbolGetter: co JsRt.S.species '[Symbol.species]' addr JsArrayBuiltins.Species 0;
+		call JsAsyncGen.Init;
+	[end]
+}
+
+# ---- async functions and async generators ----
+
+phi.JsAsyncGen:Library
+{
+	[Init]
+		ptr<JsObj> agp: JsRt.P.async_generator;
+		call Js.DefineNativeSafe: agp 'next' addr GenNext 1;
+		call Js.DefineNativeSafe: agp 'return' addr GenReturn 1;
+		call Js.DefineNativeSafe: agp 'throw' addr GenThrow 1;
+		ptr<JsObj> afs: (JsObjs.NewWithProto: JsRt.P.async_iterator);
+		JsRt.P.async_from_sync_iterator is afs;
+		call Js.DefineNativeSafe: afs 'next' addr SyncNext 1;
+		call Js.DefineNativeSafe: afs 'return' addr SyncReturn 1;
+		call Js.DefineNativeSafe: afs 'throw' addr SyncThrow 1;
+	[end]
+
+	# ASYNC_ENTER: this frame belongs to an async function, whose promise is made now
+	[Enter]
+		ptr<JsGen> g: (JsVm.NewGen);
+		g.promise is (JsV.Obj: (JsPromises.New: JsRt.P.promise) as ptr<JsObj>);
+	[end]
+
+	# AWAIT: [value] -> suspended, until it settles. Back in Run if there's nothing to wait for.
+	[Await]
+		u64 v: JsVm.sp:(-1);
+		if v is JsV.HOLE return false;
+		ptr<JsGen> g: JsVm.fr.gen;
+		u64 p: (JsPromises.PromiseResolve: (JsV.Obj: JsRt.P.promise_ctor) v);
+		ptr<JsReaction> r: (JsPromises.NewReaction);
+		r.what is JsPromises.R_AWAIT;
+		r.gen is g;
+		call JsPromises.Attach: (JsV.AsObj: p) as ptr<JsPromiseObj> r;
+		JsVm.sp-- 8;
+		call JsVm.SaveFrame: g;
+		if g.is_async_gen
+			return (JsVm.DoReturn: JsV.UNDEF);
+		;;
+	[end: (JsVm.DoReturn: g.promise)]
+
+	# ASYNC_RET: [value] -> the promise resolves, the frame's gone
+	[Return]
+		ptr<JsGen> g: JsVm.fr.gen;
+		JsVm.sp-- 8;
+		call JsPromises.Resolve: (JsV.AsObj: g.promise) as ptr<JsPromiseObj> JsVm.sp:0;
+	[end: (JsVm.DoReturn: g.promise)]
+
+	# ASYNC_THROW: [exception]
+	[Fail]
+		ptr<JsGen> g: JsVm.fr.gen;
+		JsVm.sp-- 8;
+		u64 ex: JsVm.sp:0;
+		if g.is_async_gen
+			g.state is JsVm.GS_DONE;
+			call RejectHead: g ex;
+			return (JsVm.DoReturn: JsV.UNDEF);
+		;;
+		call JsPromises.Reject: (JsV.AsObj: g.promise) as ptr<JsPromiseObj> ex;
+	[end: (JsVm.DoReturn: g.promise)]
+
+	# ---- async generators: a queue of requests, each mode, value, promise ----
+
+	[QueueFor: ptr<JsGen> g: 0;]
+		if g.queue is 0
+			g.queue is (JsObjs.NewArray: 6);
+		;;
+	[end: g.queue]
+
+	[Shift: ptr<JsGen> g: 0;]
+		ptr<JsObj> q: g.queue;
+		u32 n: q.elem_len - 3;
+		call Mem.Move: q.elems as ptr<u8> (q.elems + 24) as ptr<u8> n * 8;
+		q.elem_len is n;
+		q.length is n;
+	[end]
+
+	[ResolveHead: ptr<JsGen> g: 0; u64 v: 0; bln done_now: false;]
+		ptr<JsObj> q: g.queue;
+		u64 p: q.elems:2;
+		call Shift: g;
+		call JsPromises.Resolve: (JsV.AsObj: p) as ptr<JsPromiseObj> (JsBuiltins.IterResult: v done_now);
+	[end]
+
+	[RejectHead: ptr<JsGen> g: 0; u64 v: 0;]
+		ptr<JsObj> q: g.queue;
+		u64 p: q.elems:2;
+		call Shift: g;
+		call JsPromises.Reject: (JsV.AsObj: p) as ptr<JsPromiseObj> v;
+	[end]
+
+	# ASYNC_GEN_YIELD: [value]
+	[Yield]
+		ptr<JsGen> g: JsVm.fr.gen;
+		JsVm.sp-- 8;
+		u64 v: JsVm.sp:0;
+		call JsVm.SaveFrame: g;
+		g.state is JsVm.GS_YIELD;
+		call ResolveHead: g v false;
+	[end: (JsVm.DoReturn: JsV.UNDEF)]
+
+	# in yield*: [result] from an async delegate is passed on by its value
+	[YieldDelegate: u64 result: 0;]
+		ptr<JsGen> g: JsVm.fr.gen;
+		u64 v: (JsObjs.GetAtom: (JsV.AsObj: result) JsRt.A.value as ptr<u8> result);
+		JsVm.sp-- 8;
+		call JsVm.SaveFrame: g;
+		g.state is JsVm.GS_YIELD;
+		call ResolveHead: g v false;
+	[end: (JsVm.DoReturn: JsV.UNDEF)]
+
+	# GEN_RET: [value]
+	[OpGenReturn]
+		ptr<JsGen> g: JsVm.fr.gen;
+		JsVm.sp-- 8;
+		u64 v: JsVm.sp:0;
+		g.state is JsVm.GS_DONE;
+		call ResolveHead: g v true;
+	[end: (JsVm.DoReturn: JsV.UNDEF)]
+
+	# works through the queue as far as it can without waiting
+	[Drain: ptr<JsGen> g: 0;]
+		while g.queue is not 0 and g.queue.elem_len > 0
+			u32 st: g.state;
+			if st is JsVm.GS_RUNNING or st is JsVm.GS_AWAITING_RETURN return;
+			ptr<JsObj> q: g.queue;
+			u32 mode: q.elems:0 as u32;
+			u64 value: q.elems:1;
+			if st is JsVm.GS_START and mode is not JsVm.RM_NEXT
+				g.state is JsVm.GS_DONE;
+				st is JsVm.GS_DONE;
+			;;
+			if st is JsVm.GS_DONE
+				if mode is JsVm.RM_NEXT
+					call ResolveHead: g JsV.UNDEF true;
+					continue;
+				;;
+				if mode is JsVm.RM_THROW
+					call RejectHead: g value;
+					continue;
+				;;
+				# return(v) on a finished generator waits for v
+				g.state is JsVm.GS_AWAITING_RETURN;
+				JsTryState t;
+				call Js.TryBegin: addr t;
+				u64 p: 0;
+				if call p is JsPromises.PromiseResolve: (JsV.Obj: JsRt.P.promise_ctor) value throws err
+					u64 thrown: (Js.TryCatch: addr t err);
+					g.state is JsVm.GS_DONE;
+					call RejectHead: g thrown;
+					continue;
+				;;
+				ptr<JsReaction> r: (JsPromises.NewReaction);
+				r.what is JsPromises.R_ASYNC_RETURN;
+				r.gen is g;
+				call JsPromises.Attach: (JsV.AsObj: p) as ptr<JsPromiseObj> r;
+				return;
+			;;
+			# (the head stays until the generator yields or returns)
+			call JsVm.ResumeGen: g mode value;
+		;;
+	[end]
+
+	[ReturnSettled: ptr<JsGen> g: 0; u32 state: 0; u64 v: 0;]
+		g.state is JsVm.GS_DONE;
+		if state is JsPromises.REJECTED
+			call RejectHead: g v;
+		;;
+		else
+			call ResolveHead: g v true;
+		;;
+		call Drain: g;
+	[end]
+
+	[Enqueue: ptr<u64> args: 0; int argc: 0; u32 mode: 0;]
+		ptr<JsPromiseObj> p: (JsPromises.New: JsRt.P.promise);
+		u64 pv: (JsV.Obj: p as ptr<JsObj>);
+		u64 t: args:(-1);
+		bln ok: false;
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.kind is JsGc.K_GENERATOR and o.data is not 0
+				ptr<JsGen> check: o.data as ptr<JsGen>;
+				ok is check.is_async_gen;
+			;;
+		;;
+		if not ok
+			call JsPromises.Reject: p (JsV.Obj: (JsErr.Make: JsRt.P.type_error 'not an async generator'));
+			return pv;
+		;;
+		ptr<JsObj> go: (JsV.AsObj: t);
+		ptr<JsGen> g: go.data as ptr<JsGen>;
+		ptr<JsObj> q: (QueueFor: g);
+		call JsObjs.ArrayPush: q (JsV.Int: mode as int);
+		call JsObjs.ArrayPush: q (Js.Arg: args argc 0);
+		call JsObjs.ArrayPush: q pv;
+		call JsVm.CheckStack: 1;
+		JsVm.sp:0 is pv;
+		JsVm.sp++ 8;
+		if g.state is not JsVm.GS_RUNNING and g.state is not JsVm.GS_AWAITING_RETURN and q.elem_len is 3
+			call Drain: g;
+		;;
+		JsVm.sp-- 8;
+	[end: pv]
+
+	[GenNext: ptr<u64> args: 0; int argc: 0;]
+	[end: (Enqueue: args argc JsVm.RM_NEXT)]
+
+	[GenReturn: ptr<u64> args: 0; int argc: 0;]
+	[end: (Enqueue: args argc JsVm.RM_RETURN)]
+
+	[GenThrow: ptr<u64> args: 0; int argc: 0;]
+	[end: (Enqueue: args argc JsVm.RM_THROW)]
+
+	# ---- for await ----
+
+	# [iterable] -> an async iterator in slot, its next in slot + 1
+	[GetAsyncIter: u32 slot: 0;]
+		u64 v: JsVm.sp:(-1);
+		if v is JsV.UNDEF or v is JsV.NULL
+			call JsErr.Type: 'value is not async iterable';
+		;;
+		u64 m: (JsOps.GetMethod: v JsRt.S.asyncIterator as ptr<u8>);
+		u64 it: JsV.UNDEF;
+		if m is JsV.UNDEF
+			u64 sm: (JsOps.GetMethod: v JsRt.S.iterator as ptr<u8>);
+			if sm is JsV.UNDEF
+				call JsErr.Type: 'value is not async iterable';
+			;;
+			u64 sync: (JsVm.Call0: sm v);
+			if not (JsV.IsObj: sync)
+				call JsErr.Type: 'Result of the Symbol.iterator method is not an object';
+			;;
+			ptr<JsObj> wrap: (JsObjs.NewWithProto: JsRt.P.async_from_sync_iterator);
+			wrap.slot is sync;
+			wrap.data is 0;
+			call JsObjs.DefineValue: wrap JsRt.A.target as ptr<u8> (JsObjs.GetAtom: (JsV.AsObj: sync) JsRt.A.next as ptr<u8> sync) 0;
+			it is (JsV.Obj: wrap);
+		;;
+		else
+			it is (JsVm.Call0: m v);
+			if not (JsV.IsObj: it)
+				call JsErr.Type: 'Result of the Symbol.asyncIterator method is not an object';
+			;;
+		;;
+		JsVm.bp:slot is it;
+		JsVm.bp:(slot + 1) is (JsObjs.GetAtom: (JsV.AsObj: it) JsRt.A.next as ptr<u8> it);
+		JsVm.sp-- 8;
+	[end]
+
+	# a sync iterator's result turned into a promise of one, with its value awaited
+	[Continue: u64 result: 0; ptr<JsReaction> cap: 0;]
+		if not (JsV.IsObj: result)
+			call JsErr.Type: 'Iterator result is not an object';
+		;;
+		ptr<JsObj> ro: (JsV.AsObj: result);
+		bln done_now: (JsOps.ToBool: (JsObjs.GetAtom: ro JsRt.A.done as ptr<u8> result));
+		u64 value: (JsObjs.GetAtom: ro JsRt.A.value as ptr<u8> result);
+		u64 wrapper: (JsPromises.PromiseResolve: (JsV.Obj: JsRt.P.promise_ctor) value);
+		ptr<JsNativeFn> un: (JsObjs.NewNative: addr Unwrap 0 1 false);
+		un.data is (JsV.Bool: done_now);
+		ptr<JsReaction> r: (JsPromises.NewReaction);
+		r.on_fulfilled is (JsV.Obj: un as ptr<JsObj>);
+		r.promise is cap.promise;
+		r.resolve is cap.resolve;
+		r.reject is cap.reject;
+		call JsPromises.Attach: (JsV.AsObj: wrapper) as ptr<JsPromiseObj> r;
+	[end]
+
+	[Unwrap: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> f: (Js.CalleeOf: args);
+	[end: (JsBuiltins.IterResult: (Js.Arg: args argc 0) f.data is JsV.TRUE)]
+
+	[SyncCall: ptr<u64> args: 0; int argc: 0; ptr<JsStr> which: 0;]
+		ptr<JsObj> wrap: (JsV.AsObj: args:(-1));
+		u64 sync: wrap.slot;
+		ptr<JsPromiseObj> p: (JsPromises.New: JsRt.P.promise);
+		ptr<JsReaction> cap: (JsPromises.NewReaction);
+		cap.promise is (JsV.Obj: p as ptr<JsObj>);
+		call JsVm.CheckStack: 1;
+		JsVm.sp:0 is cap.promise;
+		JsVm.sp++ 8;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		if call SyncStep: wrap sync args argc which cap throws err
+			call JsPromises.Reject: p (Js.TryCatch: addr t err);
+		;;
+		JsVm.sp-- 8;
+	[end: cap.promise]
+
+	[SyncStep: ptr<JsObj> wrap: 0; u64 sync: 0; ptr<u64> args: 0; int argc: 0; ptr<JsStr> which: 0; ptr<JsReaction> cap: 0;]
+		u64 m: 0;
+		if which is JsRt.A.next
+			m is (JsObjs.GetAtom: wrap JsRt.A.target as ptr<u8> (JsV.Obj: wrap));
+		;;
+		else
+			m is (JsOps.GetMethod: sync which as ptr<u8>);
+			if m is JsV.UNDEF
+				if which is JsRt.A.return_
+					call JsPromises.Resolve: (JsV.AsObj: cap.promise) as ptr<JsPromiseObj> (JsBuiltins.IterResult: (Js.Arg: args argc 0) true);
+					return;
+				;;
+				call JsPromises.Reject: (JsV.AsObj: cap.promise) as ptr<JsPromiseObj> (Js.Arg: args argc 0);
+				return;
+			;;
+		;;
+		u64 r: 0;
+		if argc > 0
+			r is (JsVm.Call1: m sync args:0);
+		;;
+		else
+			r is (JsVm.Call0: m sync);
+		;;
+		call Continue: r cap;
+	[end]
+
+	[SyncNext: ptr<u64> args: 0; int argc: 0;]
+	[end: (SyncCall: args argc JsRt.A.next)]
+
+	[SyncReturn: ptr<u64> args: 0; int argc: 0;]
+	[end: (SyncCall: args argc JsRt.A.return_)]
+
+	[SyncThrow: ptr<u64> args: 0; int argc: 0;]
+	[end: (SyncCall: args argc JsRt.A.throw_)]
+}

@@ -1,0 +1,50 @@
+# A native's way through an iterable, by the protocol: what Array.from, new Map(), new Set() and the
+# like need. The iterator stays on the value stack, so it's safe in a gc_safe native, and if the body
+# throws, the iterator is closed before the error goes on.
+#
+#   call JsIter.Each: iterable addr Body addr my_state;
+#
+#   [Body: u64 item: 0; ptr<u8> state: 0;]
+#       # ...
+#   [end]
+
+phi.JsIter:Library
+{
+	[Each: u64 iterable: 0; method<u64 ptr<u8>> body: 0; ptr<u8> state: 0;]
+		call JsVm.GetIterValues: iterable;
+		ptr<u64> st: JsVm.sp - 16;
+		bln live: false;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		if call Loop: st body state addr live throws err
+			u64 thrown: (Js.TryCatch: addr t err);
+			if live
+				JsTryState t2;
+				call Js.TryBegin: addr t2;
+				if call JsVm.CloseCall: st:0 throws err2
+					call Js.TryCatch: addr t2 err2;
+				;;
+			;;
+			call JsErr.Throw: thrown;
+		;;
+	[end]
+
+	# `live` is true only while the body runs: a failure of next() itself closes nothing
+	[Loop: ptr<u64> st: 0; method<u64 ptr<u8>> body: 0; ptr<u8> state: 0; ptr<bln> live: 0;]
+		while true
+			call Js.Checkpoint;
+			u64 r: (JsVm.Call0: st:1 st:0);
+			if not (JsV.IsObj: r)
+				call JsErr.Type: 'Iterator result is not an object';
+			;;
+			ptr<JsObj> ro: (JsV.AsObj: r);
+			if (JsOps.ToBool: (JsObjs.GetAtom: ro JsRt.A.done as ptr<u8> r))
+				return;
+			;;
+			u64 item: (JsObjs.GetAtom: ro JsRt.A.value as ptr<u8> r);
+			live:0 is true;
+			call body: item state;
+			live:0 is false;
+		;;
+	[end]
+}

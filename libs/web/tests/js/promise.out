@@ -1,0 +1,27 @@
+false true
+true true true
+TypeError
+TypeError
+TypeError
+[object Promise] function 1 Promise
+resolved 1
+rejected 2
+first wins 3
+executor threw 6
+finally 1
+finally 2
+all empty 0
+not iterable: TypeError
+finally threw 10
+from thenable thenable
+self: TypeError
+all rejected no
+fulfilled 1 rejected 2
+race fast
+any 2
+AggregateError 1
+passed skip
+from promise inner
+all 1,2,3
+through finally 7
+rejection through finally 8

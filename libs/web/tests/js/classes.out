@@ -1,0 +1,32 @@
+2 3 5 BA A(2)
+5
+true true true
+function A B 1 2
+constructor,double,who,toString
+true true
+TypeError: Class constructor cannot be invoked without new
+ReferenceError: Cannot access a variable before initialization
+ReferenceError: Super constructor may only be called once
+ReferenceError: Cannot access a variable before initialization
+TypeError: Derived constructors may only return object or undefined
+1
+TypeError: Super constructor is not a constructor
+TypeError: Class extends value is not a constructor or null
+key1,key2,key3,static2,defined,init1,init3
+6 7 7 true 4
+21
+5,105,10 1 2 true false
+TypeError: Cannot read a private member from an object whose class did not declare it
+0
+TypeError: Private method is not writable
+1 2 3
+0 false
+TypeError: who is not a constructor
+1 si dyn g dyn
+E1 Named true
+TypeError: Assignment to constant variable.
+true false function
+ND
+true boom 1 [object Error]
+3 6 true
+base hi! base hi

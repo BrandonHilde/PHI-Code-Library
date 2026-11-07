@@ -1,0 +1,136 @@
+-- serializer
+<p title="a&amp;b&nbsp;&quot;&lt;&gt;'">x &amp; y &lt; z &gt; &nbsp;"'</p>
+<br><img src="x"><hr><input><wbr><area><embed><basefont><bgsound><keygen><param><source><track>x
+<table><colgroup><col></colgroup><tbody><tr><td>x</td></tr></tbody></table>
+<style>a<b&c</style><script>a<b&c</script><xmp>a<b&c</xmp><iframe>a<b&c</iframe><noembed>a<b&c</noembed><noframes>a<b&c</noframes>
+<plaintext>a<b&c</plaintext>
+<noscript><p>a&amp;b</p></noscript>
+<noscript><p>a&b</p></noscript>
+<!-- a&b --><?target some data?>
+<pre>\nx</pre><textarea>\nx</textarea><listing>\nx</listing>
+<template><p>a<template><b>c</b></template></p></template>x
+<svg viewBox="0 0 1 1" xlink:href="a" xml:lang="b" xmlns="c" xmlns:xlink="d"><foreignObject><p>x</p></foreignObject><clipPath></clipPath></svg>
+<math definitionURL="a"><mi>x</mi></math>
+document: <!DOCTYPE html><html><head><title>t</title></head><body></body></html>
+outer: <title>t</title>|t|<!DOCTYPE html>
+void inner [0] <br>
+long text 600007
+-- fragments
+div type 11 doc 1 ctx-kids 1: <p>a</p><p>b<script>c</script></p>
+td type 11 doc 1 ctx-kids 1: ab
+tr type 11 doc 1 ctx-kids 1: <td>a</td>b
+table type 11 doc 1 ctx-kids 1: a<tbody><tr><td>bc</td></tr></tbody>
+select type 11 doc 1 ctx-kids 1: <option>a</option><option>b</option>
+template type 11 doc 1 ctx-kids 1: <tr><td>a</td></tr>
+textarea type 11 doc 1 ctx-kids 1: &lt;b&gt;a&lt;/textarea&gt;&lt;/b&gt;
+title type 11 doc 1 ctx-kids 1: &lt;b&gt;a&amp;&lt;/title&gt;
+style type 11 doc 1 ctx-kids 1: &lt;b&gt;a&amp;amp;&lt;/style&gt;
+script type 11 doc 1 ctx-kids 1: &lt;b&gt;a&amp;amp;&lt;/script&gt;
+plaintext type 11 doc 1 ctx-kids 1: &lt;b&gt;a&amp;amp;&lt;/plaintext&gt;
+noscript type 11 doc 1 ctx-kids 1: &lt;b&gt;a&lt;/b&gt;
+noscript type 11 doc 1 ctx-kids 1: <b>a</b>
+html type 11 doc 1 ctx-kids 1: <head><title>a</title></head><body>b</body>
+head type 11 doc 1 ctx-kids 1: <title>a</title><p>b</p>
+frameset type 11 doc 1 ctx-kids 1: <frame>
+svg type 11 doc 1 ctx-kids 1: <circle></circle><title>a</title><div>b</div>
+title type 11 doc 1 ctx-kids 1: <div>a</div>b
+mi type 11 doc 1 ctx-kids 1: <mglyph></mglyph><div>a</div>
+annotation-xml type 11 doc 1 ctx-kids 1: <svg></svg><div>a</div>
+no context 1
+in a form: <p>a</p>
+already started 1
+-- chunks
+<!DOCTYPE html><html><head></head><body><div id="a" class="b c" data-x="&amp;\xc2\xacx">t&amp;\xe2\x88\x89AA<!-- c --><!--[CDATA[d]]--><?p i?></div><svg>e</svg><script><!--<script></script>--></script><title>a&amp;</title></body></html>
+<!DOCTYPE html><html><head></head><body><div id="a" class="b c" data-x="&amp;\xc2\xacx">t&amp;\xe2\x88\x89AA<!-- c --><!--[CDATA[d]]--><?p i?></div><svg>e</svg><script><!--<script></script>--></script><title>a&amp;</title></body></html>
+<!DOCTYPE html><html><head></head><body><div id="a" class="b c" data-x="&amp;\xc2\xacx">t&amp;\xe2\x88\x89AA<!-- c --><!--[CDATA[d]]--><?p i?></div><svg>e</svg><script><!--<script></script>--></script><title>a&amp;</title></body></html>
+<!DOCTYPE html><html><head></head><body><div id="a" class="b c" data-x="&amp;\xc2\xacx">t&amp;\xe2\x88\x89AA<!-- c --><!--[CDATA[d]]--><?p i?></div><svg>e</svg><script><!--<script></script>--></script><title>a&amp;</title></body></html>
+<!DOCTYPE html><html><head></head><body><div id="a" class="b c" data-x="&amp;\xc2\xacx">t&amp;\xe2\x88\x89AA<!-- c --><!--[CDATA[d]]--><?p i?></div><svg>e</svg><script><!--<script></script>--></script><title>a&amp;</title></body></html>
+no element yet: 1
+split tag: <html><head></head><body><div class="x">y</div>z</body></html>
+-- decoding
+bom same 1: a\xef\xbb\xbfb
+crlf same 1: a\nb\nc\n\nd\n
+cr ref same 1: a\x0db\x0d\nc
+utf8 same 1: a\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80
+stray same 1: a\xef\xbf\xbdb\xef\xbf\xbdc
+overlong same 1: a\xef\xbf\xbd\xef\xbf\xbdb\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbdc
+surrogate same 1: a\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbdb
+cut same 1: a\xef\xbf\xbdb\xef\xbf\xbdc
+past same 1: a\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbdb
+at the end same 1: a\xef\xbf\xbd
+nul: <html><head></head><body><p>ab</p></body></html>
+nul: <html><head></head><body><a\xef\xbf\xbdb c\xef\xbf\xbdd="e\xef\xbf\xbdf" g="h\xef\xbf\xbdi" j="k\xef\xbf\xbdl"><!--m\xef\xbf\xbdn--><!--o\xef\xbf\xbdp--></a\xef\xbf\xbdb></body></html>
+nul: <!DOCTYPE a\xef\xbf\xbdb><html><head></head><body></body></html>
+nul: <html><head><title>a\xef\xbf\xbdb</title><style>c\xef\xbf\xbdd</style><script>e\xef\xbf\xbdf</script></head><body><svg>g\xef\xbf\xbdhi\xef\xbf\xbdj</svg></body></html>
+nul: <html><head></head><body>ab<table><tbody><tr></tr></tbody></table></body></html>
+nul: <html><head></head><frameset><frame></frameset></html>
+\xe2\x82\xac\xe2\x82\xac\xe2\x80\x93\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbe\xf0\x9f\x98\x80\x01A
+&amp; &amp;x \xe2\x88\x89 \xc2\xacit; \xe2\x89\x82\xcc\xb8 &amp;unknown; &amp;
+<a href="?a=1&amp;amp=2&amp;ampx=3&amp;x\xe2\x88\x89"></a>
+-- scripts
+no writing calls 1 failed 0 doc: <html><head><script>a</script></head><body>b</body></html>
+write calls 1 failed 0 doc: <html><head></head><body>a<script>b</script>bc</body></html>
+write markup calls 1 failed 0 doc: <html><head></head><body>a<script><b>x</b></script><b>x</b>d</body></html>
+split calls 1 failed 0 doc: <html><head><script>s</script></head><body><div id="x">[y]</div>z</body></html>
+feed in script calls 1 failed 0 doc: <html><head><script>s</script></head><body>WROTEtailFED</body></html>
+finish in script calls 1 failed 0 doc: <html><head><script>s</script></head><body>WXtail</body></html>
+nesting calls 200 failed 0 doc: <html><head><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script><script>s</script></head><body>end</body></html>
+throw calls 1 failed 1 doc: <html><head></head><body>a<script>s</script></body></html>
+svg calls 1 failed 0 doc: <html><head></head><body><svg><script>w</script>wt</svg></body></html>
+svg self-closed calls 1 failed 0 doc: <html><head></head><body><svg><script></script>t</svg></body></html>
+svg with an end tag calls 1 failed 0 doc: <html><head></head><body><svg><script>a</script></svg></body></html>
+svg without calls 0 failed 0 doc: <html><head></head><body><svg><script>a</script></svg></body></html>
+svg, bogus end tag inside calls 1 failed 0 doc: <html><head></head><body><svg><script>a</script></svg></body></html>
+svg, ended by breakout calls 0 failed 0 doc: <html><head></head><body><svg><script>a</script></svg><s></s></body></html>
+cycle failed 0 body [] fb in tree 0 ca in tree 0 fb parent 0
+cycle, inner loop failed 0 body [] fb in tree 0 ca in tree 0 fb parent 1
+cycle, template failed 0 body [] fb in tree 0 ca in tree 0 fb parent 0
+this document: <html><head></head><body></body></html>
+the other: <table><tbody><tr><script>s</script></tr></tbody></table>
+unclosed calls 0 failed 0 doc: <html><head><script>never</script></head><body></body></html>
+paused: <html><head></head><body>a<script>s</script></body></html>
+still paused: <html><head></head><body>a<script>s</script></body></html>
+resumed: <html><head></head><body>a<script>s</script>wb<i>c</i></body></html>
+finished 1 pauses 1
+own doc 1
+own: <html><head></head><body>x</body></html>
+changes seen 1 version moved 1
+-- quirks (full, limited)
+1 0 <p>no doctype
+0 0 <!doctype html>
+0 0 <!DOCTYPE HTML>
+1 0 <!doctype htm>
+1 0 <!doctype>
+0 0 <!doctype html system "about:legacy-compat">
+0 0 <!doctype html public "-//W3C//DTD HTML 4.01//EN">
+1 0 <!doctype html public "-//W3C//DTD HTML 4.01 Transitional//EN">
+0 1 <!doctype html public "-//W3C//DTD HTML 4.01 Transitional//EN" "x">
+1 0 <!doctype html public "-//W3C//DTD HTML 4.01 Frameset//EN">
+1 0 <!doctype html public "-//w3c//dtd html 4.01 frameset//en" "">
+0 1 <!doctype html public "-//W3C//DTD HTML 4.01 Frameset//EN" "x">
+0 1 <!doctype html public "-//W3C//DTD XHTML 1.0 Transitional//EN" "x">
+0 1 <!doctype html public "-//W3C//DTD XHTML 1.0 Frameset//EN">
+0 0 <!doctype html public "-//W3C//DTD XHTML 1.0 Strict//EN">
+1 0 <!doctype html public "HTML">
+1 0 <!doctype html public "html" "x">
+1 0 <!doctype html public "-//W3O//DTD W3 HTML Strict 3.0//EN//">
+1 0 <!doctype html public "-/W3C/DTD HTML 4.0 Transitional/EN">
+1 0 <!doctype html public "-//IETF//DTD HTML//extra">
+1 0 <!doctype html public "-//O'Reilly and Associates//DTD HTML 2.0//">
+1 0 <!doctype html system "http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd">
+1 0 <!doctype html system "HTTP://WWW.IBM.COM/DATA/DTD/V11/IBMXHTML1-TRANSITIONAL.DTD">
+1 0 <!doctype html x>
+1 0 <!doctype html public>
+<p><table></table></p>
+<p></p><table></table>
+quirky fragment: <p><table></table></p> quirks stays 1
+-- names
+div 1 unknown 0
+tag div number 1 id 1 class 1
+svg ns 1 child clipPath
+-- errors
+empty: <html><head></head><body></body></html>
+<p a="1" b="3"></p>
+attributes 50 first a7 7 a49 49
+serialize nothing 0 0
+done

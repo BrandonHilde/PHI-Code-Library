@@ -1,0 +1,378 @@
+# Hostile input must never take the parser down. A fixed seed, so a failure can be run again:
+# random bytes, random markup from a dictionary, and real test inputs with bytes changed, fed in
+# random pieces, as documents and as fragments, with scripts that write more. Whatever goes in, the
+# tree that comes out must be sound (parents, siblings and the node count agree), it must serialize,
+# and what that gives must parse too. The checksum is of everything the serializer wrote, so the
+# two targets agreeing on it means they built the same trees.
+#
+#   phi test . -f test_html_fuzz --target windows64
+#   phi run test_html_fuzz.phi --target windows64 -- 200000      # more of them
+use weblib;
+use html.parser;
+
+phi.TestHtmlFuzz:Program
+{
+	u32 seed: 0x1234ABCD;
+	u32 total_docs: 0;
+	u32 total_bytes: 0;
+	u32 total_nodes: 0;
+	u32 failures: 0;
+	u32 unsound: 0;
+	u32 scripts_seen: 0;
+	u32 checksum: 2166136261;
+	WlBuf input;
+	WlBuf output;
+	WlBuf tree_text;
+	ptr<u8> corpus: 0;
+	u32 corpus_size: 0;
+	u32 script_mode: 0;
+
+	ptr<u8> words: '<div> </div> <p> </p> <b> </b> <i> </i> <a> </a> <a href=x> <table> </table> <tr> </tr> <td> </td> <th> <tbody> </tbody> <thead> <tfoot> <caption> </caption> <col> <colgroup> </colgroup> <form> </form> <input> <input type=hidden> <select> </select> <option> </option> <optgroup> <selectedcontent> </selectedcontent> <button> </button> <template> </template> <script> </script> <style> </style> <title> </title> <textarea> </textarea> <xmp> <iframe> </iframe> <noscript> </noscript> <noframes> <noembed> <plaintext> <head> </head> <body> </body> <html> </html> <frameset> </frameset> <frame> <svg> </svg> <math> </math> <mi> </mi> <mo> <mtext> <annotation-xml> </annotation-xml> <annotation-xml encoding=text/html> <foreignObject> </foreignObject> <desc> </desc> <mglyph> <malignmark> <circle/> <font color=red> </font> <font> <nobr> </nobr> <h1> </h1> <h2> <li> </li> <ul> </ul> <ol> <dd> </dd> <dt> <pre> <listing> <marquee> </marquee> <object> </object> <applet> <br> </br> <hr> <img> <image> <rb> <rt> <rp> <rtc> <ruby> </ruby> <!-- --> <!-- --!> <!doctype html> <!doctype <![CDATA[ ]]> <? ?> <?a b?> &amp; &amp &notin; &#65; &#x41; &#0; &#x110000; &# & < > </ <a a a=1 b=\'2\' c="3"/> " \' = / x y text \n \t \xC3\xA9 \xFF \xE2\x82 <!--<script> <script><!-- --></script>';
+
+	call Weblib.Start: 900000;
+	u32 rounds: 30000;
+	ptr<u8> args: (OS.Arguments);
+	if args is not 0 and args:0 is not 0
+		rounds is 0;
+		u32 a: 0;
+		while (WlText.IsDigit: args:a)
+			rounds is rounds * 10 + args:a - '0';
+			a++;
+		;;
+	;;
+	call LoadCorpus;
+	u32 word_count: (CountWords);
+	while u32 r: 0; r < rounds; r++;
+		call input.Clear;
+		u32 kind: r % 3;
+		if kind is 0
+			call RandomBytes;
+		;;
+		elif kind is 1
+			call RandomWords: word_count;
+		;;
+		else
+			call Mutated;
+		;;
+		call OneRun;
+	;;
+	call HostileShapes;
+	log 'runs ' total_docs ' failed ' failures ' unsound ' unsound ' scripts ' scripts_seen ' nodes ' total_nodes ' bytes ' total_bytes ' checksum ' checksum '\n';
+	if failures is 0 and unsound is 0
+		log 'no failures\n';
+	;;
+	exit 0;
+
+	[Rand]
+		u32 x: seed;
+		x is x ^ (x << 13);
+		x is x ^ (x >> 17);
+		x is x ^ (x << 5);
+		seed is x;
+	[end: x]
+
+	[Below: u32 n: 0;]
+		if n is 0 return 0;
+	[end: (Rand) % n]
+
+	[LoadCorpus]
+		ptr<u8> name: 'tests/html5lib/tree-construction/tests1.dat';
+		int size: (OS.FileSize: name);
+		if size <= 0
+			log 'no corpus\n';
+			exit 1;
+		;;
+		corpus is new u8[size as u32 + 1];
+		call OS.ReadFile: name corpus size;
+		corpus_size is size as u32;
+	[end]
+
+	[CountWords]
+		u32 n: 1;
+		u32 i: 0;
+		while words:i is not 0
+			if words:i is ' '
+				n++;
+			;;
+			i++;
+		;;
+	[end: n]
+
+	[RandomBytes]
+		u32 n: (Below: 200);
+		while u32 i: 0; i < n; i++;
+			call input.Add: (Rand) as u8;
+		;;
+	[end]
+
+	# the nth word of the dictionary (slow, and it doesn't matter here)
+	[AddWord: u32 which: 0;]
+		u32 i: 0;
+		u32 w: 0;
+		while w < which
+			if words:i is ' '
+				w++;
+			;;
+			i++;
+		;;
+		u32 start: i;
+		while words:i is not 0 and words:i is not ' '
+			i++;
+		;;
+		call input.AddN: words + start i - start;
+	[end]
+
+	[RandomWords: u32 word_count: 0;]
+		u32 n: (Below: 60);
+		while u32 i: 0; i < n; i++;
+			call AddWord: (Below: word_count);
+			if (Below: 8) is 0
+				call input.Add: ' ';
+			;;
+		;;
+	[end]
+
+	# a stretch of a real test file, with changes
+	[Mutated]
+		u32 start: (Below: corpus_size);
+		u32 n: (Below: 400) + 1;
+		if start + n > corpus_size
+			n is corpus_size - start;
+		;;
+		call input.AddN: corpus + start n;
+		u32 changes: (Below: 8);
+		while u32 i: 0; i < changes; i++;
+			if input.len is 0 break;
+			input.data:(Below: input.len) is (Rand) as u8;
+		;;
+	[end]
+
+	[OnScript: ptr<HtmlParser> p: 0; ptr<DomNode> script: 0;]
+		scripts_seen++;
+		when script_mode
+			is 1
+				call p.Write: '<b>x</b>' 8;
+			;;
+			is 2
+				call p.Write: '<scr' 4;
+				call p.Write: 'ipt>w</script>' 14;
+				script_mode is 0;
+			;;
+			is 3
+				# a script that moves the current node about
+				ptr<DomNode> parent: script.parent;
+				if parent is not 0 and parent.parent is not 0 and parent.parent.type is DomType.ELEMENT
+					call Dom.Remove: parent;
+				;;
+			;;
+			is 4
+				# or takes the whole document element out
+				ptr<DomDocument> d: p.doc;
+				ptr<DomNode> root: (Dom.DocumentElement: d);
+				if root is not 0
+					call Dom.Remove: root;
+				;;
+			;;
+			is 5
+				call p.Pause;
+				call p.Write: 'after' 5;
+				call p.Resume;
+			;;
+		;;
+	[end]
+
+	# every link in the tree agrees with the others, and there are no more nodes than were made
+	[Sound: ptr<DomNode> root: 0; u32 limit: 0;]
+		u32 seen: 0;
+		ptr<DomNode> n: root.first_child;
+		if n is not 0 and n.prev is not 0 return false;
+		while n is not 0
+			seen++;
+			if seen > limit return false;
+			if n.next is not 0
+				if n.next.prev is not n or n.next.parent is not n.parent return false;
+			;;
+			elif n.parent is 0 or n.parent.last_child is not n
+				return false;
+			;;
+			ptr<DomNode> down: n.first_child;
+			if down is not 0
+				if down.parent is not n or down.prev is not 0 return false;
+				n is down;
+				continue;
+			;;
+			while n.next is 0
+				n is n.parent;
+				if n is root or n is 0 return true;
+			;;
+			n is n.next;
+		;;
+	[end: true]
+
+	[CheckTemplates: ptr<DomDocument> d: 0;]
+		# every node the document owns is reachable by the list that frees it; each template's
+		# contents are sound as well
+		ptr<DomNode> n: d.all;
+		while n is not 0
+			if n.type is DomType.ELEMENT and n.content is not 0
+				if n.content.content is not n or (Sound: n.content d.node_count) is false
+					unsound++;
+				;;
+			;;
+			n is n.all_next;
+		;;
+	[end]
+
+	[Feed: ptr<HtmlParser> p: 0; ptr<u8> bytes: 0; u32 size: 0;]
+		u32 style: (Below: 3);
+		if style is 0
+			call p.Feed: bytes size;
+			return;
+		;;
+		u32 at_byte: 0;
+		while at_byte < size
+			u32 n: 1;
+			if style is 2
+				n is (Below: 40) + 1;
+			;;
+			if n > size - at_byte
+				n is size - at_byte;
+			;;
+			call p.Feed: bytes + at_byte n;
+			at_byte is at_byte + n;
+		;;
+	[end]
+
+	[Sum: ptr<u8> text: 0; u32 count: 0;]
+		u32 h: checksum;
+		while u32 i: 0; i < count; i++;
+			h is (h ^ text:i) * 16777619;
+		;;
+		checksum is h;
+	[end]
+
+	[OneRun]
+		total_docs++;
+		total_bytes is total_bytes + input.len;
+		bool_scripting is ((Below: 2) is 1);
+		script_mode is (Below: 6);
+		ptr<DomDocument> d: (Dom.NewDocument);
+		ptr<HtmlParser> p: (HtmlParser.New: d);
+		p.scripting is bool_scripting;
+		p.on_script is addr OnScript;
+		ptr<DomNode> root: d.root;
+		if (Below: 3) is 0
+			# a fragment, in a context of any kind
+			u32 which: (Below: 12);
+			DomNs ns: DomNs.HTML;
+			ptr<u8> name: 'div';
+			when which
+				is 0
+					name is 'table';
+				;;
+				is 1
+					name is 'tr';
+				;;
+				is 2
+					name is 'select';
+				;;
+				is 3
+					name is 'template';
+				;;
+				is 4
+					name is 'textarea';
+				;;
+				is 5
+					name is 'svg';
+					ns is DomNs.SVG;
+				;;
+				is 6
+					name is 'title';
+					ns is DomNs.SVG;
+				;;
+				is 7
+					name is 'mi';
+					ns is DomNs.MATHML;
+				;;
+				is 8
+					name is 'annotation-xml';
+					ns is DomNs.MATHML;
+				;;
+				is 9
+					name is 'html';
+				;;
+				is 10
+					name is 'frameset';
+				;;
+			;;
+			ptr<DomNode> ctx: (Dom.CreateElement: d (WlAtoms.GetZ: name) ns);
+			if call p.SetupFragment: ctx throws err
+				failures++;
+			;;
+			root is p.fragment;
+		;;
+		call Feed: p input.data input.len;
+		call p.Finish;
+		if p.failed
+			failures++;
+			log 'failed at run ' total_docs ': ' p.error '\n';
+		;;
+		call p.Free;
+		total_nodes is total_nodes + d.node_count;
+		if (Sound: root d.node_count) is false
+			unsound++;
+			log 'unsound tree at run ' total_docs '\n';
+		;;
+		call CheckTemplates: d;
+		call output.Clear;
+		if (Html.Serialize: root output bool_scripting) is false
+			failures++;
+		;;
+		call Sum: output.data output.len;
+		call Dom.FreeDocument: d;
+		# what came out goes in again
+		ptr<DomDocument> again: (Html.Parse: output.data output.len bool_scripting);
+		if again is 0
+			failures++;
+		;;
+		else
+			total_nodes is total_nodes + again.node_count;
+			call Dom.FreeDocument: again;
+		;;
+	[end]
+
+	bln bool_scripting: false;
+
+	# a few shapes too large for the random ones to reach: each must simply work
+	[Repeat: ptr<u8> piece: 0; u32 times: 0;]
+		u32 n: (WlText.LenZ: piece);
+		while u32 i: 0; i < times; i++;
+			call input.AddN: piece n;
+		;;
+	[end]
+
+	[Shape: ptr<u8> piece: 0; u32 times: 0;]
+		call input.Clear;
+		call Repeat: piece times;
+		call OneRun;
+	[end]
+
+	[HostileShapes]
+		call Shape: '<div>' 20000;
+		call Shape: '<table>' 5000;
+		call Shape: '<svg>' 20000;
+		call Shape: '<b>' 20000;
+		call Shape: '<a>' 5000;
+		call Shape: '<p><b><i><u></p>' 2000;
+		call Shape: '<b><p></b></p>' 2000;
+		call Shape: '</b><td><template><select>' 2000;
+		call Shape: '<template><tr><td>' 3000;
+		call Shape: '<select><option><selectedcontent>' 500;
+		call Shape: '<![CDATA[<svg>' 3000;
+		call Shape: '<!--' 5000;
+		call Shape: '&' 20000;
+		call Shape: '<a b' 5000;
+		call Shape: '<' 20000;
+		call Shape: '<script>' 2000;
+	[end]
+}

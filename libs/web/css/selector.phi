@@ -1,0 +1,1569 @@
+# Selectors: parsing them, working out their specificity, and matching them against an element.
+#
+# Matching goes right to left. It doesn't recurse on the DOM's depth or on how long a selector is:
+# CssSel.Complex is a loop with two places to go back to, which is all a selector ever needs (a
+# later descendant combinator supersedes an earlier one, as the last * does in a glob), and it means
+# a long chain of descendants can't go exponential. Only selector lists inside selectors (:is, :not,
+# :has, :nth-child(of)) recurse, on how deep the page wrote them, through WlStack.Check.
+
+use memory.mem;
+use core.text;
+use core.buf;
+use core.atoms;
+use core.arena;
+use core.stack;
+use dom.dom;
+use css.tables;
+use css.lexer;
+use css.values;
+use css.vp;
+
+struct.CssSimple
+{
+	ptr<CssSimple> next;
+	ptr<WlAtom> a;          # the name: lowercase for tags and attributes
+	ptr<WlAtom> b;          # the name as written
+	ptr<u8> value;          # an attribute's value
+	ptr<CssSelList> sub;    # :is(...) and the like
+	u32 value_len;
+	int nth_a;
+	int nth_b;
+	u16 pseudo;             # a pseudo-class's keyword
+	u8 kind;                # CssSel.S_*
+	u8 op;                  # CssSel.A_*
+	u8 flag;                # CssSel.AF_*
+}
+
+struct.CssCompound
+{
+	ptr<CssSimple> first;
+	ptr<CssCompound> left;  # the compound before this one, as written
+	u8 comb;                # how that one relates to this one: CssSel.C_*
+}
+
+struct.CssComplex
+{
+	ptr<CssCompound> right;
+	ptr<CssComplex> next;
+	u32 spec;               # a << 20 | b << 10 | c
+	u8 pseudo;              # CssSel.PE_*: the pseudo-element it ends in
+	u8 has_sibling;         # whether a sibling combinator is in it, or in anything in it
+}
+
+struct.CssSelList
+{
+	ptr<CssComplex> first;
+	u32 count;
+}
+
+phi.CssSel:Library
+{
+	const u32 S_TAG: 1;
+	const u32 S_ID: 2;
+	const u32 S_CLASS: 3;
+	const u32 S_ATTR: 4;
+	const u32 S_PSEUDO: 5;
+	const u32 S_ANCHOR: 6;      # the element a :has() is about
+
+	const u32 A_EXISTS: 0;
+	const u32 A_EQ: 1;
+	const u32 A_INCLUDES: 2;
+	const u32 A_DASH: 3;
+	const u32 A_PREFIX: 4;
+	const u32 A_SUFFIX: 5;
+	const u32 A_SUBSTR: 6;
+
+	const u32 AF_I: 1;
+	const u32 AF_S: 2;
+
+	const u32 C_DESCENDANT: 0;
+	const u32 C_CHILD: 1;
+	const u32 C_NEXT: 2;
+	const u32 C_SIBLING: 3;
+
+	const u32 PE_NONE: 0;
+	const u32 PE_BEFORE: 1;
+	const u32 PE_AFTER: 2;
+	const u32 PE_FIRST_LINE: 3;
+	const u32 PE_FIRST_LETTER: 4;
+	const u32 PE_MARKER: 5;
+	const u32 PE_SELECTION: 6;
+	const u32 PE_PLACEHOLDER: 7;
+	const u32 PE_BACKDROP: 8;
+	const u32 PE_UNKNOWN: 9;    # valid to write, like ::-webkit-anything, but matches nothing
+	const u32 PE_COUNT: 9;
+
+	const u32 MAX_NEST: 32;
+	const u32 MAX_COMPOUNDS: 512;
+	const u32 MAX_SPEC: 1023;
+
+	# What a host can tell us: asked with an element and one of these, it answers 1 or 0, or -1
+	# for "look at the attributes as if I weren't here".
+	const u32 ST_HOVER: 1;
+	const u32 ST_ACTIVE: 2;
+	const u32 ST_FOCUS: 3;
+	const u32 ST_FOCUS_VISIBLE: 4;
+	const u32 ST_FOCUS_WITHIN: 5;
+	const u32 ST_VISITED: 6;
+	const u32 ST_TARGET: 7;
+	const u32 ST_CHECKED: 8;
+	const u32 ST_DISABLED: 9;
+	const u32 ST_INDETERMINATE: 10;
+	const u32 ST_VALID: 11;
+	const u32 ST_PLACEHOLDER_SHOWN: 12;
+	const u32 ST_FULLSCREEN: 13;
+	const u32 ST_MODAL: 14;
+	const u32 ST_POPOVER_OPEN: 15;
+	const u32 ST_READ_WRITE: 16;
+
+	method<ptr<DomNode> u32: int> on_state;
+
+	# ---- parsing
+
+	ptr<CssTok> t: 0;
+	ptr<u8> src: 0;
+	u32 pos: 0;
+	u32 stop: 0;
+	u32 nest: 0;
+	ptr<WlArena> arena: 0;
+	bln in_has: false;
+	bln saw_sibling: false;
+	bln saw_has: false;
+
+	# for :scope, while Css.Query is at work
+	ptr<DomNode> scope_node: 0;
+
+	# Tokens from..to as a selector list; 0 if it's invalid.
+	[ParseList: ptr<CssToks> ts: 0; u32 from: 0; u32 to: 0; ptr<WlArena> into_arena: 0;]
+		t is ts.t;
+		src is ts.src;
+		arena is into_arena;
+		nest is 0;
+		in_has is false;
+		saw_sibling is false;
+		saw_has is false;
+	[end: (List: from to false false)]
+
+	[Alloc: u32 size: 0;]
+		ptr<WlArena> a: arena;
+	[end: (a.Alloc: size)]
+
+	# The comma-separated selectors in from..to. A forgiving list drops what it can't read.
+	[List: u32 from: 0; u32 to: 0; bln forgiving: false; bln relative: false;]
+		call WlStack.Check;
+		if nest >= MAX_NEST
+			return 0;
+		;;
+		nest++;
+		ptr<CssSelList> list: (Alloc: sizeof CssSelList) as ptr<CssSelList>;
+		ptr<CssComplex> last: 0;
+		u32 at_from: from;
+		bln failed: false;
+		while at_from <= to
+			u32 comma: at_from;
+			while comma < to and t:comma.type is not CssLex.COMMA
+				comma is (After: comma);
+			;;
+			if comma > to
+				comma is to;
+			;;
+			ptr<CssComplex> c: (ParseComplex: at_from comma relative);
+			if c is 0
+				if forgiving is false
+					failed is true;
+					break;
+				;;
+			;;
+			else
+				if last is 0
+					list.first is c;
+				;;
+				else
+					last.next is c;
+				;;
+				last is c;
+				list.count++;
+			;;
+			at_from is comma + 1;
+		;;
+		nest--;
+		if failed return 0;
+		if list.count is 0 and forgiving is false return 0;
+	[end: list]
+
+	# the index after the component value at i
+	[After: u32 i: 0;]
+		u32 type: t:i.type;
+		if type is CssLex.FUNCTION or type is CssLex.LPAREN or type is CssLex.LBRACKET or type is CssLex.LBRACE
+			return t:i.match + 1;
+		;;
+	[end: i + 1]
+
+	[SkipWs]
+		while pos < stop and t:pos.type is CssLex.WS
+			pos++;
+		;;
+	[end]
+
+	[ParseComplex: u32 from: 0; u32 to: 0; bln relative: false;]
+		u32 saved_pos: pos;
+		u32 saved_stop: stop;
+		pos is from;
+		stop is to;
+		ptr<CssComplex> c: (Alloc: sizeof CssComplex) as ptr<CssComplex>;
+		bln ok: (ComplexBody: c relative);
+		pos is saved_pos;
+		stop is saved_stop;
+		if ok is false return 0;
+	[end: c]
+
+	[ComplexBody: ptr<CssComplex> c: 0; bln relative: false;]
+		call SkipWs;
+		u32 spec: 0;
+		ptr<CssCompound> prev: 0;
+		u32 comb: C_DESCENDANT;
+		u32 count: 0;
+		if relative
+			# :has(> a): the element itself is the first compound
+			prev is (Alloc: sizeof CssCompound) as ptr<CssCompound>;
+			ptr<CssSimple> anchor: (Alloc: sizeof CssSimple) as ptr<CssSimple>;
+			anchor.kind is S_ANCHOR as u8;
+			prev.first is anchor;
+			u32 lead: (Combinator);
+			if lead is not 99
+				comb is lead;
+			;;
+			call SkipWs;
+		;;
+		if pos >= stop return false;
+		while true
+			count++;
+			if count > MAX_COMPOUNDS return false;
+			ptr<CssCompound> one: (Alloc: sizeof CssCompound) as ptr<CssCompound>;
+			one.left is prev;
+			one.comb is comb as u8;
+			if comb is C_NEXT or comb is C_SIBLING
+				saw_sibling is true;
+			;;
+			# (the rightmost compound's comb says how the one before relates to it, so what was
+			# just read is how prev relates to one)
+			u32 spec_here: 0;
+			if (ParseCompound: one addr spec_here c) is false return false;
+			spec is (AddSpec: spec spec_here);
+			prev is one;
+			bln had_space: t:pos.type is CssLex.WS and pos < stop;
+			call SkipWs;
+			if pos >= stop break;
+			if c.pseudo is not 0 return false;
+			u32 next_comb: (Combinator);
+			if next_comb is 99
+				if had_space is false return false;
+				next_comb is C_DESCENDANT;
+			;;
+			call SkipWs;
+			if pos >= stop return false;
+			comb is next_comb;
+		;;
+		c.right is prev;
+		c.spec is spec;
+	[end: true]
+
+	# the combinator here, moving past it; 99 if there isn't one
+	[Combinator]
+		if pos >= stop return 99;
+		ptr<CssTok> tk: addr t:pos;
+		if tk.type is not CssLex.DELIM return 99;
+		u32 c: tk.num as u32;
+		if c is 62
+			pos++;
+			return C_CHILD;
+		;;
+		if c is 43
+			pos++;
+			return C_NEXT;
+		;;
+		if c is 126
+			pos++;
+			return C_SIBLING;
+		;;
+	[end: 99]
+
+	[AddSpec: u32 a: 0; u32 b: 0;]
+		u32 ha: (a >> 20) + (b >> 20);
+		u32 mb: ((a >> 10) & MAX_SPEC) + ((b >> 10) & MAX_SPEC);
+		u32 lc: (a & MAX_SPEC) + (b & MAX_SPEC);
+		if ha > MAX_SPEC
+			ha is MAX_SPEC;
+		;;
+		if mb > MAX_SPEC
+			mb is MAX_SPEC;
+		;;
+		if lc > MAX_SPEC
+			lc is MAX_SPEC;
+		;;
+	[end: (ha << 20) | (mb << 10) | lc]
+
+	[NewSimple: u32 kind: 0;]
+		ptr<CssSimple> s: (Alloc: sizeof CssSimple) as ptr<CssSimple>;
+		s.kind is kind as u8;
+	[end: s]
+
+	# One compound selector, whose simple selectors are put in order with what's quickest to
+	# check first: they're as written except for the tag, which leads anyway.
+	[ParseCompound: ptr<CssCompound> c: 0; ptr<u32> spec: 0; ptr<CssComplex> whole: 0;]
+		ptr<CssSimple> last: 0;
+		u32 parts: 0;
+		if pos >= stop return false;
+
+		# a type selector, or *, with or without a namespace, which is parsed and then ignored
+		ptr<CssTok> tk: addr t:pos;
+		u32 name_at: 0;
+		bln star: false;
+		bln has_name: false;
+		if tk.type is CssLex.IDENT
+			has_name is true;
+			name_at is pos;
+			pos++;
+		;;
+		elif tk.type is CssLex.DELIM and tk.num is 42.0
+			star is true;
+			pos++;
+		;;
+		if pos < stop and t:pos.type is CssLex.DELIM and t:pos.num is 124.0
+			# ns|name, *|name, |name, and the same with *
+			u32 after: pos + 1;
+			if after < stop and (t:after.type is CssLex.IDENT or (t:after.type is CssLex.DELIM and t:after.num is 42.0))
+				star is (t:after.type is CssLex.DELIM);
+				has_name is (star is false);
+				name_at is after;
+				pos is after + 1;
+			;;
+			else
+				return false;
+			;;
+		;;
+		if has_name
+			ptr<CssSimple> s: (NewSimple: S_TAG);
+			s.b is (WlAtoms.Get: t:name_at.text t:name_at.len);
+			s.a is (WlAtoms.GetLower: t:name_at.text t:name_at.len);
+			c.first is s;
+			last is s;
+			spec:0 is spec:0 + 1;
+			parts++;
+		;;
+		elif star
+			parts++;
+		;;
+
+		while pos < stop
+			tk is addr t:pos;
+			u32 type: tk.type;
+			ptr<CssSimple> s2: 0;
+			if type is CssLex.HASH
+				if (tk.flag & CssLex.F_ID) is 0 return false;
+				s2 is (NewSimple: S_ID);
+				s2.a is (WlAtoms.Get: tk.text tk.len);
+				spec:0 is (AddSpec: spec:0 1 << 20);
+				pos++;
+			;;
+			elif type is CssLex.DELIM and tk.num is 46.0
+				pos++;
+				if pos >= stop or t:pos.type is not CssLex.IDENT return false;
+				s2 is (NewSimple: S_CLASS);
+				s2.a is (WlAtoms.Get: t:pos.text t:pos.len);
+				spec:0 is (AddSpec: spec:0 1 << 10);
+				pos++;
+			;;
+			elif type is CssLex.LBRACKET
+				s2 is (Attribute);
+				if s2 is 0 return false;
+				spec:0 is (AddSpec: spec:0 1 << 10);
+			;;
+			elif type is CssLex.COLON
+				pos++;
+				if pos >= stop return false;
+				if t:pos.type is CssLex.COLON
+					pos++;
+					if (PseudoElement: whole true) is false return false;
+					spec:0 is (AddSpec: spec:0 1);
+					parts++;
+					continue;
+				;;
+				# the four that may be written with one colon
+				if t:pos.type is CssLex.IDENT
+					u32 kw: (CssVp.Kw: addr t:pos);
+					if kw is CssK.BEFORE or kw is CssK.AFTER or kw is CssK.FIRST_LINE or kw is CssK.FIRST_LETTER
+						if (PseudoElement: whole false) is false return false;
+						spec:0 is (AddSpec: spec:0 1);
+						parts++;
+						continue;
+					;;
+				;;
+				u32 sp: 0;
+				s2 is (PseudoClass: addr sp);
+				if s2 is 0 return false;
+				spec:0 is (AddSpec: spec:0 sp);
+			;;
+			else
+				break;
+			;;
+			# after a pseudo-element, only pseudo-classes
+			if whole.pseudo is not 0 and s2.kind is not S_PSEUDO as u8 return false;
+			if last is 0
+				c.first is s2;
+			;;
+			else
+				last.next is s2;
+			;;
+			last is s2;
+			parts++;
+		;;
+		if parts is 0 return false;
+	[end: true]
+
+	[PseudoElement: ptr<CssComplex> whole: 0; bln two_colons: true;]
+		if whole.pseudo is not 0 return false;
+		if t:pos.type is not CssLex.IDENT return false;
+		ptr<CssTok> tk: addr t:pos;
+		u32 kw: (CssVp.Kw: tk);
+		u32 pe: 0;
+		when kw
+			is CssK.BEFORE
+				pe is PE_BEFORE;
+			;;
+			is CssK.AFTER
+				pe is PE_AFTER;
+			;;
+			is CssK.FIRST_LINE
+				pe is PE_FIRST_LINE;
+			;;
+			is CssK.FIRST_LETTER
+				pe is PE_FIRST_LETTER;
+			;;
+			is CssK.MARKER
+				pe is PE_MARKER;
+			;;
+			is CssK.SELECTION
+				pe is PE_SELECTION;
+			;;
+			is CssK.PLACEHOLDER
+				pe is PE_PLACEHOLDER;
+			;;
+			is CssK.BACKDROP
+				pe is PE_BACKDROP;
+			;;
+			is CssK.FILE_SELECTOR_BUTTON
+				pe is PE_UNKNOWN;
+			;;
+			else
+				# a -webkit- one is valid wherever it's written, and matches nothing
+				if tk.len > 8 and (WlText.EqNoCase: tk.text 8 '-webkit-' 8)
+					pe is PE_UNKNOWN;
+				;;
+				else
+					return false;
+				;;
+			;;
+		;;
+		whole.pseudo is pe as u8;
+		pos++;
+	[end: true]
+
+	# [ name ], [ ns|name ], [ name op value flag ]
+	[Attribute]
+		u32 close: t:pos.match;
+		if close > stop return 0;
+		u32 saved_stop: stop;
+		pos++;
+		stop is close;
+		ptr<CssSimple> s: (AttributeBody);
+		stop is saved_stop;
+		pos is close + 1;
+	[end: s]
+
+	[AttributeBody]
+		call SkipWs;
+		if pos >= stop return 0;
+		# the name, and a namespace that's skipped
+		if t:pos.type is CssLex.DELIM and t:pos.num is 42.0
+			pos++;
+			if pos >= stop or t:pos.type is not CssLex.DELIM or t:pos.num is not 124.0 return 0;
+			pos++;
+		;;
+		elif t:pos.type is CssLex.DELIM and t:pos.num is 124.0
+			pos++;
+		;;
+		elif t:pos.type is CssLex.IDENT and pos + 2 < stop and t:(pos + 1).type is CssLex.DELIM and t:(pos + 1).num is 124.0 and t:(pos + 2).type is CssLex.IDENT
+			pos++ 2;
+		;;
+		if pos >= stop or t:pos.type is not CssLex.IDENT return 0;
+		ptr<CssSimple> s: (NewSimple: S_ATTR);
+		s.b is (WlAtoms.Get: t:pos.text t:pos.len);
+		s.a is (WlAtoms.GetLower: t:pos.text t:pos.len);
+		pos++;
+		call SkipWs;
+		if pos >= stop
+			s.op is A_EXISTS as u8;
+			return s;
+		;;
+		u32 type: t:pos.type;
+		u32 op: 0;
+		if type is CssLex.DELIM and t:pos.num is 61.0
+			op is A_EQ;
+		;;
+		elif type is CssLex.INCLUDE_MATCH
+			op is A_INCLUDES;
+		;;
+		elif type is CssLex.DASH_MATCH
+			op is A_DASH;
+		;;
+		elif type is CssLex.PREFIX_MATCH
+			op is A_PREFIX;
+		;;
+		elif type is CssLex.SUFFIX_MATCH
+			op is A_SUFFIX;
+		;;
+		elif type is CssLex.SUBSTRING_MATCH
+			op is A_SUBSTR;
+		;;
+		else
+			return 0;
+		;;
+		s.op is op as u8;
+		pos++;
+		call SkipWs;
+		if pos >= stop return 0;
+		if t:pos.type is not CssLex.IDENT and t:pos.type is not CssLex.STRING return 0;
+		s.value is (Text: t:pos.text t:pos.len);
+		s.value_len is t:pos.len;
+		pos++;
+		call SkipWs;
+		if pos < stop
+			if t:pos.type is not CssLex.IDENT or t:pos.len is not 1 return 0;
+			u32 f: (WlText.Lower: t:pos.text:0);
+			if f is 105
+				s.flag is AF_I as u8;
+			;;
+			elif f is 115
+				s.flag is AF_S as u8;
+			;;
+			else
+				return 0;
+			;;
+			pos++;
+			call SkipWs;
+			if pos < stop return 0;
+		;;
+	[end: s]
+
+	[Text: ptr<u8> text: 0; u32 n: 0;]
+		ptr<WlArena> a: arena;
+	[end: (a.Text: text n)]
+
+	# a pseudo-class, in a new CssSimple whose specificity goes in sp
+	[PseudoClass: ptr<u32> sp: 0;]
+		ptr<CssTok> tk: addr t:pos;
+		u32 kw: (CssVp.Kw: tk);
+		sp:0 is 1 << 10;
+		if tk.type is CssLex.IDENT
+			if (IsPlainPseudo: kw) is false return 0;
+			ptr<CssSimple> s: (NewSimple: S_PSEUDO);
+			s.pseudo is kw as u16;
+			pos++;
+			return s;
+		;;
+		if tk.type is not CssLex.FUNCTION return 0;
+		u32 close: tk.match;
+		if close > stop return 0;
+		u32 inner: pos + 1;
+		ptr<CssSimple> f: (NewSimple: S_PSEUDO);
+		f.pseudo is kw as u16;
+		when kw
+			is CssK.IS CssK.WHERE CssK.MATCHES CssK._WEBKIT_ANY CssK._MOZ_ANY
+				if kw is CssK.MATCHES or kw is CssK._WEBKIT_ANY or kw is CssK._MOZ_ANY
+					f.pseudo is CssK.IS as u16;
+				;;
+				f.sub is (List: inner close true false);
+				if f.sub is 0 return 0;
+				if kw is CssK.WHERE
+					sp:0 is 0;
+				;;
+				else
+					sp:0 is (MaxSpec: f.sub);
+				;;
+			;;
+			is CssK.NOT
+				f.sub is (List: inner close false false);
+				if f.sub is 0 return 0;
+				sp:0 is (MaxSpec: f.sub);
+			;;
+			is CssK.HAS
+				if in_has return 0;
+				in_has is true;
+				saw_has is true;
+				f.sub is (List: inner close false true);
+				in_has is false;
+				if f.sub is 0 return 0;
+				sp:0 is (MaxSpec: f.sub);
+			;;
+			is CssK.NTH_CHILD CssK.NTH_LAST_CHILD CssK.NTH_OF_TYPE CssK.NTH_LAST_OF_TYPE
+				u32 saved_pos: pos;
+				u32 saved_stop: stop;
+				pos is inner;
+				stop is close;
+				call SkipWs;
+				bln ok: (CssAnB.Parse: t src addr pos stop);
+				if ok
+					f.nth_a is CssAnB.a;
+					f.nth_b is CssAnB.b;
+					call SkipWs;
+					if pos < stop
+						# of S, for the two that take it
+						ok is ((kw is CssK.NTH_CHILD or kw is CssK.NTH_LAST_CHILD) and t:pos.type is CssLex.IDENT and (CssVp.Kw: addr t:pos) is CssK.OF);
+						if ok
+							f.sub is (List: pos + 1 close false false);
+							ok is (f.sub is not 0);
+							if ok
+								sp:0 is (AddSpec: 1 << 10 (MaxSpec: f.sub));
+							;;
+						;;
+					;;
+				;;
+				pos is saved_pos;
+				stop is saved_stop;
+				if ok is false return 0;
+			;;
+			is CssK.LANG
+				# language ranges, as strings or identifiers, comma separated
+				u32 p: inner;
+				u32 count: 0;
+				while p < close
+					u32 ty: t:p.type;
+					if ty is CssLex.IDENT or ty is CssLex.STRING
+						count++;
+					;;
+					elif ty is not CssLex.WS and ty is not CssLex.COMMA
+						return 0;
+					;;
+					p++;
+				;;
+				if count is 0 return 0;
+				# kept as the text of all of them, each followed by a zero
+				WlBuf list;
+				p is inner;
+				while p < close
+					u32 ty: t:p.type;
+					if ty is CssLex.IDENT or ty is CssLex.STRING
+						call list.AddN: t:p.text t:p.len;
+						call list.Add: 0;
+					;;
+					p++;
+				;;
+				f.value is (Text: list.data list.len);
+				f.value_len is list.len;
+				call list.Free;
+			;;
+			is CssK.DIR
+				u32 p: inner;
+				while p < close and t:p.type is CssLex.WS
+					p++;
+				;;
+				if p >= close or t:p.type is not CssLex.IDENT return 0;
+				u32 d: (CssVp.Kw: addr t:p);
+				if d is not CssK.LTR and d is not CssK.RTL return 0;
+				f.nth_a is d as int;
+				p++;
+				while p < close and t:p.type is CssLex.WS
+					p++;
+				;;
+				if p is not close return 0;
+			;;
+			else
+				return 0;
+			;;
+		;;
+		pos is close + 1;
+	[end: f]
+
+	[MaxSpec: ptr<CssSelList> list: 0;]
+		u32 best: 0;
+		ptr<CssComplex> c: list.first;
+		while c is not 0
+			if c.spec > best
+				best is c.spec;
+			;;
+			c is c.next;
+		;;
+	[end: best]
+
+	[IsPlainPseudo: u32 kw: 0;]
+		when kw
+			is CssK.ROOT CssK.FIRST_CHILD CssK.LAST_CHILD CssK.ONLY_CHILD CssK.FIRST_OF_TYPE CssK.LAST_OF_TYPE CssK.ONLY_OF_TYPE CssK.EMPTY
+				return true;
+			;;
+			is CssK.LINK CssK.ANY_LINK CssK.VISITED CssK.HOVER CssK.ACTIVE CssK.FOCUS CssK.FOCUS_VISIBLE CssK.FOCUS_WITHIN CssK.TARGET
+				return true;
+			;;
+			is CssK.CHECKED CssK.DISABLED CssK.ENABLED CssK.REQUIRED CssK.OPTIONAL CssK.READ_ONLY CssK.READ_WRITE CssK.PLACEHOLDER_SHOWN CssK.DEFAULT
+				return true;
+			;;
+			is CssK.SCOPE CssK.INDETERMINATE CssK.VALID CssK.INVALID CssK.IN_RANGE CssK.OUT_OF_RANGE CssK.DEFINED CssK.FULLSCREEN CssK.MODAL
+				return true;
+			;;
+			is CssK.POPOVER_OPEN CssK.AUTOFILL CssK._WEBKIT_AUTOFILL CssK.USER_VALID CssK.USER_INVALID CssK.PAUSED CssK.PLAYING CssK.PAST CssK.CURRENT CssK.FUTURE
+				return true;
+			;;
+			is CssK.LOCAL_LINK CssK.TARGET_WITHIN CssK.BLANK CssK.HOST
+				return true;
+			;;
+		;;
+	[end: false]
+
+	# ---- matching
+
+	# whether the complex selector matches this element (its pseudo-element, if any, set aside)
+	[Complex: ptr<CssComplex> sel: 0; ptr<DomNode> element: 0;]
+	[end: (MatchFrom: sel.right element)]
+
+	[MatchFrom: ptr<CssCompound> c: 0; ptr<DomNode> e: 0;]
+		# where to go back to: the latest descendant combinator, and a sibling one since
+		ptr<CssCompound> desc_c: 0;
+		ptr<DomNode> desc_e: 0;
+		ptr<CssCompound> sib_c: 0;
+		ptr<DomNode> sib_e: 0;
+		while true
+			if (MatchCompound: c e)
+				ptr<CssCompound> left: c.left;
+				if left is 0 return true;
+				u32 comb: c.comb;
+				if comb is C_DESCENDANT or comb is C_CHILD
+					ptr<DomNode> up: e.parent;
+					if up is 0 or up.type is not DomType.ELEMENT return false;
+					if comb is C_DESCENDANT
+						desc_c is left;
+						desc_e is up;
+					;;
+					sib_c is 0;
+					c is left;
+					e is up;
+					continue;
+				;;
+				ptr<DomNode> before: (Dom.PrevElement: e);
+				if before is not 0
+					if comb is C_SIBLING
+						sib_c is left;
+						sib_e is before;
+					;;
+					c is left;
+					e is before;
+					continue;
+				;;
+				# no sibling to try: the nearest descendant combinator might find one elsewhere
+				sib_c is 0;
+			;;
+			if sib_c is not 0
+				ptr<DomNode> earlier: (Dom.PrevElement: sib_e);
+				if earlier is not 0
+					sib_e is earlier;
+					c is sib_c;
+					e is earlier;
+					continue;
+				;;
+				sib_c is 0;
+			;;
+			if desc_c is 0 return false;
+			ptr<DomNode> further: desc_e.parent;
+			if further is 0 or further.type is not DomType.ELEMENT return false;
+			desc_e is further;
+			c is desc_c;
+			e is further;
+		;;
+	[end: false]
+
+	[MatchCompound: ptr<CssCompound> c: 0; ptr<DomNode> e: 0;]
+		ptr<CssSimple> s: c.first;
+		while s is not 0
+			u32 kind: s.kind;
+			if kind is S_TAG
+				if e.ns is DomNs.HTML
+					if e.tag is not s.a return false;
+				;;
+				elif e.tag is not s.b
+					return false;
+				;;
+			;;
+			elif kind is S_CLASS
+				if (HasClass: e s.a) is false return false;
+			;;
+			elif kind is S_ID
+				if e.id_atom is not s.a
+					if e.doc.quirks is false or e.id_atom is 0 return false;
+					ptr<WlAtom> ida: e.id_atom;
+					ptr<WlAtom> sa: s.a;
+					if (WlText.EqNoCase: ida.text ida.len sa.text sa.len) is false return false;
+				;;
+			;;
+			elif kind is S_ATTR
+				if (Attr: s e) is false return false;
+			;;
+			elif kind is S_ANCHOR
+				if e is not anchor return false;
+			;;
+			elif (Pseudo: s e) is false
+				return false;
+			;;
+			s is s.next;
+		;;
+	[end: true]
+
+	ptr<DomNode> anchor: 0;
+
+	[HasClass: ptr<DomNode> e: 0; ptr<WlAtom> name: 0;]
+		u32 n: e.class_count;
+		ptr<ptr<WlAtom>> list: e.classes;
+		while u32 i: 0; i < n; i++;
+			if list:i is name return true;
+		;;
+		if e.doc.quirks and n > 0
+			while u32 k: 0; k < n; k++;
+				ptr<WlAtom> have: list:k;
+				if (WlText.EqNoCase: have.text have.len name.text name.len) return true;
+			;;
+		;;
+	[end: false]
+
+	[Attr: ptr<CssSimple> s: 0; ptr<DomNode> e: 0;]
+		ptr<DomAttr> a: 0;
+		if e.ns is DomNs.HTML
+			a is (Dom.Attr: e s.a);
+		;;
+		else
+			a is (Dom.Attr: e s.b);
+			if a is 0 and s.a is not s.b
+				a is (Dom.Attr: e s.a);
+			;;
+		;;
+		if a is 0 return false;
+		u32 op: s.op;
+		if op is A_EXISTS return true;
+		bln nocase: false;
+		if s.flag is AF_I as u8
+			nocase is true;
+		;;
+		elif s.flag is 0 and e.ns is DomNs.HTML and (IsCaseless: s.a)
+			nocase is true;
+		;;
+		ptr<u8> v: a.value;
+		u32 n: a.value_len;
+		ptr<u8> w: s.value;
+		u32 m: s.value_len;
+		if op is A_EQ return (Same: v n w m nocase);
+		if op is A_PREFIX
+			if m is 0 or m > n return false;
+			return (Same: v m w m nocase);
+		;;
+		if op is A_SUFFIX
+			if m is 0 or m > n return false;
+			return (Same: v + (n - m) m w m nocase);
+		;;
+		if op is A_SUBSTR
+			if m is 0 or m > n return false;
+			while u32 i: 0; i + m <= n; i++;
+				if (Same: v + i m w m nocase) return true;
+			;;
+			return false;
+		;;
+		if op is A_DASH
+			if (Same: v n w m nocase) return true;
+			if n > m and v:m is 45 return (Same: v m w m nocase);
+			return false;
+		;;
+		# ~=
+		if m is 0 return false;
+		while u32 k: 0; k < m; k++;
+			if (WlText.IsSpace: w:k) return false;
+		;;
+		u32 pos2: 0;
+		while pos2 < n
+			while pos2 < n and (WlText.IsSpace: v:pos2)
+				pos2++;
+			;;
+			u32 from: pos2;
+			while pos2 < n and (WlText.IsSpace: v:pos2) is false
+				pos2++;
+			;;
+			if pos2 - from is m and (Same: v + from m w m nocase) return true;
+		;;
+	[end: false]
+
+	[Same: ptr<u8> a: 0; u32 an: 0; ptr<u8> b: 0; u32 bn: 0; bln nocase: false;]
+		if nocase return (WlText.EqNoCase: a an b bn);
+	[end: (WlText.Eq: a an b bn)]
+
+	# the attributes whose values HTML compares without regard to case
+	ptr<WlAtom> caseless_mark: 0;
+
+	[IsCaseless: ptr<WlAtom> a: 0;]
+		if caseless_mark is 0
+			call MarkCaseless;
+		;;
+	[end: (a.prop & 0x80000000) is not 0]
+
+	[MarkCaseless]
+		ptr<u8> p: 'accept accept-charset align alink axis bgcolor charset checked clear codetype color compact declare defer dir direction disabled enctype face frame hreflang http-equiv lang language link media method multiple nohref noresize noshade nowrap readonly rel rev rules scope scrolling selected shape target text type valign valuetype vlink ';
+		u32 pos2: 0;
+		while p:pos2 is not 0
+			u32 from: pos2;
+			while p:pos2 is not 32
+				pos2++;
+			;;
+			ptr<WlAtom> a: (WlAtoms.Get: p + from pos2 - from);
+			a.prop is a.prop | 0x80000000;
+			caseless_mark is a;
+			pos2++;
+		;;
+	[end]
+
+	# what the host says, or -1
+	[Ask: ptr<DomNode> e: 0; u32 what: 0;]
+		if on_state is 0 return -1;
+	[end: (on_state: e what)]
+
+	[Tagged: ptr<DomNode> e: 0; ptr<u8> name: 0;]
+		if e.ns is not DomNs.HTML return false;
+		ptr<WlAtom> tag: e.tag;
+	[end: (WlText.EqZ: tag.text tag.len name)]
+
+	[IsLinkElement: ptr<DomNode> e: 0;]
+		if e.ns is not DomNs.HTML return false;
+		if (Tagged: e 'a') or (Tagged: e 'area')
+			return (Dom.AttrZ: e 'href') is not 0;
+		;;
+	[end: false]
+
+	[AttrIs: ptr<DomNode> e: 0; ptr<u8> name: 0; ptr<u8> value: 0;]
+		ptr<DomAttr> a: (Dom.AttrZ: e name);
+		if a is 0 return false;
+	[end: (WlText.EqNoCaseZ: a.value a.value_len value)]
+
+	# an <input>'s type, in lowercase, where it decides something
+	[IsInputType: ptr<DomNode> e: 0; ptr<u8> type: 0;]
+		if (Tagged: e 'input') is false return false;
+	[end: (AttrIs: e 'type' type)]
+
+	[Pseudo: ptr<CssSimple> s: 0; ptr<DomNode> e: 0;]
+		u32 kw: s.pseudo;
+		when kw
+			is CssK.IS CssK.WHERE
+				return (AnyOf: s.sub e);
+			;;
+			is CssK.NOT
+				return (AnyOf: s.sub e) is false;
+			;;
+			is CssK.HOVER
+				return (Ask: e ST_HOVER) is 1;
+			;;
+			is CssK.ACTIVE
+				return (Ask: e ST_ACTIVE) is 1;
+			;;
+			is CssK.FOCUS
+				return (Ask: e ST_FOCUS) is 1;
+			;;
+			is CssK.FIRST_CHILD
+				return (Dom.PrevElement: e) is 0;
+			;;
+			is CssK.LAST_CHILD
+				return (Dom.NextElement: e) is 0;
+			;;
+			is CssK.ONLY_CHILD
+				return (Dom.PrevElement: e) is 0 and (Dom.NextElement: e) is 0;
+			;;
+			is CssK.NTH_CHILD CssK.NTH_LAST_CHILD CssK.NTH_OF_TYPE CssK.NTH_LAST_OF_TYPE
+				return (Nth: s e);
+			;;
+			is CssK.FIRST_OF_TYPE
+				return (OfTypeBefore: e) is 0;
+			;;
+			is CssK.LAST_OF_TYPE
+				return (OfTypeAfter: e) is 0;
+			;;
+			is CssK.ONLY_OF_TYPE
+				return (OfTypeBefore: e) is 0 and (OfTypeAfter: e) is 0;
+			;;
+			is CssK.ROOT
+				ptr<DomNode> up: e.parent;
+				return up is not 0 and up.type is DomType.DOCUMENT;
+			;;
+			is CssK.EMPTY
+				return (IsEmpty: e);
+			;;
+			is CssK.HAS
+				return (Has: s.sub e);
+			;;
+			is CssK.SCOPE
+				if scope_node is not 0 return e is scope_node;
+				ptr<DomNode> up: e.parent;
+				return up is not 0 and up.type is DomType.DOCUMENT;
+			;;
+			is CssK.LINK
+				if (IsLinkElement: e) is false return false;
+				return (Ask: e ST_VISITED) is not 1;
+			;;
+			is CssK.ANY_LINK
+				return (IsLinkElement: e);
+			;;
+			is CssK.VISITED
+				if (IsLinkElement: e) is false return false;
+				return (Ask: e ST_VISITED) is 1;
+			;;
+			is CssK.FOCUS_VISIBLE
+				return (Ask: e ST_FOCUS_VISIBLE) is 1;
+			;;
+			is CssK.FOCUS_WITHIN
+				return (FocusWithin: e);
+			;;
+			is CssK.TARGET
+				return (Ask: e ST_TARGET) is 1;
+			;;
+			is CssK.LANG
+				return (Lang: s e);
+			;;
+			is CssK.DIR
+				return (Dir: e) is s.nth_a as u32;
+			;;
+			is CssK.CHECKED
+				return (Checked: e);
+			;;
+			is CssK.INDETERMINATE
+				return (Ask: e ST_INDETERMINATE) is 1;
+			;;
+			is CssK.DISABLED
+				return (IsDisableable: e) and (Disabled: e);
+			;;
+			is CssK.ENABLED
+				return (IsDisableable: e) and (Disabled: e) is false;
+			;;
+			is CssK.REQUIRED
+				return (TakesRequired: e) and (Dom.AttrZ: e 'required') is not 0;
+			;;
+			is CssK.OPTIONAL
+				return (TakesRequired: e) and (Dom.AttrZ: e 'required') is 0;
+			;;
+			is CssK.READ_WRITE
+				return (ReadWrite: e);
+			;;
+			is CssK.READ_ONLY
+				return (ReadWrite: e) is false;
+			;;
+			is CssK.PLACEHOLDER_SHOWN
+				return (PlaceholderShown: e);
+			;;
+			is CssK.DEFAULT
+				return (IsDefault: e);
+			;;
+			is CssK.VALID
+				return (Ask: e ST_VALID) is not 0 and (TakesRequired: e);
+			;;
+			is CssK.INVALID
+				return (Ask: e ST_VALID) is 0;
+			;;
+			is CssK.DEFINED
+				return true;
+			;;
+			is CssK.FULLSCREEN
+				return (Ask: e ST_FULLSCREEN) is 1;
+			;;
+			is CssK.MODAL
+				return (Ask: e ST_MODAL) is 1;
+			;;
+			is CssK.POPOVER_OPEN
+				return (Ask: e ST_POPOVER_OPEN) is 1;
+			;;
+		;;
+	[end: false]
+
+	# whether any selector of the list matches: this is the recursion on selector lists
+	[AnyOf: ptr<CssSelList> list: 0; ptr<DomNode> e: 0;]
+		call WlStack.Check;
+		ptr<CssComplex> c: list.first;
+		while c is not 0
+			if c.pseudo is 0 and (MatchFrom: c.right e) return true;
+			c is c.next;
+		;;
+	[end: false]
+
+	# :has(): walks what's below (and for sibling combinators, beside) the element, in a loop
+	[Has: ptr<CssSelList> list: 0; ptr<DomNode> e: 0;]
+		call WlStack.Check;
+		ptr<DomNode> saved: anchor;
+		anchor is e;
+		bln found: false;
+		ptr<CssComplex> c: list.first;
+		while c is not 0 and found is false
+			ptr<CssCompound> first_real: c.right;
+			while first_real.left is not 0 and first_real.left.left is not 0
+				first_real is first_real.left;
+			;;
+			u32 comb: first_real.comb;
+			ptr<DomNode> root: e;
+			if comb is C_NEXT or comb is C_SIBLING
+				# what's after it, and under those if the selector goes on down
+				ptr<DomNode> sib: (Dom.NextElement: e);
+				while sib is not 0 and found is false
+					ptr<DomNode> n: sib;
+					while n is not 0 and found is false
+						if n.type is DomType.ELEMENT and c.pseudo is 0 and (MatchFrom: c.right n)
+							found is true;
+						;;
+						n is (Dom.Next: n sib);
+					;;
+					sib is (Dom.NextElement: sib);
+				;;
+			;;
+			else
+				ptr<DomNode> n: (Dom.Next: root root);
+				while n is not 0 and found is false
+					if n.type is DomType.ELEMENT and c.pseudo is 0 and (MatchFrom: c.right n)
+						found is true;
+					;;
+					n is (Dom.Next: n root);
+				;;
+			;;
+			c is c.next;
+		;;
+		anchor is saved;
+	[end: found]
+
+	# ---- structure
+
+	[SameType: ptr<DomNode> a: 0; ptr<DomNode> b: 0;]
+	[end: a.tag is b.tag and a.ns is b.ns]
+
+	[OfTypeBefore: ptr<DomNode> e: 0;]
+		ptr<DomNode> c: (Dom.PrevElement: e);
+		while c is not 0
+			if (SameType: c e) return c;
+			c is (Dom.PrevElement: c);
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	[OfTypeAfter: ptr<DomNode> e: 0;]
+		ptr<DomNode> c: (Dom.NextElement: e);
+		while c is not 0
+			if (SameType: c e) return c;
+			c is (Dom.NextElement: c);
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	[IsEmpty: ptr<DomNode> e: 0;]
+		ptr<DomNode> c: e.first_child;
+		while c is not 0
+			if c.type is DomType.ELEMENT return false;
+			if (c.type is DomType.TEXT or c.type is DomType.CDATA) and c.text_len > 0 return false;
+			c is c.next;
+		;;
+	[end: true]
+
+	# so a long list of siblings walked in order doesn't count from its start each time
+	ptr<DomNode> nth_node: 0;
+	u32 nth_index: 0;
+	u32 nth_version: 0;
+	u32 nth_kind: 0;
+	ptr<DomDocument> nth_doc: 0;
+
+	[Nth: ptr<CssSimple> s: 0; ptr<DomNode> e: 0;]
+		u32 kw: s.pseudo;
+		i64 index: 0;
+		if s.sub is not 0
+			if (AnyOf: s.sub e) is false return false;
+			ptr<DomNode> c: 0;
+			index is 1;
+			if kw is CssK.NTH_CHILD
+				c is (Dom.PrevElement: e);
+			;;
+			else
+				c is (Dom.NextElement: e);
+			;;
+			while c is not 0
+				if (AnyOf: s.sub c)
+					index++;
+				;;
+				if kw is CssK.NTH_CHILD
+					c is (Dom.PrevElement: c);
+				;;
+				else
+					c is (Dom.NextElement: c);
+				;;
+			;;
+		;;
+		elif kw is CssK.NTH_CHILD
+			# the one case that's asked for over and over, in document order
+			ptr<DomDocument> doc: e.doc;
+			if nth_doc is doc and nth_version is doc.version and nth_node is not 0 and nth_node.parent is e.parent
+				if nth_node is e
+					index is nth_index;
+				;;
+				elif (Dom.NextElement: nth_node) is e
+					index is nth_index + 1;
+				;;
+			;;
+			if index is 0
+				index is 1;
+				ptr<DomNode> c: (Dom.PrevElement: e);
+				while c is not 0
+					index++;
+					c is (Dom.PrevElement: c);
+				;;
+			;;
+			nth_doc is doc;
+			nth_version is doc.version;
+			nth_node is e;
+			nth_index is index as u32;
+		;;
+		else
+			index is 1;
+			ptr<DomNode> c: 0;
+			if kw is CssK.NTH_LAST_CHILD or kw is CssK.NTH_LAST_OF_TYPE
+				c is (Dom.NextElement: e);
+			;;
+			else
+				c is (Dom.PrevElement: e);
+			;;
+			bln of_type: kw is CssK.NTH_OF_TYPE or kw is CssK.NTH_LAST_OF_TYPE;
+			while c is not 0
+				if of_type is false or (SameType: c e)
+					index++;
+				;;
+				if kw is CssK.NTH_LAST_CHILD or kw is CssK.NTH_LAST_OF_TYPE
+					c is (Dom.NextElement: c);
+				;;
+				else
+					c is (Dom.PrevElement: c);
+				;;
+			;;
+		;;
+		i64 a: s.nth_a;
+		i64 b: s.nth_b;
+		if a is 0 return index is b;
+		i64 diff: index - b;
+		if diff % a is not 0 return false;
+	[end: diff / a >= 0]
+
+	# ---- forms and language
+
+	[Checked: ptr<DomNode> e: 0;]
+		int said: (Ask: e ST_CHECKED);
+		if said is not -1 return said is 1;
+		if (IsInputType: e 'checkbox') or (IsInputType: e 'radio')
+			return (Dom.AttrZ: e 'checked') is not 0;
+		;;
+		if (Tagged: e 'option')
+			return (Dom.AttrZ: e 'selected') is not 0;
+		;;
+	[end: false]
+
+	[IsDisableable: ptr<DomNode> e: 0;]
+		if e.ns is not DomNs.HTML return false;
+	[end: (Tagged: e 'button') or (Tagged: e 'input') or (Tagged: e 'select') or (Tagged: e 'textarea') or (Tagged: e 'optgroup') or (Tagged: e 'option') or (Tagged: e 'fieldset')]
+
+	[Disabled: ptr<DomNode> e: 0;]
+		int said: (Ask: e ST_DISABLED);
+		if said is not -1 return said is 1;
+		if (Dom.AttrZ: e 'disabled') is not 0 return true;
+		if (Tagged: e 'option')
+			ptr<DomNode> up: e.parent;
+			if up is not 0 and up.type is DomType.ELEMENT and (Tagged: up 'optgroup') and (Dom.AttrZ: up 'disabled') is not 0 return true;
+			return false;
+		;;
+		if (Tagged: e 'optgroup') return false;
+		# inside a disabled fieldset, unless inside its first legend
+		ptr<DomNode> under: e;
+		ptr<DomNode> up: e.parent;
+		while up is not 0
+			if up.type is DomType.ELEMENT and (Tagged: up 'fieldset') and (Dom.AttrZ: up 'disabled') is not 0
+				ptr<DomNode> legend: (Dom.FirstElementChild: up);
+				while legend is not 0 and (Tagged: legend 'legend') is false
+					legend is (Dom.NextElement: legend);
+				;;
+				if legend is 0 or legend is not under return true;
+			;;
+			under is up;
+			up is up.parent;
+		;;
+	[end: false]
+
+	[TakesRequired: ptr<DomNode> e: 0;]
+	[end: (Tagged: e 'input') or (Tagged: e 'select') or (Tagged: e 'textarea')]
+
+	# an input whose text can be typed into
+	[IsTextInput: ptr<DomNode> e: 0;]
+		if (Tagged: e 'input') is false return false;
+		ptr<DomAttr> a: (Dom.AttrZ: e 'type');
+		if a is 0 return true;
+		# the types with no text to edit
+		ptr<u8> v: a.value;
+		u32 n: a.value_len;
+		if (WlText.EqNoCaseZ: v n 'checkbox') or (WlText.EqNoCaseZ: v n 'radio') or (WlText.EqNoCaseZ: v n 'button') or (WlText.EqNoCaseZ: v n 'submit') or (WlText.EqNoCaseZ: v n 'reset') or (WlText.EqNoCaseZ: v n 'file') or (WlText.EqNoCaseZ: v n 'hidden') or (WlText.EqNoCaseZ: v n 'image') or (WlText.EqNoCaseZ: v n 'color') or (WlText.EqNoCaseZ: v n 'range')
+			return false;
+		;;
+	[end: true]
+
+	[ReadWrite: ptr<DomNode> e: 0;]
+		int said: (Ask: e ST_READ_WRITE);
+		if said is not -1 return said is 1;
+		if (IsTextInput: e) or (Tagged: e 'textarea')
+			if (Dom.AttrZ: e 'readonly') is not 0 return false;
+			return (Disabled: e) is false;
+		;;
+		# contenteditable, the nearest that says
+		ptr<DomNode> n: e;
+		while n is not 0 and n.type is DomType.ELEMENT
+			ptr<DomAttr> a: (Dom.AttrZ: n 'contenteditable');
+			if a is not 0
+				if a.value_len is 0 or (WlText.EqNoCaseZ: a.value a.value_len 'true') or (WlText.EqNoCaseZ: a.value a.value_len 'plaintext-only') return true;
+				return false;
+			;;
+			n is n.parent;
+		;;
+	[end: false]
+
+	[PlaceholderShown: ptr<DomNode> e: 0;]
+		bln text: (IsTextInput: e) or (Tagged: e 'textarea');
+		if text is false return false;
+		ptr<DomAttr> ph: (Dom.AttrZ: e 'placeholder');
+		if ph is 0 or ph.value_len is 0 return false;
+		int said: (Ask: e ST_PLACEHOLDER_SHOWN);
+		if said is not -1 return said is 1;
+		if (Tagged: e 'textarea')
+			ptr<DomNode> c: e.first_child;
+			while c is not 0
+				if c.type is DomType.TEXT and c.text_len > 0 return false;
+				c is c.next;
+			;;
+			return true;
+		;;
+		ptr<DomAttr> v: (Dom.AttrZ: e 'value');
+	[end: v is 0 or v.value_len is 0]
+
+	[IsDefault: ptr<DomNode> e: 0;]
+		if (Tagged: e 'option') return (Dom.AttrZ: e 'selected') is not 0;
+		if (IsInputType: e 'checkbox') or (IsInputType: e 'radio') return (Dom.AttrZ: e 'checked') is not 0;
+		# the first submit button of its form
+		if (IsSubmit: e) is false return false;
+		ptr<DomNode> form: e.parent;
+		while form is not 0 and (form.type is not DomType.ELEMENT or (Tagged: form 'form') is false)
+			form is form.parent;
+		;;
+		if form is 0 return false;
+		ptr<DomNode> n: (Dom.Next: form form);
+		while n is not 0
+			if n.type is DomType.ELEMENT and (IsSubmit: n) return n is e;
+			n is (Dom.Next: n form);
+		;;
+	[end: false]
+
+	[IsSubmit: ptr<DomNode> e: 0;]
+		if (Tagged: e 'button')
+			ptr<DomAttr> a: (Dom.AttrZ: e 'type');
+			return a is 0 or (WlText.EqNoCaseZ: a.value a.value_len 'submit');
+		;;
+	[end: (IsInputType: e 'submit') or (IsInputType: e 'image')]
+
+	[FocusWithin: ptr<DomNode> e: 0;]
+		int said: (Ask: e ST_FOCUS_WITHIN);
+		if said is not -1 return said is 1;
+		if on_state is 0 return false;
+		ptr<DomNode> n: e;
+		while n is not 0
+			if n.type is DomType.ELEMENT and (Ask: n ST_FOCUS) is 1 return true;
+			n is (Dom.Next: n e);
+		;;
+	[end: false]
+
+	[Lang: ptr<CssSimple> s: 0; ptr<DomNode> e: 0;]
+		ptr<DomNode> n: e;
+		ptr<DomAttr> a: 0;
+		while n is not 0 and n.type is DomType.ELEMENT
+			a is (Dom.AttrZ: n 'lang');
+			if a is 0
+				a is (Dom.AttrZ: n 'xml:lang');
+			;;
+			if a is not 0 break;
+			n is n.parent;
+		;;
+		if a is 0 or a.value_len is 0 return false;
+		u32 p: 0;
+		while p < s.value_len
+			ptr<u8> range: s.value + p;
+			u32 n2: (WlText.LenZ: range);
+			if (LangMatches: a.value a.value_len range n2) return true;
+			p++ n2 + 1;
+		;;
+	[end: false]
+
+	# extended filtering, for the ranges people write: en matches en-US, *-CH matches de-CH
+	[LangMatches: ptr<u8> v: 0; u32 n: 0; ptr<u8> range: 0; u32 m: 0;]
+		if m is 0 return false;
+		if m is 1 and range:0 is 42 return n > 0;
+		if range:0 is 42 and m > 1 and range:1 is 45
+			# anything-rest: rest must be a run of subtags in it
+			u32 i: 0;
+			while i < n
+				if v:i is 45
+					u32 want: m - 2;
+					if n - i - 1 >= want and (WlText.EqNoCase: v + i + 1 want range + 2 want)
+						if i + 1 + want is n or v:(i + 1 + want) is 45 return true;
+					;;
+				;;
+				i++;
+			;;
+			return false;
+		;;
+		if n < m return false;
+		if (WlText.EqNoCase: v m range m) is false return false;
+	[end: n is m or v:m is 45]
+
+	# CssK.LTR or CssK.RTL, from the nearest dir attribute that says
+	[Dir: ptr<DomNode> e: 0;]
+		ptr<DomNode> n: e;
+		while n is not 0 and n.type is DomType.ELEMENT
+			ptr<DomAttr> a: (Dom.AttrZ: n 'dir');
+			if a is not 0
+				if (WlText.EqNoCaseZ: a.value a.value_len 'rtl') return CssK.RTL;
+				if (WlText.EqNoCaseZ: a.value a.value_len 'ltr') return CssK.LTR;
+			;;
+			n is n.parent;
+		;;
+	[end: CssK.LTR]
+}
+
+# An+B, for :nth-child and its relatives
+phi.CssAnB:Library
+{
+	int a: 0;
+	int b: 0;
+
+	[ToInt: f64 v: 0.0;]
+		if v > 1000000000.0 return 1000000000;
+		if v < -1000000000.0 return -1000000000;
+	[end: v as int]
+
+	[Signed: ptr<CssTok> tk: 0; ptr<u8> src: 0;]
+	[end: src:(tk.start) is 43 or src:(tk.start) is 45]
+
+	# Reads it at pos_at, leaving that after what it read. stop limits it, and what comes after
+	# isn't looked at, so `of S` can follow.
+	[Parse: ptr<CssTok> t: 0; ptr<u8> src: 0; ptr<u32> pos_at: 0; u32 stop: 0;]
+		u32 p: pos_at:0;
+		if p >= stop return false;
+		ptr<CssTok> tk: addr t:p;
+		u32 type: tk.type;
+		a is 0;
+		b is 0;
+		if type is CssLex.NUMBER
+			if (tk.flag & CssLex.F_INTEGER) is 0 return false;
+			b is (ToInt: tk.num);
+			pos_at:0 is p + 1;
+			return true;
+		;;
+		if type is CssLex.DIMENSION
+			if (tk.flag & CssLex.F_INTEGER) is 0 return false;
+			a is (ToInt: tk.num);
+			pos_at:0 is p + 1;
+			return (AfterN: t src pos_at stop tk.text tk.len);
+		;;
+		bln plus: false;
+		if type is CssLex.DELIM and tk.num is 43.0
+			plus is true;
+			p++;
+			if p >= stop return false;
+			tk is addr t:p;
+			if tk.type is not CssLex.IDENT return false;
+		;;
+		elif type is not CssLex.IDENT
+			return false;
+		;;
+		ptr<u8> text: tk.text;
+		u32 len: tk.len;
+		if plus is false
+			if (WlText.EqNoCaseZ: text len 'even')
+				a is 2;
+				pos_at:0 is p + 1;
+				return true;
+			;;
+			if (WlText.EqNoCaseZ: text len 'odd')
+				a is 2;
+				b is 1;
+				pos_at:0 is p + 1;
+				return true;
+			;;
+		;;
+		a is 1;
+		if len > 0 and text:0 is 45 and plus is false
+			a is -1;
+			text is text + 1;
+			len--;
+		;;
+		pos_at:0 is p + 1;
+	[end: (AfterN: t src pos_at stop text len)]
+
+	# text should be n, n-, or n-123; then maybe a sign and a number
+	[AfterN: ptr<CssTok> t: 0; ptr<u8> src: 0; ptr<u32> pos_at: 0; u32 stop: 0; ptr<u8> text: 0; u32 len: 0;]
+		if len is 0 or (text:0 is not 110 and text:0 is not 78) return false;
+		u32 p: pos_at:0;
+		if len is 1
+			# n, then maybe: <signed integer>, or + or - and an integer without a sign
+			u32 q: p;
+			while q < stop and t:q.type is CssLex.WS
+				q++;
+			;;
+			if q >= stop return true;
+			ptr<CssTok> nx: addr t:q;
+			if nx.type is CssLex.NUMBER
+				if (nx.flag & CssLex.F_INTEGER) is 0 or (Signed: nx src) is false
+					# it isn't ours: whoever called will find it in the way
+					return true;
+				;;
+				b is (ToInt: nx.num);
+				pos_at:0 is q + 1;
+				return true;
+			;;
+			if nx.type is CssLex.DELIM and (nx.num is 43.0 or nx.num is 45.0)
+				bln minus: nx.num is 45.0;
+				u32 r: q + 1;
+				while r < stop and t:r.type is CssLex.WS
+					r++;
+				;;
+				if r >= stop or t:r.type is not CssLex.NUMBER return false;
+				if (t:r.flag & CssLex.F_INTEGER) is 0 or (Signed: addr t:r src) return false;
+				b is (ToInt: t:r.num);
+				if minus
+					b is 0 - b;
+				;;
+				pos_at:0 is r + 1;
+				return true;
+			;;
+			return true;
+		;;
+		if text:1 is not 45 return false;
+		if len is 2
+			# n- and an integer without a sign
+			u32 q: p;
+			while q < stop and t:q.type is CssLex.WS
+				q++;
+			;;
+			if q >= stop or t:q.type is not CssLex.NUMBER return false;
+			if (t:q.flag & CssLex.F_INTEGER) is 0 or (Signed: addr t:q src) return false;
+			b is 0 - (ToInt: t:q.num);
+			pos_at:0 is q + 1;
+			return true;
+		;;
+		# n-123
+		f64 v: 0.0;
+		while u32 i: 2; i < len; i++;
+			if text:i < 48 or text:i > 57 return false;
+			v is v * 10.0 + (text:i - 48);
+		;;
+		b is 0 - (ToInt: v);
+	[end: true]
+}

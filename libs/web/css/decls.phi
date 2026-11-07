@@ -1,0 +1,1677 @@
+# Declarations: a block of them (CssDecls, what a style rule or a style attribute holds), and turning
+# `name: value` into them, shorthands expanded to their longhands.
+
+use memory.mem;
+use core.text;
+use core.buf;
+use core.atoms;
+use css.tables;
+use css.lexer;
+use css.values;
+use css.calc;
+use css.vp;
+
+struct.CssDecl
+{
+	CssVal val;
+	ptr<WlAtom> name;   # a custom property's name
+	u16 prop;           # CssP.*, or CssP.CUSTOM
+	u16 shorthand;      # a RAW value from a shorthand: that shorthand's number + 1, whose value it is
+	u8 important;
+}
+
+struct.CssDecls
+{
+	ptr<CssDecl> items;
+	u32 count;
+	u32 cap;
+	ptr<CssDecls> next_in_sheet;
+	ptr<u8> src;        # a style attribute: the text this was parsed from
+	u32 src_len;
+
+	[Item: u32 i: 0;]
+	[end: addr items:i]
+
+	# the declaration for this longhand, or 0
+	[Find: u32 prop: 0;]
+		while u32 i: 0; i < count; i++;
+			if items:i.prop is prop as u16 return addr items:i;
+		;;
+	[end: 0 as ptr<CssDecl>]
+
+	[FindCustom: ptr<WlAtom> name: 0;]
+		while u32 i: 0; i < count; i++;
+			if items:i.prop is CssP.CUSTOM as u16 and items:i.name is name return addr items:i;
+		;;
+	[end: 0 as ptr<CssDecl>]
+
+	# adds it, replacing what was there (the new one goes last, as its order matters); the value's
+	# reference becomes this block's
+	[Add: u32 prop: 0; ptr<CssVal> v: 0; bln important: false; ptr<WlAtom> name: 0; u32 shorthand: 0; bln keep_important: false;]
+		if count <= 256
+			u32 found: count;
+			while u32 i: 0; i < count; i++;
+				if items:i.prop is prop as u16 and items:i.name is name
+					found is i;
+					break;
+				;;
+			;;
+			if found < count
+				# in a sheet, a later ordinary one doesn't lose an earlier !important
+				if keep_important and items:found.important is not 0 and important is false
+					call CssV.Release: v;
+					return;
+				;;
+				call CssV.Release: addr items:found.val;
+				if found + 1 < count
+					call Mem.Move: addr items:found addr items:(found + 1) (count - found - 1) * sizeof CssDecl;
+				;;
+				count--;
+			;;
+		;;
+		if count >= cap
+			u32 room: cap * 2;
+			if room is 0
+				room is 4;
+			;;
+			ptr<CssDecl> grown: new CssDecl[room];
+			if grown is 0
+				call CssV.Release: v;
+				throw 'out of memory for CSS declarations';
+			;;
+			if items is not 0
+				call Mem.Copy: grown items count * sizeof CssDecl;
+				free items;
+			;;
+			items is grown;
+			cap is room;
+		;;
+		ptr<CssDecl> d: addr items:count;
+		d.val.bits is v.bits;
+		d.val.code is v.code;
+		d.val.kind is v.kind;
+		d.val.unit is v.unit;
+		d.name is name;
+		d.prop is prop as u16;
+		d.shorthand is shorthand as u16;
+		d.important is 0;
+		if important
+			d.important is 1;
+		;;
+		count++;
+	[end]
+
+	# takes out this property; whether it was there
+	[Remove: u32 prop: 0; ptr<WlAtom> name: 0;]
+		bln any: false;
+		u32 i: 0;
+		while i < count
+			if items:i.prop is prop as u16 and items:i.name is name
+				call CssV.Release: addr items:i.val;
+				if i + 1 < count
+					call Mem.Move: addr items:i addr items:(i + 1) (count - i - 1) * sizeof CssDecl;
+				;;
+				count--;
+				any is true;
+				continue;
+			;;
+			i++;
+		;;
+	[end: any]
+
+	[Clear]
+		while u32 i: 0; i < count; i++;
+			call CssV.Release: addr items:i.val;
+		;;
+		count is 0;
+	[end]
+
+	[FreeItems]
+		call Clear;
+		if items is not 0
+			free items;
+		;;
+		items is 0;
+		cap is 0;
+		if src is not 0
+			free src;
+		;;
+		src is 0;
+		src_len is 0;
+	[end]
+}
+
+phi.CssDeclP:Library
+{
+	# the longhands a shorthand is assembling: nothing reaches the block unless all of it is valid
+	u32 pend_props[128];
+	CssVal pend_vals[128];
+	u32 pend_n: 0;
+	ptr<CssToks> ts: 0;
+
+	# ---- one declaration
+
+	# name (tokens:name_at), with a value in tokens from..to, into the block. False if it was dropped.
+	[One: ptr<CssDecls> d: 0; ptr<CssToks> toks: 0; ptr<u8> name: 0; u32 name_len: 0; u32 from: 0; u32 to: 0; bln important: false; bln keep_important: true;]
+		ts is toks;
+		ptr<CssTok> t: toks.t;
+		u32 vmark: CssVp.vn;
+		# leading and trailing whitespace isn't the value's
+		while from < to and t:from.type is CssLex.WS
+			from++;
+		;;
+		while to > from and t:(to - 1).type is CssLex.WS
+			to--;
+		;;
+		if name_len > 2 and name:0 is 45 and name:1 is 45
+			return (Custom: d name name_len from to important keep_important);
+		;;
+		int id: (CssProps.Find: name name_len);
+		if id < 0 return false;
+		u32 prop: id as u32;
+		if from >= to return false;
+
+		u32 wide: (CssVp.WideKeyword: t from to);
+		if wide is not 0
+			CssVal w;
+			w.kind is CssV.WIDE as u8;
+			w.code is wide as u16;
+			call AddAll: d prop addr w important keep_important;
+			return true;
+		;;
+
+		if (CssVp.HasVar: t from to)
+			# what it means isn't known until it's computed; only its shape can be checked now
+			if (CheckRaw: t from to) is false return false;
+			CssVal raw;
+			call CssV.SetText: addr raw CssV.RAW toks.src + t:from.start t:(to - 1).stop - t:from.start;
+			if (CssProps.IsShorthand: prop)
+				call AddRaw: d prop addr raw important keep_important;
+				call CssV.Release: addr raw;
+			;;
+			else
+				call d.Add: prop addr raw important 0 0 keep_important;
+			;;
+			return true;
+		;;
+
+		if (CssProps.IsShorthand: prop)
+			pend_n is 0;
+			bln ok: false;
+			if call ok is CssSh.Expand: prop t from to throws err
+				ok is false;
+				CssVp.single is false;
+			;;
+			call CssVp.Cut: vmark;
+			if ok is false
+				call DropPending;
+				return false;
+			;;
+			while u32 i: 0; i < pend_n; i++;
+				call d.Add: pend_props:i addr pend_vals:i important 0 0 keep_important;
+			;;
+			pend_n is 0;
+			return true;
+		;;
+
+		bln good: false;
+		if call good is CssVp.Longhand: t from to prop throws err2
+			good is false;
+			CssVp.single is false;
+			call CssVp.Cut: vmark;
+		;;
+		if good is false return false;
+		call d.Add: prop addr CssVp.parsed important 0 0 keep_important;
+	[end: true]
+
+	[DropPending]
+		while pend_n > 0
+			pend_n--;
+			call CssV.Release: addr pend_vals:pend_n;
+		;;
+	[end]
+
+	# the same value for a property, or for all of a shorthand's longhands
+	[AddAll: ptr<CssDecls> d: 0; u32 prop: 0; ptr<CssVal> w: 0; bln important: false; bln keep_important: true;]
+		if (CssProps.IsShorthand: prop) is false
+			call d.Add: prop w important 0 0 keep_important;
+			return;
+		;;
+		if prop is CssP.ALL
+			while u32 i: 0; i < CssP.LONGHANDS; i++;
+				if i is not CssP.DIRECTION and i is not CssP.UNICODE_BIDI
+					call d.Add: i w important 0 0 keep_important;
+				;;
+			;;
+			return;
+		;;
+		call AddSubs: d prop w important 0 keep_important;
+	[end]
+
+	# every longhand under a shorthand, through shorthands of shorthands
+	[AddSubs: ptr<CssDecls> d: 0; u32 prop: 0; ptr<CssVal> w: 0; bln important: false; u32 origin: 0; bln keep_important: true;]
+		ptr<CssPropInfo> info: addr CssProps.info:prop;
+		while u32 i: 0; i < info.sub_count; i++;
+			u32 sub: info.subs:i;
+			if (CssProps.IsShorthand: sub)
+				call AddSubs: d sub w important origin keep_important;
+			;;
+			else
+				call CssV.Retain: w;
+				call d.Add: sub w important 0 origin keep_important;
+			;;
+		;;
+	[end]
+
+	# each longhand holds the shorthand's text, and says it's the shorthand's
+	[AddRaw: ptr<CssDecls> d: 0; u32 prop: 0; ptr<CssVal> raw: 0; bln important: false; bln keep_important: true;]
+		if prop is CssP.ALL
+			while u32 i: 0; i < CssP.LONGHANDS; i++;
+				if i is not CssP.DIRECTION and i is not CssP.UNICODE_BIDI
+					call CssV.Retain: raw;
+					call d.Add: i raw important 0 0 keep_important;
+				;;
+			;;
+			return;
+		;;
+		call AddSubs: d prop raw important prop + 1 keep_important;
+	[end]
+
+	# what no value may hold, even one that's waiting to be worked out
+	[CheckRaw: ptr<CssTok> t: 0; u32 from: 0; u32 to: 0;]
+		u32 i: from;
+		while i < to
+			u32 type: t:i.type;
+			if type is CssLex.BAD_STRING or type is CssLex.BAD_URL or type is CssLex.SEMICOLON
+				# a ; in a block is fine: that's skipped below at top level only
+				if type is not CssLex.SEMICOLON return false;
+				if (AtTop: t from i) return false;
+			;;
+			if (t:i.flag & CssLex.F_STRAY) is not 0 return false;
+			if type is CssLex.DELIM and t:i.num is 33.0 and (AtTop: t from i) return false;
+			i++;
+		;;
+	[end: true]
+
+	[AtTop: ptr<CssTok> t: 0; u32 from: 0; u32 at_i: 0;]
+		u32 i: from;
+		while i < at_i
+			u32 type: t:i.type;
+			if type is CssLex.FUNCTION or type is CssLex.LPAREN or type is CssLex.LBRACKET or type is CssLex.LBRACE
+				if t:i.match >= at_i return false;
+				i is t:i.match + 1;
+				continue;
+			;;
+			i++;
+		;;
+	[end: true]
+
+	# --name: anything well-formed, kept as its text
+	[Custom: ptr<CssDecls> d: 0; ptr<u8> name: 0; u32 name_len: 0; u32 from: 0; u32 to: 0; bln important: false; bln keep_important: true;]
+		ptr<CssTok> t: ts.t;
+		if (CheckRaw: t from to) is false return false;
+		ptr<WlAtom> atom: (WlAtoms.Get: name name_len);
+		u32 wide: (CssVp.WideKeyword: t from to);
+		CssVal v;
+		if wide is not 0
+			v.kind is CssV.WIDE as u8;
+			v.code is wide as u16;
+		;;
+		elif from >= to
+			call CssV.SetText: addr v CssV.RAW 0 0;
+		;;
+		else
+			call CssV.SetText: addr v CssV.RAW ts.src + t:from.start t:(to - 1).stop - t:from.start;
+		;;
+		call d.Add: CssP.CUSTOM addr v important atom 0 keep_important;
+	[end: true]
+
+	# ---- declaration lists
+
+	# the declarations in tokens from..to; at-rules and anything malformed are dropped, as the
+	# spec's error recovery says: up to the next ; that's not inside a block
+	[List: ptr<CssDecls> d: 0; ptr<CssToks> toks: 0; u32 from: 0; u32 to: 0; bln keep_important: true;]
+		ptr<CssTok> t: toks.t;
+		u32 i: from;
+		while i < to
+			u32 type: t:i.type;
+			if type is CssLex.WS or type is CssLex.SEMICOLON
+				i++;
+				continue;
+			;;
+			if type is CssLex.AT
+				# an at-rule in a declaration list: consumed, and nothing here wants it
+				i is (CssSyntax.AtRule: t i to);
+				continue;
+			;;
+			u32 last: i;
+			while last < to and t:last.type is not CssLex.SEMICOLON
+				last is (CssSyntax.After: t last);
+			;;
+			if last > to
+				last is to;
+			;;
+			if type is CssLex.IDENT
+				call Parse: d toks i last keep_important;
+			;;
+			i is last;
+			if i < to
+				i++;
+			;;
+		;;
+	[end]
+
+	# one name: value [!important], the tokens from..to
+	[Parse: ptr<CssDecls> d: 0; ptr<CssToks> toks: 0; u32 from: 0; u32 to: 0; bln keep_important: true;]
+		ptr<CssTok> t: toks.t;
+		if (CssSyntax.Decl: t from to) is false return false;
+		bln added: (One: d toks t:from.text t:from.len CssSyntax.value_from CssSyntax.value_to CssSyntax.important keep_important);
+	[end: added]
+}
+
+# css-syntax's generic pieces, which work the same whatever the tokens are for
+phi.CssSyntax:Library
+{
+	u32 value_from: 0;
+	u32 value_to: 0;
+	bln important: false;
+
+	# the index after the component value at i
+	[After: ptr<CssTok> t: 0; u32 i: 0;]
+		u32 type: t:i.type;
+		if type is CssLex.FUNCTION or type is CssLex.LPAREN or type is CssLex.LBRACKET or type is CssLex.LBRACE
+			return t:i.match + 1;
+		;;
+	[end: i + 1]
+
+	# A declaration in from..to, which starts with an ident. Sets value_from, value_to and
+	# important: the value doesn't include !important, and keeps its whitespace.
+	[Decl: ptr<CssTok> t: 0; u32 from: 0; u32 to: 0;]
+		if from >= to or t:from.type is not CssLex.IDENT return false;
+		u32 i: from + 1;
+		while i < to and t:i.type is CssLex.WS
+			i++;
+		;;
+		if i >= to or t:i.type is not CssLex.COLON return false;
+		value_from is i + 1;
+		value_to is to;
+		important is false;
+		# from the end: [ ws ] important [ ws ] ! ...
+		u32 e: to;
+		while e > value_from and t:(e - 1).type is CssLex.WS
+			e--;
+		;;
+		if e >= value_from + 2 and t:(e - 1).type is CssLex.IDENT and (WlText.EqNoCaseZ: t:(e - 1).text t:(e - 1).len 'important')
+			u32 b: e - 1;
+			while b > value_from and t:(b - 1).type is CssLex.WS
+				b--;
+			;;
+			if b > value_from and t:(b - 1).type is CssLex.DELIM and t:(b - 1).num is 33.0
+				important is true;
+				value_to is b - 1;
+			;;
+		;;
+	[end: true]
+
+	# an at-rule at i: where it ends (the index after it). Sets the span's fields below.
+	u32 prelude_from: 0;
+	u32 prelude_to: 0;
+	u32 block_from: 0;
+	u32 block_to: 0;
+	bln has_block: false;
+
+	[AtRule: ptr<CssTok> t: 0; u32 i: 0; u32 to: 0;]
+		prelude_from is i + 1;
+		has_block is false;
+		u32 p: i + 1;
+		while p < to
+			u32 type: t:p.type;
+			if type is CssLex.SEMICOLON
+				prelude_to is p;
+				return p + 1;
+			;;
+			if type is CssLex.LBRACE
+				prelude_to is p;
+				has_block is true;
+				block_from is p + 1;
+				block_to is t:p.match;
+				if block_to > to
+					block_to is to;
+				;;
+				return block_to + 1;
+			;;
+			p is (After: t p);
+		;;
+		if p > to
+			p is to;
+		;;
+		prelude_to is p;
+	[end: p]
+
+	# A qualified rule at i: where it ends. has_block is false if the input ended before its block.
+	[Qualified: ptr<CssTok> t: 0; u32 i: 0; u32 to: 0;]
+		prelude_from is i;
+		has_block is false;
+		u32 p: i;
+		while p < to
+			if t:p.type is CssLex.LBRACE
+				prelude_to is p;
+				has_block is true;
+				block_from is p + 1;
+				block_to is t:p.match;
+				if block_to > to
+					block_to is to;
+				;;
+				return block_to + 1;
+			;;
+			p is (After: t p);
+		;;
+		if p > to
+			p is to;
+		;;
+		prelude_to is p;
+	[end: p]
+}
+
+# Shorthands. Each kind of them reads its tokens with the value parser and puts its longhands on the
+# pending list in CssDeclP, for all of them to be added if all of it was valid.
+phi.CssSh:Library
+{
+	[Pend: u32 prop: 0;]
+		call PendVal: prop addr CssVp.parsed;
+	[end]
+
+	[PendVal: u32 prop: 0; ptr<CssVal> v: 0;]
+		u32 n: CssDeclP.pend_n;
+		if n >= 128
+			throw 'too many longhands';
+		;;
+		CssDeclP.pend_props:n is prop;
+		ptr<CssVal> to: addr CssDeclP.pend_vals:n;
+		to.bits is v.bits;
+		to.code is v.code;
+		to.kind is v.kind;
+		to.unit is v.unit;
+		CssDeclP.pend_n is n + 1;
+	[end]
+
+	# a second reference to the same value
+	[PendCopy: u32 prop: 0; ptr<CssVal> v: 0;]
+		call CssV.Retain: v;
+		call PendVal: prop v;
+	[end]
+
+	[PendInitial: u32 prop: 0;]
+		ptr<CssVal> v: (Initial: prop);
+		call PendCopy: prop v;
+	[end]
+
+	# the property's initial value as a declaration would hold it
+	[Initial: u32 prop: 0;]
+		ptr<CssPropInfo> info: addr CssProps.info:prop;
+		if info.init_done is false
+			ptr<CssTok> saved_t: CssVp.t;
+			u32 saved_pos: CssVp.pos;
+			u32 saved_stop: CssVp.stop;
+			ptr<CssToks> toks: (CssLex.Run: info.initial info.initial_len);
+			if (CssVp.Longhand: toks.t 0 toks.n prop) is false
+				throw 'bad initial value in the CSS table for ' info.name.text;
+			;;
+			ptr<CssVal> to: addr info.init;
+			to.bits is CssVp.parsed.bits;
+			to.code is CssVp.parsed.code;
+			to.kind is CssVp.parsed.kind;
+			to.unit is CssVp.parsed.unit;
+			info.init_done is true;
+			call CssLex.Free: toks;
+			CssVp.t is saved_t;
+			CssVp.pos is saved_pos;
+			CssVp.stop is saved_stop;
+		;;
+	[end: addr info.init]
+
+	# one occurrence of a longhand's value, into parsed: for a list property, one layer of it
+	[One: u32 prop: 0;]
+		if CssVp.pos >= CssVp.stop return false;
+		u32 at_pos: CssVp.pos;
+		u32 mark: CssVp.vn;
+		bln saved_single: CssVp.single;
+		CssVp.single is true;
+		bln ok: (CssVp.Match: (CssGram.Of: prop));
+		CssVp.single is saved_single;
+		if ok is false or CssVp.pos is at_pos
+			CssVp.pos is at_pos;
+			call CssVp.Cut: mark;
+			return false;
+		;;
+		call CssVp.TakeParsed: mark;
+	[end: true]
+
+	[Expand: u32 prop: 0; ptr<CssTok> t: 0; u32 from: 0; u32 to: 0;]
+		CssVp.t is t;
+		CssVp.pos is from;
+		CssVp.stop is to;
+		call CssVp.Skip;
+		ptr<CssPropInfo> info: addr CssProps.info:prop;
+		bln ok: false;
+		when info.sh_kind as u32
+			is CssProps.SH_BOX4
+				ok is (Box4: info);
+			;;
+			is CssProps.SH_ANY
+				ok is (Any: info);
+			;;
+			is CssProps.SH_ANY2
+				ok is (Any2: info t from to);
+			;;
+			is CssProps.SH_PAIR
+				ok is (Pair: info);
+			;;
+			is CssProps.SH_SLASH
+				ok is (Slash: info);
+			;;
+			is CssProps.SH_BORDER
+				ok is (Border: info);
+			;;
+			is CssProps.SH_RADIUS
+				ok is (Radius: info);
+			;;
+			is CssProps.SH_BACKGROUND
+				ok is (Background: info);
+			;;
+			is CssProps.SH_FONT
+				ok is (Font: info);
+			;;
+			is CssProps.SH_FLEX
+				ok is (Flex);
+			;;
+			is CssProps.SH_LAYERS
+				ok is (Layers: info);
+			;;
+			is CssProps.SH_GRIDTEMPLATE
+				ok is (GridTemplate);
+			;;
+			is CssProps.SH_GRID
+				ok is (Grid);
+			;;
+			is CssProps.SH_CUSTOM
+				if prop is CssP.MASK
+					ok is (Layers: info);
+				;;
+				elif prop is CssP.CONTAINER
+					ok is (Container);
+				;;
+				else
+					ok is (BorderImage: info);
+				;;
+			;;
+		;;
+		if CssVp.pos is not CssVp.stop
+			ok is false;
+		;;
+	[end: ok]
+
+	# top right bottom left, the usual way of leaving some out
+	[Box4: ptr<CssPropInfo> info: 0;]
+		ptr<CssGNode> g: (CssGram.Of: info.subs:0);
+		CssVal got[4];
+		u32 n: 0;
+		while n < 4 and CssVp.pos < CssVp.stop
+			u32 mark: CssVp.vn;
+			if (CssVp.Match: g) is false
+				break;
+			;;
+			call CssVp.TakeParsed: mark;
+			ptr<CssVal> slot: addr got:n;
+			slot.bits is CssVp.parsed.bits;
+			slot.code is CssVp.parsed.code;
+			slot.kind is CssVp.parsed.kind;
+			slot.unit is CssVp.parsed.unit;
+			n++;
+		;;
+		bln ok: (n > 0 and CssVp.pos is CssVp.stop);
+		if ok is false
+			while u32 k: 0; k < n; k++;
+				call CssV.Release: addr got:k;
+			;;
+			return false;
+		;;
+		u32 right: 0;
+		u32 bottom: 0;
+		u32 left: 0;
+		if n >= 2
+			right is 1;
+			left is 1;
+		;;
+		if n >= 3
+			bottom is 2;
+		;;
+		if n is 4
+			left is 3;
+		;;
+		call PendVal: info.subs:0 addr got:0;
+		if n >= 2
+			call PendVal: info.subs:1 addr got:right;
+		;;
+		else
+			call PendCopy: info.subs:1 addr got:right;
+		;;
+		if n >= 3
+			call PendVal: info.subs:2 addr got:bottom;
+		;;
+		else
+			call PendCopy: info.subs:2 addr got:bottom;
+		;;
+		if n is 4
+			call PendVal: info.subs:3 addr got:left;
+		;;
+		else
+			call PendCopy: info.subs:3 addr got:left;
+		;;
+	[end: true]
+
+	# its longhands, in any order, each at most once; the missing ones get their initial values
+	[Any: ptr<CssPropInfo> info: 0;]
+		u32 done: 0;
+		while CssVp.pos < CssVp.stop
+			bln hit: false;
+			while u32 i: 0; i < info.sub_count; i++;
+				if (done & (1 << i)) is 0 and (One: info.subs:i)
+					call Pend: info.subs:i;
+					done is done | (1 << i);
+					hit is true;
+					break;
+				;;
+			;;
+			if hit is false return false;
+		;;
+		if done is 0 return false;
+		while u32 k: 0; k < info.sub_count; k++;
+			if (done & (1 << k)) is 0
+				call PendInitial: info.subs:k;
+			;;
+		;;
+	[end: true]
+
+	# border-inline: the same `any` shorthand for each side
+	[Any2: ptr<CssPropInfo> info: 0; ptr<CssTok> t: 0; u32 from: 0; u32 to: 0;]
+		while u32 i: 0; i < info.sub_count; i++;
+			CssVp.t is t;
+			CssVp.pos is from;
+			CssVp.stop is to;
+			call CssVp.Skip;
+			if (Any: addr CssProps.info:(info.subs:i)) is false return false;
+		;;
+	[end: true]
+
+	# one value, or two; the second defaults to the first
+	[Pair: ptr<CssPropInfo> info: 0;]
+		u32 a: info.subs:0;
+		u32 b: info.subs:1;
+		u32 start: CssVp.pos;
+		u32 mark: CssVp.vn;
+		if (CssVp.Match: (CssGram.Of: a)) is false or CssVp.pos is start return false;
+		call CssVp.TakeParsed: mark;
+		call Pend: a;
+		if CssVp.pos < CssVp.stop
+			mark is CssVp.vn;
+			if (CssVp.Match: (CssGram.Of: b)) is false return false;
+			call CssVp.TakeParsed: mark;
+			call Pend: b;
+			return true;
+		;;
+		# the same words again, as the other longhand: they may not mean anything to it
+		u32 here: CssVp.pos;
+		CssVp.pos is start;
+		mark is CssVp.vn;
+		if (CssVp.Match: (CssGram.Of: b)) is false or CssVp.pos is not here return false;
+		call CssVp.TakeParsed: mark;
+		call Pend: b;
+	[end: true]
+
+	# grid-row, grid-column, grid-area: parts split by slashes
+	[Slash: ptr<CssPropInfo> info: 0;]
+		u32 count: info.sub_count;
+		CssVal got[4];
+		bln ident[4];
+		u32 n: 0;
+		while n < count
+			u32 mark: CssVp.vn;
+			if (CssVp.Match: (CssGram.Of: info.subs:n)) is false
+				call DropGot: addr got n;
+				return false;
+			;;
+			# a lone custom-ident is what the missing parts copy
+			ident:n is (CssVp.vn - mark is 1 and CssVp.vals:mark.kind is CssV.IDENT as u8);
+			call CssVp.TakeParsed: mark;
+			ptr<CssVal> slot: addr got:n;
+			slot.bits is CssVp.parsed.bits;
+			slot.code is CssVp.parsed.code;
+			slot.kind is CssVp.parsed.kind;
+			slot.unit is CssVp.parsed.unit;
+			n++;
+			if CssVp.pos < CssVp.stop and CssVp.t:(CssVp.pos).type is CssLex.DELIM and CssVp.t:(CssVp.pos).num is 47.0
+				CssVp.pos++;
+				call CssVp.Skip;
+				if CssVp.pos >= CssVp.stop
+					call DropGot: addr got n;
+					return false;
+				;;
+				continue;
+			;;
+			break;
+		;;
+		if CssVp.pos is not CssVp.stop
+			call DropGot: addr got n;
+			return false;
+		;;
+		while u32 i: 0; i < count; i++;
+			if i < n
+				call PendVal: info.subs:i addr got:i;
+			;;
+			else
+				# a part left out copies its partner if that's a name, or else it's auto
+				u32 from: 0;
+				bln have: false;
+				if count is 2
+					have is ident:0;
+				;;
+				else
+					# row-start column-start row-end column-end
+					if i is 1
+						have is ident:0;
+					;;
+					elif i is 2
+						have is ident:0;
+					;;
+					else
+						from is 1;
+						if n > 1
+							have is ident:1;
+						;;
+						else
+							from is 0;
+							have is ident:0;
+						;;
+					;;
+				;;
+				if have
+					ptr<CssVal> src: addr got:from;
+					call PendCopy: info.subs:i src;
+				;;
+				else
+					call PendInitial: info.subs:i;
+				;;
+			;;
+		;;
+	[end: true]
+
+	[DropGot: ptr<CssVal> got: 0; u32 n: 0;]
+		while u32 i: 0; i < n; i++;
+			call CssV.Release: got + i * sizeof CssVal;
+		;;
+	[end]
+
+	# width, style and color for all four sides, and border-image back to its start
+	[Border: ptr<CssPropInfo> info: 0;]
+		ptr<CssVal> w: 0;
+		ptr<CssVal> s: 0;
+		ptr<CssVal> c: 0;
+		CssVal vw;
+		CssVal vs;
+		CssVal vc;
+		bln have_w: false;
+		bln have_s: false;
+		bln have_c: false;
+		bln ok: true;
+		while CssVp.pos < CssVp.stop and ok
+			if have_w is false and (One: CssP.BORDER_TOP_WIDTH)
+				call Copy: addr vw addr CssVp.parsed;
+				have_w is true;
+			;;
+			elif have_s is false and (One: CssP.BORDER_TOP_STYLE)
+				call Copy: addr vs addr CssVp.parsed;
+				have_s is true;
+			;;
+			elif have_c is false and (One: CssP.BORDER_TOP_COLOR)
+				call Copy: addr vc addr CssVp.parsed;
+				have_c is true;
+			;;
+			else
+				ok is false;
+			;;
+		;;
+		if ok is false or (have_w is false and have_s is false and have_c is false)
+			if have_w
+				call CssV.Release: addr vw;
+			;;
+			if have_s
+				call CssV.Release: addr vs;
+			;;
+			if have_c
+				call CssV.Release: addr vc;
+			;;
+			return false;
+		;;
+		w is (Initial: CssP.BORDER_TOP_WIDTH);
+		s is (Initial: CssP.BORDER_TOP_STYLE);
+		c is (Initial: CssP.BORDER_TOP_COLOR);
+		if have_w
+			w is addr vw;
+		;;
+		if have_s
+			s is addr vs;
+		;;
+		if have_c
+			c is addr vc;
+		;;
+		while u32 i: 0; i < 4; i++;
+			call PendCopy: CssP.BORDER_TOP_WIDTH + i w;
+			call PendCopy: CssP.BORDER_TOP_STYLE + i s;
+			call PendCopy: CssP.BORDER_TOP_COLOR + i c;
+		;;
+		if have_w
+			call CssV.Release: addr vw;
+		;;
+		if have_s
+			call CssV.Release: addr vs;
+		;;
+		if have_c
+			call CssV.Release: addr vc;
+		;;
+		call PendInitial: CssP.BORDER_IMAGE_SOURCE;
+		call PendInitial: CssP.BORDER_IMAGE_SLICE;
+		call PendInitial: CssP.BORDER_IMAGE_WIDTH;
+		call PendInitial: CssP.BORDER_IMAGE_OUTSET;
+		call PendInitial: CssP.BORDER_IMAGE_REPEAT;
+	[end: true]
+
+	[Copy: ptr<CssVal> to: 0; ptr<CssVal> from: 0;]
+		to.bits is from.bits;
+		to.code is from.code;
+		to.kind is from.kind;
+		to.unit is from.unit;
+	[end]
+
+	# <lp0>{1,4} [ / <lp0>{1,4} ]?
+	[Radius: ptr<CssPropInfo> info: 0;]
+		CssVal h[4];
+		CssVal v[4];
+		u32 nh: 0;
+		u32 nv: 0;
+		while nh < 4 and CssVp.pos < CssVp.stop
+			u32 mark: CssVp.vn;
+			if (CssVp.ParseType: CssT.LP0) is false break;
+			call Copy: addr h:nh addr CssVp.vals:mark;
+			CssVp.vn is mark;
+			nh++;
+		;;
+		bln ok: nh > 0;
+		if ok and CssVp.pos < CssVp.stop and CssVp.t:(CssVp.pos).type is CssLex.DELIM and CssVp.t:(CssVp.pos).num is 47.0
+			CssVp.pos++;
+			call CssVp.Skip;
+			while nv < 4 and CssVp.pos < CssVp.stop
+				u32 mark: CssVp.vn;
+				if (CssVp.ParseType: CssT.LP0) is false break;
+				call Copy: addr v:nv addr CssVp.vals:mark;
+				CssVp.vn is mark;
+				nv++;
+			;;
+			if nv is 0
+				ok is false;
+			;;
+		;;
+		if ok is false or CssVp.pos is not CssVp.stop
+			call DropGot: addr h nh;
+			call DropGot: addr v nv;
+			return false;
+		;;
+		while u32 corner: 0; corner < 4; corner++;
+			u32 hi: (Corner: corner nh);
+			if nv is 0
+				call PendCopy: info.subs:corner addr h:hi;
+			;;
+			else
+				u32 vi: (Corner: corner nv);
+				CssVal two[2];
+				call Copy: addr two:0 addr h:hi;
+				call Copy: addr two:1 addr v:vi;
+				call CssV.Retain: addr two:0;
+				call CssV.Retain: addr two:1;
+				CssVal list;
+				list.kind is CssV.LIST as u8;
+				list.bits is (CssCxs.NewList: addr two 2);
+				call PendVal: info.subs:corner addr list;
+			;;
+		;;
+		call DropGot: addr h nh;
+		call DropGot: addr v nv;
+	[end: true]
+
+	# which of n values a corner (top-left, top-right, bottom-right, bottom-left) takes
+	[Corner: u32 corner: 0; u32 n: 0;]
+		if n is 1 return 0;
+		if n is 2 return corner % 2;
+		if n is 3
+			if corner is 3 return 1;
+			return corner;
+		;;
+	[end: corner]
+
+	# ---- lists of layers: background, transition, animation, mask
+
+	# items for each longhand, built up layer by layer
+	ptr<CssVal> lay_items[16];
+	u32 lay_n[16];
+	u32 lay_cap[16];
+
+	[LayAdd: u32 j: 0; ptr<CssVal> v: 0;]
+		if lay_n:j >= CssVp.MAX_ITEMS
+			throw 'CSS value too long';
+		;;
+		if lay_n:j >= lay_cap:j
+			u32 room: lay_cap:j * 2;
+			if room is 0
+				room is 16;
+			;;
+			ptr<CssVal> grown: new CssVal[room];
+			if grown is 0
+				throw 'out of memory for a CSS value';
+			;;
+			if lay_items:j is not 0
+				call Mem.Copy: grown lay_items:j lay_n:j * sizeof CssVal;
+				free lay_items:j;
+			;;
+			lay_items:j is grown;
+			lay_cap:j is room;
+		;;
+		ptr<CssVal> list_j: lay_items:j;
+		ptr<CssVal> to: addr list_j:(lay_n:j);
+		call Copy: to v;
+		lay_n:j is lay_n:j + 1;
+	[end]
+
+	# a whole value (a list or just one) added as this longhand's next layer, taking its reference
+	[LayAddValue: u32 j: 0; ptr<CssVal> v: 0;]
+		if lay_n:j > 0
+			CssVal sep;
+			sep.kind is CssV.SEP as u8;
+			sep.code is 44;
+			call LayAdd: j addr sep;
+		;;
+		if v.kind is CssV.LIST as u8
+			ptr<CssVal> items: (CssV.Items: v);
+			u32 count: CssV.item_count;
+			while u32 i: 0; i < count; i++;
+				call CssV.Retain: addr items:i;
+				call LayAdd: j addr items:i;
+			;;
+			call CssV.Release: v;
+		;;
+		else
+			call LayAdd: j v;
+		;;
+	[end]
+
+	[LayStart: u32 count: 0;]
+		while u32 i: 0; i < count; i++;
+			lay_n:i is 0;
+		;;
+	[end]
+
+	[LayDrop: u32 count: 0;]
+		while u32 i: 0; i < count; i++;
+			ptr<CssVal> list_i: lay_items:i;
+			while lay_n:i > 0
+				lay_n:i is lay_n:i - 1;
+				call CssV.Release: addr list_i:(lay_n:i);
+			;;
+		;;
+	[end]
+
+	[LayPend: ptr<CssPropInfo> info: 0;]
+		while u32 i: 0; i < info.sub_count; i++;
+			u32 n: lay_n:i;
+			ptr<CssVal> items: lay_items:i;
+			if n is 1 and items:0.kind is not CssV.FUNC as u8
+				call PendVal: info.subs:i addr items:0;
+			;;
+			else
+				CssVal list;
+				list.kind is CssV.LIST as u8;
+				list.bits is (CssCxs.NewList: items n);
+				call PendVal: info.subs:i addr list;
+			;;
+			lay_n:i is 0;
+		;;
+	[end]
+
+	[LayInitial: u32 j: 0; u32 prop: 0;]
+		ptr<CssVal> v: (Initial: prop);
+		call CssV.Retain: v;
+		CssVal copy;
+		call Copy: addr copy v;
+		call LayAddValue: j addr copy;
+	[end]
+
+	# background: [ layer , ]* final-layer, each its parts in any order
+	[Background: ptr<CssPropInfo> info: 0;]
+		call LayStart: info.sub_count;
+		bln ok: false;
+		if call ok is BackgroundLayers: info throws err
+			call LayDrop: info.sub_count;
+			throw err.text;
+		;;
+		if ok is false
+			call LayDrop: info.sub_count;
+			return false;
+		;;
+		call LayPend: info;
+	[end: true]
+
+	[BackgroundLayers: ptr<CssPropInfo> info: 0;]
+		# image position size repeat attachment origin clip color, in the table's order
+		bln have_color: false;
+		CssVal color;
+		while true
+			u32 done: 0;
+			u32 boxes: 0;
+			CssVal first_box;
+			while CssVp.pos < CssVp.stop and CssVp.t:(CssVp.pos).type is not CssLex.COMMA
+				if (done & 1) is 0 and (One: CssP.BACKGROUND_IMAGE)
+					call LayAddValue: 0 addr CssVp.parsed;
+					done is done | 1;
+				;;
+				elif (done & 2) is 0 and (One: CssP.BACKGROUND_POSITION)
+					call LayAddValue: 1 addr CssVp.parsed;
+					done is done | 2;
+					if CssVp.pos < CssVp.stop and CssVp.t:(CssVp.pos).type is CssLex.DELIM and CssVp.t:(CssVp.pos).num is 47.0
+						CssVp.pos++;
+						call CssVp.Skip;
+						if (One: CssP.BACKGROUND_SIZE) is false return false;
+						call LayAddValue: 2 addr CssVp.parsed;
+						done is done | 4;
+					;;
+				;;
+				elif (done & 8) is 0 and (One: CssP.BACKGROUND_REPEAT)
+					call LayAddValue: 3 addr CssVp.parsed;
+					done is done | 8;
+				;;
+				elif (done & 16) is 0 and (One: CssP.BACKGROUND_ATTACHMENT)
+					call LayAddValue: 4 addr CssVp.parsed;
+					done is done | 16;
+				;;
+				elif boxes < 2 and (One: CssP.BACKGROUND_CLIP)
+					# one box is both origin and clip; of two, the first is the origin
+					boxes++;
+					if boxes is 1
+						call Copy: addr first_box addr CssVp.parsed;
+					;;
+					else
+						call LayAddValue: 5 addr first_box;
+						call LayAddValue: 6 addr CssVp.parsed;
+					;;
+				;;
+				elif have_color is false and (One: CssP.BACKGROUND_COLOR)
+					call Copy: addr color addr CssVp.parsed;
+					have_color is true;
+				;;
+				else
+					return false;
+				;;
+			;;
+			if boxes is 1
+				if first_box.code is CssK.TEXT as u16
+					return false;
+				;;
+				call CssV.Retain: addr first_box;
+				call LayAddValue: 5 addr first_box;
+				call LayAddValue: 6 addr first_box;
+			;;
+			elif boxes is 0
+				call LayInitial: 5 CssP.BACKGROUND_ORIGIN;
+				call LayInitial: 6 CssP.BACKGROUND_CLIP;
+			;;
+			if (done & 1) is 0
+				call LayInitial: 0 CssP.BACKGROUND_IMAGE;
+			;;
+			if (done & 2) is 0
+				call LayInitial: 1 CssP.BACKGROUND_POSITION;
+			;;
+			if (done & 4) is 0
+				call LayInitial: 2 CssP.BACKGROUND_SIZE;
+			;;
+			if (done & 8) is 0
+				call LayInitial: 3 CssP.BACKGROUND_REPEAT;
+			;;
+			if (done & 16) is 0
+				call LayInitial: 4 CssP.BACKGROUND_ATTACHMENT;
+			;;
+			if CssVp.pos >= CssVp.stop break;
+			# a comma: a color belongs only in the last layer
+			if have_color return false;
+			CssVp.pos++;
+			call CssVp.Skip;
+			if CssVp.pos >= CssVp.stop return false;
+		;;
+		if have_color
+			call LayAdd: 7 addr color;
+		;;
+		else
+			call LayInitial: 7 CssP.BACKGROUND_COLOR;
+		;;
+	[end: true]
+
+	# transition, animation, mask: layers of longhands in any order. The name of a thing can be
+	# any word, so it's tried last, and the first time is the duration, so that's tried first.
+	[Layers: ptr<CssPropInfo> info: 0;]
+		call LayStart: info.sub_count;
+		bln ok: false;
+		if call ok is LayersBody: info throws err
+			call LayDrop: info.sub_count;
+			throw err.text;
+		;;
+		if ok is false
+			call LayDrop: info.sub_count;
+			return false;
+		;;
+		call LayPend: info;
+	[end: true]
+
+	[LayersBody: ptr<CssPropInfo> info: 0;]
+		u32 count: info.sub_count;
+		bln is_mask: info.subs:0 is CssP.MASK_IMAGE as u16;
+		while true
+			u32 done: 0;
+			while CssVp.pos < CssVp.stop and CssVp.t:(CssVp.pos).type is not CssLex.COMMA
+				bln hit: false;
+				if is_mask
+					while u32 j: 0; j < count; j++;
+						if (done & (1 << j)) is 0 and (One: info.subs:j)
+							call LayAddValue: j addr CssVp.parsed;
+							done is done | (1 << j);
+							hit is true;
+							break;
+						;;
+					;;
+				;;
+				else
+					if (done & 2) is 0 and (One: info.subs:1)
+						call LayAddValue: 1 addr CssVp.parsed;
+						done is done | 2;
+						hit is true;
+					;;
+					u32 j: count;
+					while hit is false and j > 2
+						j--;
+						if (done & (1 << j)) is 0 and (One: info.subs:j)
+							call LayAddValue: j addr CssVp.parsed;
+							done is done | (1 << j);
+							hit is true;
+						;;
+					;;
+					if hit is false and (done & 4) is 0 and (One: info.subs:2)
+						call LayAddValue: 2 addr CssVp.parsed;
+						done is done | 4;
+						hit is true;
+					;;
+					if hit is false and (done & 1) is 0 and (One: info.subs:0)
+						call LayAddValue: 0 addr CssVp.parsed;
+						done is done | 1;
+						hit is true;
+					;;
+				;;
+				if hit is false return false;
+			;;
+			if done is 0 return false;
+			while u32 k: 0; k < count; k++;
+				if (done & (1 << k)) is 0
+					call LayInitial: k info.subs:k;
+				;;
+			;;
+			if CssVp.pos >= CssVp.stop break;
+			CssVp.pos++;
+			call CssVp.Skip;
+			if CssVp.pos >= CssVp.stop return false;
+		;;
+	[end: true]
+
+	# ---- font
+
+	[Font: ptr<CssPropInfo> info: 0;]
+		# a system font's name stands for all of it
+		ptr<CssTok> tk: addr CssVp.t:(CssVp.pos);
+		if tk.type is CssLex.IDENT and CssVp.pos + 1 >= CssVp.stop
+			u32 kw: (CssVp.Kw: tk);
+			if kw is CssK.CAPTION or kw is CssK.ICON or kw is CssK.MENU or kw is CssK.MESSAGE_BOX or kw is CssK.SMALL_CAPTION or kw is CssK.STATUS_BAR
+				CssVp.pos++;
+				while u32 i: 0; i < info.sub_count; i++;
+					u32 sub: info.subs:i;
+					if sub is CssP.FONT_SIZE
+						CssVal size;
+						call CssV.SetLen: addr size 13.0 CssU.PX;
+						call PendVal: sub addr size;
+					;;
+					elif sub is CssP.FONT_FAMILY
+						CssVal family;
+						call CssV.SetText: addr family CssV.IDENT 'system-ui' 9;
+						call PendVal: sub addr family;
+					;;
+					else
+						call PendInitial: sub;
+					;;
+				;;
+				return true;
+			;;
+		;;
+		u32 done: 0;
+		# style, small-caps, weight and stretch come in any order before the size
+		while CssVp.pos < CssVp.stop
+			tk is addr CssVp.t:(CssVp.pos);
+			if tk.type is CssLex.IDENT and (CssVp.Kw: tk) is CssK.NORMAL
+				CssVp.pos++;
+				call CssVp.Skip;
+				continue;
+			;;
+			if (done & 1) is 0 and (One: CssP.FONT_STYLE)
+				call Pend: CssP.FONT_STYLE;
+				done is done | 1;
+			;;
+			elif (done & 2) is 0 and tk.type is CssLex.IDENT and (CssVp.Kw: tk) is CssK.SMALL_CAPS
+				CssVal caps;
+				call CssV.SetKw: addr caps CssK.SMALL_CAPS;
+				call PendVal: CssP.FONT_VARIANT_CAPS addr caps;
+				CssVp.pos++;
+				call CssVp.Skip;
+				done is done | 2;
+			;;
+			elif (done & 4) is 0 and tk.type is not CssLex.DIMENSION and tk.type is not CssLex.PERCENTAGE and (One: CssP.FONT_WEIGHT)
+				call Pend: CssP.FONT_WEIGHT;
+				done is done | 4;
+			;;
+			elif (done & 8) is 0 and tk.type is CssLex.IDENT and (One: CssP.FONT_STRETCH)
+				call Pend: CssP.FONT_STRETCH;
+				done is done | 8;
+			;;
+			else
+				break;
+			;;
+		;;
+		if (One: CssP.FONT_SIZE) is false return false;
+		call Pend: CssP.FONT_SIZE;
+		if CssVp.pos < CssVp.stop and CssVp.t:(CssVp.pos).type is CssLex.DELIM and CssVp.t:(CssVp.pos).num is 47.0
+			CssVp.pos++;
+			call CssVp.Skip;
+			if (One: CssP.LINE_HEIGHT) is false return false;
+			call Pend: CssP.LINE_HEIGHT;
+			done is done | 16;
+		;;
+		u32 mark: CssVp.vn;
+		if (CssVp.Match: (CssGram.Of: CssP.FONT_FAMILY)) is false or CssVp.vn is mark return false;
+		call CssVp.TakeParsed: mark;
+		call Pend: CssP.FONT_FAMILY;
+		if (done & 1) is 0
+			call PendInitial: CssP.FONT_STYLE;
+		;;
+		if (done & 2) is 0
+			call PendInitial: CssP.FONT_VARIANT_CAPS;
+		;;
+		if (done & 4) is 0
+			call PendInitial: CssP.FONT_WEIGHT;
+		;;
+		if (done & 8) is 0
+			call PendInitial: CssP.FONT_STRETCH;
+		;;
+		if (done & 16) is 0
+			call PendInitial: CssP.LINE_HEIGHT;
+		;;
+		call PendInitial: CssP.FONT_VARIANT_LIGATURES;
+		call PendInitial: CssP.FONT_VARIANT_NUMERIC;
+		call PendInitial: CssP.FONT_VARIANT_EAST_ASIAN;
+		call PendInitial: CssP.FONT_VARIANT_POSITION;
+		call PendInitial: CssP.FONT_KERNING;
+		call PendInitial: CssP.FONT_SIZE_ADJUST;
+		call PendInitial: CssP.FONT_FEATURE_SETTINGS;
+		call PendInitial: CssP.FONT_VARIATION_SETTINGS;
+		call PendInitial: CssP.FONT_OPTICAL_SIZING;
+	[end: true]
+
+	# none | [ grow shrink? || basis ]
+	[Flex]
+		ptr<CssTok> tk: addr CssVp.t:(CssVp.pos);
+		CssVal v;
+		if tk.type is CssLex.IDENT and (CssVp.Kw: tk) is CssK.NONE and CssVp.pos + 1 >= CssVp.stop
+			CssVp.pos++;
+			call CssV.SetNumber: addr v CssV.NUM 0.0;
+			call PendVal: CssP.FLEX_GROW addr v;
+			call PendVal: CssP.FLEX_SHRINK addr v;
+			call CssV.SetKw: addr v CssK.AUTO;
+			call PendVal: CssP.FLEX_BASIS addr v;
+			return true;
+		;;
+		f64 grow: 1.0;
+		f64 shrink: 1.0;
+		u32 numbers: 0;
+		bln have_basis: false;
+		while CssVp.pos < CssVp.stop
+			tk is addr CssVp.t:(CssVp.pos);
+			# a plain number is a grow or shrink factor while there's room for one
+			if numbers < 2 and (tk.type is CssLex.NUMBER or tk.type is CssLex.FUNCTION) and (numbers is 0 or (Adjacent))
+				u32 mark: CssVp.vn;
+				if (CssVp.ParseType: CssT.NUMBER0)
+					f64 x: 0.0;
+					if CssVp.vals:mark.kind is CssV.NUM as u8
+						x is (CssVp.vals:mark.Num);
+					;;
+					call CssVp.Cut: mark;
+					if numbers is 0
+						grow is x;
+					;;
+					else
+						shrink is x;
+					;;
+					numbers++;
+					last_number_at is CssVp.pos;
+					continue;
+				;;
+			;;
+			if have_basis return false;
+			if (One: CssP.FLEX_BASIS) is false return false;
+			call Pend: CssP.FLEX_BASIS;
+			have_basis is true;
+			last_number_at is 0;
+		;;
+		if numbers is 0 and have_basis is false return false;
+		call CssV.SetNumber: addr v CssV.NUM grow;
+		call PendVal: CssP.FLEX_GROW addr v;
+		call CssV.SetNumber: addr v CssV.NUM shrink;
+		call PendVal: CssP.FLEX_SHRINK addr v;
+		if have_basis is false
+			# flex: 1 means a basis of nothing, written as browsers read it back
+			call CssV.SetNumber: addr v CssV.PCT 0.0;
+			call PendVal: CssP.FLEX_BASIS addr v;
+		;;
+	[end: true]
+
+	u32 last_number_at: 0;
+
+	# whether the shrink factor would be next to the grow factor
+	[Adjacent]
+	[end: last_number_at is CssVp.pos]
+
+	# name [ / type ]
+	[Container]
+		if (One: CssP.CONTAINER_NAME) is false return false;
+		call Pend: CssP.CONTAINER_NAME;
+		if CssVp.pos < CssVp.stop
+			if CssVp.t:(CssVp.pos).type is not CssLex.DELIM or CssVp.t:(CssVp.pos).num is not 47.0 return false;
+			CssVp.pos++;
+			call CssVp.Skip;
+			if (One: CssP.CONTAINER_TYPE) is false return false;
+			call Pend: CssP.CONTAINER_TYPE;
+		;;
+		else
+			call PendInitial: CssP.CONTAINER_TYPE;
+		;;
+	[end: true]
+
+	# source || slice [ / width [ / outset ] ] || repeat
+	[BorderImage: ptr<CssPropInfo> info: 0;]
+		u32 done: 0;
+		while CssVp.pos < CssVp.stop
+			if (done & 1) is 0 and (One: CssP.BORDER_IMAGE_SOURCE)
+				call Pend: CssP.BORDER_IMAGE_SOURCE;
+				done is done | 1;
+			;;
+			elif (done & 2) is 0 and (One: CssP.BORDER_IMAGE_SLICE)
+				call Pend: CssP.BORDER_IMAGE_SLICE;
+				done is done | 2;
+				if CssVp.pos < CssVp.stop and CssVp.t:(CssVp.pos).type is CssLex.DELIM and CssVp.t:(CssVp.pos).num is 47.0
+					CssVp.pos++;
+					call CssVp.Skip;
+					if (One: CssP.BORDER_IMAGE_WIDTH)
+						call Pend: CssP.BORDER_IMAGE_WIDTH;
+						done is done | 4;
+					;;
+					if CssVp.pos < CssVp.stop and CssVp.t:(CssVp.pos).type is CssLex.DELIM and CssVp.t:(CssVp.pos).num is 47.0
+						CssVp.pos++;
+						call CssVp.Skip;
+						if (One: CssP.BORDER_IMAGE_OUTSET) is false return false;
+						call Pend: CssP.BORDER_IMAGE_OUTSET;
+						done is done | 8;
+					;;
+				;;
+			;;
+			elif (done & 16) is 0 and (One: CssP.BORDER_IMAGE_REPEAT)
+				call Pend: CssP.BORDER_IMAGE_REPEAT;
+				done is done | 16;
+			;;
+			else
+				return false;
+			;;
+		;;
+		if done is 0 return false;
+		if (done & 1) is 0
+			call PendInitial: CssP.BORDER_IMAGE_SOURCE;
+		;;
+		if (done & 2) is 0
+			call PendInitial: CssP.BORDER_IMAGE_SLICE;
+		;;
+		if (done & 4) is 0
+			call PendInitial: CssP.BORDER_IMAGE_WIDTH;
+		;;
+		if (done & 8) is 0
+			call PendInitial: CssP.BORDER_IMAGE_OUTSET;
+		;;
+		if (done & 16) is 0
+			call PendInitial: CssP.BORDER_IMAGE_REPEAT;
+		;;
+	[end: true]
+
+	# ---- grid
+
+	# rows / columns, or areas written out with their rows between the strings
+	[GridTemplate]
+		ptr<CssTok> tk: addr CssVp.t:(CssVp.pos);
+		if tk.type is CssLex.IDENT and (CssVp.Kw: tk) is CssK.NONE and CssVp.pos + 1 >= CssVp.stop
+			CssVp.pos++;
+			call PendInitial: CssP.GRID_TEMPLATE_ROWS;
+			call PendInitial: CssP.GRID_TEMPLATE_COLUMNS;
+			call PendInitial: CssP.GRID_TEMPLATE_AREAS;
+			return true;
+		;;
+		if (HasString)
+			return (GridTemplateAreas);
+		;;
+		if (One: CssP.GRID_TEMPLATE_ROWS) is false return false;
+		call Pend: CssP.GRID_TEMPLATE_ROWS;
+		if CssVp.pos >= CssVp.stop or CssVp.t:(CssVp.pos).type is not CssLex.DELIM or CssVp.t:(CssVp.pos).num is not 47.0 return false;
+		CssVp.pos++;
+		call CssVp.Skip;
+		if (One: CssP.GRID_TEMPLATE_COLUMNS) is false return false;
+		call Pend: CssP.GRID_TEMPLATE_COLUMNS;
+		call PendInitial: CssP.GRID_TEMPLATE_AREAS;
+	[end: true]
+
+	[HasString]
+		u32 p: CssVp.pos;
+		while p < CssVp.stop
+			if CssVp.t:p.type is CssLex.STRING return true;
+			p is (CssSyntax.After: CssVp.t p);
+		;;
+	[end: false]
+
+	# [ names? string size? names? ]+ [ / columns ]?
+	[GridTemplateAreas]
+		u32 rows_mark: CssVp.vn;
+		u32 first_string: CssVp.pos;
+		while CssVp.pos < CssVp.stop and CssVp.t:(CssVp.pos).type is not CssLex.DELIM
+			u32 type: CssVp.t:(CssVp.pos).type;
+			if type is CssLex.LBRACKET
+				if (CssVp.LineNames) is false return false;
+			;;
+			elif type is CssLex.STRING
+				if (CssVp.CountCells: addr CssVp.t:(CssVp.pos)) is 0 return false;
+				call Advance;
+				# its row's size, or auto if it says none
+				u32 next_type: CssLex.EOF;
+				if CssVp.pos < CssVp.stop
+					next_type is CssVp.t:(CssVp.pos).type;
+				;;
+				if CssVp.pos >= CssVp.stop or next_type is CssLex.STRING or next_type is CssLex.LBRACKET or next_type is CssLex.DELIM
+					call CssV.SetKw: (CssVp.Emit) CssK.AUTO;
+				;;
+				elif (CssVp.Match: (CssGram.Macro: (MacroOf: 'tracksize'))) is false
+					return false;
+				;;
+			;;
+			else
+				return false;
+			;;
+		;;
+		u32 last_string: CssVp.pos;
+		call CssVp.TakeParsed: rows_mark;
+		call Pend: CssP.GRID_TEMPLATE_ROWS;
+		# the strings on their own, which checks that they make rectangles
+		call PendAreas: first_string last_string;
+		if CssVp.pos < CssVp.stop
+			if CssVp.t:(CssVp.pos).num is not 47.0 return false;
+			call Advance;
+			if (One: CssP.GRID_TEMPLATE_COLUMNS) is false return false;
+			call Pend: CssP.GRID_TEMPLATE_COLUMNS;
+		;;
+		else
+			call PendInitial: CssP.GRID_TEMPLATE_COLUMNS;
+		;;
+	[end: true]
+
+	[Advance]
+		CssVp.pos++;
+		call CssVp.Skip;
+	[end]
+
+	[MacroOf: ptr<u8> name: 0;]
+		ptr<WlAtom> a: (WlAtoms.GetZ: name);
+		while u32 m: 0; m < CssProps.macro_count; m++;
+			if CssProps.macro_names:m is a return m;
+		;;
+		throw 'no such grammar: ' name;
+	[end: 0 as u32]
+
+	[PendAreas: u32 from: 0; u32 to: 0;]
+		u32 saved_pos: CssVp.pos;
+		u32 mark: CssVp.vn;
+		u32 rows: 0;
+		u32 columns: 0;
+		u32 p: from;
+		while p < to
+			if CssVp.t:p.type is CssLex.STRING
+				u32 cells: (CssVp.CountCells: addr CssVp.t:p);
+				if rows > 0 and cells is not columns
+					throw 'grid-template rows differ';
+				;;
+				columns is cells;
+				rows++;
+				call CssV.SetText: (CssVp.Emit) CssV.STR CssVp.t:p.text CssVp.t:p.len;
+			;;
+			p is (CssSyntax.After: CssVp.t p);
+		;;
+		CssVp.pos is to;
+		if rows * columns > 4096 or (CssVp.AreasAreRectangles: from rows columns) is false
+			call CssVp.Cut: mark;
+			throw 'grid-template areas are not rectangles';
+		;;
+		call CssVp.TakeParsed: mark;
+		call Pend: CssP.GRID_TEMPLATE_AREAS;
+		CssVp.pos is saved_pos;
+	[end]
+
+	# <grid-template> | rows / auto-flow ... | auto-flow ... / columns
+	[Grid]
+		ptr<CssTok> tk: addr CssVp.t:(CssVp.pos);
+		if tk.type is CssLex.IDENT and (CssVp.Kw: tk) is CssK.AUTO_FLOW
+			return (GridAutoFlow: false);
+		;;
+		# rows / auto-flow
+		u32 p: CssVp.pos;
+		while p < CssVp.stop
+			if CssVp.t:p.type is CssLex.DELIM and CssVp.t:p.num is 47.0
+				u32 q: p + 1;
+				while q < CssVp.stop and CssVp.t:q.type is CssLex.WS
+					q++;
+				;;
+				if q < CssVp.stop and CssVp.t:q.type is CssLex.IDENT and (CssVp.Kw: addr CssVp.t:q) is CssK.AUTO_FLOW
+					return (GridAutoFlow: true);
+				;;
+			;;
+			p is (CssSyntax.After: CssVp.t p);
+		;;
+		if (GridTemplate) is false return false;
+		call PendInitial: CssP.GRID_AUTO_ROWS;
+		call PendInitial: CssP.GRID_AUTO_COLUMNS;
+		call PendInitial: CssP.GRID_AUTO_FLOW;
+	[end: true]
+
+	[GridAutoFlow: bln rows_first: false;]
+		u32 sized: CssP.GRID_AUTO_ROWS;
+		if rows_first
+			if (One: CssP.GRID_TEMPLATE_ROWS) is false return false;
+			call Pend: CssP.GRID_TEMPLATE_ROWS;
+			if CssVp.pos >= CssVp.stop or CssVp.t:(CssVp.pos).type is not CssLex.DELIM return false;
+			call Advance;
+			call PendInitial: CssP.GRID_TEMPLATE_COLUMNS;
+			sized is CssP.GRID_AUTO_COLUMNS;
+		;;
+		else
+			call PendInitial: CssP.GRID_TEMPLATE_ROWS;
+		;;
+		# auto-flow [ dense ]?, which on this side says rows or columns
+		call Advance;
+		bln dense: false;
+		if CssVp.pos < CssVp.stop and CssVp.t:(CssVp.pos).type is CssLex.IDENT and (CssVp.Kw: addr CssVp.t:(CssVp.pos)) is CssK.DENSE
+			dense is true;
+			call Advance;
+		;;
+		CssVal flow;
+		u32 word: CssK.ROW;
+		if rows_first
+			word is CssK.COLUMN;
+		;;
+		if dense
+			CssVal two[2];
+			call CssV.SetKw: addr two:0 word;
+			call CssV.SetKw: addr two:1 CssK.DENSE;
+			flow.kind is CssV.LIST as u8;
+			flow.bits is (CssCxs.NewList: addr two 2);
+		;;
+		else
+			call CssV.SetKw: addr flow word;
+		;;
+		call PendVal: CssP.GRID_AUTO_FLOW addr flow;
+		call PendInitial: CssP.GRID_TEMPLATE_AREAS;
+		bln have_sized: false;
+		if CssVp.pos < CssVp.stop and CssVp.t:(CssVp.pos).type is not CssLex.DELIM
+			if (One: sized) is false return false;
+			call Pend: sized;
+			have_sized is true;
+		;;
+		if have_sized is false
+			call PendInitial: sized;
+		;;
+		if rows_first
+			call PendInitial: CssP.GRID_AUTO_ROWS;
+		;;
+		else
+			if CssVp.pos < CssVp.stop
+				if CssVp.t:(CssVp.pos).type is not CssLex.DELIM or CssVp.t:(CssVp.pos).num is not 47.0 return false;
+				call Advance;
+				if (One: CssP.GRID_TEMPLATE_COLUMNS) is false return false;
+				call Pend: CssP.GRID_TEMPLATE_COLUMNS;
+			;;
+			else
+				call PendInitial: CssP.GRID_TEMPLATE_COLUMNS;
+			;;
+			call PendInitial: CssP.GRID_AUTO_COLUMNS;
+		;;
+	[end: true]
+}

@@ -1,0 +1,683 @@
+--- normally
+load http://test.example/dir/site.css kind 2
+load http://test.example/dir/lib.js kind 1
+console[0]: external script ran
+console[0]: lib says 42
+console[0]: tag DIV DIV 1 box
+console[0]: style attr 3px padding: 3px
+console[0]: after set rgb(255, 0, 0) | padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);
+console[0]: classList 2 true a b
+console[0]: className b c d
+console[0]: dataset ada ["userName"]
+console[0]: attr baz
+console[0]: text Some bold text | Some <b>bold</b> text
+console[0]: lists 3 3 3 two three
+console[0]: after add 4 4 3
+console[0]: iterate one,two,three
+console[0]: for-of one,two,three,four
+console[0]: innerHTML <span>made <i>here</i></span> &amp; there 1 SPAN 3
+console[0]: closest added true true
+console[0]: clone <div id="copy" class="fresh"><span>made <i>here</i></span> &amp; there</div>
+console[0]: adjacent U
+console[0]: bad selector SyntaxError
+console[0]: cycle HierarchyRequestError
+console[0]: title First title
+console[0]: title now Second title Second title
+console[0]: body BODY HTML HEAD
+console[0]: instanceof true true true true true
+console[0]: events doc capture / list capture 1 / target 2 true / once / list bubble 3 true / window
+console[0]: no bubble doc capture / list capture 1 / target 2 true
+console[0]: stop false stopped
+console[2]: Uncaught Error: in a listener
+console[0]: next listener still ran
+console[0]: sync end
+load http://test.example/dir/data.json kind 3
+load http://test.example/dir/nothing kind 3
+load http://test.example/dir/data.json kind 3
+console[0]: window true 800 600 string /dir/page.html test.example
+console[0]: storage 1 null 1
+console[0]: btoa aGVsbG8= hello
+console[0]: matchMedia true false
+console[0]: computed rgb(16, 32, 48) block
+console[0]: written written
+console[0]: microtask
+console[0]: queued microtask
+console[0]: xhr 200 {"answer": 7} 4
+console[0]: DOMContentLoaded interactive
+console[0]: fetch 200 true
+console[0]: fetch 404 404 false
+console[0]: json 7
+console[0]: load complete
+readyState after load: 1
+console[0]: timeout x y
+console[0]: interval 1
+console[0]: frame number
+console[0]: interval 2
+click result: console[0]: inline handler click go
+console[0]: listener click true 10
+0
+navigate to http://test.example/dir/next.html
+box display 257 block 1
+box width 400 color 270545151 font 20
+added color 3362009855 margin 32
+serialized <!DOCTYPE html><html><head>
+<title>Second title</title>
+<link rel="stylesheet" href="site.css">
+<script src="lib.js"></script>
+<style>
+  #box { display: block; width: 50%; color: #102030; font-size: 20px; }
+  .fresh { color: rgb(200, 100, 50); margin-top: 2em; }
+  p { margin: 1em 0; }
+</style>
+</head>
+<body>
+<h1 id="top" class="b c d">Hello</h1>
+<p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
+<div id="box" style="padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);">box</div>
+<ul id="list"><li>one</li><li>two</li><li>three</li><li>four</li></ul>
+<button id="go" onclick="console.log('inline handler', event.type, this.id); return false;">Go</button>
+<a class="out" href="next.html">next</a>
+<script>
+var log = console.log;
+log('lib says', window.fromLib);
+
+// finding things, and changing them
+var box = document.getElementById('box');
+log('tag', box.tagName, box.nodeName, box.nodeType, box.id);
+log('style attr', box.style.padding, box.getAttribute('style'));
+box.style.backgroundColor = 'red';
+log('after set', box.style.backgroundColor, '|', box.getAttribute('style'));
+
+var head1 = document.querySelector('#top');
+log('classList', head1.classList.length, head1.classList.contains('b'), head1.classList.value);
+head1.classList.add('c');
+head1.classList.remove('a');
+head1.classList.toggle('d');
+log('className', head1.className);
+
+var p = document.querySelector('p.linked');
+log('dataset', p.dataset.userName, JSON.stringify(Object.keys(p.dataset)));
+p.dataset.fooBar = 'baz';
+log('attr', p.getAttribute('data-foo-bar'));
+log('text', p.textContent, '|', p.innerHTML);
+
+// live and static lists
+var items = document.getElementsByTagName('li');
+var kids = document.getElementById('list').children;
+var fixed = document.querySelectorAll('li');
+log('lists', items.length, kids.length, fixed.length, items[1].textContent, items.item(2).textContent);
+var li = document.createElement('li');
+li.textContent = 'four';
+document.getElementById('list').appendChild(li);
+log('after add', items.length, kids.length, fixed.length);
+log('iterate', Array.from(fixed).map(function (x) { return x.textContent; }).join(','));
+var seen = [];
+for (var k of items) seen.push(k.textContent);
+log('for-of', seen.join(','));
+fixed.forEach(function (n, i) { seen[i] = i; });
+
+// building things
+var d = document.createElement('div');
+d.id = 'added';
+d.className = 'fresh';
+d.innerHTML = '<span>made <i>here</i></span> &amp; there';
+document.body.appendChild(d);
+log('innerHTML', d.innerHTML, d.children.length, d.firstChild.nodeName, d.lastChild.nodeType);
+log('closest', d.querySelector('i').closest('div').id, d.matches('.fresh'), d.parentNode === document.body);
+var c = d.cloneNode(true);
+c.id = 'copy';
+log('clone', c.outerHTML);
+d.insertAdjacentHTML('beforeend', '<u>end</u>');
+log('adjacent', d.lastChild.tagName);
+d.querySelector('u').remove();
+try { document.querySelector('[['); } catch (e) { log('bad selector', e.name); }
+try { d.appendChild(document.body); } catch (e) { log('cycle', e.name); }
+log('title', document.title);
+document.title = 'Second title';
+log('title now', document.title, document.querySelector('title').textContent);
+log('body', document.body.tagName, document.documentElement.tagName, document.head.tagName);
+log('instanceof', d instanceof HTMLElement, d instanceof Element, d instanceof Node, d instanceof EventTarget, document instanceof Document);
+
+// events: capture, target, bubble, stopping, once
+var order = [];
+var list = document.getElementById('list');
+var first = list.firstChild;
+document.addEventListener('ping', function (e) { order.push('doc capture'); }, true);
+list.addEventListener('ping', function (e) { order.push('list capture ' + e.eventPhase); }, true);
+first.addEventListener('ping', function (e) { order.push('target ' + e.eventPhase + ' ' + (e.target === first)); });
+first.addEventListener('ping', function (e) { order.push('once'); }, { once: true });
+list.addEventListener('ping', function (e) { order.push('list bubble ' + e.eventPhase + ' ' + (e.currentTarget === list)); });
+window.addEventListener('ping', function (e) { order.push('window'); });
+first.dispatchEvent(new CustomEvent('ping', { bubbles: true, detail: 5 }));
+log('events', order.join(' / '));
+order.length = 0;
+first.dispatchEvent(new Event('ping'));
+log('no bubble', order.join(' / '));
+list.addEventListener('stop', function (e) { e.stopPropagation(); e.preventDefault(); order.push('stopped'); });
+document.addEventListener('stop', function () { order.push('should not run'); });
+order.length = 0;
+var result = first.dispatchEvent(new Event('stop', { bubbles: true, cancelable: true }));
+log('stop', result, order.join(' / '));
+first.addEventListener('boom', function () { throw new Error('in a listener'); });
+first.addEventListener('boom', function () { log('next listener still ran'); });
+first.dispatchEvent(new Event('boom'));
+
+// timers, promises and order
+setTimeout(function (a, b) { log('timeout', a, b); }, 10, 'x', 'y');
+var n = 0;
+var iv = setInterval(function () { n++; log('interval', n); if (n === 2) clearInterval(iv); }, 50);
+var cancelled = setTimeout(function () { log('should not fire'); }, 20);
+clearTimeout(cancelled);
+requestAnimationFrame(function (t) { log('frame', typeof t); });
+Promise.resolve().then(function () { log('microtask'); });
+queueMicrotask(function () { log('queued microtask'); });
+log('sync end');
+
+// fetch and XHR
+fetch('data.json').then(function (r) { log('fetch', r.status, r.ok); return r.json(); }).then(function (j) { log('json', j.answer); });
+fetch('nothing').then(function (r) { log('fetch 404', r.status, r.ok); });
+var x = new XMLHttpRequest();
+x.onload = function () { log('xhr', x.status, x.responseText, x.readyState); };
+x.open('GET', 'data.json');
+x.send();
+
+// the window
+log('window', window === globalThis, innerWidth, innerHeight, typeof navigator.userAgent, location.pathname, location.host);
+localStorage.setItem('k', 1);
+log('storage', localStorage.getItem('k'), localStorage.getItem('none'), localStorage.length);
+log('btoa', btoa('hello'), atob('aGVsbG8='));
+log('matchMedia', matchMedia('(min-width: 500px)').matches, matchMedia('(min-width: 900px)').matches);
+log('computed', getComputedStyle(box).color, getComputedStyle(box).display);
+
+document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
+window.addEventListener('load', function () { log('load', document.readyState); });
+document.getElementById('go').addEventListener('click', function (e) { log('listener', e.type, e.defaultPrevented, e.clientX); });
+
+document.write('<p id="written">written</p>');
+log('written', document.getElementById('written').textContent);
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
+<p>after the script</p>
+
+
+</body></html><!DOCTYPE html><html><head>
+<title>Second title</title>
+<link rel="stylesheet" href="site.css">
+<script src="lib.js"></script>
+<style>
+  #box { display: block; width: 50%; color: #102030; font-size: 20px; }
+  .fresh { color: rgb(200, 100, 50); margin-top: 2em; }
+  p { margin: 1em 0; }
+</style>
+</head>
+<body>
+<h1 id="top" class="b c d">Hello</h1>
+<p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
+<div id="box" style="padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);">box</div>
+<ul id="list"><li>one</li><li>two</li><li>three</li><li>four</li></ul>
+<button id="go" onclick="console.log('inline handler', event.type, this.id); return false;">Go</button>
+<a class="out" href="next.html">next</a>
+<script>
+var log = console.log;
+log('lib says', window.fromLib);
+
+// finding things, and changing them
+var box = document.getElementById('box');
+log('tag', box.tagName, box.nodeName, box.nodeType, box.id);
+log('style attr', box.style.padding, box.getAttribute('style'));
+box.style.backgroundColor = 'red';
+log('after set', box.style.backgroundColor, '|', box.getAttribute('style'));
+
+var head1 = document.querySelector('#top');
+log('classList', head1.classList.length, head1.classList.contains('b'), head1.classList.value);
+head1.classList.add('c');
+head1.classList.remove('a');
+head1.classList.toggle('d');
+log('className', head1.className);
+
+var p = document.querySelector('p.linked');
+log('dataset', p.dataset.userName, JSON.stringify(Object.keys(p.dataset)));
+p.dataset.fooBar = 'baz';
+log('attr', p.getAttribute('data-foo-bar'));
+log('text', p.textContent, '|', p.innerHTML);
+
+// live and static lists
+var items = document.getElementsByTagName('li');
+var kids = document.getElementById('list').children;
+var fixed = document.querySelectorAll('li');
+log('lists', items.length, kids.length, fixed.length, items[1].textContent, items.item(2).textContent);
+var li = document.createElement('li');
+li.textContent = 'four';
+document.getElementById('list').appendChild(li);
+log('after add', items.length, kids.length, fixed.length);
+log('iterate', Array.from(fixed).map(function (x) { return x.textContent; }).join(','));
+var seen = [];
+for (var k of items) seen.push(k.textContent);
+log('for-of', seen.join(','));
+fixed.forEach(function (n, i) { seen[i] = i; });
+
+// building things
+var d = document.createElement('div');
+d.id = 'added';
+d.className = 'fresh';
+d.innerHTML = '<span>made <i>here</i></span> &amp; there';
+document.body.appendChild(d);
+log('innerHTML', d.innerHTML, d.children.length, d.firstChild.nodeName, d.lastChild.nodeType);
+log('closest', d.querySelector('i').closest('div').id, d.matches('.fresh'), d.parentNode === document.body);
+var c = d.cloneNode(true);
+c.id = 'copy';
+log('clone', c.outerHTML);
+d.insertAdjacentHTML('beforeend', '<u>end</u>');
+log('adjacent', d.lastChild.tagName);
+d.querySelector('u').remove();
+try { document.querySelector('[['); } catch (e) { log('bad selector', e.name); }
+try { d.appendChild(document.body); } catch (e) { log('cycle', e.name); }
+log('title', document.title);
+document.title = 'Second title';
+log('title now', document.title, document.querySelector('title').textContent);
+log('body', document.body.tagName, document.documentElement.tagName, document.head.tagName);
+log('instanceof', d instanceof HTMLElement, d instanceof Element, d instanceof Node, d instanceof EventTarget, document instanceof Document);
+
+// events: capture, target, bubble, stopping, once
+var order = [];
+var list = document.getElementById('list');
+var first = list.firstChild;
+document.addEventListener('ping', function (e) { order.push('doc capture'); }, true);
+list.addEventListener('ping', function (e) { order.push('list capture ' + e.eventPhase); }, true);
+first.addEventListener('ping', function (e) { order.push('target ' + e.eventPhase + ' ' + (e.target === first)); });
+first.addEventListener('ping', function (e) { order.push('once'); }, { once: true });
+list.addEventListener('ping', function (e) { order.push('list bubble ' + e.eventPhase + ' ' + (e.currentTarget === list)); });
+window.addEventListener('ping', function (e) { order.push('window'); });
+first.dispatchEvent(new CustomEvent('ping', { bubbles: true, detail: 5 }));
+log('events', order.join(' / '));
+order.length = 0;
+first.dispatchEvent(new Event('ping'));
+log('no bubble', order.join(' / '));
+list.addEventListener('stop', function (e) { e.stopPropagation(); e.preventDefault(); order.push('stopped'); });
+document.addEventListener('stop', function () { order.push('should not run'); });
+order.length = 0;
+var result = first.dispatchEvent(new Event('stop', { bubbles: true, cancelable: true }));
+log('stop', result, order.join(' / '));
+first.addEventListener('boom', function () { throw new Error('in a listener'); });
+first.addEventListener('boom', function () { log('next listener still ran'); });
+first.dispatchEvent(new Event('boom'));
+
+// timers, promises and order
+setTimeout(function (a, b) { log('timeout', a, b); }, 10, 'x', 'y');
+var n = 0;
+var iv = setInterval(function () { n++; log('interval', n); if (n === 2) clearInterval(iv); }, 50);
+var cancelled = setTimeout(function () { log('should not fire'); }, 20);
+clearTimeout(cancelled);
+requestAnimationFrame(function (t) { log('frame', typeof t); });
+Promise.resolve().then(function () { log('microtask'); });
+queueMicrotask(function () { log('queued microtask'); });
+log('sync end');
+
+// fetch and XHR
+fetch('data.json').then(function (r) { log('fetch', r.status, r.ok); return r.json(); }).then(function (j) { log('json', j.answer); });
+fetch('nothing').then(function (r) { log('fetch 404', r.status, r.ok); });
+var x = new XMLHttpRequest();
+x.onload = function () { log('xhr', x.status, x.responseText, x.readyState); };
+x.open('GET', 'data.json');
+x.send();
+
+// the window
+log('window', window === globalThis, innerWidth, innerHeight, typeof navigator.userAgent, location.pathname, location.host);
+localStorage.setItem('k', 1);
+log('storage', localStorage.getItem('k'), localStorage.getItem('none'), localStorage.length);
+log('btoa', btoa('hello'), atob('aGVsbG8='));
+log('matchMedia', matchMedia('(min-width: 500px)').matches, matchMedia('(min-width: 900px)').matches);
+log('computed', getComputedStyle(box).color, getComputedStyle(box).display);
+
+document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
+window.addEventListener('load', function () { log('load', document.readyState); });
+document.getElementById('go').addEventListener('click', function (e) { log('listener', e.type, e.defaultPrevented, e.clientX); });
+
+document.write('<p id="written">written</p>');
+log('written', document.getElementById('written').textContent);
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
+<p>after the script</p>
+
+
+</body></html>
+--- with a collection at every safepoint
+load http://test.example/dir/site.css kind 2
+load http://test.example/dir/lib.js kind 1
+console[0]: external script ran
+console[0]: lib says 42
+console[0]: tag DIV DIV 1 box
+console[0]: style attr 3px padding: 3px
+console[0]: after set rgb(255, 0, 0) | padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);
+console[0]: classList 2 true a b
+console[0]: className b c d
+console[0]: dataset ada ["userName"]
+console[0]: attr baz
+console[0]: text Some bold text | Some <b>bold</b> text
+console[0]: lists 3 3 3 two three
+console[0]: after add 4 4 3
+console[0]: iterate one,two,three
+console[0]: for-of one,two,three,four
+console[0]: innerHTML <span>made <i>here</i></span> &amp; there 1 SPAN 3
+console[0]: closest added true true
+console[0]: clone <div id="copy" class="fresh"><span>made <i>here</i></span> &amp; there</div>
+console[0]: adjacent U
+console[0]: bad selector SyntaxError
+console[0]: cycle HierarchyRequestError
+console[0]: title First title
+console[0]: title now Second title Second title
+console[0]: body BODY HTML HEAD
+console[0]: instanceof true true true true true
+console[0]: events doc capture / list capture 1 / target 2 true / once / list bubble 3 true / window
+console[0]: no bubble doc capture / list capture 1 / target 2 true
+console[0]: stop false stopped
+console[2]: Uncaught Error: in a listener
+console[0]: next listener still ran
+console[0]: sync end
+load http://test.example/dir/data.json kind 3
+load http://test.example/dir/nothing kind 3
+load http://test.example/dir/data.json kind 3
+console[0]: window true 800 600 string /dir/page.html test.example
+console[0]: storage 1 null 1
+console[0]: btoa aGVsbG8= hello
+console[0]: matchMedia true false
+console[0]: computed rgb(16, 32, 48) block
+console[0]: written written
+console[0]: microtask
+console[0]: queued microtask
+console[0]: xhr 200 {"answer": 7} 4
+console[0]: DOMContentLoaded interactive
+console[0]: fetch 200 true
+console[0]: fetch 404 404 false
+console[0]: json 7
+console[0]: load complete
+readyState after load: 1
+console[0]: timeout x y
+console[0]: interval 1
+console[0]: frame number
+console[0]: interval 2
+click result: console[0]: inline handler click go
+console[0]: listener click true 10
+0
+navigate to http://test.example/dir/next.html
+box display 257 block 1
+box width 400 color 270545151 font 20
+added color 3362009855 margin 32
+serialized <!DOCTYPE html><html><head>
+<title>Second title</title>
+<link rel="stylesheet" href="site.css">
+<script src="lib.js"></script>
+<style>
+  #box { display: block; width: 50%; color: #102030; font-size: 20px; }
+  .fresh { color: rgb(200, 100, 50); margin-top: 2em; }
+  p { margin: 1em 0; }
+</style>
+</head>
+<body>
+<h1 id="top" class="b c d">Hello</h1>
+<p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
+<div id="box" style="padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);">box</div>
+<ul id="list"><li>one</li><li>two</li><li>three</li><li>four</li></ul>
+<button id="go" onclick="console.log('inline handler', event.type, this.id); return false;">Go</button>
+<a class="out" href="next.html">next</a>
+<script>
+var log = console.log;
+log('lib says', window.fromLib);
+
+// finding things, and changing them
+var box = document.getElementById('box');
+log('tag', box.tagName, box.nodeName, box.nodeType, box.id);
+log('style attr', box.style.padding, box.getAttribute('style'));
+box.style.backgroundColor = 'red';
+log('after set', box.style.backgroundColor, '|', box.getAttribute('style'));
+
+var head1 = document.querySelector('#top');
+log('classList', head1.classList.length, head1.classList.contains('b'), head1.classList.value);
+head1.classList.add('c');
+head1.classList.remove('a');
+head1.classList.toggle('d');
+log('className', head1.className);
+
+var p = document.querySelector('p.linked');
+log('dataset', p.dataset.userName, JSON.stringify(Object.keys(p.dataset)));
+p.dataset.fooBar = 'baz';
+log('attr', p.getAttribute('data-foo-bar'));
+log('text', p.textContent, '|', p.innerHTML);
+
+// live and static lists
+var items = document.getElementsByTagName('li');
+var kids = document.getElementById('list').children;
+var fixed = document.querySelectorAll('li');
+log('lists', items.length, kids.length, fixed.length, items[1].textContent, items.item(2).textContent);
+var li = document.createElement('li');
+li.textContent = 'four';
+document.getElementById('list').appendChild(li);
+log('after add', items.length, kids.length, fixed.length);
+log('iterate', Array.from(fixed).map(function (x) { return x.textContent; }).join(','));
+var seen = [];
+for (var k of items) seen.push(k.textContent);
+log('for-of', seen.join(','));
+fixed.forEach(function (n, i) { seen[i] = i; });
+
+// building things
+var d = document.createElement('div');
+d.id = 'added';
+d.className = 'fresh';
+d.innerHTML = '<span>made <i>here</i></span> &amp; there';
+document.body.appendChild(d);
+log('innerHTML', d.innerHTML, d.children.length, d.firstChild.nodeName, d.lastChild.nodeType);
+log('closest', d.querySelector('i').closest('div').id, d.matches('.fresh'), d.parentNode === document.body);
+var c = d.cloneNode(true);
+c.id = 'copy';
+log('clone', c.outerHTML);
+d.insertAdjacentHTML('beforeend', '<u>end</u>');
+log('adjacent', d.lastChild.tagName);
+d.querySelector('u').remove();
+try { document.querySelector('[['); } catch (e) { log('bad selector', e.name); }
+try { d.appendChild(document.body); } catch (e) { log('cycle', e.name); }
+log('title', document.title);
+document.title = 'Second title';
+log('title now', document.title, document.querySelector('title').textContent);
+log('body', document.body.tagName, document.documentElement.tagName, document.head.tagName);
+log('instanceof', d instanceof HTMLElement, d instanceof Element, d instanceof Node, d instanceof EventTarget, document instanceof Document);
+
+// events: capture, target, bubble, stopping, once
+var order = [];
+var list = document.getElementById('list');
+var first = list.firstChild;
+document.addEventListener('ping', function (e) { order.push('doc capture'); }, true);
+list.addEventListener('ping', function (e) { order.push('list capture ' + e.eventPhase); }, true);
+first.addEventListener('ping', function (e) { order.push('target ' + e.eventPhase + ' ' + (e.target === first)); });
+first.addEventListener('ping', function (e) { order.push('once'); }, { once: true });
+list.addEventListener('ping', function (e) { order.push('list bubble ' + e.eventPhase + ' ' + (e.currentTarget === list)); });
+window.addEventListener('ping', function (e) { order.push('window'); });
+first.dispatchEvent(new CustomEvent('ping', { bubbles: true, detail: 5 }));
+log('events', order.join(' / '));
+order.length = 0;
+first.dispatchEvent(new Event('ping'));
+log('no bubble', order.join(' / '));
+list.addEventListener('stop', function (e) { e.stopPropagation(); e.preventDefault(); order.push('stopped'); });
+document.addEventListener('stop', function () { order.push('should not run'); });
+order.length = 0;
+var result = first.dispatchEvent(new Event('stop', { bubbles: true, cancelable: true }));
+log('stop', result, order.join(' / '));
+first.addEventListener('boom', function () { throw new Error('in a listener'); });
+first.addEventListener('boom', function () { log('next listener still ran'); });
+first.dispatchEvent(new Event('boom'));
+
+// timers, promises and order
+setTimeout(function (a, b) { log('timeout', a, b); }, 10, 'x', 'y');
+var n = 0;
+var iv = setInterval(function () { n++; log('interval', n); if (n === 2) clearInterval(iv); }, 50);
+var cancelled = setTimeout(function () { log('should not fire'); }, 20);
+clearTimeout(cancelled);
+requestAnimationFrame(function (t) { log('frame', typeof t); });
+Promise.resolve().then(function () { log('microtask'); });
+queueMicrotask(function () { log('queued microtask'); });
+log('sync end');
+
+// fetch and XHR
+fetch('data.json').then(function (r) { log('fetch', r.status, r.ok); return r.json(); }).then(function (j) { log('json', j.answer); });
+fetch('nothing').then(function (r) { log('fetch 404', r.status, r.ok); });
+var x = new XMLHttpRequest();
+x.onload = function () { log('xhr', x.status, x.responseText, x.readyState); };
+x.open('GET', 'data.json');
+x.send();
+
+// the window
+log('window', window === globalThis, innerWidth, innerHeight, typeof navigator.userAgent, location.pathname, location.host);
+localStorage.setItem('k', 1);
+log('storage', localStorage.getItem('k'), localStorage.getItem('none'), localStorage.length);
+log('btoa', btoa('hello'), atob('aGVsbG8='));
+log('matchMedia', matchMedia('(min-width: 500px)').matches, matchMedia('(min-width: 900px)').matches);
+log('computed', getComputedStyle(box).color, getComputedStyle(box).display);
+
+document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
+window.addEventListener('load', function () { log('load', document.readyState); });
+document.getElementById('go').addEventListener('click', function (e) { log('listener', e.type, e.defaultPrevented, e.clientX); });
+
+document.write('<p id="written">written</p>');
+log('written', document.getElementById('written').textContent);
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
+<p>after the script</p>
+
+
+</body></html><!DOCTYPE html><html><head>
+<title>Second title</title>
+<link rel="stylesheet" href="site.css">
+<script src="lib.js"></script>
+<style>
+  #box { display: block; width: 50%; color: #102030; font-size: 20px; }
+  .fresh { color: rgb(200, 100, 50); margin-top: 2em; }
+  p { margin: 1em 0; }
+</style>
+</head>
+<body>
+<h1 id="top" class="b c d">Hello</h1>
+<p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
+<div id="box" style="padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);">box</div>
+<ul id="list"><li>one</li><li>two</li><li>three</li><li>four</li></ul>
+<button id="go" onclick="console.log('inline handler', event.type, this.id); return false;">Go</button>
+<a class="out" href="next.html">next</a>
+<script>
+var log = console.log;
+log('lib says', window.fromLib);
+
+// finding things, and changing them
+var box = document.getElementById('box');
+log('tag', box.tagName, box.nodeName, box.nodeType, box.id);
+log('style attr', box.style.padding, box.getAttribute('style'));
+box.style.backgroundColor = 'red';
+log('after set', box.style.backgroundColor, '|', box.getAttribute('style'));
+
+var head1 = document.querySelector('#top');
+log('classList', head1.classList.length, head1.classList.contains('b'), head1.classList.value);
+head1.classList.add('c');
+head1.classList.remove('a');
+head1.classList.toggle('d');
+log('className', head1.className);
+
+var p = document.querySelector('p.linked');
+log('dataset', p.dataset.userName, JSON.stringify(Object.keys(p.dataset)));
+p.dataset.fooBar = 'baz';
+log('attr', p.getAttribute('data-foo-bar'));
+log('text', p.textContent, '|', p.innerHTML);
+
+// live and static lists
+var items = document.getElementsByTagName('li');
+var kids = document.getElementById('list').children;
+var fixed = document.querySelectorAll('li');
+log('lists', items.length, kids.length, fixed.length, items[1].textContent, items.item(2).textContent);
+var li = document.createElement('li');
+li.textContent = 'four';
+document.getElementById('list').appendChild(li);
+log('after add', items.length, kids.length, fixed.length);
+log('iterate', Array.from(fixed).map(function (x) { return x.textContent; }).join(','));
+var seen = [];
+for (var k of items) seen.push(k.textContent);
+log('for-of', seen.join(','));
+fixed.forEach(function (n, i) { seen[i] = i; });
+
+// building things
+var d = document.createElement('div');
+d.id = 'added';
+d.className = 'fresh';
+d.innerHTML = '<span>made <i>here</i></span> &amp; there';
+document.body.appendChild(d);
+log('innerHTML', d.innerHTML, d.children.length, d.firstChild.nodeName, d.lastChild.nodeType);
+log('closest', d.querySelector('i').closest('div').id, d.matches('.fresh'), d.parentNode === document.body);
+var c = d.cloneNode(true);
+c.id = 'copy';
+log('clone', c.outerHTML);
+d.insertAdjacentHTML('beforeend', '<u>end</u>');
+log('adjacent', d.lastChild.tagName);
+d.querySelector('u').remove();
+try { document.querySelector('[['); } catch (e) { log('bad selector', e.name); }
+try { d.appendChild(document.body); } catch (e) { log('cycle', e.name); }
+log('title', document.title);
+document.title = 'Second title';
+log('title now', document.title, document.querySelector('title').textContent);
+log('body', document.body.tagName, document.documentElement.tagName, document.head.tagName);
+log('instanceof', d instanceof HTMLElement, d instanceof Element, d instanceof Node, d instanceof EventTarget, document instanceof Document);
+
+// events: capture, target, bubble, stopping, once
+var order = [];
+var list = document.getElementById('list');
+var first = list.firstChild;
+document.addEventListener('ping', function (e) { order.push('doc capture'); }, true);
+list.addEventListener('ping', function (e) { order.push('list capture ' + e.eventPhase); }, true);
+first.addEventListener('ping', function (e) { order.push('target ' + e.eventPhase + ' ' + (e.target === first)); });
+first.addEventListener('ping', function (e) { order.push('once'); }, { once: true });
+list.addEventListener('ping', function (e) { order.push('list bubble ' + e.eventPhase + ' ' + (e.currentTarget === list)); });
+window.addEventListener('ping', function (e) { order.push('window'); });
+first.dispatchEvent(new CustomEvent('ping', { bubbles: true, detail: 5 }));
+log('events', order.join(' / '));
+order.length = 0;
+first.dispatchEvent(new Event('ping'));
+log('no bubble', order.join(' / '));
+list.addEventListener('stop', function (e) { e.stopPropagation(); e.preventDefault(); order.push('stopped'); });
+document.addEventListener('stop', function () { order.push('should not run'); });
+order.length = 0;
+var result = first.dispatchEvent(new Event('stop', { bubbles: true, cancelable: true }));
+log('stop', result, order.join(' / '));
+first.addEventListener('boom', function () { throw new Error('in a listener'); });
+first.addEventListener('boom', function () { log('next listener still ran'); });
+first.dispatchEvent(new Event('boom'));
+
+// timers, promises and order
+setTimeout(function (a, b) { log('timeout', a, b); }, 10, 'x', 'y');
+var n = 0;
+var iv = setInterval(function () { n++; log('interval', n); if (n === 2) clearInterval(iv); }, 50);
+var cancelled = setTimeout(function () { log('should not fire'); }, 20);
+clearTimeout(cancelled);
+requestAnimationFrame(function (t) { log('frame', typeof t); });
+Promise.resolve().then(function () { log('microtask'); });
+queueMicrotask(function () { log('queued microtask'); });
+log('sync end');
+
+// fetch and XHR
+fetch('data.json').then(function (r) { log('fetch', r.status, r.ok); return r.json(); }).then(function (j) { log('json', j.answer); });
+fetch('nothing').then(function (r) { log('fetch 404', r.status, r.ok); });
+var x = new XMLHttpRequest();
+x.onload = function () { log('xhr', x.status, x.responseText, x.readyState); };
+x.open('GET', 'data.json');
+x.send();
+
+// the window
+log('window', window === globalThis, innerWidth, innerHeight, typeof navigator.userAgent, location.pathname, location.host);
+localStorage.setItem('k', 1);
+log('storage', localStorage.getItem('k'), localStorage.getItem('none'), localStorage.length);
+log('btoa', btoa('hello'), atob('aGVsbG8='));
+log('matchMedia', matchMedia('(min-width: 500px)').matches, matchMedia('(min-width: 900px)').matches);
+log('computed', getComputedStyle(box).color, getComputedStyle(box).display);
+
+document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
+window.addEventListener('load', function () { log('load', document.readyState); });
+document.getElementById('go').addEventListener('click', function (e) { log('listener', e.type, e.defaultPrevented, e.clientX); });
+
+document.write('<p id="written">written</p>');
+log('written', document.getElementById('written').textContent);
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
+<p>after the script</p>
+
+
+</body></html>
+done

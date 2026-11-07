@@ -8,7 +8,7 @@ the program, so there's nothing extra to ship.
 
 | Library | What it does | Status |
 |---|---|---|
-| `weblib` | HTML, CSS and JavaScript: bytes in; DOM, computed styles and running scripts out | Being moved here |
+| `weblib` | HTML, CSS and JavaScript: bytes in; DOM, computed styles and running scripts out | Moved here, in [libs/web](libs/web) |
 | `imagelib` | Image files in, pixels out | Planned |
 | `fontlib` | Font files in; metrics and smooth glyph bitmaps out | Planned |
 | `corelib` | Checked byte reading and inflate, shared by `imagelib` and `fontlib` | Planned |
@@ -17,14 +17,17 @@ the program, so there's nothing extra to ship.
 
 ## Building
 
-You need PHI's compiler, built with `dotnet build PHI.sln`, and NASM. `build.ps1` looks for the compiler
-in a `PHI` folder next to this one, or at the path in the `PHI_EXE` environment variable.
+You need PHI's compiler, built with `dotnet build PHI.sln` (the .NET 10 SDK), and NASM. `build.ps1` looks
+for the compiler in a `PHI` folder next to this one, or at the path in the `PHI_EXE` environment variable.
 
 ```
 .\build.ps1                every library, into dist/
 .\build.ps1 image          one library and what it depends on
 .\build.ps1 -Test          and run the tests
 ```
+
+On Linux, the same script runs in PowerShell 7 (`dotnet tool install --global PowerShell` installs it
+without root): `pwsh ./build.ps1 -Test`.
 
 This repo only makes `.philib` files. Which systems they hold is up to PHI's compiler, and which systems a
 program runs on is up to the project building it.
