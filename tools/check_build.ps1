@@ -4,9 +4,21 @@
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path $PSScriptRoot -Parent
-if (-not $env:PHI_EXE) {
-	$env:PHI_EXE = (Resolve-Path (Join-Path $repo '..\PHI\Compiler\Phi.Cli\bin\Debug\net8.0\phi.exe')).Path
+
+# A path written with \, with this system's separator
+function ConvertTo-LocalPath {
+	param([string]$Path)
+	return $Path -replace '[\\/]', [IO.Path]::DirectorySeparatorChar
 }
+
+if (-not $env:PHI_EXE) {
+	$exe = if ($env:OS -eq 'Windows_NT') { 'phi.exe' } else { 'phi' }
+	$env:PHI_EXE = (Resolve-Path (Join-Path $repo (ConvertTo-LocalPath "..\PHI\Compiler\Phi.Cli\bin\Debug\net10.0\$exe"))).Path
+}
+
+# build.ps1 runs in the same PowerShell as this: Windows PowerShell, or pwsh (PowerShell 7,
+# Windows or Linux). (Not this process's own file: pwsh installed as a dotnet tool is dotnet.)
+$shell = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh' } else { 'powershell' }
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ('phi-buildcheck-' + [guid]::NewGuid().ToString('N'))
 $checks = New-Object System.Collections.Generic.List[object]
@@ -16,7 +28,7 @@ function New-Checkout {
 	if (Test-Path $work) { Remove-Item $work -Recurse -Force }
 	New-Item -ItemType Directory -Path $work | Out-Null
 	Copy-Item (Join-Path $repo 'build.ps1') $work
-	Copy-Item (Join-Path $PSScriptRoot 'buildcheck\*') $work -Recurse
+	Copy-Item (Join-Path (Join-Path $PSScriptRoot 'buildcheck') '*') $work -Recurse
 }
 
 function Invoke-Check {
@@ -24,7 +36,7 @@ function Invoke-Check {
 
 	Write-Host "`n#### $Title"
 	$ErrorActionPreference = 'Continue'
-	& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $work 'build.ps1') @BuildArguments 2>&1 |
+	& $shell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $work 'build.ps1') @BuildArguments 2>&1 |
 		ForEach-Object { Write-Host "$_" }
 	$passed = $LASTEXITCODE -eq 0
 	$checks.Add([pscustomobject]@{
@@ -38,7 +50,7 @@ function Invoke-Check {
 function Add-Text {
 	param([string]$Path, [string]$Text)
 
-	$full = Join-Path $work $Path
+	$full = Join-Path $work (ConvertTo-LocalPath $Path)
 	[IO.File]::WriteAllText($full, [IO.File]::ReadAllText($full) + $Text)
 }
 

@@ -27,9 +27,17 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $dist = Join-Path $root 'dist'
 
+# A path written with \ (as libraries.psd1's are), with this system's separator: phi on Linux
+# takes / only
+function ConvertTo-LocalPath {
+	param([string]$Path)
+	return $Path -replace '[\\/]', [IO.Path]::DirectorySeparatorChar
+}
+
 $phi = $env:PHI_EXE
 if (-not $phi) {
-	$phi = Join-Path $root '..\PHI\Compiler\Phi.Cli\bin\Debug\net8.0\phi.exe'
+	$exe = if ($env:OS -eq 'Windows_NT') { 'phi.exe' } else { 'phi' }
+	$phi = Join-Path $root (ConvertTo-LocalPath "..\PHI\Compiler\Phi.Cli\bin\Debug\net10.0\$exe")
 }
 if (-not (Test-Path $phi)) {
 	throw "phi not found at $phi. Build the PHI repo (dotnet build PHI.sln), or set PHI_EXE."
@@ -58,6 +66,9 @@ function Invoke-Phi {
 
 $manifest = Import-PowerShellDataFile (Join-Path $root 'libraries.psd1')
 $libraries = @($manifest.Libraries)
+foreach ($library in $libraries) {
+	$library.Folder = ConvertTo-LocalPath $library.Folder
+}
 
 # Each library's dependencies must be listed before it, so one pass is the build order.
 $known = @{}
@@ -170,7 +181,7 @@ function Add-Run {
 
 foreach ($library in $built) {
 	$folder = Join-Path $root $library.Folder
-	$useFolder = Join-Path $folder 'tests\use'
+	$useFolder = Join-Path (Join-Path $folder 'tests') 'use'
 	$hasInternal = @(Get-ChildItem $folder -Filter 'test_*.phi').Count -gt 0
 	$hasCompiled = (Test-Path $useFolder) -and @(Get-ChildItem $useFolder -Filter 'test_*.phi').Count -gt 0
 
