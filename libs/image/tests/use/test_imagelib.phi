@@ -1,7 +1,7 @@
 # imagelib through imagelib.philib alone, as a program using it has it: no source beside this, only
 # imagelib.philib and the corelib.philib it uses. So this proves the compiled library works, and
-# that corelib comes through the chain: the decoder reads its headers with corelib's CoreReader, and
-# this calls corelib itself, which it never names.
+# that corelib comes through the chain: the decoders read their headers with corelib's CoreReader,
+# PNG's pixels come through corelib's inflate, and this calls corelib itself, which it never names.
 use imagelib;
 
 phi.TestImagelib:Program
@@ -24,6 +24,23 @@ phi.TestImagelib:Program
 	;;
 	log '\n';
 
+	call Img.Free: image;
+
+	# 2 by 2 PNG, a 2-bit palette of red, green and blue, with tRNS 255 128: indexes 0 1 / 2 3
+	u8 png: 137 80 78 71 13 10 26 10 0 0 0 13 73 72 68 82 0 0 0 2 0 0 0 2 2 3 0 0 0 15 216 229 183 0
+		0 0 9 80 76 84 69 255 0 0 0 255 0 0 0 255 45 74 205 138 0 0 0 2 116 82 78 83 255 128 8 15 179
+		106 0 0 0 12 73 68 65 84 120 218 99 16 96 216 0 0 0 228 0 193 25 85 59 251 0 0 0 0 73 69 78 68
+		174 66 96 130;
+	image is (Img.Decode: png 104);
+	if image is 0
+		log 'refused: ' Img.error '\n';
+		exit 0;
+	;;
+	log 'png: ' image.w ' by ' image.h ':';
+	while u32 i: 0; i < 4; i++;
+		log ' ' (Hex: image.pixels:i);
+	;;
+	log '\n';
 	call Img.Free: image;
 
 	# corelib, reached through imagelib (Python's zlib.adler32 of the file: 2099643294)

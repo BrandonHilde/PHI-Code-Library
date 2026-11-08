@@ -9,6 +9,7 @@
 use corelib;
 use imagelib.image;
 use imagelib.bmp;
+use imagelib.png;
 
 phi.ImageLib:Library
 {

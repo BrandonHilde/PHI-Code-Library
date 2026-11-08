@@ -1,6 +1,7 @@
-# imagelib's API, on small images made with tools/image/make_bmp_tests.py's writer and checked
-# with bmp_reference.py: finding the format, decoding, the limit on pixels, the reasons it gives,
-# freeing, and BlendRow (its values worked out separately, in Python, by the formula it gives).
+# imagelib's API, on small images made with the writers in tools/image/make_bmp_tests.py and
+# make_png_tests.py, and checked with bmp_reference.py and png_reference.py: finding the format,
+# decoding, the limit on pixels, the reasons it gives, freeing, and BlendRow (its values worked out
+# separately, in Python, by the formula it gives).
 use imagelib;
 
 phi.TestImage:Program
@@ -16,13 +17,31 @@ phi.TestImage:Program
 	u8 rgba32: 66 77 78 0 0 0 0 0 0 0 70 0 0 0 56 0 0 0 2 0 0 0 1 0 0 0 1 0 32 0 3 0 0 0 8 0 0 0 19 11
 		0 0 19 11 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 255 0 0 255 0 0 0 0 0 0 255 0 0 255 128 86 52 18 0;
 	u8 png_start: 137 80 78 71 13 10 26 10;
+	# 2 by 2 PNG, a 2-bit palette of red, green and blue, with tRNS 255 128: indexes 0 1 / 2 3, so
+	# the green is half transparent, and index 3, past the end of the palette, is opaque black
+	u8 png_palette: 137 80 78 71 13 10 26 10 0 0 0 13 73 72 68 82 0 0 0 2 0 0 0 2 2 3 0 0 0 15 216
+		229 183 0 0 0 9 80 76 84 69 255 0 0 0 255 0 0 0 255 45 74 205 138 0 0 0 2 116 82 78 83 255 128
+		8 15 179 106 0 0 0 12 73 68 65 84 120 218 99 16 96 216 0 0 0 228 0 193 25 85 59 251 0 0 0 0 73
+		69 78 68 174 66 96 130;
+	# 3 by 1 PNG, 16-bit gray with tRNS 0x1234: 0x1234 (so transparent), 0x8080 and 0xFFFF, each
+	# rounded to 8 bits
+	u8 png_gray16: 137 80 78 71 13 10 26 10 0 0 0 13 73 72 68 82 0 0 0 3 0 0 0 1 16 0 0 0 0 110 27
+		151 43 0 0 0 2 116 82 78 83 18 52 47 211 73 94 0 0 0 15 73 68 65 84 120 218 99 20 50 201 243
+		169 175 7 0 5 151 2 0 130 212 198 192 0 0 0 0 73 69 78 68 174 66 96 130;
 
-	log 'format: ' (Img.Format: rgb24 70) ' ' (Img.Format: png_start 8) ' ' (Img.Format: rgb24 1) ' '
-		(Img.Format: 0 70) ' (BMP is ' Img.BMP ', unknown ' Img.UNKNOWN ')\n';
+	log 'format: ' (Img.Format: rgb24 70) ' ' (Img.Format: png_start 8) ' ' (Img.Format: png_start 3) ' '
+		(Img.Format: rgb24 1) ' ' (Img.Format: 0 70) ' (BMP is ' Img.BMP ', PNG ' Img.PNG ', unknown '
+		Img.UNKNOWN ')\n';
 
 	call Show: 'rgb24' (Img.Decode: rgb24 70);
 	call Show: 'rgba32' (Img.Decode: rgba32 78);
-	call Show: 'png' (Img.Decode: png_start 8);
+	call Show: 'png palette' (Img.Decode: png_palette 104);
+	call Show: 'png gray16' (Img.Decode: png_gray16 86);
+	call Show: 'png signature only' (Img.Decode: png_start 8);
+	call Show: 'png cut short' (Img.DecodePng: png_palette 100);
+	call Show: 'png no data' (Img.DecodePng: 0 104);
+	call Show: 'png as bmp' (Img.DecodeBmp: png_palette 104);
+	call Show: 'bmp as png' (Img.DecodePng: rgb24 70);
 	call Show: 'empty' (Img.Decode: rgb24 0);
 	call Show: 'no data' (Img.DecodeBmp: 0 70);
 	call Show: 'cut short' (Img.DecodeBmp: rgb24 60);
@@ -31,8 +50,10 @@ phi.TestImage:Program
 	# the limit: 4 pixels is fine at 4, and refused at 3
 	Img.max_pixels is 4;
 	call Show: 'limit 4' (Img.Decode: rgb24 70);
+	call Show: 'png limit 4' (Img.Decode: png_palette 104);
 	Img.max_pixels is 3;
 	call Show: 'limit 3' (Img.Decode: rgb24 70);
+	call Show: 'png limit 3' (Img.Decode: png_palette 104);
 	Img.max_pixels is 0;
 	log 'default limit: ' Img.DEFAULT_MAX_PIXELS '\n';
 	call Img.Free: 0;

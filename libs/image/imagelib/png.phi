@@ -1,0 +1,588 @@
+# PNG files: every color type and bit depth, interlaced or not, with tRNS transparency.
+#
+# The rules are tools/image/png_reference.py's, which are checked against PngSuite, ImageMagick
+# (libpng) and Pillow, and this follows them check for check, in the same order, so that the two
+# give the same reasons. In short:
+#
+#   - A sample of n bits becomes 8 by scaling, round(v * 255 / (2^n - 1)), so 16-bit samples
+#     are rounded rather than cut to their top byte.
+#   - tRNS makes a gray or RGB color transparent when it matches all 16 bits of the sample.
+#   - A palette index past the end of the palette is opaque black.
+#   - Gamma, color profiles and the rest are ignored. Ancillary chunks that are wrong (a bad CRC,
+#     a tRNS of the wrong length or out of place, a PLTE in a gray image) are ignored, as libpng
+#     does. Critical ones are refused.
+#   - The file must run through IEND, and the image data must be exactly what the image needs.
+#
+# Every read is checked: the chunks through CoreReader, and the image data through arrays, whose
+# indexes are checked. The size is checked against the limit before anything is allocated, and
+# the image data is inflated with its exact size as the limit, so a small file can't claim more.
+
+use memory.mem;
+use data.crc32;
+use corelib;
+use imagelib.image;
+
+# One PNG being read. It's on the heap, as it's bigger than a method's variables may be.
+struct.ImgPng
+{
+	ptr<ImgImage> image;    # what's been made so far, for Img to free if this fails
+	ptr<u8> joined;         # the IDATs' data put together, when there's more than one; Img frees it
+	ptr<u8> raw;            # the image data, inflated; Img frees it
+	u32 width;
+	u32 height;
+	u32 depth;
+	u32 color;
+	u32 interlace;
+	u32 channels;
+	u32 bits;               # a pixel's
+	u32 expected;           # the size of the image data, inflated
+	bln have_palette;
+	u32 palette_count;
+	bln have_trns;
+	u32 keys[3];            # tRNS's gray, or red, green and blue, as 16-bit samples
+	u32 palette[256];       # by index, with alpha; opaque black past the end of PLTE
+
+	[Read: ptr<u8> data: 0; u32 length: 0; u32 limit: 0;]
+		if length < 8
+			throw 'not a PNG file';
+		;;
+		while u32 k: 0; k < 8; k++;
+			if data:k is not ImgPngTables.signature:k
+				throw 'not a PNG file';
+			;;
+		;;
+		while u32 k: 0; k < 256; k++;
+			palette:k is 0xFF000000;
+		;;
+		CoreReader r;
+		call r.Start: data length;
+		bln have_header: false;
+		u32 idat_state: 0;      # 0: none yet, 1: in them, 2: past them
+		u32 idat_at: 0;         # where the first IDAT chunk starts
+		u32 idat_count: 0;
+		u32 idat_total: 0;
+		u32 pos: 8;
+		# each chunk takes at least 12 bytes, so the loop ends
+		while true
+			if length - pos < 12
+				throw 'the file is cut short';
+			;;
+			call r.Seek: pos;
+			u32 size: (r.U32BE);
+			u32 kind: (r.U32BE);
+			if size > 0x7FFFFFFF
+				throw 'a chunk of more than 2 GB';
+			;;
+			if size > length - pos - 12
+				throw 'the file is cut short';
+			;;
+			if not (Letters: kind)
+				throw 'a chunk whose name isn't four letters';
+			;;
+			u32 body: pos + 8;
+			call r.Seek: body + size;
+			u32 crc: (r.U32BE);
+			u32 chunk_at: pos;
+			pos++ 12 + size;
+			bln critical: ((kind >> 24) & 0x20) is 0;
+			if idat_state is 1 and kind is not ImgPngTables.IDAT
+				idat_state is 2;
+			;;
+			if (Crc32.Of: (data + chunk_at + 4) (size + 4)) is not crc
+				if critical
+					throw 'the ' (Name: kind) ' chunk's CRC doesn't match it';
+				;;
+				continue;
+			;;
+			if not have_header and kind is not ImgPngTables.IHDR
+				throw 'the file doesn't start with an IHDR chunk';
+			;;
+
+			if kind is ImgPngTables.IHDR
+				if have_header
+					throw 'more than one IHDR chunk';
+				;;
+				if size is not 13
+					throw 'an IHDR chunk of ' size ' bytes, where it has 13';
+				;;
+				have_header is true;
+				call r.Seek: body;
+				width is (r.U32BE);
+				height is (r.U32BE);
+				depth is (r.U8);
+				color is (r.U8);
+				u32 compression: (r.U8);
+				u32 filtering: (r.U8);
+				interlace is (r.U8);
+				call Header: compression filtering limit;
+			;;
+			elif kind is ImgPngTables.PLTE
+				if color is 0 or color is 4
+					continue;           # not allowed in a gray image, and ignored
+				;;
+				if idat_state is not 0
+					throw 'a PLTE chunk after the image data';
+				;;
+				if have_palette
+					throw 'more than one PLTE chunk';
+				;;
+				if size is 0 or size > 768 or size % 3 is not 0
+					throw 'a PLTE chunk of ' size ' bytes';
+				;;
+				have_palette is true;
+				palette_count is size / 3;
+				call r.Seek: body;
+				while u32 k: 0; k < palette_count; k++;
+					palette:k is 0xFF000000 | (r.U24BE);
+				;;
+			;;
+			elif kind is ImgPngTables.TRNS
+				# wrong in any way, it's ignored, as libpng does
+				if idat_state is not 0 or have_trns
+					continue;
+				;;
+				call r.Seek: body;
+				if color is 3
+					if have_palette and size > 0 and size <= palette_count
+						have_trns is true;
+						while u32 k: 0; k < size; k++;
+							palette:k is (palette:k & 0xFFFFFF) | ((r.U8) << 24);
+						;;
+					;;
+				;;
+				elif color is 0
+					if size is 2
+						have_trns is true;
+						keys:0 is (r.U16BE);
+					;;
+				;;
+				elif color is 2
+					if size is 6
+						have_trns is true;
+						keys:0 is (r.U16BE);
+						keys:1 is (r.U16BE);
+						keys:2 is (r.U16BE);
+					;;
+				;;
+			;;
+			elif kind is ImgPngTables.IDAT
+				if color is 3 and not have_palette
+					throw 'a palette image with no PLTE chunk before its image data';
+				;;
+				if idat_state is 2
+					throw 'IDAT chunks that aren't one after another';
+				;;
+				if idat_state is 0
+					idat_at is chunk_at;
+				;;
+				idat_state is 1;
+				idat_count++;
+				idat_total++ size;
+			;;
+			elif kind is ImgPngTables.IEND
+				if idat_state is 0
+					throw 'no image data (no IDAT chunk)';
+				;;
+				break;
+			;;
+			elif critical
+				throw 'a critical chunk imagelib doesn't know, ' (Name: kind);
+			;;
+		;;
+
+		# the IDATs' data: where it is when there's one, and put together when there are more
+		ptr<u8> zdata: data + idat_at + 8;
+		if idat_count > 1
+			joined is new u8[idat_total + 1];
+			if joined is 0
+				throw 'out of memory';
+			;;
+			u32 from: idat_at;
+			u32 put: 0;
+			while u32 k: 0; k < idat_count; k++;
+				call r.Seek: from;
+				u32 size: (r.U32BE);
+				call Mem.Copy: (joined + put) (data + from + 8) size;
+				put++ size;
+				from++ 12 + size;
+			;;
+			zdata is joined;
+		;;
+		u32 got: 0;
+		raw is (CoreInflate.Zlib: zdata idat_total expected addr got);
+		if raw is 0
+			str why: CoreInflate.error;
+			if why has 'the data ends' or why has 'too short for a zlib header'
+				throw 'the image data is cut short';
+			;;
+			if why has 'more than the limit'
+				throw 'more image data than the image needs';
+			;;
+			if why has 'out of memory'
+				throw why;
+			;;
+			throw 'the image data is damaged';
+		;;
+		if got < expected
+			throw 'the image data ends before the image does';
+		;;
+
+		u32 count: width * height;
+		image is (Img.New: width height);
+		call Passes: (raw as u8[expected]) (image.pixels as u32[count]);
+	[end]
+
+	# IHDR's numbers, checked; and the size of the image data, worked out
+	[Header: u32 compression: 0; u32 filtering: 0; u32 limit: 0;]
+		if width is 0 or height is 0 or width > 0x7FFFFFFF or height > 0x7FFFFFFF
+			throw 'a width or height of 0, or of more than 2^31 - 1';
+		;;
+		bln known: true;
+		channels is 1;
+		when color
+			is 0
+				known is (depth is 1 or depth is 2 or depth is 4 or depth is 8 or depth is 16);
+			;;
+			is 2
+				channels is 3;
+				known is (depth is 8 or depth is 16);
+			;;
+			is 3
+				known is (depth is 1 or depth is 2 or depth is 4 or depth is 8);
+			;;
+			is 4
+				channels is 2;
+				known is (depth is 8 or depth is 16);
+			;;
+			is 6
+				channels is 4;
+				known is (depth is 8 or depth is 16);
+			;;
+			else
+				throw 'color type ' color ', which PNG doesn't have';
+			;;
+		;;
+		if not known
+			throw 'a bit depth of ' depth ' with color type ' color ', which PNG doesn't allow';
+		;;
+		if compression is not 0
+			throw 'compression method ' compression ', which PNG doesn't have';
+		;;
+		if filtering is not 0
+			throw 'filter method ' filtering ', which PNG doesn't have';
+		;;
+		if interlace > 1
+			throw 'interlace method ' interlace ', which PNG doesn't have';
+		;;
+		if (width as u64) * height > limit
+			throw width ' by ' height ' is more than the limit of ' limit ' pixels';
+		;;
+		bits is depth * channels;
+		u64 total: 0;
+		u32 first: 7;
+		if interlace is 1
+			first is 0;
+		;;
+		u32 last: 6 + first / 7;
+		while u32 p: first; p <= last; p++;
+			u32 pw: (Across: p);
+			u32 ph: (Down: p);
+			if pw is not 0 and ph is not 0
+				total++ (ph as u64) * (1 + ((pw as u64) * bits + 7) / 8);
+			;;
+		;;
+		if total > 0x7FFFFFFF
+			throw 'the image data would be more than 2 GB';
+		;;
+		expected is total as u32;
+	[end]
+
+	# how many pixels across and down pass p has (7: the whole image, when it isn't interlaced)
+	[Across: u32 p: 0; : u32]
+		u32 x0: ImgPngTables.x0s:p;
+		u32 dx: ImgPngTables.dxs:p;
+		if width <= x0 return 0;
+	[end: (width - x0 + dx - 1) / dx]
+
+	[Down: u32 p: 0; : u32]
+		u32 y0: ImgPngTables.y0s:p;
+		u32 dy: ImgPngTables.dys:p;
+		if height <= y0 return 0;
+	[end: (height - y0 + dy - 1) / dy]
+
+	# each pass's rows, unfiltered and made pixels
+	[Passes: u8 src[]; u32 pixels_out[];]
+		u32 first: 7;
+		if interlace is 1
+			first is 0;
+		;;
+		u32 last: 6 + first / 7;
+		u32 pos: 0;
+		while u32 p: first; p <= last; p++;
+			u32 pw: (Across: p);
+			u32 ph: (Down: p);
+			if pw is 0 or ph is 0
+				continue;
+			;;
+			u32 stride: (pw * bits + 7) / 8;
+			call Unfilter: src pos ph stride;
+			call Pixels: src pixels_out pos p pw ph stride;
+			pos++ ph * (stride + 1);
+		;;
+	[end]
+
+	# a pass's rows, unfiltered where they are: each is a filter type and then stride bytes
+	[Unfilter: u8 src[]; u32 pos: 0; u32 ph: 0; u32 stride: 0;]
+		u32 step: bits / 8;
+		if step is 0
+			step is 1;
+		;;
+		while u32 y: 0; y < ph; y++;
+			u32 f_at: pos + y * (stride + 1);
+			u32 f: src:f_at;
+			if f > 4
+				throw 'a row with filter type ' f ', which PNG doesn't have';
+			;;
+			u32 i0: f_at + 1;
+			# the first row's row before is all zeros: Up does nothing, and Paeth is Sub
+			if y is 0
+				if f is 2
+					f is 0;
+				;;
+				elif f is 4
+					f is 1;
+				;;
+			;;
+			if f is 0
+				continue;
+			;;
+			u32 p0: 0;
+			if y > 0
+				p0 is i0 - stride - 1;
+			;;
+			when f
+				is 1
+					while u32 i: step; i < stride; i++;
+						src:(i0 + i) is (src:(i0 + i) + src:(i0 + i - step)) as u8;
+					;;
+				;;
+				is 2
+					while u32 i: 0; i < stride; i++;
+						src:(i0 + i) is (src:(i0 + i) + src:(p0 + i)) as u8;
+					;;
+				;;
+				is 3
+					if y is 0
+						while u32 i: step; i < stride; i++;
+							src:(i0 + i) is (src:(i0 + i) + (src:(i0 + i - step) >> 1)) as u8;
+						;;
+					;;
+					else
+						u32 i: 0;
+						while i < step and i < stride
+							src:(i0 + i) is (src:(i0 + i) + (src:(p0 + i) >> 1)) as u8;
+							i++;
+						;;
+						while i < stride
+							u32 a: src:(i0 + i - step);
+							u32 b: src:(p0 + i);
+							src:(i0 + i) is (src:(i0 + i) + ((a + b) >> 1)) as u8;
+							i++;
+						;;
+					;;
+				;;
+				else
+					u32 i: 0;
+					while i < step and i < stride
+						src:(i0 + i) is (src:(i0 + i) + src:(p0 + i)) as u8;
+						i++;
+					;;
+					while i < stride
+						int a: src:(i0 + i - step) as int;
+						int b: src:(p0 + i) as int;
+						int c: src:(p0 + i - step) as int;
+						int pa: b - c;
+						int pb: a - c;
+						int pc: pa + pb;
+						if pa < 0
+							pa is -pa;
+						;;
+						if pb < 0
+							pb is -pb;
+						;;
+						if pc < 0
+							pc is -pc;
+						;;
+						int pred: c;
+						if pa <= pb and pa <= pc
+							pred is a;
+						;;
+						elif pb <= pc
+							pred is b;
+						;;
+						src:(i0 + i) is (src:(i0 + i) as int + pred) as u8;
+						i++;
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	# a pass's unfiltered rows, as pixels in their places in the image
+	[Pixels: u8 src[]; u32 pixels_out[]; u32 pos: 0; u32 p: 0; u32 pw: 0; u32 ph: 0; u32 stride: 0;]
+		u32 x0: ImgPngTables.x0s:p;
+		u32 y0: ImgPngTables.y0s:p;
+		u32 dx: ImgPngTables.dxs:p;
+		u32 dy: ImgPngTables.dys:p;
+		u32 k0: keys:0;
+		u32 k1: keys:1;
+		u32 k2: keys:2;
+		if not have_trns
+			k0 is 0x10000;      # no sample is this, so nothing matches
+		;;
+		u32 top: (1 << depth) - 1;
+		u32 per: 1;
+		u32 times: 1;
+		if depth < 8
+			per is 8 / depth;
+			times is 255 / top;
+		;;
+		while u32 y: 0; y < ph; y++;
+			u32 q0: pos + y * (stride + 1) + 1;
+			u32 o: (y0 + y * dy) * width + x0;
+			if depth is 8
+				when color
+					is 6
+						while u32 x: 0; x < pw; x++;
+							u32 q: q0 + 4 * x;
+							pixels_out:(o + x * dx) is ((src:(q + 3) as u32) << 24) | ((src:q as u32) << 16) | ((src:(q + 1) as u32) << 8) | src:(q + 2);
+						;;
+					;;
+					is 2
+						while u32 x: 0; x < pw; x++;
+							u32 q: q0 + 3 * x;
+							u32 cr: src:q;
+							u32 cg: src:(q + 1);
+							u32 cb: src:(q + 2);
+							u32 a: 0xFF000000;
+							if cr is k0 and cg is k1 and cb is k2
+								a is 0;
+							;;
+							pixels_out:(o + x * dx) is a | (cr << 16) | (cg << 8) | cb;
+						;;
+					;;
+					is 3
+						while u32 x: 0; x < pw; x++;
+							pixels_out:(o + x * dx) is palette:(src:(q0 + x));
+						;;
+					;;
+					is 0
+						while u32 x: 0; x < pw; x++;
+							u32 g: src:(q0 + x);
+							u32 a: 0xFF000000;
+							if g is k0
+								a is 0;
+							;;
+							pixels_out:(o + x * dx) is a | (g << 16) | (g << 8) | g;
+						;;
+					;;
+					else
+						while u32 x: 0; x < pw; x++;
+							u32 q: q0 + 2 * x;
+							u32 g: src:q;
+							pixels_out:(o + x * dx) is ((src:(q + 1) as u32) << 24) | (g << 16) | (g << 8) | g;
+						;;
+					;;
+				;;
+			;;
+			elif depth < 8
+				# 1, 2 and 4 bits: the first sample in a byte is in its top bits
+				while u32 x: 0; x < pw; x++;
+					u32 v: (src:(q0 + x / per) >> (8 - depth - (x % per) * depth)) & top;
+					if color is 3
+						pixels_out:(o + x * dx) is palette:v;
+					;;
+					else
+						u32 g: v * times;
+						u32 a: 0xFF000000;
+						if v is k0
+							a is 0;
+						;;
+						pixels_out:(o + x * dx) is a | (g << 16) | (g << 8) | g;
+					;;
+				;;
+			;;
+			else
+				# 16 bits, each sample rounded to 8
+				while u32 x: 0; x < pw; x++;
+					u32 q: q0 + 2 * channels * x;
+					u32 v0: ((src:q as u32) << 8) | src:(q + 1);
+					u32 c0: (v0 * 255 + 32767) / 65535;
+					when color
+						is 0
+							u32 a: 0xFF000000;
+							if v0 is k0
+								a is 0;
+							;;
+							pixels_out:(o + x * dx) is a | (c0 << 16) | (c0 << 8) | c0;
+						;;
+						is 4
+							u32 va: ((src:(q + 2) as u32) << 8) | src:(q + 3);
+							pixels_out:(o + x * dx) is (((va * 255 + 32767) / 65535) << 24) | (c0 << 16) | (c0 << 8) | c0;
+						;;
+						else
+							u32 v1: ((src:(q + 2) as u32) << 8) | src:(q + 3);
+							u32 v2: ((src:(q + 4) as u32) << 8) | src:(q + 5);
+							u32 c1: (v1 * 255 + 32767) / 65535;
+							u32 c2: (v2 * 255 + 32767) / 65535;
+							u32 a: 0xFF000000;
+							if color is 6
+								u32 va: ((src:(q + 6) as u32) << 8) | src:(q + 7);
+								a is ((va * 255 + 32767) / 65535) << 24;
+							;;
+							elif v0 is k0 and v1 is k1 and v2 is k2
+								a is 0;
+							;;
+							pixels_out:(o + x * dx) is a | (c0 << 16) | (c1 << 8) | c2;
+						;;
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	# whether a chunk's name is four letters, each A to Z or a to z
+	[Letters: u32 kind: 0; : bln]
+		while u32 k: 0; k < 4; k++;
+			u32 c: (kind >> (24 - k * 8)) & 255;
+			if not ((c >= 65 and c <= 90) or (c >= 97 and c <= 122))
+				return false;
+			;;
+		;;
+	[end: true]
+
+	# a chunk's name, as text
+	[Name: u32 kind: 0; : str]
+		str name: '';
+		while u32 k: 0; k < 4; k++;
+			name++ ((kind >> (24 - k * 8)) & 255) as chr;
+		;;
+	[end: name]
+}
+
+phi.ImgPngTables:Library
+{
+	const u32 IHDR: 0x49484452;
+	const u32 PLTE: 0x504C5445;
+	const u32 IDAT: 0x49444154;
+	const u32 IEND: 0x49454E44;
+	const u32 TRNS: 0x74524E53;
+
+	u8 signature: 0x89 0x50 0x4E 0x47 0x0D 0x0A 0x1A 0x0A;
+
+	# Adam7's passes, where each starts and its steps across and down; the 8th is the whole image
+	u32 x0s: 0 4 0 2 0 1 0 0;
+	u32 y0s: 0 0 4 0 2 0 1 0;
+	u32 dxs: 8 8 4 4 2 2 1 1;
+	u32 dys: 8 8 8 4 4 2 2 1;
+}

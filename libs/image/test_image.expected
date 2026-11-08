@@ -1,14 +1,22 @@
 version: 1
-format: 1 0 0 0 (BMP is 1, unknown 0)
+format: 1 2 0 0 0 (BMP is 1, PNG 2, unknown 0)
 rgb24: 2 by 2: FFFF0000 FF00FF00 FF0000FF FFFFFFFF
 rgba32: 2 by 1: 80FF0000 00123456
-png: refused: not an image format imagelib reads
+png palette: 2 by 2: FFFF0000 8000FF00 FF0000FF FF000000
+png gray16: 3 by 1: 00121212 FF808080 FFFFFFFF
+png signature only: refused: the file is cut short
+png cut short: refused: the file is cut short
+png no data: refused: no data was given
+png as bmp: refused: not a BMP file
+bmp as png: refused: not a PNG file
 empty: refused: not an image format imagelib reads
 no data: refused: no data was given
 cut short: refused: the file is cut short
 last row unpadded: 2 by 2: FFFF0000 FF00FF00 FF0000FF FFFFFFFF
 limit 4: 2 by 2: FFFF0000 FF00FF00 FF0000FF FFFFFFFF
+png limit 4: 2 by 2: FFFF0000 8000FF00 FF0000FF FF000000
 limit 3: refused: 2 by 2 is more than the limit of 3 pixels
+png limit 3: refused: 2 by 2 is more than the limit of 3 pixels
 default limit: 16777216
 blended: 00800000 FF102030 00010203 00606060 00010101 12CCBBAA
 none blended: 00800000

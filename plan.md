@@ -6,8 +6,8 @@ and a **Font Library**, and more will follow.
 
 Written 2026-11-06. Status (2026-11-08): Phases 0 and 2 are done, and so is Phase 1's move (commit
 `2e9743f`): weblib builds here, and all its tests pass from here (38 of 38 runs as Linux programs,
-and the compiled test). Phase 1's tidying is left. Phase 3 has begun: imagelib reads BMP
-(milestone 3.1), and its compiled test uses corelib through the chain.
+and the compiled test). Phase 1's tidying is left. Phase 3 has begun: imagelib reads BMP and PNG
+(milestones 3.1 and 3.2), and its compiled test uses corelib through the chain.
 
 | Library | File | What it does | Starts from |
 |---|---|---|---|
@@ -260,7 +260,7 @@ call Img.Free: image;
 | Milestone | Scope | Checked against |
 |---|---|---|
 | 3.1 BMP ✓ | Every header size, bit depths 1 to 32, bit fields, RLE8 and RLE4; the simplest format, to settle the API | BMP Suite's reference images, and Pillow |
-| 3.2 PNG | All color types and depths, interlacing, gamma ignored at first | PngSuite: valid images match, broken ones fail cleanly |
+| 3.2 PNG ✓ | All color types and depths, interlacing, gamma ignored at first | PngSuite: valid images match, broken ones fail cleanly |
 | 3.3 JPEG baseline | Huffman, integer IDCT, chroma subsampling | Pillow/libjpeg within a small per-pixel tolerance, since decoders legally differ |
 | 3.4 JPEG progressive | Common on the web | The same |
 | 3.5 GIF | LZW, transparency, and animation frames with their timing | Pillow |
@@ -278,6 +278,16 @@ and alpha comes only from an alpha mask. imagelib agrees with the rules on all 9
 back from 526,260 fuzzed files without a crash. Not done: 64-bit pixels, Huffman 1D, RLE24 and
 embedded JPEG and PNG (refused, saying so). A 2048 by 2048 image takes 6 to 17 ms. `Img.BlendRow`
 is in, and `Img.max_pixels` is the limit, 4096 by 4096 by default.
+
+**3.2, done 2026-11-08,** in [libs/image](libs/image), the same way: the rules are in
+`tools/image/png_reference.py`, and ImageMagick (libpng) gives the same pixels as the rules, at 16 bits,
+on all 162 of PngSuite's good files and the 472 good files made here, and refuses its 14 broken ones.
+Pillow's differences are listed with their reasons. Where libpng only warns, the rules follow it for
+ancillary chunks (ignored) and are stricter for the rest: the file must run through IEND, and the image
+data must be exactly the image's size. imagelib agrees with the rules on all 6,933 cases (and 40,000
+more fuzz cases with another seed), as 32 and 64-bit Linux programs, and comes back from 276,024 fuzzed
+files without a crash. A 2048 by 2048 RGBA image takes 363 ms, 294 of them corelib's inflate (Pillow:
+56 ms), so a faster inflate is what would make PNG faster. Not done: APNG's other frames.
 
 **Done when:** milestones 3.1 to 3.6 pass, PngSuite's results are in the README, every decoder has been
 fuzzed, and a pixel bomb is refused before it allocates.
