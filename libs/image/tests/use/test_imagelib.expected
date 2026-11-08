@@ -1,5 +1,6 @@
 version: 1, corelib 1
 rle8: 2 by 2: FF00FF00 00000000 FFFF0000 FFFF0000
 png: 2 by 2: FFFF0000 8000FF00 FF0000FF FF000000
+jpeg: 2 by 2: FFF4C287 FF004300 FF3854DB FFC074FF
 adler of the file: 2099643294
 cut short: 1, the RLE data ends before the end of the image

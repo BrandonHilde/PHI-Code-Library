@@ -6,8 +6,8 @@ and a **Font Library**, and more will follow.
 
 Written 2026-11-06. Status (2026-11-08): Phases 0 and 2 are done, and so is Phase 1's move (commit
 `2e9743f`): weblib builds here, and all its tests pass from here (38 of 38 runs as Linux programs,
-and the compiled test). Phase 1's tidying is left. Phase 3 has begun: imagelib reads BMP and PNG
-(milestones 3.1 and 3.2), and its compiled test uses corelib through the chain.
+and the compiled test). Phase 1's tidying is left. Phase 3 is under way: imagelib reads BMP, PNG and
+baseline JPEG (milestones 3.1 to 3.3), and its compiled test uses corelib through the chain.
 
 | Library | File | What it does | Starts from |
 |---|---|---|---|
@@ -262,7 +262,7 @@ call Img.Free: image;
 |---|---|---|
 | 3.1 BMP ✓ | Every header size, bit depths 1 to 32, bit fields, RLE8 and RLE4; the simplest format, to settle the API | BMP Suite's reference images, and Pillow |
 | 3.2 PNG ✓ | All color types and depths, interlacing, gamma ignored at first | PngSuite: valid images match, broken ones fail cleanly |
-| 3.3 JPEG baseline | Huffman, integer IDCT, chroma subsampling | Pillow/libjpeg within a small per-pixel tolerance, since decoders legally differ |
+| 3.3 JPEG baseline ✓ | Huffman, integer IDCT, chroma subsampling | Pillow/libjpeg within a small per-pixel tolerance, since decoders legally differ |
 | 3.4 JPEG progressive | Common on the web | The same |
 | 3.5 GIF | LZW, transparency, and animation frames with their timing | Pillow |
 | 3.6 Scaling | Nearest and bilinear, working by rows | Pillow, within a tolerance |
@@ -289,6 +289,17 @@ data must be exactly the image's size. imagelib agrees with the rules on all 6,9
 more fuzz cases with another seed), as 32 and 64-bit Linux programs, and comes back from 276,024 fuzzed
 files without a crash. A 2048 by 2048 RGBA image took 363 ms, 294 of them corelib's inflate; with
 inflate's fast path it takes 190 ms, 126 of them inflate (Pillow: 56 ms). Not done: APNG's other frames.
+
+**3.3, done 2026-11-08,** in [libs/image](libs/image). Better than the tolerance planned: the rules
+(`tools/image/jpeg_reference.py`) decode as libjpeg-turbo does by default, step for step (its integer
+IDCT, its fancy upsampling, its color tables), so the pixels are the same as libjpeg-turbo's, exactly,
+on all 121 files libjpeg-turbo wrote and all 190 good files from the script's own encoder (every
+sampling layout that divides evenly, one component a scan, restart intervals, 16-bit tables, each way
+of naming the color space). There's no free JPEG suite, so the script makes its files. imagelib agrees
+with the rules on all 7,435 cases (and 40,000 more fuzz cases with another seed), as 32 and 64-bit
+Linux programs, and comes back from 482,370 fuzzed files without a crash. A 2048 by 2048 photo takes
+147 ms at 4:2:0 (Pillow, with libjpeg-turbo's SIMD: 22 ms). Not done: progressive (3.4), CMYK, 12-bit,
+arithmetic coding, EXIF orientation.
 
 **Done when:** milestones 3.1 to 3.6 pass, PngSuite's results are in the README, every decoder has been
 fuzzed, and a pixel bomb is refused before it allocates.

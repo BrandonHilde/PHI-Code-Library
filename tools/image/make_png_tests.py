@@ -24,7 +24,7 @@ way that isn't listed:
     Pillow            whose own PNG reader shares no code with libpng: counted, and where it
                       differs the reason is listed (in PILLOW_NOTES, or by a case's rule)
 
-Four groups of cases, in the same cases.bin format as make_bmp_tests.py's:
+Four groups of cases, in cases.bin (its format is in cases.py):
 
     suite   PngSuite's files
     made    files written here, for what PngSuite doesn't cover: every color type and bit depth at
@@ -47,7 +47,7 @@ import zlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from png_reference import decode, MAX_PIXELS, SIGNATURE, CHANNELS, DEPTHS, passes  # noqa: E402
-from make_bmp_tests import Cases as BmpCases, as_rgba  # noqa: E402
+from cases import Cases as CaseFile, as_rgba  # noqa: E402
 
 LIB = os.path.normpath(os.path.join(HERE, '..', '..', 'libs', 'image'))
 OUT = os.path.join(LIB, 'tests', 'png')
@@ -572,7 +572,7 @@ def main():
         print('\n'.join(problems))
         sys.exit('the rules and the outside evidence disagree')
 
-    cases = Cases()
+    cases = CaseFile(decode, MAX_PIXELS, OUT, 'make_png_tests.py', GROUP_NAMES)
     index = {}
     for name in suite_files():
         data = open(os.path.join(SUITE, name), 'rb').read()
@@ -615,35 +615,7 @@ def main():
         cases.add(FUZZ, 3, 'fuzz-%d-%s' % (k, name), bytes(data), 0, (source, changes))
 
     size = cases.write()
-    groups = {}
-    for group, _, _, _, _, _, (ok, _) in cases.list:
-        g = groups.setdefault(GROUP_NAMES[group], [0, 0])
-        g[0 if ok else 1] += 1
-    print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size),
-          ', '.join('%s %d ok, %d refused' % (k, v[0], v[1]) for k, v in groups.items()))
-
-
-class Cases(BmpCases):
-    """make_bmp_tests.py's cases file, with PNG's rules and folder"""
-
-    def add(self, group, kind, name, data, max_pixels=0, payload=None):
-        ok, result = decode(data, max_pixels or MAX_PIXELS)
-        self.list.append((group, kind, name, max_pixels, payload, data, (ok, result)))
-        return len(self.list) - 1
-
-    def write(self):
-        import make_bmp_tests
-        saved = make_bmp_tests.OUT
-        make_bmp_tests.OUT = OUT
-        try:
-            size = BmpCases.write(self)
-        finally:
-            make_bmp_tests.OUT = saved
-        txt = os.path.join(OUT, 'cases.txt')
-        lines = open(txt).read().replace('make_bmp_tests.py', 'make_png_tests.py')
-        with open(txt, 'w', newline='\n') as f:
-            f.write(lines)
-        return size
+    print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
 
 
 if __name__ == '__main__':

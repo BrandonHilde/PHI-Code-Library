@@ -1,7 +1,8 @@
 # imagelib through imagelib.philib alone, as a program using it has it: no source beside this, only
 # imagelib.philib and the corelib.philib it uses. So this proves the compiled library works, and
 # that corelib comes through the chain: the decoders read their headers with corelib's CoreReader,
-# PNG's pixels come through corelib's inflate, and this calls corelib itself, which it never names.
+# PNG's pixels come through corelib's inflate, JPEG's bits through its bit reader, and this calls
+# corelib itself, which it never names.
 use imagelib;
 
 phi.TestImagelib:Program
@@ -37,6 +38,27 @@ phi.TestImagelib:Program
 		exit 0;
 	;;
 	log 'png: ' image.w ' by ' image.h ':';
+	while u32 i: 0; i < 4; i++;
+		log ' ' (Hex: image.pixels:i);
+	;;
+	log '\n';
+	call Img.Free: image;
+
+	# 2 by 2 JPEG, YCbCr 4:4:4 (libjpeg-turbo gives FFF4C287 FF004300 FF3854DB FFC074FF)
+	u8 jpeg: 255 216 255 219 0 67 0 3 2 2 3 2 2 3 3 3 3 4 3 3 4 5 8 5 5 4 4 5 10 7 7 6 8 12 10 12 12 11
+		10 11 11 13 14 18 16 13 14 17 14 11 11 16 22 16 17 19 20 21 21 21 12 15 23 24 22 20 24 18 20
+		21 20 255 192 0 17 8 0 2 0 2 3 1 17 0 2 17 0 3 17 0 255 196 0 50 16 0 2 3 0 3 0 3 1 0 0 0 0
+		0 0 0 0 1 2 3 4 5 0 6 17 23 86 149 210 0 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 6 8 255 218 0 12 3
+		1 0 2 0 3 0 0 63 0 65 133 208 58 190 230 38 126 142 143 91 200 208 208 185 94 59 22 109 218
+		163 20 146 207 43 168 103 119 118 82 89 152 146 73 39 210 73 39 148 223 198 125 63 234 152
+		127 157 15 243 198 88 24 25 119 176 179 108 217 205 169 98 204 213 163 146 89 165 129 89 221
+		138 130 89 137 30 146 73 244 147 207 255 217;
+	image is (Img.Decode: jpeg 238);
+	if image is 0
+		log 'refused: ' Img.error '\n';
+		exit 0;
+	;;
+	log 'jpeg: ' image.w ' by ' image.h ':';
 	while u32 i: 0; i < 4; i++;
 		log ' ' (Hex: image.pixels:i);
 	;;

@@ -1,0 +1,970 @@
+# JPEG files: baseline and extended sequential (SOF0, SOF1), Huffman coded, 8-bit, gray or three
+# components (YCbCr, or RGB when the file says so), any sampling factors that divide evenly,
+# interleaved scans or one component a scan, and restart markers.
+#
+# The rules are tools/image/jpeg_reference.py's, which give the same pixels as libjpeg-turbo, and
+# this follows them check for check, in the same order, so that the two give the same reasons. It
+# does what libjpeg-turbo does by default, step for step: the integer IDCT ("islow"), "fancy"
+# upsampling (the triangle filter) for chroma at half width, half height or both, and YCbCr to RGB
+# by fixed-point tables. The arithmetic is 32-bit and wraps, and coefficients are kept in 16 bits,
+# as libjpeg's are, which only matters for damaged files.
+#
+# Refused, where libjpeg would warn and go on: entropy-coded data that's damaged or ends early,
+# restart markers missing or out of order, a scan that isn't sequential, a component in no scan or
+# two, and a file that doesn't end with EOI. Not done: progressive, lossless, hierarchical and
+# arithmetic coding, 12-bit samples, CMYK, and DNL.
+#
+# Every read is checked: the segments through CoreReader, and the entropy-coded data and the
+# samples through arrays, whose indexes are checked. The size is checked against the limit before
+# anything is allocated.
+
+use corelib;
+use imagelib.image;
+
+# One JPEG being read. It's on the heap, as it's bigger than a method's variables may be.
+struct.ImgJpeg
+{
+	ptr<ImgImage> image;    # what's been made so far, for Img to free if this fails
+	ptr<u8> scratch;        # a restart interval's entropy-coded bytes, unstuffed; Img frees it
+	u32 scratch_len;
+	ptr<u8> rows;           # three rows of samples, upsampled; Img frees it
+	ptr<u8> plane0;         # each component's samples, in blocks; Img frees them
+	ptr<u8> plane1;
+	ptr<u8> plane2;
+	CoreBits bits;
+
+	# the frame
+	bln have_frame;
+	u32 width;
+	u32 height;
+	u32 count;              # components: 1 or 3
+	u32 hmax;
+	u32 vmax;
+	u32 mcux;
+	u32 mcuy;
+	u32 ids[3];
+	u32 hs[3];
+	u32 vs[3];
+	u32 tqs[3];
+	u32 cws[3];             # each component's samples across and down
+	u32 chs[3];
+	u32 strides[3];         # and its plane's, padded to whole blocks (or MCUs)
+	u32 plane_rows[3];
+	bln scanned[3];
+
+	# the tables
+	u32 quant[256];         # four tables, natural order
+	bln quant_defined[4];
+	u8 counts[128];         # eight Huffman tables: DC 0 to 3, then AC 0 to 3
+	u8 values[2048];
+	bln huff_defined[8];
+	int maxcode[136];       # by table and length: the largest code of that length; -1: none
+	u32 valptr[136];
+	u32 mincode[136];
+	u16 fast[4096];         # by table and the next 9 bits: value << 4 | length; 0: longer, or none
+	u32 restart;
+	bln jfif;
+	int adobe;              # the Adobe marker's transform; -1: none
+	u32 scans;
+	u32 seg_len;            # how many bytes are in scratch
+
+	# the scan
+	u32 scan_count;
+	u32 scan_comps[4];
+	u32 scan_dc[4];
+	u32 scan_ac[4];
+	int preds[4];
+	int coef[64];
+	int ws[64];
+	int bf[8];
+	int bo[8];
+	int cr_r[256];
+	int cb_b[256];
+	int cr_g[256];
+	int cb_g[256];
+
+	[Read: ptr<u8> data: 0; u32 length: 0; u32 limit: 0;]
+		if length < 2 or data:0 is not 0xFF or data:1 is not 0xD8
+			throw 'not a JPEG file';
+		;;
+		adobe is -1;
+		CoreReader r;
+		call r.Start: data length;
+		u32 pos: 2;
+		# each segment takes at least 2 bytes, and a scan ends past where it starts, so the loop ends
+		while true
+			if pos >= length
+				throw 'the file is cut short';
+			;;
+			if data:pos is not 0xFF
+				throw 'something other than a marker, where a marker should be';
+			;;
+			while pos < length and data:pos is 0xFF
+				pos++;
+			;;
+			if pos >= length
+				throw 'the file is cut short';
+			;;
+			u32 m: data:pos;
+			pos++;
+			if m is 0xD9
+				break;
+			;;
+			if m is 0xD8
+				throw 'a second start of image';
+			;;
+			if m >= 0xD0 and m <= 0xD7
+				throw 'a restart marker outside the image data';
+			;;
+			if m is 0x01 or m is 0x00
+				throw 'marker FF' (Hex2: m) ', which JPEG doesn't use here';
+			;;
+			if length - pos < 2
+				throw 'the file is cut short';
+			;;
+			call r.Seek: pos;
+			u32 size: (r.U16BE);
+			if size < 2
+				throw 'a segment of less than 2 bytes';
+			;;
+			if size > length - pos
+				throw 'the file is cut short';
+			;;
+			u32 body: pos + 2;
+			u32 body_len: size - 2;
+			pos++ size;
+
+			if m is 0xC0 or m is 0xC1
+				if have_frame
+					throw 'more than one frame header';
+				;;
+				call Frame: r body body_len limit;
+			;;
+			elif m is 0xC2
+				throw 'progressive JPEG, which isn't supported yet';
+			;;
+			elif m is 0xC3
+				throw 'lossless JPEG, which isn't supported';
+			;;
+			elif m is 0xC5 or m is 0xC6 or m is 0xC7 or m is 0xDE or m is 0xDF
+				throw 'hierarchical JPEG, which isn't supported';
+			;;
+			elif m is 0xC9 or m is 0xCA or m is 0xCB or m is 0xCD or m is 0xCE or m is 0xCF
+				throw 'arithmetic coding, which isn't supported';
+			;;
+			elif m is 0xC4
+				call Dht: r body body_len;
+			;;
+			elif m is 0xDB
+				call Dqt: r body body_len;
+			;;
+			elif m is 0xDD
+				if size is not 4
+					throw 'a DRI segment of the wrong length';
+				;;
+				call r.Seek: body;
+				restart is (r.U16BE);
+			;;
+			elif m is 0xDC
+				throw 'a DNL marker, which isn't supported';
+			;;
+			elif m is 0xDA
+				if not have_frame
+					throw 'image data before the frame header';
+				;;
+				pos is (Scan: r (data as u8[length]) pos body body_len);
+				scans++;
+			;;
+			elif m is 0xE0
+				if body_len >= 14 and (Starts: data body 'JFIF') and data:(body + 4) is 0
+					jfif is true;
+				;;
+			;;
+			elif m is 0xEE
+				if body_len >= 12 and (Starts: data body 'Adobe')
+					adobe is data:(body + 11) as int;
+				;;
+			;;
+			elif (m >= 0xE1 and m <= 0xEF) or m is 0xFE or m is 0xCC
+				# APPn, COM and DAC: skipped
+			;;
+			else
+				throw 'marker FF' (Hex2: m) ', which JPEG doesn't use here';
+			;;
+		;;
+
+		if not have_frame or scans is 0
+			throw 'no image data';
+		;;
+		while u32 c: 0; c < count; c++;
+			if not scanned:c
+				throw 'a component with no image data';
+			;;
+		;;
+		bln rgb: false;
+		if count is 3
+			if jfif
+				rgb is false;
+			;;
+			elif adobe >= 0
+				rgb is (adobe is 0);
+			;;
+			else
+				rgb is (ids:0 is 82 and ids:1 is 71 and ids:2 is 66);
+			;;
+		;;
+		call Output: rgb;
+	[end]
+
+	# SOF0 or SOF1: the frame header, checked, and the planes for its components
+	[Frame: CoreReader r; u32 body: 0; u32 n: 0; u32 limit: 0;]
+		if n < 6
+			throw 'a frame header of the wrong length';
+		;;
+		call r.Seek: body;
+		u32 precision: (r.U8);
+		height is (r.U16BE);
+		width is (r.U16BE);
+		count is (r.U8);
+		if n is not 6 + 3 * count
+			throw 'a frame header of the wrong length';
+		;;
+		if precision is not 8
+			throw precision '-bit samples, which aren't supported';
+		;;
+		if count is 4
+			throw 'four components (CMYK), which isn't supported';
+		;;
+		if count is not 1 and count is not 3
+			throw count ' components, which isn't supported';
+		;;
+		if height is 0
+			throw 'a height of 0, to be set by a DNL marker, which isn't supported';
+		;;
+		if width is 0
+			throw 'a width of 0';
+		;;
+		have_frame is true;
+		hmax is 0;
+		vmax is 0;
+		while u32 k: 0; k < count; k++;
+			u32 cid: (r.U8);
+			u32 hv: (r.U8);
+			u32 tq: (r.U8);
+			u32 h: hv >> 4;
+			u32 v: hv & 15;
+			if h < 1 or h > 4 or v < 1 or v > 4
+				throw 'a sampling factor JPEG doesn't have';
+			;;
+			if tq > 3
+				throw 'quantization table ' tq ', which JPEG doesn't have';
+			;;
+			while u32 j: 0; j < k; j++;
+				if ids:j is cid
+					throw 'two components with the same ID';
+				;;
+			;;
+			ids:k is cid;
+			hs:k is h;
+			vs:k is v;
+			tqs:k is tq;
+			if h > hmax
+				hmax is h;
+			;;
+			if v > vmax
+				vmax is v;
+			;;
+		;;
+		while u32 k: 0; k < count; k++;
+			if hmax % hs:k is not 0 or vmax % vs:k is not 0
+				throw 'sampling factors that don't divide evenly';
+			;;
+		;;
+		if (width as u64) * height > limit
+			throw width ' by ' height ' is more than the limit of ' limit ' pixels';
+		;;
+		mcux is (width + 8 * hmax - 1) / (8 * hmax);
+		mcuy is (height + 8 * vmax - 1) / (8 * vmax);
+		u64 total: 0;
+		while u32 k: 0; k < count; k++;
+			cws:k is (width * hs:k + hmax - 1) / hmax;
+			chs:k is (height * vs:k + vmax - 1) / vmax;
+			if count is 1
+				# one component: libjpeg's MCU is its one block, whatever its sampling factors say
+				strides:k is (cws:k + 7) / 8 * 8;
+				plane_rows:k is (chs:k + 7) / 8 * 8;
+			;;
+			else
+				strides:k is mcux * hs:k * 8;
+				plane_rows:k is mcuy * vs:k * 8;
+			;;
+			total++ (strides:k as u64) * plane_rows:k;
+		;;
+		if total > 0x7FFFFFFF
+			throw 'the image's samples would be more than 2 GB';
+		;;
+		plane0 is (Plane: 0);
+		if count is 3
+			plane1 is (Plane: 1);
+			plane2 is (Plane: 2);
+		;;
+	[end]
+
+	# a component's plane, all zeros
+	[Plane: u32 k: 0; : ptr<u8>]
+		ptr<u8> p: new u8[strides:k * plane_rows:k];
+		if p is 0
+			throw 'out of memory for the image's samples';
+		;;
+	[end: p]
+
+	# DQT: one or more quantization tables
+	[Dqt: CoreReader r; u32 body: 0; u32 n: 0;]
+		call r.Seek: body;
+		u32 used: 0;
+		while used < n
+			u32 b: (r.U8);
+			used++;
+			u32 pq: b >> 4;
+			u32 tq: b & 15;
+			if pq > 1
+				throw 'a quantization table of precision ' pq ', which JPEG doesn't have';
+			;;
+			if tq > 3
+				throw 'quantization table ' tq ', which JPEG doesn't have';
+			;;
+			u32 size: 64;
+			if pq is 1
+				size is 128;
+			;;
+			if n - used < size
+				throw 'a DQT segment of the wrong length';
+			;;
+			while u32 k: 0; k < 64; k++;
+				u32 v: 0;
+				if pq is 1
+					v is (r.U16BE);
+				;;
+				else
+					v is (r.U8);
+				;;
+				quant:(tq * 64 + ImgJpegTables.zigzag:k) is v;
+			;;
+			used++ size;
+			quant_defined:tq is true;
+		;;
+	[end]
+
+	# DHT: one or more Huffman tables, kept as they are until a scan uses them
+	[Dht: CoreReader r; u32 body: 0; u32 n: 0;]
+		call r.Seek: body;
+		u32 used: 0;
+		while used < n
+			u32 b: (r.U8);
+			used++;
+			u32 tc: b >> 4;
+			u32 th: b & 15;
+			if tc > 1 or th > 3
+				throw 'Huffman table ' th ' of class ' tc ', which JPEG doesn't have';
+			;;
+			if n - used < 16
+				throw 'a DHT segment of the wrong length';
+			;;
+			u32 t: tc * 4 + th;
+			u32 total: 0;
+			while u32 k: 0; k < 16; k++;
+				u32 c: (r.U8);
+				counts:(t * 16 + k) is c as u8;
+				total++ c;
+			;;
+			used++ 16;
+			if total > 256
+				throw 'a Huffman table of more than 256 codes';
+			;;
+			if n - used < total
+				throw 'a DHT segment of the wrong length';
+			;;
+			while u32 k: 0; k < total; k++;
+				values:(t * 256 + k) is (r.U8) as u8;
+			;;
+			used++ total;
+			huff_defined:t is true;
+		;;
+	[end]
+
+	# a Huffman table checked, and made ready, when a scan uses it: as libjpeg does, so a table
+	# that's wrong but never used is no matter
+	[Build: u32 t: 0; bln dc: false;]
+		u32 code: 0;
+		u32 k: 0;
+		while u32 len: 1; len <= 16; len++;
+			u32 c: counts:(t * 16 + len - 1);
+			valptr:(t * 17 + len) is k;
+			mincode:(t * 17 + len) is code;
+			maxcode:(t * 17 + len) is -1;
+			code++ c;
+			k++ c;
+			if c is not 0
+				maxcode:(t * 17 + len) is (code - 1) as int;
+			;;
+			if code > (1 << len)
+				throw 'a Huffman table with more codes than there's room for';
+			;;
+			code is code << 1;
+		;;
+		if dc
+			while u32 j: 0; j < k; j++;
+				if values:(t * 256 + j) > 15
+					throw 'a DC Huffman table with a value over 15';
+				;;
+			;;
+		;;
+		# the codes of 9 bits or fewer, found in one look
+		while u32 f: 0; f < 512; f++;
+			fast:(t * 512 + f) is 0;
+		;;
+		while u32 len: 1; len <= 9; len++;
+			int top: maxcode:(t * 17 + len);
+			u32 first: mincode:(t * 17 + len);
+			if top < 0
+				continue;
+			;;
+			while u32 c: first; c <= top as u32; c++;
+				u32 value: values:(t * 256 + valptr:(t * 17 + len) + c - first);
+				u16 entry: ((value << 4) | len) as u16;
+				u32 step: 1 << (9 - len);
+				u32 first_entry: c << (9 - len);
+				while u32 s: 0; s < step; s++;
+					fast:(t * 512 + first_entry + s) is entry;
+				;;
+			;;
+		;;
+	[end]
+
+	# SOS: the scan header, and then its entropy-coded data, from pos; where the scan ends
+	[Scan: CoreReader r; u8 src[]; u32 pos: 0; u32 body: 0; u32 n: 0; : u32]
+		if n < 1
+			throw 'a scan header of the wrong length';
+		;;
+		call r.Seek: body;
+		scan_count is (r.U8);
+		if n is not 4 + 2 * scan_count
+			throw 'a scan header of the wrong length';
+		;;
+		if scan_count < 1 or scan_count > 4
+			throw 'a scan of ' scan_count ' components';
+		;;
+		while u32 k: 0; k < scan_count; k++;
+			u32 cid: (r.U8);
+			u32 t: (r.U8);
+			u32 c: 3;
+			while u32 j: 0; j < count; j++;
+				if ids:j is cid
+					c is j;
+				;;
+			;;
+			if c >= count
+				throw 'a scan of a component the frame doesn't have';
+			;;
+			while u32 j: 0; j < k; j++;
+				if scan_comps:j is c
+					throw 'a component twice in one scan';
+				;;
+			;;
+			if scanned:c
+				throw 'a component in two scans';
+			;;
+			u32 td: t >> 4;
+			u32 ta: t & 15;
+			if td > 3 or ta > 3 or not huff_defined:td or not huff_defined:(4 + ta)
+				throw 'a scan using a Huffman table that isn't defined';
+			;;
+			if not quant_defined:(tqs:c)
+				throw 'a component whose quantization table isn't defined';
+			;;
+			call Build: td true;
+			call Build: (4 + ta) false;
+			scan_comps:k is c;
+			scan_dc:k is td;
+			scan_ac:k is 4 + ta;
+		;;
+		u32 ss: (r.U8);
+		u32 se: (r.U8);
+		u32 a: (r.U8);
+		if ss is not 0 or se is not 63 or a is not 0
+			throw 'a scan that isn't sequential';
+		;;
+		if scan_count > 1
+			u32 blocks: 0;
+			while u32 k: 0; k < scan_count; k++;
+				blocks++ hs:(scan_comps:k) * vs:(scan_comps:k);
+			;;
+			if blocks > 10
+				throw 'more than 10 blocks in an MCU';
+			;;
+		;;
+		while u32 k: 0; k < scan_count; k++;
+			scanned:(scan_comps:k) is true;
+		;;
+
+		u32 across: mcux;
+		u32 total: mcux * mcuy;
+		if scan_count is 1
+			u32 c: scan_comps:0;
+			across is (cws:c + 7) / 8;
+			total is across * ((chs:c + 7) / 8);
+		;;
+		if scratch is 0
+			scratch_len is src.len as u32;
+			scratch is new u8[scratch_len + 1];
+			if scratch is 0
+				throw 'out of memory';
+			;;
+		;;
+		u32 done: 0;
+		u32 interval: 0;
+		while done < total
+			pos is (Segment: src (scratch as u8[scratch_len]) pos);
+			u32 todo: total - done;
+			if restart is not 0 and restart < todo
+				todo is restart;
+			;;
+			call bits.Start: scratch seg_len true;
+			while u32 k: 0; k < scan_count; k++;
+				preds:k is 0;
+			;;
+			while u32 i: 0; i < todo; i++;
+				u32 mx: (done + i) % across;
+				u32 my: (done + i) / across;
+				while u32 si: 0; si < scan_count; si++;
+					u32 c: scan_comps:si;
+					if scan_count is 1
+						call Block: si mx my;
+					;;
+					else
+						while u32 by: 0; by < vs:c; by++;
+							while u32 bx: 0; bx < hs:c; bx++;
+								call Block: si (mx * hs:c + bx) (my * vs:c + by);
+							;;
+						;;
+					;;
+				;;
+			;;
+			done++ todo;
+			if done < total
+				if pos + 1 >= (src.len as u32) or src:(pos + 1) is not (0xD0 + (interval & 7))
+					throw 'a restart marker missing or out of order';
+				;;
+				pos++ 2;
+				interval++;
+			;;
+		;;
+	[end: pos]
+
+	# the entropy-coded bytes from pos to the next marker, unstuffed into dst (seg_len of them);
+	# where that marker is (each byte out takes at least one in, so dst has room)
+	[Segment: u8 src[]; u8 dst[]; u32 pos: 0; : u32]
+		u32 n: src.len as u32;
+		u32 put: 0;
+		while pos < n
+			u32 b: src:pos;
+			if b is not 0xFF
+				dst:put is b as u8;
+				put++;
+				pos++;
+				continue;
+			;;
+			u32 j: pos + 1;
+			while j < n and src:j is 0xFF
+				j++;
+			;;
+			if j >= n
+				seg_len is put;
+				return n;
+			;;
+			if src:j is 0
+				dst:put is 0xFF;
+				put++;
+				pos is j + 1;
+				continue;
+			;;
+			seg_len is put;
+			return j - 1;
+		;;
+		seg_len is put;
+	[end: n]
+
+	# one block of the scan's component si, decoded and put in its place
+	[Block: u32 si: 0; u32 bx: 0; u32 by: 0;]
+		while u32 k: 0; k < 64; k++;
+			coef:k is 0;
+		;;
+		u32 s: (Decode: scan_dc:si);
+		int diff: 0;
+		if s > 0
+			u32 v: (bits.Bits: s);
+			if bits.failed
+				throw 'the image data ends before the image does';
+			;;
+			diff is (Extend: v s);
+		;;
+		preds:si is preds:si + diff;
+		coef:0 is (((preds:si + 32768) & 0xFFFF) - 32768);
+		u32 ac: scan_ac:si;
+		u32 k: 1;
+		while k < 64
+			u32 rs: (Decode: ac);
+			u32 run: rs >> 4;
+			s is rs & 15;
+			if s is 0
+				if run is not 15
+					break;
+				;;
+				k++ 16;
+				continue;
+			;;
+			k++ run;
+			if k > 63
+				throw 'a run of coefficients past the end of a block';
+			;;
+			u32 v: (bits.Bits: s);
+			if bits.failed
+				throw 'the image data ends before the image does';
+			;;
+			coef:(ImgJpegTables.zigzag:k) is (Extend: v s);
+			k++;
+		;;
+		u32 c: scan_comps:si;
+		ptr<u8> plane: plane0;
+		if c is 1
+			plane is plane1;
+		;;
+		elif c is 2
+			plane is plane2;
+		;;
+		call Idct: (plane as u8[strides:c * plane_rows:c]) strides:c (by * 8 * strides:c + bx * 8) (tqs:c * 64);
+	[end]
+
+	# s bits as a signed value, as JPEG codes them
+	[Extend: u32 v: 0; u32 s: 0; : int]
+		if v < (1 << (s - 1))
+			return (v as int) - ((1 << s) as int) + 1;
+		;;
+	[end: v as int]
+
+	# The next value in Huffman table t. A code is found in one look when it's 9 bits or fewer,
+	# and otherwise a length at a time. Bits from past the end of the data are zeros, and using
+	# one is a failure: so a code is found where it is, or the data ends before it.
+	[Decode: u32 t: 0; : u32]
+		u32 entry: fast:(t * 512 + (bits.Peek: 9));
+		if entry is not 0
+			call bits.Drop: entry & 15;
+			if bits.failed
+				throw 'the image data ends before the image does';
+			;;
+			return entry >> 4;
+		;;
+		u32 ahead: (bits.Peek: 16);
+		while u32 len: 1; len <= 16; len++;
+			int code: (ahead >> (16 - len)) as int;
+			if code <= maxcode:(t * 17 + len)
+				call bits.Drop: len;
+				if bits.failed
+					throw 'the image data ends before the image does';
+				;;
+				return values:(t * 256 + valptr:(t * 17 + len) + (code as u32) - mincode:(t * 17 + len));
+			;;
+		;;
+		# no code in 16 bits: the data ran out before them, or the code isn't in the table
+		if (bits.count - bits.fake) + (bits.len - bits.pos) * 8 < 16
+			throw 'the image data ends before the image does';
+		;;
+		throw 'a code that isn't in its Huffman table';
+	[end: 0]
+
+	# libjpeg's integer IDCT ("islow"): coef, with quantization table at q, into the 8 by 8
+	# samples at start in plane, whose rows are stride apart
+	[Idct: u8 plane[]; u32 stride: 0; u32 start: 0; u32 q: 0;]
+		# the columns
+		while u32 col: 0; col < 8; col++;
+			bln zero: true;
+			while u32 k: 1; k < 8; k++;
+				if coef:(8 * k + col) is not 0
+					zero is false;
+					break;
+				;;
+			;;
+			if zero
+				int dc: (coef:col * (quant:(q + col) as int)) << 2;
+				while u32 k: 0; k < 8; k++;
+					ws:(8 * k + col) is dc;
+				;;
+				continue;
+			;;
+			while u32 k: 0; k < 8; k++;
+				bf:k is coef:(8 * k + col) * (quant:(q + 8 * k + col) as int);
+			;;
+			call Butterfly: 11;
+			while u32 k: 0; k < 8; k++;
+				ws:(8 * k + col) is bo:k;
+			;;
+		;;
+		# the rows
+		while u32 row: 0; row < 8; row++;
+			u32 o: start + row * stride;
+			u32 w0: row * 8;
+			bln zero: true;
+			while u32 k: 1; k < 8; k++;
+				if ws:(w0 + k) is not 0
+					zero is false;
+					break;
+				;;
+			;;
+			if zero
+				u8 v: (Limit: ((ws:w0 + 16) >> 5)) as u8;
+				while u32 k: 0; k < 8; k++;
+					plane:(o + k) is v;
+				;;
+				continue;
+			;;
+			while u32 k: 0; k < 8; k++;
+				bf:k is ws:(w0 + k);
+			;;
+			call Butterfly: 18;
+			while u32 k: 0; k < 8; k++;
+				plane:(o + k) is (Limit: bo:k) as u8;
+			;;
+		;;
+	[end]
+
+	# one 8-point pass of the islow IDCT, bf into bo, descaled by shift
+	[Butterfly: int shift: 0;]
+		int z2: bf:2;
+		int z3: bf:6;
+		int z1: (z2 + z3) * 4433;
+		int tmp2: z1 - z3 * 15137;
+		int tmp3: z1 + z2 * 6270;
+		int tmp0: (bf:0 + bf:4) << 13;
+		int tmp1: (bf:0 - bf:4) << 13;
+		int tmp10: tmp0 + tmp3;
+		int tmp13: tmp0 - tmp3;
+		int tmp11: tmp1 + tmp2;
+		int tmp12: tmp1 - tmp2;
+		int t0: bf:7;
+		int t1: bf:5;
+		int t2: bf:3;
+		int t3: bf:1;
+		z1 is t0 + t3;
+		z2 is t1 + t2;
+		z3 is t0 + t2;
+		int z4: t1 + t3;
+		int z5: (z3 + z4) * 9633;
+		t0 is t0 * 2446;
+		t1 is t1 * 16819;
+		t2 is t2 * 25172;
+		t3 is t3 * 12299;
+		z1 is 0 - z1 * 7373;
+		z2 is 0 - z2 * 20995;
+		z3 is z5 - z3 * 16069;
+		z4 is z5 - z4 * 3196;
+		t0 is t0 + z1 + z3;
+		t1 is t1 + z2 + z4;
+		t2 is t2 + z2 + z3;
+		t3 is t3 + z1 + z4;
+		int round: 1 << (shift - 1);
+		bo:0 is (tmp10 + t3 + round) >> shift;
+		bo:7 is (tmp10 - t3 + round) >> shift;
+		bo:1 is (tmp11 + t2 + round) >> shift;
+		bo:6 is (tmp11 - t2 + round) >> shift;
+		bo:2 is (tmp12 + t1 + round) >> shift;
+		bo:5 is (tmp12 - t1 + round) >> shift;
+		bo:3 is (tmp13 + t0 + round) >> shift;
+		bo:4 is (tmp13 - t0 + round) >> shift;
+	[end]
+
+	# libjpeg's range limit after the IDCT: x + 128 clamped, for any x a damaged file can give
+	[Limit: int x: 0; : u32]
+		u32 v: (x & 1023) as u32;
+		if v < 128 return v + 128;
+		if v < 512 return 255;
+		if v < 896 return 0;
+	[end: v - 896]
+
+	# the components upsampled to full size and made pixels, a row at a time
+	[Output: bln rgb: false;]
+		image is (Img.New: width height);
+		rows is new u8[width * 3];
+		if rows is 0
+			throw 'out of memory';
+		;;
+		if count is 3 and not rgb
+			while int i: 0; i < 256; i++;
+				int x: i - 128;
+				cr_r:i is (91881 * x + 32768) >> 16;
+				cb_b:i is (116130 * x + 32768) >> 16;
+				cr_g:i is 0 - 46802 * x;
+				cb_g:i is 32768 - 22554 * x;
+			;;
+		;;
+		while u32 y: 0; y < height; y++;
+			call Upsample: 0 y (plane0 as u8[strides:0 * plane_rows:0]) (rows as u8[width * 3]) 0;
+			if count is 3
+				call Upsample: 1 y (plane1 as u8[strides:1 * plane_rows:1]) (rows as u8[width * 3]) width;
+				call Upsample: 2 y (plane2 as u8[strides:2 * plane_rows:2]) (rows as u8[width * 3]) (width * 2);
+			;;
+			call Pixels: (rows as u8[width * 3]) (image.pixels as u32[width * height]) (y * width) rgb;
+		;;
+	[end]
+
+	# a row's samples, upsampled, as pixels from o
+	[Pixels: u8 samples[]; u32 pixels_out[]; u32 o: 0; bln rgb: false;]
+		if count is 1
+			while u32 x: 0; x < width; x++;
+				u32 g: samples:x;
+				pixels_out:(o + x) is 0xFF000000 | (g << 16) | (g << 8) | g;
+			;;
+			return;
+		;;
+		if rgb
+			while u32 x: 0; x < width; x++;
+				pixels_out:(o + x) is 0xFF000000 | ((samples:x as u32) << 16) | ((samples:(width + x) as u32) << 8) | samples:(2 * width + x);
+			;;
+			return;
+		;;
+		while u32 x: 0; x < width; x++;
+			int luma: samples:x as int;
+			u32 cb: samples:(width + x);
+			u32 cr: samples:(2 * width + x);
+			u32 red: (Clamp: (luma + cr_r:cr));
+			u32 green: (Clamp: (luma + ((cb_g:cb + cr_g:cr) >> 16)));
+			u32 blue: (Clamp: (luma + cb_b:cb));
+			pixels_out:(o + x) is 0xFF000000 | (red << 16) | (green << 8) | blue;
+		;;
+	[end]
+
+	[Clamp: int v: 0; : u32]
+		if v < 0 return 0;
+		if v > 255 return 255;
+	[end: v as u32]
+
+	# Component k's row y at full size, into dst from start: libjpeg's fancy upsampling (the triangle
+	# filter, with the edges repeated) at half width, half height or both, and otherwise each
+	# sample repeated (as also for a component 2 samples across or fewer, at half width).
+	[Upsample: u32 k: 0; u32 y: 0; u8 p[]; u8 dst[]; u32 start: 0;]
+		u32 hf: hmax / hs:k;
+		u32 vf: vmax / vs:k;
+		u32 cw: cws:k;
+		u32 ch: chs:k;
+		u32 stride: strides:k;
+		if hf is 1 and vf is 1
+			u32 row: y * stride;
+			while u32 x: 0; x < width; x++;
+				dst:(start + x) is p:(row + x);
+			;;
+			return;
+		;;
+		if hf is 2 and vf is 1 and cw > 2
+			u32 row: y * stride;
+			while u32 j: 0; j < cw; j++;
+				u32 near: p:(row + j) * 3;
+				u32 left: p:(row + j);
+				if j > 0
+					left is p:(row + j - 1);
+				;;
+				u32 right: p:(row + j);
+				if j + 1 < cw
+					right is p:(row + j + 1);
+				;;
+				u32 x: 2 * j;
+				if x < width
+					dst:(start + x) is ((near + left + 1) >> 2) as u8;
+				;;
+				if x + 1 < width
+					dst:(start + x + 1) is ((near + right + 2) >> 2) as u8;
+				;;
+			;;
+			return;
+		;;
+		if hf is 1 and vf is 2
+			u32 i: y >> 1;
+			u32 far: i;
+			u32 bias: 1;
+			if (y & 1) is 1
+				bias is 2;
+				if i + 1 < ch
+					far is i + 1;
+				;;
+			;;
+			elif i > 0
+				far is i - 1;
+			;;
+			u32 near_row: i * stride;
+			u32 far_row: far * stride;
+			while u32 x: 0; x < width; x++;
+				dst:(start + x) is ((p:(near_row + x) * 3 + p:(far_row + x) + bias) >> 2) as u8;
+			;;
+			return;
+		;;
+		if hf is 2 and vf is 2 and cw > 2
+			u32 i: y >> 1;
+			u32 far: i;
+			if (y & 1) is 1
+				if i + 1 < ch
+					far is i + 1;
+				;;
+			;;
+			elif i > 0
+				far is i - 1;
+			;;
+			u32 near_row: i * stride;
+			u32 far_row: far * stride;
+			# column sums, the one before, this one and the next, with the edges repeated
+			u32 this_sum: p:near_row * 3 + p:far_row;
+			u32 last_sum: this_sum;
+			while u32 j: 0; j < cw; j++;
+				u32 next_sum: this_sum;
+				if j + 1 < cw
+					next_sum is p:(near_row + j + 1) * 3 + p:(far_row + j + 1);
+				;;
+				u32 x: 2 * j;
+				if x < width
+					dst:(start + x) is ((this_sum * 3 + last_sum + 8) >> 4) as u8;
+				;;
+				if x + 1 < width
+					dst:(start + x + 1) is ((this_sum * 3 + next_sum + 7) >> 4) as u8;
+				;;
+				last_sum is this_sum;
+				this_sum is next_sum;
+			;;
+			return;
+		;;
+		u32 row: (y / vf) * stride;
+		while u32 x: 0; x < width; x++;
+			dst:(start + x) is p:(row + x / hf);
+		;;
+	[end]
+
+	# whether the bytes from start in data begin with text
+	[Starts: ptr<u8> data: 0; u32 start: 0; str text; : bln]
+		while u32 k: 0; k < text.len; k++;
+			if data:(start + k) is not text:k as u8
+				return false;
+			;;
+		;;
+	[end: true]
+
+	# a byte as two hex digits
+	[Hex2: u32 v: 0; : str]
+		str digits: '0123456789ABCDEF';
+		str text: '';
+		text++ digits:((v >> 4) & 15);
+		text++ digits:(v & 15);
+	[end: text]
+}
+
+phi.ImgJpegTables:Library
+{
+	# where each coefficient in the order JPEG codes them goes, in a block's rows
+	u8 zigzag: 0 1 8 16 9 2 3 10 17 24 32 25 18 11 4 5 12 19 26 33 40 48 41 34 27 20 13 6 7 14 21 28
+		35 42 49 56 57 50 43 36 29 22 15 23 30 37 44 51 58 59 52 45 38 31 39 46 53 60 61 54 47 55 62 63;
+}

@@ -28,10 +28,20 @@ phi.TestImage:Program
 	u8 png_gray16: 137 80 78 71 13 10 26 10 0 0 0 13 73 72 68 82 0 0 0 3 0 0 0 1 16 0 0 0 0 110 27
 		151 43 0 0 0 2 116 82 78 83 18 52 47 211 73 94 0 0 0 15 73 68 65 84 120 218 99 20 50 201 243
 		169 175 7 0 5 151 2 0 130 212 198 192 0 0 0 0 73 69 78 68 174 66 96 130;
+	# 2 by 2 JPEG, YCbCr 4:4:4 with no APP segment, made with make_jpeg_tests.py's encoder: its
+	# pixels are libjpeg-turbo's (through ImageMagick)
+	u8 jpeg: 255 216 255 219 0 67 0 3 2 2 3 2 2 3 3 3 3 4 3 3 4 5 8 5 5 4 4 5 10 7 7 6 8 12 10 12 12 11
+		10 11 11 13 14 18 16 13 14 17 14 11 11 16 22 16 17 19 20 21 21 21 12 15 23 24 22 20 24 18 20
+		21 20 255 192 0 17 8 0 2 0 2 3 1 17 0 2 17 0 3 17 0 255 196 0 50 16 0 2 3 0 3 0 3 1 0 0 0 0
+		0 0 0 0 1 2 3 4 5 0 6 17 23 86 149 210 0 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 6 8 255 218 0 12 3
+		1 0 2 0 3 0 0 63 0 65 133 208 58 190 230 38 126 142 143 91 200 208 208 185 94 59 22 109 218
+		163 20 146 207 43 168 103 119 118 82 89 152 146 73 39 210 73 39 148 223 198 125 63 234 152
+		127 157 15 243 198 88 24 25 119 176 179 108 217 205 169 98 204 213 163 146 89 165 129 89 221
+		138 130 89 137 30 146 73 244 147 207 255 217;
 
 	log 'format: ' (Img.Format: rgb24 70) ' ' (Img.Format: png_start 8) ' ' (Img.Format: png_start 3) ' '
-		(Img.Format: rgb24 1) ' ' (Img.Format: 0 70) ' (BMP is ' Img.BMP ', PNG ' Img.PNG ', unknown '
-		Img.UNKNOWN ')\n';
+		(Img.Format: rgb24 1) ' ' (Img.Format: 0 70) ' ' (Img.Format: jpeg 238) ' (BMP is ' Img.BMP ', PNG '
+		Img.PNG ', JPEG ' Img.JPEG ', unknown ' Img.UNKNOWN ')\n';
 
 	call Show: 'rgb24' (Img.Decode: rgb24 70);
 	call Show: 'rgba32' (Img.Decode: rgba32 78);
@@ -42,6 +52,11 @@ phi.TestImage:Program
 	call Show: 'png no data' (Img.DecodePng: 0 104);
 	call Show: 'png as bmp' (Img.DecodeBmp: png_palette 104);
 	call Show: 'bmp as png' (Img.DecodePng: rgb24 70);
+	call Show: 'jpeg' (Img.Decode: jpeg 238);
+	call Show: 'jpeg without its end' (Img.DecodeJpeg: jpeg 236);
+	call Show: 'jpeg as png' (Img.DecodePng: jpeg 238);
+	call Show: 'png as jpeg' (Img.DecodeJpeg: png_palette 104);
+	call Show: 'jpeg no data' (Img.DecodeJpeg: 0 238);
 	call Show: 'empty' (Img.Decode: rgb24 0);
 	call Show: 'no data' (Img.DecodeBmp: 0 70);
 	call Show: 'cut short' (Img.DecodeBmp: rgb24 60);
@@ -54,6 +69,7 @@ phi.TestImage:Program
 	Img.max_pixels is 3;
 	call Show: 'limit 3' (Img.Decode: rgb24 70);
 	call Show: 'png limit 3' (Img.Decode: png_palette 104);
+	call Show: 'jpeg limit 3' (Img.Decode: jpeg 238);
 	Img.max_pixels is 0;
 	log 'default limit: ' Img.DEFAULT_MAX_PIXELS '\n';
 	call Img.Free: 0;

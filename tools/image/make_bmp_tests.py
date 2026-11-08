@@ -30,17 +30,7 @@ Four groups of cases:
     cut     good files cut short at many lengths
     fuzz    small files with a few bytes changed, with a fixed seed
 
-The format of cases.bin (every number little-endian):
-
-    u32 count, then for each:
-      u8 group (0 suite, 1 made, 2 cut, 3 fuzz), u8 kind, u8 name length, name,
-      u32 max_pixels (0: the default),
-      kind 0, a file:      u8 path length, path (from libs/image)
-      kind 1, bytes:       u32 length, bytes
-      kind 2, a cut:       u32 case, u32 length       (the first length bytes of an earlier case)
-      kind 3, changes:     u32 case, u16 count, then count of: u32 offset, u8 value
-      u8 ok; if ok: u32 width, u32 height, u32 CRC-32 of the pixels (each as 4 bytes, B G R A,
-      top row first); if not: u8 length, the reason
+cases.bin's format is in cases.py.
 """
 import argparse
 import os
@@ -48,11 +38,11 @@ import random
 import shutil
 import struct
 import sys
-import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from bmp_reference import decode, MAX_PIXELS  # noqa: E402
+from cases import Cases as CaseFile, as_rgba  # noqa: E402
 
 LIB = os.path.normpath(os.path.join(HERE, '..', '..', 'libs', 'image'))
 OUT = os.path.join(LIB, 'tests', 'bmp')
@@ -94,12 +84,6 @@ SUITE_NOTES = {
 
 
 # ---------------------------------------------------------------- comparing images
-
-def as_rgba(w, h, px):
-    import numpy as np
-    a = np.array(px, dtype=np.uint32).reshape(h, w)
-    return np.stack([(a >> 16) & 255, (a >> 8) & 255, a & 255, a >> 24], axis=2).astype(np.uint8)
-
 
 def difference(a, b):
     """the largest difference in any channel, counting fully transparent pixels as 0; None if the
@@ -437,59 +421,6 @@ def made_cases():
 
 # ---------------------------------------------------------------- the cases file
 
-class Cases:
-    def __init__(self):
-        self.list = []      # (group, kind, name, max_pixels, payload, data, verdict)
-
-    def add(self, group, kind, name, data, max_pixels=0, payload=None):
-        ok, result = decode(data, max_pixels or MAX_PIXELS)
-        self.list.append((group, kind, name, max_pixels, payload, data, (ok, result)))
-        return len(self.list) - 1
-
-    def write(self):
-        out = bytearray(struct.pack('<I', len(self.list)))
-        lines = ['# made by tools/image/make_bmp_tests.py: what imagelib must make of each case in cases.bin',
-                 '# (the cut and fuzz cases are summed up by the case they come from, at the end)']
-        summary = {}
-        for group, kind, name, max_pixels, payload, data, (ok, result) in self.list:
-            nb = name.encode()
-            out += struct.pack('<BBB', group, kind, len(nb)) + nb + struct.pack('<I', max_pixels)
-            if kind == 0:
-                p = payload.encode()
-                out += struct.pack('<B', len(p)) + p
-            elif kind == 1:
-                out += struct.pack('<I', len(data)) + data
-            elif kind == 2:
-                out += struct.pack('<II', *payload)
-            else:
-                source, changes = payload
-                out += struct.pack('<IH', source, len(changes))
-                for at, v in changes:
-                    out += struct.pack('<IB', at, v)
-            if ok:
-                w, h, px = result
-                crc = zlib.crc32(struct.pack('<%dI' % len(px), *px))
-                out += struct.pack('<BIII', 1, w, h, crc)
-                verdict = 'ok, %d by %d' % (w, h)
-            else:
-                rb = result.encode()
-                out += struct.pack('<BB', 0, len(rb)) + rb
-                verdict = 'refused: ' + result
-            if group in (CUT, FUZZ):
-                key = (GROUP_NAMES[group], self.list[payload[0]][2])
-                tally = summary.setdefault(key, [0, 0])
-                tally[0 if ok else 1] += 1
-            else:
-                lines.append('%-5s %-40s %7d bytes  %s' % (GROUP_NAMES[group], name, len(data), verdict))
-        for (group, source), (good, bad) in summary.items():
-            lines.append('%-5s %-40s %4d ok, %4d refused' % (group, source, good, bad))
-        with open(os.path.join(OUT, 'cases.bin'), 'wb') as f:
-            f.write(out)
-        with open(os.path.join(OUT, 'cases.txt'), 'w', newline='\n') as f:
-            f.write('\n'.join(lines) + '\n')
-        return len(out)
-
-
 def suite_files():
     files = []
     for d in 'gqbx':
@@ -628,7 +559,7 @@ def main():
         print('\n'.join(problems))
         sys.exit('the rules and the outside evidence disagree')
 
-    cases = Cases()
+    cases = CaseFile(decode, MAX_PIXELS, OUT, 'make_bmp_tests.py', GROUP_NAMES)
     index = {}
     for name in suite_files():
         data = open(os.path.join(SUITE, name), 'rb').read()
@@ -664,12 +595,7 @@ def main():
         cases.add(FUZZ, 3, 'fuzz-%d-%s' % (k, name), bytes(data), 0, (source, changes))
 
     size = cases.write()
-    groups = {}
-    for group, _, _, _, _, _, (ok, _) in cases.list:
-        g = groups.setdefault(GROUP_NAMES[group], [0, 0])
-        g[0 if ok else 1] += 1
-    print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size),
-          ', '.join('%s %d ok, %d refused' % (k, v[0], v[1]) for k, v in groups.items()))
+    print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
 
 
 if __name__ == '__main__':

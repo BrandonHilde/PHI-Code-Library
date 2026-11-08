@@ -1,7 +1,8 @@
 # imagelib
 
 Image files in, pixels out. Whatever the file, the pixels are 32-bit `0xAARRGGBB` with straight (not
-premultiplied) alpha, a row at a time from the top. It reads BMP and PNG so far; JPEG and GIF are next
+premultiplied) alpha, a row at a time from the top. It reads BMP, PNG and baseline JPEG so far; progressive
+JPEG and GIF are next
 ([plan.md](../../plan.md#phase-3-image-library)). It uses [corelib](../core), so a program using it
 has `corelib.philib` beside `imagelib.philib`.
 
@@ -21,7 +22,8 @@ call Img.Free: image;
 ## API
 
 These names are the API. Everything else the library declares (`ImgBmp`, `ImgBmpTables`, `ImgPng`,
-`ImgPngTables`, and `Img`'s `New`, `Limit`, `Done` and `DonePng`) is how it works, and may change.
+`ImgPngTables`, `ImgJpeg`, `ImgJpegTables`, and `Img`'s `New`, `Limit`, `Done`, `DonePng` and `DoneJpeg`) is
+how it works, and may change.
 
 | Name | What it is |
 |---|---|
@@ -30,7 +32,8 @@ These names are the API. Everything else the library declares (`ImgBmp`, `ImgBmp
 | `Img.Decode: data length` → | A `ptr<ImgImage>` from a file in any format imagelib reads, or 0 with the reason in `Img.error` |
 | `Img.DecodeBmp: data length` → | The same, for a BMP file |
 | `Img.DecodePng: data length` → | The same, for a PNG file |
-| `Img.Format: data length` → | Which format the bytes are in, from their first few: `Img.BMP`, `Img.PNG`, or `Img.UNKNOWN` |
+| `Img.DecodeJpeg: data length` → | The same, for a JPEG file |
+| `Img.Format: data length` → | Which format the bytes are in, from their first few: `Img.BMP`, `Img.PNG`, `Img.JPEG`, or `Img.UNKNOWN` |
 | `Img.Free: image` | Gives back an image's memory (0 does nothing) |
 | `Img.BlendRow: dest src count` | Draws `count` pixels of `src` over `dest`, which is taken as opaque: each color becomes `(src * alpha + dest * (255 - alpha)) / 255`, rounded, and `dest`'s top byte stays as it was |
 | `Img.max_pixels` | The most pixels an image may have. 0, as it starts, means `Img.DEFAULT_MAX_PIXELS` (16,777,216: 4096 by 4096, 64 MB of pixels) |
@@ -91,6 +94,34 @@ chunks whose names aren't letters, a missing or late PLTE in a palette image, ID
 another, unknown critical chunks (such as Apple's `CgBI`), and image data that's damaged, cut short, or the
 wrong size. **Not done:** APNG's other frames, and showing an image that's cut short (it's refused).
 
+## JPEG
+
+Baseline and extended sequential JPEG (SOF0 and SOF1) with Huffman coding and 8-bit samples: gray, or three
+components, which are YCbCr unless the file says RGB. Any sampling factors that divide evenly (4:4:4, 4:2:2,
+4:2:0, 4:4:0, 4:1:1 and the rest, chroma at a higher resolution than luma too), interleaved scans or one
+component a scan, and restart markers.
+
+It gives the **same pixels as libjpeg-turbo**, not merely close ones, because it decodes as libjpeg-turbo
+does by default, step for step:
+
+- **The integer IDCT,** libjpeg's "islow": its 13-bit constants, its two passes, and its shortcuts for columns
+  and rows with no AC terms.
+- **"Fancy" upsampling,** the triangle filter, for chroma at half width, half height or both, with the edges
+  repeated; plain repeating for other ratios, and for a component 2 samples across or fewer.
+- **YCbCr to RGB** by libjpeg's fixed-point tables.
+- **The color space** chosen as libjpeg chooses it: a JFIF marker means YCbCr; otherwise an Adobe marker's
+  transform says (0 is RGB); otherwise component IDs R, G and B mean RGB.
+
+The arithmetic is 32-bit and wraps, and coefficients are kept in 16 bits as libjpeg keeps them, which only
+matters for damaged files. EXIF orientation isn't applied, and color profiles are ignored.
+
+**Stricter than libjpeg,** which warns and shows what it can: entropy-coded data that's damaged or ends early,
+restart markers missing or out of order, a scan that isn't sequential, a component in no scan or in two, a run
+of coefficients past the end of a block, a file that doesn't end with EOI, and no Huffman tables (libjpeg
+would use the standard ones, as motion-JPEG frames expect) are all refused. **Not done** (refused, saying so):
+progressive JPEG, which is next, lossless, hierarchical and arithmetic coding, 12-bit samples, four
+components (CMYK), and DNL.
+
 ## How it's checked
 
 From the repo's root:
@@ -99,13 +130,14 @@ From the repo's root:
 pwsh ./build.ps1 image -Test                         # (or .\build.ps1 image -Test on Windows)
 python3 -P tools/image/make_bmp_tests.py --bmpsuite DIR    # remakes tests/bmp/ (it's committed)
 python3 -P tools/image/make_png_tests.py                   # remakes tests/png/ (it's committed)
+python3 -P tools/image/make_jpeg_tests.py                  # remakes tests/jpeg/ (it's committed)
 ```
 
 Each format's rules are written plainly in Python, in [tools/image](../../tools/image), and checked against
 outside evidence before any case is written; imagelib follows them check for check.
 
-**BMP:** the rules are [bmp_reference.py](../../tools/image/bmp_reference.py), and `make_bmp_tests.py` checks them against BMP Suite's reference images and Pillow before it writes any
-case: it stops at any difference that isn't listed with its reason. Each case's expected result is then
+**BMP:** the rules are [bmp_reference.py](../../tools/image/bmp_reference.py), and `make_bmp_tests.py` checks
+them against BMP Suite's reference images and Pillow before it writes any case: it stops at any difference that isn't listed with its reason. Each case's expected result is then
 the rules', and imagelib must give the same size and pixels, or refuse for the same reason. (`DIR` is
 BMP Suite 2.8 unpacked, for its reference images. Without it, the script checks against Pillow alone.
 `-P` rather than `-I`, since Pillow is usually in the user's site-packages.)
@@ -117,14 +149,23 @@ same way, and every file the rules refuse must be refused by libpng too, except 
 rules are stricter or more lenient. Pillow's differences are counted, and each has a reason below. It needs
 `magick` on the path; `--pngsuite DIR` copies PngSuite-2017jul19 in from `DIR` first.
 
+**JPEG:** the rules are [jpeg_reference.py](../../tools/image/jpeg_reference.py). There's no free JPEG test
+suite, so `make_jpeg_tests.py` makes its files: with libjpeg-turbo itself, through Pillow and ImageMagick,
+and with a small baseline encoder of its own for what those can't write. Every file the rules read must
+give exactly the pixels libjpeg-turbo gives (through ImageMagick, which uses the system's copy), and every
+file the rules refuse must at least make libjpeg warn, unless it's listed as stricter or as a kind not read
+yet. Pillow, with its own copy of libjpeg-turbo, is counted too.
+
 | Test | What it proves |
 |---|---|
 | `test_bmp` | The decoder against the rules, on the cases in [tests/bmp](tests/bmp) (listed in `cases.txt`): BMP Suite's files, files made for what it doesn't cover, good files cut short at many lengths, and files with bytes changed |
 | `test_bmp_fuzz` | 100,000 random changes to good files, every value of each of the first 160 bytes of ten of them, troublesome numbers in every header field, and noise. All must come back, with an image within the limit or a reason |
 | `test_png` | The same for PNG, on the cases in [tests/png](tests/png): PngSuite's files; files made for what it doesn't cover (every color type and depth at 13 sizes, interlaced and not, every filter, tRNS and PLTE of each kind, chunks in each wrong place, image data that's damaged, short or too long); good files cut short; and files with bytes changed, most with their CRCs mended so the change reaches what it was aimed at |
 | `test_png_fuzz` | 100,000 random changes to good files (three in four with their CRCs mended), every value of each of the first 64 bytes of eight, troublesome numbers in every field of the first 100 bytes, and 30,000 files made from noise: random pixel data of about the right size in stored blocks with the right Adler-32, so that it reaches the filters and the pixels. All must come back, with an image within the limit or a reason |
+| `test_jpeg` | The same for JPEG, on the cases in [tests/jpeg](tests/jpeg): files written by libjpeg-turbo (many sizes, qualities and subsamplings, optimized tables, restart markers, RGB); files made by the encoder for the rest (every sampling layout, one component a scan, scans of two, restart intervals of every length, 16-bit and redefined tables, each way of naming the color space, markers in every wrong place, and damaged entropy-coded data); good files cut short; and files with bytes changed |
+| `test_jpeg_fuzz` | 100,000 random changes to good files, every value of each of the first 200 bytes of six, troublesome numbers in every 16-bit field of the first 400 bytes, and 30,000 good headers followed by noise, so that random coefficients reach the IDCT. All must come back, with an image within the limit or a reason |
 | `test_image` | The API: finding the format, the limit, the reasons, freeing, and `BlendRow` against values worked out in Python |
-| `tests/use/test_imagelib` | The compiled `imagelib.philib` on its own, with corelib reached through it (its reader for BMP, and its inflate for PNG) |
+| `tests/use/test_imagelib` | The compiled `imagelib.philib` on its own, with corelib reached through it (its reader for BMP, its inflate for PNG, and its bit reader for JPEG) |
 
 ### BMP: the rules, against outside evidence (2026-11-08)
 
@@ -203,3 +244,32 @@ unfiltering and making the pixels:
 | Gray, 16 bits | 100 ms | 63 ms | 33 ms |
 | Palette, 8 bits | 42 ms | 30 ms | 13 ms |
 | Gray, 1 bit | 22 ms | 5 ms | 6 ms |
+
+### JPEG: the rules, against outside evidence (2026-11-08)
+
+| Against | Result |
+|---|---|
+| libjpeg-turbo 3.1.3 (through ImageMagick 7.1), on the 124 files written by libjpeg-turbo | 121 the same, pixel for pixel; 3 not read yet (progressive, CMYK, arithmetic coding) |
+| libjpeg-turbo, on the 261 files made by the encoder | 189 the same, pixel for pixel, and 1 the same though libjpeg warns (an Adobe transform of 2); 58 refused, which libjpeg also refuses or warns about; 8 refused where libjpeg reads them without a word (a TEM or DNL marker, a restart marker outside a scan, a segment of length 0, a component in no scan or two, a run past the end of a block, an extra restart marker after the last); 3 not read yet (12-bit, four components, arithmetic); 2 for the pixel limit |
+| Pillow 11.1 (its own copy of libjpeg-turbo) | The same, pixel for pixel, on every file both read, except for 2 it refuses: a JFIF or Adobe segment too short to be one, which Pillow's own reading of the markers trips on |
+
+### JPEG: imagelib, against the rules (2026-11-08, as 32 and 64-bit Linux programs)
+
+| Cases | Result |
+|---|---|
+| Written by libjpeg-turbo | 124 of 124 as the rules say: 121 read, 3 refused |
+| Made by the encoder | 261 of 261: 190 read, 71 refused |
+| Good files cut short | 3,050 of 3,050 refused (the file must end with EOI) |
+| Files with a few bytes changed | 4,000 of 4,000 (1,476 read, 2,524 refused); and 40,000 of 40,000 with another seed, run once |
+| Fuzzing: 100,000 random changes, 307,200 values of the first 200 bytes, 45,258 troublesome numbers, 29,912 headers followed by noise | No crash or hang, and every image within the limit |
+
+**Speed,** for a 2048 by 2048 photo (GNOME's Adwaita background, scaled, with a little noise added), saved
+by Pillow at quality 85, with Pillow decoding and converting to RGBA for comparison. libjpeg-turbo uses SIMD
+for the IDCT, the upsampling and the color conversion, where this is plain PHI:
+
+| Kind | imagelib, 64-bit | imagelib, 32-bit | Pillow |
+|---|---|---|---|
+| 4:2:0 | 147 ms | 112 ms | 22 ms |
+| 4:2:0, quality 95 | 190 ms | 147 ms | 20 ms |
+| 4:4:4 | 221 ms | 166 ms | 17 ms |
+| Gray | 82 ms | 62 ms | 7 ms |

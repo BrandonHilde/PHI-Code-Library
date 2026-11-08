@@ -26,6 +26,7 @@ phi.Img:Library
 	const int UNKNOWN: 0;
 	const int BMP: 1;
 	const int PNG: 2;
+	const int JPEG: 3;
 
 	# the limit when Img.max_pixels is 0: 4096 by 4096, 64 MB of pixels
 	const u32 DEFAULT_MAX_PIXELS: 16 * 1024 * 1024;
@@ -36,13 +37,16 @@ phi.Img:Library
 	str error: [383];   # why the last call failed
 	u32 max_pixels;     # the most pixels an image may have; 0 means DEFAULT_MAX_PIXELS
 
-	# which format the bytes are in, from their first few: Img.BMP, Img.PNG, or Img.UNKNOWN
+	# which format the bytes are in, from their first few: Img.BMP, Img.PNG, Img.JPEG, or Img.UNKNOWN
 	[Format: ptr<u8> data: 0; u32 length: 0; : int]
 		if data is not 0 and length >= 2 and data:0 is 'B' and data:1 is 'M'
 			return BMP;
 		;;
 		if data is not 0 and length >= 4 and data:0 is 0x89 and data:1 is 'P' and data:2 is 'N' and data:3 is 'G'
 			return PNG;
+		;;
+		if data is not 0 and length >= 2 and data:0 is 0xFF and data:1 is 0xD8
+			return JPEG;
 		;;
 	[end: UNKNOWN]
 
@@ -54,6 +58,9 @@ phi.Img:Library
 			;;
 			is PNG
 				return (DecodePng: data length);
+			;;
+			is JPEG
+				return (DecodeJpeg: data length);
 			;;
 		;;
 		error is 'not an image format imagelib reads';
@@ -121,6 +128,37 @@ phi.Img:Library
 		call DonePng: d;
 	[end: image]
 
+	# a JPEG file; 0 if it can't be read, with the reason in error
+	[DecodeJpeg: ptr<u8> data: 0; u32 length: 0; : ptr<ImgImage>]
+		error is '';
+		if data is 0 and length > 0
+			error is 'no data was given';
+			return 0;
+		;;
+		if length > 0x7FFFFFFF
+			error is 'more than 2 GB of data';
+			return 0;
+		;;
+		ptr<ImgJpeg> d: new ImgJpeg;
+		if d is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		if call d.Read: data length (Limit) throws err
+			if err.kind is ErrorKind.THROWN
+				error is err.text;
+			;;
+			else
+				error is err.message;
+			;;
+			call Free: d.image;
+			call DoneJpeg: d;
+			return 0;
+		;;
+		ptr<ImgImage> image: d.image;
+		call DoneJpeg: d;
+	[end: image]
+
 	# gives back an image's memory (0 is allowed, and does nothing)
 	[Free: ptr<ImgImage> image: 0;]
 		if image is 0 return;
@@ -166,6 +204,26 @@ phi.Img:Library
 		;;
 		if d.raw is not 0
 			free d.raw;
+		;;
+		free d;
+	[end]
+
+	# a JPEG decoder's own memory, given back
+	[DoneJpeg: ptr<ImgJpeg> d: 0;]
+		if d.scratch is not 0
+			free d.scratch;
+		;;
+		if d.rows is not 0
+			free d.rows;
+		;;
+		if d.plane0 is not 0
+			free d.plane0;
+		;;
+		if d.plane1 is not 0
+			free d.plane1;
+		;;
+		if d.plane2 is not 0
+			free d.plane2;
 		;;
 		free d;
 	[end]
