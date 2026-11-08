@@ -235,8 +235,9 @@ imagelib's first test uses `corelib.philib` through the chain.
 `corelib.philib` alone, and reaches corelib through imagelib. **2026-11-07,** the rest: In [libs/core](libs/core): 160 of 160
 reference streams inflate as zlib does, byte for byte; 43 of 43 broken ones and 3,513 of 3,513 cut
 short are refused; zlib's verdict and corelib's agree on 600 of 600 fuzz cases; and 100,000 random
-changes, every value of the first 48 bytes, and noise all come back without a crash. It inflates about
-70 MB/s of text (zlib in C: about 6 times that).
+changes, every value of the first 48 bytes, and noise all come back without a crash. **2026-11-08:**
+a fast path, like zlib's `inflate_fast`, took it from about 100 to 185 MB/s on text, and from 57 to
+135 MB/s on PNG image data (zlib in C: 851 and 376).
 
 ### Phase 3: Image Library
 
@@ -286,8 +287,8 @@ Pillow's differences are listed with their reasons. Where libpng only warns, the
 ancillary chunks (ignored) and are stricter for the rest: the file must run through IEND, and the image
 data must be exactly the image's size. imagelib agrees with the rules on all 6,933 cases (and 40,000
 more fuzz cases with another seed), as 32 and 64-bit Linux programs, and comes back from 276,024 fuzzed
-files without a crash. A 2048 by 2048 RGBA image takes 363 ms, 294 of them corelib's inflate (Pillow:
-56 ms), so a faster inflate is what would make PNG faster. Not done: APNG's other frames.
+files without a crash. A 2048 by 2048 RGBA image took 363 ms, 294 of them corelib's inflate; with
+inflate's fast path it takes 190 ms, 126 of them inflate (Pillow: 56 ms). Not done: APNG's other frames.
 
 **Done when:** milestones 3.1 to 3.6 pass, PngSuite's results are in the README, every decoder has been
 fuzzed, and a pixel bomb is refused before it allocates.

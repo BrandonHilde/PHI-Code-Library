@@ -78,5 +78,16 @@ for each way a stream can be broken. Every case's expected result is zlib's own 
 | Fuzz cases (small streams with bits changed), agreeing with zlib | 600 of 600 (230 good, 370 bad) |
 | Good streams cut short, refused | 3,513 of 3,513 |
 
-**Speed:** about 70 MB/s of output on text with short matches, and 150 MB/s on data that's mostly long
-matches, as a 64-bit Linux program; zlib, in C, is about 6 times faster on the same data.
+**Speed** (2026-11-08, as a 64-bit Linux program, with Python's zlib on the same data for comparison):
+
+| Data, 16 to 24 MB of output | corelib | zlib, in C |
+|---|---|---|
+| Text (PHI's docs and weblib's source) | 185 MB/s | 851 MB/s |
+| Mostly long matches | 503 MB/s | 1,444 MB/s |
+| A PNG's image data (2048 by 2048 RGBA, saved by Pillow) | 135 MB/s | 376 MB/s |
+
+Most symbols are decoded by a fast path, as zlib's `inflate_fast` does: while 16 bytes of input are left
+and the output has room for the longest match, the bits stay in the method's own variables and each code
+is one look in a table. That made it 1.8 times faster on text and 2.3 times on image data. The last
+bytes of the input, codes longer than 9 bits, and output near the limit go the slower way, one call per
+step, and both check the same things in the same order, so they fail the same way.

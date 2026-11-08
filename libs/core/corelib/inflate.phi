@@ -395,9 +395,12 @@ struct.CoreInflater
 		call dist.Build: addr lengths:nlen ndist false;
 	[end]
 
-	# the symbols of a block, to its end
+	# the symbols of a block, to its end: as many as it can by Fast, and the rest one at a time
 	[Codes]
 		while true
+			if bits.len - bits.pos >= CoreInflate.FAST_INPUT
+				if (Fast) is 256 return;
+			;;
 			u32 sym: (Decode: lit);
 			if sym < 256
 				if size is cap
@@ -440,6 +443,133 @@ struct.CoreInflater
 			;;
 			size++ length;
 		;;
+	[end]
+
+	# Symbols decoded quickly, as zlib's inflate_fast does, for as long as FAST_INPUT bytes of input
+	# are left and the output has room for the longest match: the bits are kept in this method's
+	# own variables rather than in CoreBits, and each code is found in one look in its table. It
+	# gives back 256 at the end of the block, or 0 when Codes should take the next symbol (input
+	# near its end, or output near the limit). It does what Codes does, check for check and in the
+	# same order, so the two fail the same way. A code longer than the table goes to Decode.
+	#
+	# Its reads: each turn starts with FAST_INPUT bytes left, and takes at most 12 of them (three
+	# fills of at most 4, and Decode's own 2 at most when a code is long), so no read passes the
+	# end, and no bit it uses is one of CoreBits' zeros from past the end. Its writes: each turn
+	# starts with room for 258 bytes, the longest a match is.
+	[Fast: : u32]
+		ptr<u8> src: bits.data;
+		u32 b: bits.buf;
+		u32 n: bits.count;
+		u32 p: bits.pos;
+		u32 stop: bits.len - CoreInflate.FAST_INPUT;
+		u32 s: size;
+		ptr<u8> to: dest;
+		while p <= stop
+			if cap - s < 258
+				if limit - s < 258
+					break;
+				;;
+				size is s;
+				call Grow: 258;
+				to is dest;
+			;;
+			while n <= 24
+				b is b | ((src:p as u32) << n);
+				p++;
+				n++ 8;
+			;;
+			u32 entry: 0;
+			unsafe
+				entry is lit.fast:(b & 511);
+			;;
+			u32 sym: 0;
+			if entry is not 0
+				sym is entry >> 4;
+				b is b >> (entry & 15);
+				n-- (entry & 15);
+			;;
+			else
+				call Save: b n p s;
+				sym is (Decode: lit);
+				b is bits.buf;
+				n is bits.count;
+				p is bits.pos;
+			;;
+			if sym < 256
+				to:s is sym as u8;
+				s++;
+				continue;
+			;;
+			if sym is 256
+				call Save: b n p s;
+				return 256;
+			;;
+			sym-- 257;
+			if sym >= 29
+				throw 'length code ' sym + 257 ', which DEFLATE doesn't have';
+			;;
+			while n <= 24
+				b is b | ((src:p as u32) << n);
+				p++;
+				n++ 8;
+			;;
+			u32 extra: CoreInflate.length_extra:sym;
+			u32 length: CoreInflate.length_base:sym + (b & ((1 << extra) - 1));
+			b is b >> extra;
+			n-- extra;
+			unsafe
+				entry is dist.fast:(b & 511);
+			;;
+			u32 dsym: 0;
+			if entry is not 0
+				dsym is entry >> 4;
+				b is b >> (entry & 15);
+				n-- (entry & 15);
+			;;
+			else
+				call Save: b n p s;
+				dsym is (Decode: dist);
+				b is bits.buf;
+				n is bits.count;
+				p is bits.pos;
+			;;
+			if dsym >= 30
+				throw 'distance code ' dsym ', which DEFLATE doesn't have';
+			;;
+			while n <= 24
+				b is b | ((src:p as u32) << n);
+				p++;
+				n++ 8;
+			;;
+			extra is CoreInflate.distance_extra:dsym;
+			u32 distance: CoreInflate.distance_base:dsym + (b & ((1 << extra) - 1));
+			b is b >> extra;
+			n-- extra;
+			if distance > s
+				throw 'a match from ' distance ' back, before the start of the output';
+			;;
+			ptr<u8> at_to: to + s;
+			ptr<u8> from: at_to - distance;
+			if distance >= length and length >= 16
+				call Mem.Copy: at_to from length;
+			;;
+			else
+				# one byte at a time, front to back, as a copy that overlaps itself must be
+				while u32 i: 0; i < length; i++;
+					at_to:i is from:i;
+				;;
+			;;
+			s++ length;
+		;;
+		call Save: b n p s;
+	[end: 0]
+
+	# Fast's bits and output, put back where the rest of the inflater keeps them
+	[Save: u32 b: 0; u32 n: 0; u32 p: 0; u32 s: 0;]
+		bits.buf is b;
+		bits.count is n;
+		bits.pos is p;
+		size is s;
 	[end]
 
 	# the next symbol in the code h
@@ -514,6 +644,9 @@ phi.CoreInflate:Library
 
 	# the limit when 0 is given: a program that expects more says so
 	const u32 DEFAULT_LIMIT: 64 * 1024 * 1024;
+
+	# how much input must be left for CoreInflater's Fast to take the next symbol
+	const u32 FAST_INPUT: 16;
 
 	str error: [383];   # why the last call failed
 	u32 used;           # how many bytes of the input the last call's stream took

@@ -191,15 +191,15 @@ before the palette).
 
 **Speed,** for 2048 by 2048 images saved by Pillow (a gradient with noise, so each is a few MB), as a 64-bit
 Linux program (32-bit is about the same), with Pillow 11.1 decoding and converting to RGBA for comparison.
-Most of the time is corelib's inflate, which is about 6 times slower than zlib's; the rest is unfiltering
-and making the pixels:
+Most of the time is corelib's inflate, which is about 3 times slower than zlib's on this data; the rest is
+unfiltering and making the pixels:
 
 | Pixels | imagelib | of which inflate | Pillow |
 |---|---|---|---|
-| RGB, 8 bits | 269 ms | 224 ms | 43 ms |
-| RGBA, 8 bits | 363 ms | 294 ms | 56 ms |
-| RGBA, 8 bits, interlaced | 382 ms | 291 ms | 68 ms |
-| Gray, 8 bits | 100 ms | 72 ms | 18 ms |
-| Gray, 16 bits | 168 ms | 136 ms | 33 ms |
-| Palette, 8 bits | 66 ms | 57 ms | 13 ms |
-| Gray, 1 bit | 27 ms | 10 ms | 6 ms |
+| RGB, 8 bits | 139 ms | 88 ms | 43 ms |
+| RGBA, 8 bits | 190 ms | 126 ms | 56 ms |
+| RGBA, 8 bits, interlaced | 202 ms | 132 ms | 68 ms |
+| Gray, 8 bits | 51 ms | 29 ms | 18 ms |
+| Gray, 16 bits | 100 ms | 63 ms | 33 ms |
+| Palette, 8 bits | 42 ms | 30 ms | 13 ms |
+| Gray, 1 bit | 22 ms | 5 ms | 6 ms |

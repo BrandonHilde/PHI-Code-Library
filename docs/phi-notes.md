@@ -55,3 +55,10 @@ The reason in brackets is right, but "16-bit program" isn't.
 **`phi test --help` crashes** (2026-11-08). `phi test` takes `--help` as the file to test, and .NET's
 unhandled `FileNotFoundException` comes out, with its stack trace, from `TestRunner.BuildTestLibraries`.
 `phi` with no arguments prints the usage, so that's the way to see it for now.
+
+**A `u32` index is sign-extended in 64-bit code** (2026-11-08). `p:i`, with `p` a pointer and `i` a
+`u32`, comes out as `movsxd rax, eax` before the add (seen in corelib's inflate, in
+`build/test_inflate.linux64/program.asm`), so an index of 2^31 or more reaches below `p` instead of
+past it. Nothing here meets it yet, as corelib and imagelib hold every size under 2 GB, but a `u32`
+index ought to be zero-extended.
+
