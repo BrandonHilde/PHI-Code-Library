@@ -1,0 +1,471 @@
+# Windows and OS/2 BMP files: every header size BMP has, 1, 2, 4 and 8-bit palettes, 16, 24 and
+# 32-bit pixels with bit fields of any shape (alpha too), and RLE8 and RLE4.
+#
+# The rules are tools/image/bmp_reference.py's, which are checked against BMP Suite's reference
+# images and Pillow, and this follows them check for check, in the same order, so that the two
+# give the same reasons. In short:
+#
+#   - Pixels RLE skips over (with a delta, or an early end of line or of the image) are transparent.
+#   - A channel of n bits becomes 8 by scaling, round(v * 255 / (2^n - 1)), so its top value is 255.
+#   - Alpha only comes from an alpha mask: in a header of 56 bytes or more, or BI_ALPHABITFIELDS.
+#     The unused bits of 16 and 32-bit pixels without one are ignored, so those images are opaque.
+#   - An index past the end of the palette is opaque black.
+#   - Not done: 64-bit pixels, Huffman 1D, RLE24, embedded JPEG and PNG, and color profiles
+#     (which are ignored).
+#
+# Every read is checked: the headers through CoreReader, and the pixels through arrays made from
+# the file's bytes, whose indexes are checked. Sizes are checked before anything is allocated.
+
+use corelib;
+use imagelib.image;
+
+# One BMP being read. It's on the heap, as it's bigger than a method's variables may be.
+struct.ImgBmp
+{
+	ptr<ImgImage> image;    # what's been made so far, for Img to free if this fails
+	u32 width;
+	u32 height;
+	u32 bpp;
+	u32 compression;
+	u32 offset;             # where the pixels start
+	bln top_down;
+	u32 masks[4];           # red, green, blue, alpha; alpha 0: opaque
+	u32 shifts[4];
+	u32 bits[4];
+	u8 scales[1024];        # by channel, each of its values to 0..255, for channels of 8 bits or fewer
+	u32 palette[256];
+	ptr<u32> lut;           # a big 16-bit image's every pixel value, worked out once; Img frees it
+
+	[Read: ptr<u8> data: 0; u32 length: 0; u32 limit: 0;]
+		if length < 18 or data:0 is not 'B' or data:1 is not 'M'
+			throw 'not a BMP file';
+		;;
+		CoreReader r;
+		call r.Start: data length;
+		call r.Seek: 10;
+		offset is (r.U32LE);
+		u32 hs: (r.U32LE);
+		if not (ImgBmpTables.header_sizes has hs)
+			throw 'a header of ' hs ' bytes, which no BMP has';
+		;;
+		if 14 + hs > length
+			throw 'the file is cut short';
+		;;
+		bln os2: hs is 16 or hs is 64;
+		int w: 0;
+		int h: 0;
+		u32 colors: 0;
+		if hs is 12
+			w is (r.U16LE) as int;
+			h is (r.U16LE) as int;
+			call r.Skip: 2;
+			bpp is (r.U16LE);
+			compression is 0;
+		;;
+		else
+			w is (r.I32LE);
+			h is (r.I32LE);
+			call r.Skip: 2;
+			bpp is (r.U16LE);
+			compression is 0;
+			if hs >= 20
+				compression is (r.U32LE);
+			;;
+			if hs >= 36
+				call r.Seek: 46;
+				colors is (r.U32LE);
+			;;
+		;;
+		if w <= 0 or h is 0 or h is (-2147483647 - 1)
+			throw 'a width or height of 0 or less';
+		;;
+		top_down is h < 0;
+		if top_down
+			h is -h;
+		;;
+		width is w as u32;
+		height is h as u32;
+
+		if os2 and compression is 3
+			throw 'Huffman 1D compression, which isn't supported';
+		;;
+		if os2 and compression is 4
+			throw 'RLE24 compression, which isn't supported';
+		;;
+		if compression is 4 or compression is 5
+			throw 'an embedded JPEG or PNG, which isn't supported';
+		;;
+		if not (ImgBmpTables.depths has bpp)
+			throw bpp ' bits a pixel, which isn't supported';
+		;;
+		if (compression is 1 and bpp is not 8) or (compression is 2 and bpp is not 4)
+			throw 'RLE compression with the wrong number of bits a pixel';
+		;;
+		bln fields: compression is 3 or compression is 6;
+		if fields and bpp is not 16 and bpp is not 32
+			throw 'bit fields with ' bpp ' bits a pixel';
+		;;
+		if compression > 6 or compression is 4 or compression is 5
+			throw 'compression ' compression ', which isn't supported';
+		;;
+		bln rle: compression is 1 or compression is 2;
+		if rle and top_down
+			throw 'RLE compression stored top-down, which BMP doesn't allow';
+		;;
+		if (width as u64) * height > limit
+			throw width ' by ' height ' is more than the limit of ' limit ' pixels';
+		;;
+
+		# the masks: in the header from 52 bytes on, or after a 40-byte one
+		u32 tables_at: 14 + hs;
+		if fields
+			if hs >= 52
+				call r.Seek: 54;
+				masks:0 is (r.U32LE);
+				masks:1 is (r.U32LE);
+				masks:2 is (r.U32LE);
+				if hs >= 56
+					masks:3 is (r.U32LE);
+				;;
+			;;
+			else
+				call r.Seek: tables_at;
+				masks:0 is (r.U32LE);
+				masks:1 is (r.U32LE);
+				masks:2 is (r.U32LE);
+				tables_at++ 12;
+				if compression is 6
+					masks:3 is (r.U32LE);
+					tables_at++ 4;
+				;;
+			;;
+			if compression is 6 and hs >= 52 and hs < 56
+				call r.Seek: tables_at;
+				masks:3 is (r.U32LE);
+				tables_at++ 4;
+			;;
+			if r.failed
+				throw 'the file is cut short';
+			;;
+		;;
+		elif bpp is 16
+			masks:0 is 0x7C00;
+			masks:1 is 0x03E0;
+			masks:2 is 0x001F;
+		;;
+		elif bpp is 32
+			masks:0 is 0xFF0000;
+			masks:1 is 0xFF00;
+			masks:2 is 0xFF;
+		;;
+		if bpp is 16 or bpp is 32
+			call Fields;
+		;;
+
+		# the palette
+		while u32 k: 0; k < 256; k++;
+			palette:k is 0xFF000000;
+		;;
+		if bpp <= 8
+			call Palette: data length hs tables_at colors;
+		;;
+		if offset < 14 + hs or offset > length
+			throw 'the pixels\' offset is outside the file';
+		;;
+
+		u32 count: width * height;
+		if rle
+			image is (Img.New: width height);
+			ptr<u8> rle_data: data + offset;
+			call Rle: (rle_data as u8[length - offset]) (image.pixels as u32[count]) (compression is 2);
+			return;
+		;;
+		u64 row_bits: (width as u64) * bpp;
+		u64 row_bytes: (row_bits + 31) / 32 * 4;
+		u64 need: row_bytes * (height - 1) + (row_bits + 7) / 8;
+		if offset + need > length
+			throw 'the file is cut short';
+		;;
+		image is (Img.New: width height);
+		call Rows: (data as u8[length]) (image.pixels as u32[count]) (row_bytes as u32);
+	[end]
+
+	# the masks' shifts and sizes, checked, and the tables that scale them to 8 bits
+	[Fields]
+		while u32 c: 0; c < 4; c++;
+			if bpp is 16 and masks:c > 0xFFFF
+				throw 'a color mask wider than the pixel';
+			;;
+		;;
+		while u32 c: 0; c < 4; c++;
+			u32 m: masks:c;
+			shifts:c is 0;
+			bits:c is 0;
+			if m is 0
+				continue;
+			;;
+			while ((m >> shifts:c) & 1) is 0
+				shifts:c++;
+			;;
+			u32 run: m >> shifts:c;
+			while bits:c < 32 - shifts:c and ((run >> bits:c) & 1) is 1
+				bits:c++;
+			;;
+			if bits:c < 32 and (run >> bits:c) is not 0
+				throw 'a color mask that isn't one run of bits';
+			;;
+			if bits:c <= 8
+				u32 top: (1 << bits:c) - 1;
+				while u32 v: 0; v <= top; v++;
+					scales:(c * 256 + v) is ((v * 255 + top / 2) / top) as u8;
+				;;
+			;;
+		;;
+	[end]
+
+	[Palette: ptr<u8> data: 0; u32 length: 0; u32 hs: 0; u32 tables_at: 0; u32 colors: 0;]
+		u32 entry: 4;
+		if hs is 12
+			entry is 3;
+		;;
+		u32 most: 1 << bpp;
+		u32 count: most;
+		if colors is not 0
+			if offset >= tables_at and (colors as u64) * entry > offset - tables_at
+				throw 'a palette of ' colors ' colors, which doesn't fit before the pixels';
+			;;
+			if colors < most
+				count is colors;
+			;;
+		;;
+		elif offset >= tables_at
+			if (offset - tables_at) / entry < most
+				count is (offset - tables_at) / entry;
+			;;
+		;;
+		if (tables_at as u64) + count * entry > length
+			throw 'the file is cut short';
+		;;
+		while u32 k: 0; k < count; k++;
+			ptr<u8> p: data + tables_at + k * entry;
+			palette:k is 0xFF000000 | ((p:2 as u32) << 16) | ((p:1 as u32) << 8) | p:0;
+		;;
+	[end]
+
+	# the pixels, uncompressed: rows of row_bytes each, from the bottom unless top_down
+	[Rows: u8 file[]; u32 pixels_out[]; u32 row_bytes: 0;]
+		# a big 16-bit image: each of the 65,536 pixel values worked out once
+		if bpp is 16 and width * height >= 65536
+			lut is new u32[65536];
+			if lut is not 0
+				while u32 v: 0; v < 65536; v++;
+					lut:v is (Pixel: v);
+				;;
+			;;
+		;;
+		# 32-bit pixels whose channels are all 8 bits or none, as nearly all are
+		bln bytewise: bpp is 32;
+		while u32 c: 0; c < 4; c++;
+			if bits:c is not 0 and bits:c is not 8
+				bytewise is false;
+			;;
+		;;
+		u32 s0: shifts:0;
+		u32 s1: shifts:1;
+		u32 s2: shifts:2;
+		u32 s3: shifts:3;
+		u32 m0: (ByteMask: 0);
+		u32 m1: (ByteMask: 1);
+		u32 m2: (ByteMask: 2);
+		u32 m3: (ByteMask: 3);
+		u32 opaque: 0;
+		if masks:3 is 0
+			opaque is 0xFF000000;
+		;;
+		while u32 row: 0; row < height; row++;
+			u32 y: height - 1 - row;
+			if top_down
+				y is row;
+			;;
+			u32 p: offset + row * row_bytes;
+			u32 o: y * width;
+			when bpp
+				is 8
+					while u32 x: 0; x < width; x++;
+						pixels_out:(o + x) is palette:(file:(p + x));
+					;;
+				;;
+				is 24
+					while u32 x: 0; x < width; x++;
+						u32 q: p + 3 * x;
+						pixels_out:(o + x) is 0xFF000000 | ((file:(q + 2) as u32) << 16) | ((file:(q + 1) as u32) << 8) | file:q;
+					;;
+				;;
+				is 16
+					if lut is not 0
+						while u32 x: 0; x < width; x++;
+							u32 q: p + 2 * x;
+							pixels_out:(o + x) is lut:(file:q | ((file:(q + 1) as u32) << 8));
+						;;
+					;;
+					else
+						while u32 x: 0; x < width; x++;
+							u32 q: p + 2 * x;
+							pixels_out:(o + x) is (Pixel: file:q | ((file:(q + 1) as u32) << 8));
+						;;
+					;;
+				;;
+				is 32
+					if bytewise
+						# every channel 8 bits or none: no scaling, so each is a shift and a mask
+						while u32 x: 0; x < width; x++;
+							u32 q: p + 4 * x;
+							u32 v: file:q | ((file:(q + 1) as u32) << 8) | ((file:(q + 2) as u32) << 16) | ((file:(q + 3) as u32) << 24);
+							pixels_out:(o + x) is opaque | (((v >> s3) & m3) << 24) | (((v >> s0) & m0) << 16) | (((v >> s1) & m1) << 8) | ((v >> s2) & m2);
+						;;
+					;;
+					else
+						while u32 x: 0; x < width; x++;
+							u32 q: p + 4 * x;
+							u32 v: file:q | ((file:(q + 1) as u32) << 8) | ((file:(q + 2) as u32) << 16) | ((file:(q + 3) as u32) << 24);
+							pixels_out:(o + x) is (Pixel: v);
+						;;
+					;;
+				;;
+				else
+					# 1, 2 and 4 bits: the first pixel in a byte is in its top bits
+					u32 per: 8 / bpp;
+					u32 index_mask: (1 << bpp) - 1;
+					while u32 x: 0; x < width; x++;
+						u32 byte: file:(p + x / per);
+						u32 shift: 8 - bpp - (x % per) * bpp;
+						pixels_out:(o + x) is palette:((byte >> shift) & index_mask);
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	# 255 for a channel of 8 bits, and 0 for one that isn't there
+	[ByteMask: u32 c: 0; : u32]
+		if bits:c is 8 return 255;
+	[end: 0]
+
+	# a 16 or 32-bit pixel through its masks
+	[Pixel: u32 v: 0; : u32]
+		u32 a: 255;
+		if masks:3 is not 0
+			a is (Channel: v 3);
+		;;
+	[end: (a << 24) | ((Channel: v 0) << 16) | ((Channel: v 1) << 8) | (Channel: v 2)]
+
+	[Channel: u32 v: 0; u32 c: 0; : u32]
+		u32 n: bits:c;
+		if n is 0 return 0;
+		u32 value: (v & masks:c) >> shifts:c;
+		if n <= 8 return scales:(c * 256 + value);
+		u32 top: 0xFFFFFFFF;
+		if n < 32
+			top is (1 << n) - 1;
+		;;
+	[end: (((value as u64) * 255 + top / 2) / top) as u32]
+
+	# RLE8, or RLE4 when four, from the bottom row up. What it never reaches stays transparent,
+	# runs that go past the end of a row are cut off there, and data that ends without an
+	# end-of-image is a failure. Every command takes at least 2 bytes, so the loop ends.
+	[Rle: u8 src[]; u32 pixels_out[]; bln four: false;]
+		u32 x: 0;
+		u32 y: 0;
+		u32 i: 0;
+		u32 n: src.len as u32;
+		while true
+			if y >= height return;
+			if i + 2 > n
+				throw 'the RLE data ends before the end of the image';
+			;;
+			u32 count: src:i;
+			u32 value: src:(i + 1);
+			i++ 2;
+			if count is not 0
+				u32 run: count;
+				if run > width - x
+					run is width - x;
+				;;
+				u32 o: (height - 1 - y) * width + x;
+				if four
+					u32 high: palette:(value >> 4);
+					u32 low: palette:(value & 15);
+					while u32 k: 0; k < run; k++;
+						if (k & 1) is 0
+							pixels_out:(o + k) is high;
+						;;
+						else
+							pixels_out:(o + k) is low;
+						;;
+					;;
+				;;
+				else
+					u32 color: palette:value;
+					while u32 k: 0; k < run; k++;
+						pixels_out:(o + k) is color;
+					;;
+				;;
+				x++ run;
+			;;
+			elif value is 0
+				x is 0;
+				y++;
+			;;
+			elif value is 1
+				return;
+			;;
+			elif value is 2
+				if i + 2 > n
+					throw 'the RLE data ends before the end of the image';
+				;;
+				x++ src:i;
+				if x > width
+					x is width;
+				;;
+				y++ src:(i + 1);
+				i++ 2;
+			;;
+			else
+				u32 size: value;
+				if four
+					size is (value + 1) / 2;
+				;;
+				if i + size > n
+					throw 'the RLE data ends before the end of the image';
+				;;
+				u32 run: value;
+				if run > width - x
+					run is width - x;
+				;;
+				u32 o: (height - 1 - y) * width + x;
+				while u32 k: 0; k < run; k++;
+					if four
+						u32 byte: src:(i + k / 2);
+						if (k & 1) is 0
+							pixels_out:(o + k) is palette:(byte >> 4);
+						;;
+						else
+							pixels_out:(o + k) is palette:(byte & 15);
+						;;
+					;;
+					else
+						pixels_out:(o + k) is palette:(src:(i + k));
+					;;
+				;;
+				x++ run;
+				i++ size + (size & 1);
+			;;
+		;;
+	[end]
+}
+
+phi.ImgBmpTables:Library
+{
+	u32 header_sizes: 12 16 40 52 56 64 108 124;
+	u32 depths: 1 2 4 8 16 24 32;
+}

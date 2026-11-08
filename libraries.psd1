@@ -4,5 +4,6 @@
 	Libraries = @(
 		@{ Name = 'corelib'; Folder = 'libs\core'; Uses = @() }
 		@{ Name = 'weblib'; Folder = 'libs\web'; Uses = @() }
+		@{ Name = 'imagelib'; Folder = 'libs\image'; Uses = @('corelib') }
 	)
 }

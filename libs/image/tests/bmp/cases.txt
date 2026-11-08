@@ -1,0 +1,770 @@
+# made by tools/image/make_bmp_tests.py: what imagelib must make of each case in cases.bin
+# (the cut and fuzz cases are summed up by the case they come from, at the end)
+suite g/pal1.bmp                                  1086 bytes  ok, 127 by 64
+suite g/pal1bg.bmp                                1086 bytes  ok, 127 by 64
+suite g/pal1wb.bmp                                1086 bytes  ok, 127 by 64
+suite g/pal4.bmp                                  4198 bytes  ok, 127 by 64
+suite g/pal4gs.bmp                                4198 bytes  ok, 127 by 64
+suite g/pal4rle.bmp                               3836 bytes  ok, 127 by 64
+suite g/pal8-0.bmp                                9270 bytes  ok, 127 by 64
+suite g/pal8.bmp                                  9254 bytes  ok, 127 by 64
+suite g/pal8gs.bmp                                9254 bytes  ok, 127 by 64
+suite g/pal8nonsquare.bmp                         5158 bytes  ok, 127 by 32
+suite g/pal8os2.bmp                               8986 bytes  ok, 127 by 64
+suite g/pal8rle.bmp                               8788 bytes  ok, 127 by 64
+suite g/pal8topdown.bmp                           9254 bytes  ok, 127 by 64
+suite g/pal8v4.bmp                                9322 bytes  ok, 127 by 64
+suite g/pal8v5.bmp                                9338 bytes  ok, 127 by 64
+suite g/pal8w124.bmp                              8626 bytes  ok, 124 by 61
+suite g/pal8w125.bmp                              8998 bytes  ok, 125 by 62
+suite g/pal8w126.bmp                              9126 bytes  ok, 126 by 63
+suite g/rgb16-565.bmp                            16450 bytes  ok, 127 by 64
+suite g/rgb16-565pal.bmp                         17474 bytes  ok, 127 by 64
+suite g/rgb16.bmp                                16438 bytes  ok, 127 by 64
+suite g/rgb16bfdef.bmp                           16450 bytes  ok, 127 by 64
+suite g/rgb24.bmp                                24630 bytes  ok, 127 by 64
+suite g/rgb24pal.bmp                             25654 bytes  ok, 127 by 64
+suite g/rgb32.bmp                                32566 bytes  ok, 127 by 64
+suite g/rgb32bf.bmp                              32578 bytes  ok, 127 by 64
+suite g/rgb32bfdef.bmp                           32578 bytes  ok, 127 by 64
+suite q/pal1huffmsb.bmp                           2160 bytes  refused: Huffman 1D compression, which isn't supported
+suite q/pal1p1.bmp                                1082 bytes  ok, 127 by 64
+suite q/pal2.bmp                                  2118 bytes  ok, 127 by 64
+suite q/pal2color.bmp                             2118 bytes  ok, 127 by 64
+suite q/pal4rlecut.bmp                            3610 bytes  ok, 127 by 64
+suite q/pal4rletrns.bmp                           4326 bytes  ok, 127 by 64
+suite q/pal8offs.bmp                              9354 bytes  ok, 127 by 64
+suite q/pal8os2-hs.bmp                            8986 bytes  ok, 127 by 64
+suite q/pal8os2-sz.bmp                            8986 bytes  ok, 127 by 64
+suite q/pal8os2sp.bmp                             8974 bytes  ok, 127 by 64
+suite q/pal8os2v2-16.bmp                          9246 bytes  ok, 127 by 64
+suite q/pal8os2v2-40sz.bmp                        9254 bytes  ok, 127 by 64
+suite q/pal8os2v2-sz.bmp                          9278 bytes  ok, 127 by 64
+suite q/pal8os2v2.bmp                             9278 bytes  ok, 127 by 64
+suite q/pal8oversizepal.bmp                       9446 bytes  ok, 127 by 64
+suite q/pal8rlecut.bmp                            7980 bytes  ok, 127 by 64
+suite q/pal8rletrns.bmp                           9212 bytes  ok, 127 by 64
+suite q/rgb16-231.bmp                            16450 bytes  ok, 127 by 64
+suite q/rgb16-3103.bmp                           16450 bytes  ok, 127 by 64
+suite q/rgb16faketrns.bmp                        16438 bytes  ok, 127 by 64
+suite q/rgb24jpeg.bmp                             2457 bytes  refused: an embedded JPEG or PNG, which isn't supported
+suite q/rgb24largepal.bmp                        25830 bytes  ok, 127 by 64
+suite q/rgb24lprof.bmp                           24743 bytes  ok, 127 by 64
+suite q/rgb24png.bmp                              1210 bytes  refused: an embedded JPEG or PNG, which isn't supported
+suite q/rgb24rle24.bmp                           21432 bytes  refused: RLE24 compression, which isn't supported
+suite q/rgb32-111110.bmp                         32578 bytes  ok, 127 by 64
+suite q/rgb32-7187.bmp                           32578 bytes  ok, 127 by 64
+suite q/rgb32-xbgr.bmp                           32650 bytes  ok, 127 by 64
+suite q/rgb32fakealpha.bmp                       32566 bytes  ok, 127 by 64
+suite q/rgb32h52.bmp                             32578 bytes  ok, 127 by 64
+suite q/rgba16-1924.bmp                          16522 bytes  ok, 127 by 64
+suite q/rgba16-4444.bmp                          16522 bytes  ok, 127 by 64
+suite q/rgba16-5551.bmp                          16522 bytes  ok, 127 by 64
+suite q/rgba32-1.bmp                             32650 bytes  ok, 127 by 64
+suite q/rgba32-1010102.bmp                       32650 bytes  ok, 127 by 64
+suite q/rgba32-2.bmp                             32650 bytes  ok, 127 by 64
+suite q/rgba32-61754.bmp                         32650 bytes  ok, 127 by 64
+suite q/rgba32-81284.bmp                         32650 bytes  ok, 127 by 64
+suite q/rgba32abf.bmp                            32582 bytes  ok, 127 by 64
+suite q/rgba32h56.bmp                            32582 bytes  ok, 127 by 64
+suite q/rgba64.bmp                               65078 bytes  refused: 64 bits a pixel, which isn't supported
+suite b/badbitcount.bmp                           1086 bytes  refused: 30000 bits a pixel, which isn't supported
+suite b/badbitssize.bmp                           1086 bytes  ok, 127 by 64
+suite b/baddens1.bmp                              1086 bytes  ok, 127 by 64
+suite b/baddens2.bmp                              1086 bytes  ok, 127 by 64
+suite b/badfilesize.bmp                           1086 bytes  ok, 127 by 64
+suite b/badheadersize.bmp                         1112 bytes  refused: a header of 66 bytes, which no BMP has
+suite b/badpalettesize.bmp                        9254 bytes  refused: a palette of 305402420 colors, which doesn't fit before the pixels
+suite b/badplanes.bmp                             1086 bytes  ok, 127 by 64
+suite b/badrle.bmp                                9212 bytes  ok, 127 by 64
+suite b/badrle4.bmp                               4326 bytes  ok, 127 by 64
+suite b/badrle4bis.bmp                            4326 bytes  ok, 127 by 64
+suite b/badrle4ter.bmp                            4326 bytes  ok, 127 by 64
+suite b/badrlebis.bmp                             9212 bytes  ok, 127 by 64
+suite b/badrleter.bmp                             9212 bytes  ok, 127 by 64
+suite b/badwidth.bmp                              1086 bytes  refused: a width or height of 0 or less
+suite b/pal8badindex.bmp                          8650 bytes  ok, 127 by 64
+suite b/reallybig.bmp                            24630 bytes  refused: 3000000 by 2000000 is more than the limit of 16777216 pixels
+suite b/rgb16-880.bmp                            16450 bytes  ok, 127 by 64
+suite b/rletopdown.bmp                            8788 bytes  refused: RLE compression stored top-down, which BMP doesn't allow
+suite b/shortfile.bmp                              273 bytes  refused: the file is cut short
+suite x/ba-bm.bmp                                 9000 bytes  refused: not a BMP file
+made  depth1-w1                                     74 bytes  ok, 1 by 3
+made  depth1-w1-topdown                             74 bytes  ok, 1 by 3
+made  depth1-w2                                     74 bytes  ok, 2 by 3
+made  depth1-w2-topdown                             74 bytes  ok, 2 by 3
+made  depth1-w3                                     74 bytes  ok, 3 by 3
+made  depth1-w3-topdown                             74 bytes  ok, 3 by 3
+made  depth1-w4                                     74 bytes  ok, 4 by 3
+made  depth1-w4-topdown                             74 bytes  ok, 4 by 3
+made  depth1-w5                                     74 bytes  ok, 5 by 3
+made  depth1-w5-topdown                             74 bytes  ok, 5 by 3
+made  depth1-w6                                     74 bytes  ok, 6 by 3
+made  depth1-w6-topdown                             74 bytes  ok, 6 by 3
+made  depth1-w7                                     74 bytes  ok, 7 by 3
+made  depth1-w7-topdown                             74 bytes  ok, 7 by 3
+made  depth1-w8                                     74 bytes  ok, 8 by 3
+made  depth1-w8-topdown                             74 bytes  ok, 8 by 3
+made  depth1-w9                                     74 bytes  ok, 9 by 3
+made  depth1-w9-topdown                             74 bytes  ok, 9 by 3
+made  depth1-w15                                    74 bytes  ok, 15 by 3
+made  depth1-w15-topdown                            74 bytes  ok, 15 by 3
+made  depth1-w16                                    74 bytes  ok, 16 by 3
+made  depth1-w16-topdown                            74 bytes  ok, 16 by 3
+made  depth1-w17                                    74 bytes  ok, 17 by 3
+made  depth1-w17-topdown                            74 bytes  ok, 17 by 3
+made  depth1-w31                                    74 bytes  ok, 31 by 3
+made  depth1-w31-topdown                            74 bytes  ok, 31 by 3
+made  depth1-w32                                    74 bytes  ok, 32 by 3
+made  depth1-w32-topdown                            74 bytes  ok, 32 by 3
+made  depth1-w33                                    86 bytes  ok, 33 by 3
+made  depth1-w33-topdown                            86 bytes  ok, 33 by 3
+made  depth2-w1                                     82 bytes  ok, 1 by 3
+made  depth2-w1-topdown                             82 bytes  ok, 1 by 3
+made  depth2-w2                                     82 bytes  ok, 2 by 3
+made  depth2-w2-topdown                             82 bytes  ok, 2 by 3
+made  depth2-w3                                     82 bytes  ok, 3 by 3
+made  depth2-w3-topdown                             82 bytes  ok, 3 by 3
+made  depth2-w4                                     82 bytes  ok, 4 by 3
+made  depth2-w4-topdown                             82 bytes  ok, 4 by 3
+made  depth2-w5                                     82 bytes  ok, 5 by 3
+made  depth2-w5-topdown                             82 bytes  ok, 5 by 3
+made  depth2-w6                                     82 bytes  ok, 6 by 3
+made  depth2-w6-topdown                             82 bytes  ok, 6 by 3
+made  depth2-w7                                     82 bytes  ok, 7 by 3
+made  depth2-w7-topdown                             82 bytes  ok, 7 by 3
+made  depth2-w8                                     82 bytes  ok, 8 by 3
+made  depth2-w8-topdown                             82 bytes  ok, 8 by 3
+made  depth2-w9                                     82 bytes  ok, 9 by 3
+made  depth2-w9-topdown                             82 bytes  ok, 9 by 3
+made  depth2-w15                                    82 bytes  ok, 15 by 3
+made  depth2-w15-topdown                            82 bytes  ok, 15 by 3
+made  depth2-w16                                    82 bytes  ok, 16 by 3
+made  depth2-w16-topdown                            82 bytes  ok, 16 by 3
+made  depth2-w17                                    94 bytes  ok, 17 by 3
+made  depth2-w17-topdown                            94 bytes  ok, 17 by 3
+made  depth2-w31                                    94 bytes  ok, 31 by 3
+made  depth2-w31-topdown                            94 bytes  ok, 31 by 3
+made  depth2-w32                                    94 bytes  ok, 32 by 3
+made  depth2-w32-topdown                            94 bytes  ok, 32 by 3
+made  depth2-w33                                   106 bytes  ok, 33 by 3
+made  depth2-w33-topdown                           106 bytes  ok, 33 by 3
+made  depth4-w1                                    130 bytes  ok, 1 by 3
+made  depth4-w1-topdown                            130 bytes  ok, 1 by 3
+made  depth4-w2                                    130 bytes  ok, 2 by 3
+made  depth4-w2-topdown                            130 bytes  ok, 2 by 3
+made  depth4-w3                                    130 bytes  ok, 3 by 3
+made  depth4-w3-topdown                            130 bytes  ok, 3 by 3
+made  depth4-w4                                    130 bytes  ok, 4 by 3
+made  depth4-w4-topdown                            130 bytes  ok, 4 by 3
+made  depth4-w5                                    130 bytes  ok, 5 by 3
+made  depth4-w5-topdown                            130 bytes  ok, 5 by 3
+made  depth4-w6                                    130 bytes  ok, 6 by 3
+made  depth4-w6-topdown                            130 bytes  ok, 6 by 3
+made  depth4-w7                                    130 bytes  ok, 7 by 3
+made  depth4-w7-topdown                            130 bytes  ok, 7 by 3
+made  depth4-w8                                    130 bytes  ok, 8 by 3
+made  depth4-w8-topdown                            130 bytes  ok, 8 by 3
+made  depth4-w9                                    142 bytes  ok, 9 by 3
+made  depth4-w9-topdown                            142 bytes  ok, 9 by 3
+made  depth4-w15                                   142 bytes  ok, 15 by 3
+made  depth4-w15-topdown                           142 bytes  ok, 15 by 3
+made  depth4-w16                                   142 bytes  ok, 16 by 3
+made  depth4-w16-topdown                           142 bytes  ok, 16 by 3
+made  depth4-w17                                   154 bytes  ok, 17 by 3
+made  depth4-w17-topdown                           154 bytes  ok, 17 by 3
+made  depth4-w31                                   166 bytes  ok, 31 by 3
+made  depth4-w31-topdown                           166 bytes  ok, 31 by 3
+made  depth4-w32                                   166 bytes  ok, 32 by 3
+made  depth4-w32-topdown                           166 bytes  ok, 32 by 3
+made  depth4-w33                                   178 bytes  ok, 33 by 3
+made  depth4-w33-topdown                           178 bytes  ok, 33 by 3
+made  depth8-w1                                   1090 bytes  ok, 1 by 3
+made  depth8-w1-topdown                           1090 bytes  ok, 1 by 3
+made  depth8-w2                                   1090 bytes  ok, 2 by 3
+made  depth8-w2-topdown                           1090 bytes  ok, 2 by 3
+made  depth8-w3                                   1090 bytes  ok, 3 by 3
+made  depth8-w3-topdown                           1090 bytes  ok, 3 by 3
+made  depth8-w4                                   1090 bytes  ok, 4 by 3
+made  depth8-w4-topdown                           1090 bytes  ok, 4 by 3
+made  depth8-w5                                   1102 bytes  ok, 5 by 3
+made  depth8-w5-topdown                           1102 bytes  ok, 5 by 3
+made  depth8-w6                                   1102 bytes  ok, 6 by 3
+made  depth8-w6-topdown                           1102 bytes  ok, 6 by 3
+made  depth8-w7                                   1102 bytes  ok, 7 by 3
+made  depth8-w7-topdown                           1102 bytes  ok, 7 by 3
+made  depth8-w8                                   1102 bytes  ok, 8 by 3
+made  depth8-w8-topdown                           1102 bytes  ok, 8 by 3
+made  depth8-w9                                   1114 bytes  ok, 9 by 3
+made  depth8-w9-topdown                           1114 bytes  ok, 9 by 3
+made  depth8-w15                                  1126 bytes  ok, 15 by 3
+made  depth8-w15-topdown                          1126 bytes  ok, 15 by 3
+made  depth8-w16                                  1126 bytes  ok, 16 by 3
+made  depth8-w16-topdown                          1126 bytes  ok, 16 by 3
+made  depth8-w17                                  1138 bytes  ok, 17 by 3
+made  depth8-w17-topdown                          1138 bytes  ok, 17 by 3
+made  depth8-w31                                  1174 bytes  ok, 31 by 3
+made  depth8-w31-topdown                          1174 bytes  ok, 31 by 3
+made  depth8-w32                                  1174 bytes  ok, 32 by 3
+made  depth8-w32-topdown                          1174 bytes  ok, 32 by 3
+made  depth8-w33                                  1186 bytes  ok, 33 by 3
+made  depth8-w33-topdown                          1186 bytes  ok, 33 by 3
+made  depth16-w1                                    66 bytes  ok, 1 by 3
+made  depth16-w1-topdown                            66 bytes  ok, 1 by 3
+made  depth16-w2                                    66 bytes  ok, 2 by 3
+made  depth16-w2-topdown                            66 bytes  ok, 2 by 3
+made  depth16-w3                                    78 bytes  ok, 3 by 3
+made  depth16-w3-topdown                            78 bytes  ok, 3 by 3
+made  depth16-w4                                    78 bytes  ok, 4 by 3
+made  depth16-w4-topdown                            78 bytes  ok, 4 by 3
+made  depth16-w5                                    90 bytes  ok, 5 by 3
+made  depth16-w5-topdown                            90 bytes  ok, 5 by 3
+made  depth16-w6                                    90 bytes  ok, 6 by 3
+made  depth16-w6-topdown                            90 bytes  ok, 6 by 3
+made  depth16-w7                                   102 bytes  ok, 7 by 3
+made  depth16-w7-topdown                           102 bytes  ok, 7 by 3
+made  depth16-w8                                   102 bytes  ok, 8 by 3
+made  depth16-w8-topdown                           102 bytes  ok, 8 by 3
+made  depth16-w9                                   114 bytes  ok, 9 by 3
+made  depth16-w9-topdown                           114 bytes  ok, 9 by 3
+made  depth16-w15                                  150 bytes  ok, 15 by 3
+made  depth16-w15-topdown                          150 bytes  ok, 15 by 3
+made  depth16-w16                                  150 bytes  ok, 16 by 3
+made  depth16-w16-topdown                          150 bytes  ok, 16 by 3
+made  depth16-w17                                  162 bytes  ok, 17 by 3
+made  depth16-w17-topdown                          162 bytes  ok, 17 by 3
+made  depth16-w31                                  246 bytes  ok, 31 by 3
+made  depth16-w31-topdown                          246 bytes  ok, 31 by 3
+made  depth16-w32                                  246 bytes  ok, 32 by 3
+made  depth16-w32-topdown                          246 bytes  ok, 32 by 3
+made  depth16-w33                                  258 bytes  ok, 33 by 3
+made  depth16-w33-topdown                          258 bytes  ok, 33 by 3
+made  depth24-w1                                    66 bytes  ok, 1 by 3
+made  depth24-w1-topdown                            66 bytes  ok, 1 by 3
+made  depth24-w2                                    78 bytes  ok, 2 by 3
+made  depth24-w2-topdown                            78 bytes  ok, 2 by 3
+made  depth24-w3                                    90 bytes  ok, 3 by 3
+made  depth24-w3-topdown                            90 bytes  ok, 3 by 3
+made  depth24-w4                                    90 bytes  ok, 4 by 3
+made  depth24-w4-topdown                            90 bytes  ok, 4 by 3
+made  depth24-w5                                   102 bytes  ok, 5 by 3
+made  depth24-w5-topdown                           102 bytes  ok, 5 by 3
+made  depth24-w6                                   114 bytes  ok, 6 by 3
+made  depth24-w6-topdown                           114 bytes  ok, 6 by 3
+made  depth24-w7                                   126 bytes  ok, 7 by 3
+made  depth24-w7-topdown                           126 bytes  ok, 7 by 3
+made  depth24-w8                                   126 bytes  ok, 8 by 3
+made  depth24-w8-topdown                           126 bytes  ok, 8 by 3
+made  depth24-w9                                   138 bytes  ok, 9 by 3
+made  depth24-w9-topdown                           138 bytes  ok, 9 by 3
+made  depth24-w15                                  198 bytes  ok, 15 by 3
+made  depth24-w15-topdown                          198 bytes  ok, 15 by 3
+made  depth24-w16                                  198 bytes  ok, 16 by 3
+made  depth24-w16-topdown                          198 bytes  ok, 16 by 3
+made  depth24-w17                                  210 bytes  ok, 17 by 3
+made  depth24-w17-topdown                          210 bytes  ok, 17 by 3
+made  depth24-w31                                  342 bytes  ok, 31 by 3
+made  depth24-w31-topdown                          342 bytes  ok, 31 by 3
+made  depth24-w32                                  342 bytes  ok, 32 by 3
+made  depth24-w32-topdown                          342 bytes  ok, 32 by 3
+made  depth24-w33                                  354 bytes  ok, 33 by 3
+made  depth24-w33-topdown                          354 bytes  ok, 33 by 3
+made  depth32-w1                                    66 bytes  ok, 1 by 3
+made  depth32-w1-topdown                            66 bytes  ok, 1 by 3
+made  depth32-w2                                    78 bytes  ok, 2 by 3
+made  depth32-w2-topdown                            78 bytes  ok, 2 by 3
+made  depth32-w3                                    90 bytes  ok, 3 by 3
+made  depth32-w3-topdown                            90 bytes  ok, 3 by 3
+made  depth32-w4                                   102 bytes  ok, 4 by 3
+made  depth32-w4-topdown                           102 bytes  ok, 4 by 3
+made  depth32-w5                                   114 bytes  ok, 5 by 3
+made  depth32-w5-topdown                           114 bytes  ok, 5 by 3
+made  depth32-w6                                   126 bytes  ok, 6 by 3
+made  depth32-w6-topdown                           126 bytes  ok, 6 by 3
+made  depth32-w7                                   138 bytes  ok, 7 by 3
+made  depth32-w7-topdown                           138 bytes  ok, 7 by 3
+made  depth32-w8                                   150 bytes  ok, 8 by 3
+made  depth32-w8-topdown                           150 bytes  ok, 8 by 3
+made  depth32-w9                                   162 bytes  ok, 9 by 3
+made  depth32-w9-topdown                           162 bytes  ok, 9 by 3
+made  depth32-w15                                  234 bytes  ok, 15 by 3
+made  depth32-w15-topdown                          234 bytes  ok, 15 by 3
+made  depth32-w16                                  246 bytes  ok, 16 by 3
+made  depth32-w16-topdown                          246 bytes  ok, 16 by 3
+made  depth32-w17                                  258 bytes  ok, 17 by 3
+made  depth32-w17-topdown                          258 bytes  ok, 17 by 3
+made  depth32-w31                                  426 bytes  ok, 31 by 3
+made  depth32-w31-topdown                          426 bytes  ok, 31 by 3
+made  depth32-w32                                  438 bytes  ok, 32 by 3
+made  depth32-w32-topdown                          438 bytes  ok, 32 by 3
+made  depth32-w33                                  450 bytes  ok, 33 by 3
+made  depth32-w33-topdown                          450 bytes  ok, 33 by 3
+made  header12-pal8                                874 bytes  ok, 13 by 5
+made  header12-rgb24                               226 bytes  ok, 13 by 5
+made  header16-pal8                               1134 bytes  ok, 13 by 5
+made  header16-rgb24                               230 bytes  ok, 13 by 5
+made  header40-pal8                               1158 bytes  ok, 13 by 5
+made  header40-rgb24                               254 bytes  ok, 13 by 5
+made  header52-pal8                               1170 bytes  ok, 13 by 5
+made  header52-rgb24                               266 bytes  ok, 13 by 5
+made  header56-pal8                               1174 bytes  ok, 13 by 5
+made  header56-rgb24                               270 bytes  ok, 13 by 5
+made  header64-pal8                               1182 bytes  ok, 13 by 5
+made  header64-rgb24                               278 bytes  ok, 13 by 5
+made  header108-pal8                              1226 bytes  ok, 13 by 5
+made  header108-rgb24                              322 bytes  ok, 13 by 5
+made  header124-pal8                              1242 bytes  ok, 13 by 5
+made  header124-rgb24                              338 bytes  ok, 13 by 5
+made  palette-short                                 86 bytes  ok, 8 by 2
+made  palette-one-color-1bit                        66 bytes  ok, 9 by 2
+made  palette-300-colors                          1258 bytes  ok, 4 by 1
+made  palette-0-means-all                          122 bytes  ok, 4 by 1
+made  palette-os2-short                             39 bytes  ok, 4 by 1
+made  palette-gap-after                           1119 bytes  ok, 4 by 1
+made  rgb24-with-palette                          1266 bytes  ok, 4 by 1
+made  last-row-unpadded                           1091 bytes  ok, 5 by 2
+made  fields-565-header40                          114 bytes  ok, 7 by 3
+made  fields-565-header52                          114 bytes  ok, 7 by 3
+made  fields-565-header56                          118 bytes  ok, 7 by 3
+made  fields-565-header108                         170 bytes  ok, 7 by 3
+made  fields-565-header124                         186 bytes  ok, 7 by 3
+made  fields-565-header40-alpha-ignored            114 bytes  ok, 7 by 3
+made  fields-555-header40                          114 bytes  ok, 7 by 3
+made  fields-555-header52                          114 bytes  ok, 7 by 3
+made  fields-555-header56                          118 bytes  ok, 7 by 3
+made  fields-555-header108                         170 bytes  ok, 7 by 3
+made  fields-555-header124                         186 bytes  ok, 7 by 3
+made  fields-555-header40-alpha-ignored            114 bytes  ok, 7 by 3
+made  fields-4444-header56                         118 bytes  ok, 7 by 3
+made  fields-4444-header108                        170 bytes  ok, 7 by 3
+made  fields-4444-header124                        186 bytes  ok, 7 by 3
+made  fields-4444-alphabitfields                   118 bytes  ok, 7 by 3
+made  fields-4444-header40-alpha-ignored           114 bytes  ok, 7 by 3
+made  fields-1555-header56                         118 bytes  ok, 7 by 3
+made  fields-1555-header108                        170 bytes  ok, 7 by 3
+made  fields-1555-header124                        186 bytes  ok, 7 by 3
+made  fields-1555-alphabitfields                   118 bytes  ok, 7 by 3
+made  fields-1555-header40-alpha-ignored           114 bytes  ok, 7 by 3
+made  fields-one-bit-each-header56                 118 bytes  ok, 7 by 3
+made  fields-one-bit-each-header108                170 bytes  ok, 7 by 3
+made  fields-one-bit-each-header124                186 bytes  ok, 7 by 3
+made  fields-one-bit-each-alphabitfields           118 bytes  ok, 7 by 3
+made  fields-one-bit-each-header40-alpha-ignored     114 bytes  ok, 7 by 3
+made  fields-no-blue-header40                      114 bytes  ok, 7 by 3
+made  fields-no-blue-header52                      114 bytes  ok, 7 by 3
+made  fields-no-blue-header56                      118 bytes  ok, 7 by 3
+made  fields-no-blue-header108                     170 bytes  ok, 7 by 3
+made  fields-no-blue-header124                     186 bytes  ok, 7 by 3
+made  fields-no-blue-header40-alpha-ignored        114 bytes  ok, 7 by 3
+made  fields-no-channels-header40                  114 bytes  ok, 7 by 3
+made  fields-no-channels-header52                  114 bytes  ok, 7 by 3
+made  fields-no-channels-header56                  118 bytes  ok, 7 by 3
+made  fields-no-channels-header108                 170 bytes  ok, 7 by 3
+made  fields-no-channels-header124                 186 bytes  ok, 7 by 3
+made  fields-no-channels-header40-alpha-ignored     114 bytes  ok, 7 by 3
+made  fields-all-16-green-header40                 114 bytes  ok, 7 by 3
+made  fields-all-16-green-header52                 114 bytes  ok, 7 by 3
+made  fields-all-16-green-header56                 118 bytes  ok, 7 by 3
+made  fields-all-16-green-header108                170 bytes  ok, 7 by 3
+made  fields-all-16-green-header124                186 bytes  ok, 7 by 3
+made  fields-all-16-green-header40-alpha-ignored     114 bytes  ok, 7 by 3
+made  fields-8888-header56                         154 bytes  ok, 7 by 3
+made  fields-8888-header108                        206 bytes  ok, 7 by 3
+made  fields-8888-header124                        222 bytes  ok, 7 by 3
+made  fields-8888-alphabitfields                   154 bytes  ok, 7 by 3
+made  fields-8888-header40-alpha-ignored           150 bytes  ok, 7 by 3
+made  fields-8888-abgr-header56                    154 bytes  ok, 7 by 3
+made  fields-8888-abgr-header108                   206 bytes  ok, 7 by 3
+made  fields-8888-abgr-header124                   222 bytes  ok, 7 by 3
+made  fields-8888-abgr-alphabitfields              154 bytes  ok, 7 by 3
+made  fields-8888-abgr-header40-alpha-ignored      150 bytes  ok, 7 by 3
+made  fields-xrgb-high-header40                    150 bytes  ok, 7 by 3
+made  fields-xrgb-high-header52                    150 bytes  ok, 7 by 3
+made  fields-xrgb-high-header56                    154 bytes  ok, 7 by 3
+made  fields-xrgb-high-header108                   206 bytes  ok, 7 by 3
+made  fields-xrgb-high-header124                   222 bytes  ok, 7 by 3
+made  fields-xrgb-high-header40-alpha-ignored      150 bytes  ok, 7 by 3
+made  fields-10-10-10-2-header56                   154 bytes  ok, 7 by 3
+made  fields-10-10-10-2-header108                  206 bytes  ok, 7 by 3
+made  fields-10-10-10-2-header124                  222 bytes  ok, 7 by 3
+made  fields-10-10-10-2-alphabitfields             154 bytes  ok, 7 by 3
+made  fields-10-10-10-2-header40-alpha-ignored     150 bytes  ok, 7 by 3
+made  fields-32-bit-red-header40                   150 bytes  ok, 7 by 3
+made  fields-32-bit-red-header52                   150 bytes  ok, 7 by 3
+made  fields-32-bit-red-header56                   154 bytes  ok, 7 by 3
+made  fields-32-bit-red-header108                  206 bytes  ok, 7 by 3
+made  fields-32-bit-red-header124                  222 bytes  ok, 7 by 3
+made  fields-32-bit-red-header40-alpha-ignored     150 bytes  ok, 7 by 3
+made  fields-11-11-10-header40                     150 bytes  ok, 7 by 3
+made  fields-11-11-10-header52                     150 bytes  ok, 7 by 3
+made  fields-11-11-10-header56                     154 bytes  ok, 7 by 3
+made  fields-11-11-10-header108                    206 bytes  ok, 7 by 3
+made  fields-11-11-10-header124                    222 bytes  ok, 7 by 3
+made  fields-11-11-10-header40-alpha-ignored       150 bytes  ok, 7 by 3
+made  fields-overlapping-header40                  150 bytes  ok, 7 by 3
+made  fields-overlapping-header52                  150 bytes  ok, 7 by 3
+made  fields-overlapping-header56                  154 bytes  ok, 7 by 3
+made  fields-overlapping-header108                 206 bytes  ok, 7 by 3
+made  fields-overlapping-header124                 222 bytes  ok, 7 by 3
+made  fields-overlapping-header40-alpha-ignored     150 bytes  ok, 7 by 3
+made  fields-565-256-square                     131138 bytes  ok, 256 by 256
+made  fields-4444-256-square                    131142 bytes  ok, 256 by 256
+made  rgb32-unused-bits-set                         66 bytes  ok, 3 by 1
+made  rgb16-unused-bit-set                          62 bytes  ok, 3 by 1
+made  rle8-run-past-row-end                       1086 bytes  ok, 5 by 2
+made  rle8-absolute-odd                           1088 bytes  ok, 5 by 1
+made  rle8-absolute-past-row-end                  1094 bytes  ok, 4 by 2
+made  rle8-delta                                  1088 bytes  ok, 6 by 4
+made  rle8-delta-off-the-right                    1090 bytes  ok, 4 by 3
+made  rle8-delta-off-the-top                      1086 bytes  ok, 4 by 3
+made  rle8-eol-at-row-end                         1088 bytes  ok, 3 by 2
+made  rle8-rows-past-the-top                      1090 bytes  ok, 2 by 2
+made  rle8-no-end                                 1084 bytes  refused: the RLE data ends before the end of the image
+made  rle8-ends-in-delta                          1083 bytes  refused: the RLE data ends before the end of the image
+made  rle8-ends-in-absolute                       1084 bytes  refused: the RLE data ends before the end of the image
+made  rle8-index-past-palette                       68 bytes  ok, 4 by 1
+made  rle8-empty-runs                             1086 bytes  ok, 3 by 1
+made  rle4-run-odd                                 124 bytes  ok, 7 by 1
+made  rle4-absolute-odd                            128 bytes  ok, 7 by 1
+made  rle4-absolute-3                              124 bytes  ok, 4 by 1
+made  rle4-run-past-row-end                        126 bytes  ok, 3 by 2
+made  bad-signature                                126 bytes  refused: not a BMP file
+made  bad-too-short                                 17 bytes  refused: not a BMP file
+made  bad-empty                                      0 bytes  refused: not a BMP file
+made  bad-header-size-0                            126 bytes  refused: a header of 0 bytes, which no BMP has
+made  bad-header-size-11                           126 bytes  refused: a header of 11 bytes, which no BMP has
+made  bad-header-size-13                           126 bytes  refused: a header of 13 bytes, which no BMP has
+made  bad-header-size-39                           126 bytes  refused: a header of 39 bytes, which no BMP has
+made  bad-header-size-41                           126 bytes  refused: a header of 41 bytes, which no BMP has
+made  bad-header-size-100                          126 bytes  refused: a header of 100 bytes, which no BMP has
+made  bad-header-size-4294967295                   126 bytes  refused: a header of 4294967295 bytes, which no BMP has
+made  bad-header-cut                                44 bytes  refused: the file is cut short
+made  bad-width-0                                  126 bytes  refused: a width or height of 0 or less
+made  bad-width-negative                           126 bytes  refused: a width or height of 0 or less
+made  bad-height-0                                 126 bytes  refused: a width or height of 0 or less
+made  bad-height-most-negative                     126 bytes  refused: a width or height of 0 or less
+made  bad-os2-width-0                              802 bytes  refused: a width or height of 0 or less
+made  bad-bpp-0                                    126 bytes  refused: 0 bits a pixel, which isn't supported
+made  bad-bpp-3                                    126 bytes  refused: 3 bits a pixel, which isn't supported
+made  bad-bpp-5                                    126 bytes  refused: 5 bits a pixel, which isn't supported
+made  bad-bpp-12                                   126 bytes  refused: 12 bits a pixel, which isn't supported
+made  bad-bpp-48                                   126 bytes  refused: 48 bits a pixel, which isn't supported
+made  bad-bpp-64                                   126 bytes  refused: 64 bits a pixel, which isn't supported
+made  bad-bpp-65535                                126 bytes  refused: 65535 bits a pixel, which isn't supported
+made  bad-compression-4                            126 bytes  refused: an embedded JPEG or PNG, which isn't supported
+made  bad-compression-5                            126 bytes  refused: an embedded JPEG or PNG, which isn't supported
+made  bad-compression-7                            126 bytes  refused: compression 7, which isn't supported
+made  bad-compression-11                           126 bytes  refused: compression 11, which isn't supported
+made  bad-compression-4294967295                   126 bytes  refused: compression 4294967295, which isn't supported
+made  bad-os2v2-huffman                             90 bytes  refused: Huffman 1D compression, which isn't supported
+made  bad-os2v2-rle24                               85 bytes  refused: RLE24 compression, which isn't supported
+made  bad-rle8-with-4-bits                         122 bytes  refused: RLE compression with the wrong number of bits a pixel
+made  bad-rle4-with-8-bits                         126 bytes  refused: RLE compression with the wrong number of bits a pixel
+made  bad-rle-top-down                            1086 bytes  refused: RLE compression stored top-down, which BMP doesn't allow
+made  bad-fields-with-24-bits                       74 bytes  refused: bit fields with 24 bits a pixel
+made  bad-fields-with-8-bits                      1094 bytes  refused: bit fields with 8 bits a pixel
+made  bad-mask-gap                                  70 bytes  refused: a color mask that isn't one run of bits
+made  bad-mask-wider-than-16                        70 bytes  refused: a color mask wider than the pixel
+made  bad-masks-cut-off                             60 bytes  refused: the file is cut short
+made  bad-palette-too-big                          126 bytes  refused: a palette of 268435456 colors, which doesn't fit before the pixels
+made  bad-palette-cut-off                          126 bytes  refused: the file is cut short
+made  bad-offset-past-end                          126 bytes  refused: the pixels' offset is outside the file
+made  bad-offset-in-header                          62 bytes  refused: the pixels' offset is outside the file
+made  bad-pixels-cut-off                           121 bytes  refused: the file is cut short
+made  bad-pixels-one-short                        1090 bytes  refused: the file is cut short
+made  bomb-65536-square                             64 bytes  refused: 65536 by 65536 is more than the limit of 16777216 pixels
+made  bomb-wide                                     64 bytes  refused: 2147483647 by 1 is more than the limit of 16777216 pixels
+made  bomb-tall-top-down                            58 bytes  refused: 3 by 2147483647 is more than the limit of 16777216 pixels
+made  bomb-os2                                      36 bytes  refused: 65535 by 65535 is more than the limit of 16777216 pixels
+made  limit-exactly                                374 bytes  ok, 10 by 10
+made  limit-one-over                               374 bytes  refused: 10 by 10 is more than the limit of 99 pixels
+made  limit-big                                     64 bytes  ok, 5000 by 4000
+cut   g/pal8.bmp                                  1 ok,  489 refused
+cut   g/pal4rle.bmp                               0 ok,  308 refused
+cut   g/pal8rle.bmp                               0 ok,  472 refused
+cut   g/rgb16-565.bmp                             2 ok,  740 refused
+cut   q/rgba32h56.bmp                             0 ok, 1306 refused
+cut   g/pal8os2.bmp                               1 ok,  501 refused
+cut   depth1-w9                                   2 ok,   72 refused
+cut   depth4-w5-topdown                           1 ok,  129 refused
+cut   fields-8888-header124                       0 ok,  194 refused
+cut   rle8-delta                                  0 ok,  220 refused
+cut   rle4-absolute-odd                           0 ok,  128 refused
+cut   last-row-unpadded                           0 ok,  223 refused
+fuzz  depth32-w9-topdown                         14 ok,    9 refused
+fuzz  fields-1555-alphabitfields                  3 ok,    9 refused
+fuzz  fields-32-bit-red-header108                11 ok,    3 refused
+fuzz  fields-555-header40-alpha-ignored           7 ok,    7 refused
+fuzz  fields-8888-abgr-header124                 11 ok,   11 refused
+fuzz  palette-0-means-all                         3 ok,    5 refused
+fuzz  fields-8888-abgr-header108                  8 ok,    9 refused
+fuzz  depth24-w1                                  3 ok,    7 refused
+fuzz  depth1-w5-topdown                           7 ok,    7 refused
+fuzz  depth24-w4                                  8 ok,    4 refused
+fuzz  depth2-w31                                  9 ok,   10 refused
+fuzz  depth2-w6                                   9 ok,   12 refused
+fuzz  depth1-w1-topdown                           5 ok,   13 refused
+fuzz  depth2-w1                                   7 ok,    8 refused
+fuzz  depth2-w15                                  8 ok,    7 refused
+fuzz  depth1-w5                                   8 ok,    5 refused
+fuzz  depth32-w16                                14 ok,    6 refused
+fuzz  fields-11-11-10-header56                    8 ok,   13 refused
+fuzz  depth16-w3                                  6 ok,    8 refused
+fuzz  fields-xrgb-high-header124                 15 ok,   10 refused
+fuzz  fields-xrgb-high-header40                   6 ok,    7 refused
+fuzz  depth2-w17                                  6 ok,    7 refused
+fuzz  depth1-w32                                  9 ok,   10 refused
+fuzz  fields-11-11-10-header40-alpha-ignored      7 ok,    7 refused
+fuzz  depth1-w6                                   9 ok,    9 refused
+fuzz  fields-no-channels-header52                 8 ok,    4 refused
+fuzz  fields-565-header52                         8 ok,   11 refused
+fuzz  depth16-w6                                  8 ok,    2 refused
+fuzz  depth4-w17-topdown                          6 ok,    2 refused
+fuzz  depth4-w15-topdown                         12 ok,    4 refused
+fuzz  depth2-w3                                   8 ok,    6 refused
+fuzz  depth32-w7                                 10 ok,    5 refused
+fuzz  depth24-w6                                  7 ok,    9 refused
+fuzz  depth1-w33-topdown                          8 ok,    8 refused
+fuzz  depth2-w16                                  8 ok,    8 refused
+fuzz  depth16-w15-topdown                         9 ok,    5 refused
+fuzz  fields-555-header40                         7 ok,    7 refused
+fuzz  depth2-w6-topdown                           9 ok,    5 refused
+fuzz  depth2-w31-topdown                          8 ok,    5 refused
+fuzz  depth4-w9-topdown                           7 ok,    8 refused
+fuzz  fields-32-bit-red-header124                 9 ok,    5 refused
+fuzz  fields-no-channels-header108               11 ok,    4 refused
+fuzz  depth1-w17                                  6 ok,    7 refused
+fuzz  depth16-w4-topdown                         12 ok,    2 refused
+fuzz  rle4-absolute-3                             9 ok,    6 refused
+fuzz  depth2-w32                                  5 ok,    7 refused
+fuzz  depth32-w6                                  2 ok,    9 refused
+fuzz  depth2-w1-topdown                           5 ok,    6 refused
+fuzz  depth16-w15                                15 ok,    8 refused
+fuzz  fields-4444-header40-alpha-ignored          7 ok,    4 refused
+fuzz  depth32-w4                                  4 ok,    7 refused
+fuzz  depth2-w8-topdown                           7 ok,    8 refused
+fuzz  fields-11-11-10-header124                   9 ok,    9 refused
+fuzz  depth24-w2                                 10 ok,    4 refused
+fuzz  fields-no-channels-header40                 6 ok,    6 refused
+fuzz  depth24-w15                                 9 ok,    5 refused
+fuzz  depth2-w33-topdown                          6 ok,    2 refused
+fuzz  fields-all-16-green-header40                8 ok,   11 refused
+fuzz  depth4-w3-topdown                          10 ok,   13 refused
+fuzz  depth16-w5-topdown                         11 ok,    6 refused
+fuzz  depth4-w9                                   7 ok,    9 refused
+fuzz  fields-555-header124                        8 ok,   12 refused
+fuzz  depth16-w31                                 8 ok,    8 refused
+fuzz  depth16-w32                                19 ok,    2 refused
+fuzz  depth24-w7                                  8 ok,    3 refused
+fuzz  depth16-w16-topdown                         7 ok,    8 refused
+fuzz  depth16-w33                                10 ok,    6 refused
+fuzz  depth24-w15-topdown                         9 ok,    5 refused
+fuzz  fields-1555-header124                       4 ok,    8 refused
+fuzz  depth24-w3                                  8 ok,    5 refused
+fuzz  fields-4444-alphabitfields                  6 ok,   12 refused
+fuzz  depth24-w3-topdown                          6 ok,    4 refused
+fuzz  depth32-w15                                 6 ok,    7 refused
+fuzz  depth1-w3-topdown                          10 ok,    8 refused
+fuzz  depth2-w8                                   6 ok,    7 refused
+fuzz  depth16-w3-topdown                         15 ok,    9 refused
+fuzz  fields-no-blue-header108                    6 ok,    9 refused
+fuzz  depth2-w2-topdown                           3 ok,    7 refused
+fuzz  depth4-w33                                 11 ok,    5 refused
+fuzz  depth16-w6-topdown                          7 ok,    7 refused
+fuzz  fields-one-bit-each-header40-alpha-ignored    3 ok,    8 refused
+fuzz  fields-10-10-10-2-header40-alpha-ignored    8 ok,    9 refused
+fuzz  fields-8888-header56                        9 ok,    9 refused
+fuzz  fields-no-channels-header56                 6 ok,   11 refused
+fuzz  fields-565-header108                        6 ok,    8 refused
+fuzz  depth24-w8-topdown                         10 ok,    6 refused
+fuzz  depth16-w16                                13 ok,    6 refused
+fuzz  fields-overlapping-header40                 6 ok,    9 refused
+fuzz  fields-overlapping-header40-alpha-ignored    8 ok,    3 refused
+fuzz  depth2-w5-topdown                           9 ok,    9 refused
+fuzz  depth4-w4-topdown                          10 ok,    6 refused
+fuzz  depth2-w7                                   6 ok,    6 refused
+fuzz  depth4-w3                                  15 ok,   11 refused
+fuzz  depth4-w7-topdown                           5 ok,   14 refused
+fuzz  depth24-w5                                  5 ok,    7 refused
+fuzz  header16-rgb24                             12 ok,    2 refused
+fuzz  fields-no-channels-header40-alpha-ignored    6 ok,    6 refused
+fuzz  fields-no-blue-header40-alpha-ignored       3 ok,    7 refused
+fuzz  header12-rgb24                              8 ok,    3 refused
+fuzz  depth24-w16                                 8 ok,   12 refused
+fuzz  fields-565-header40-alpha-ignored           5 ok,    6 refused
+fuzz  depth4-w8-topdown                           6 ok,    7 refused
+fuzz  fields-8888-header124                       8 ok,    8 refused
+fuzz  depth2-w5                                   7 ok,    6 refused
+fuzz  depth24-w5-topdown                          9 ok,    5 refused
+fuzz  depth4-w4                                   8 ok,    6 refused
+fuzz  depth4-w32                                 13 ok,   10 refused
+fuzz  depth24-w16-topdown                        10 ok,    3 refused
+fuzz  depth16-w7                                  6 ok,    8 refused
+fuzz  fields-8888-abgr-alphabitfields             5 ok,    6 refused
+fuzz  depth1-w4-topdown                           7 ok,    4 refused
+fuzz  depth2-w33                                  9 ok,   10 refused
+fuzz  fields-10-10-10-2-alphabitfields           11 ok,    2 refused
+fuzz  palette-short                               5 ok,    7 refused
+fuzz  header108-rgb24                             4 ok,    6 refused
+fuzz  depth24-w32-topdown                        10 ok,    6 refused
+fuzz  fields-xrgb-high-header108                  5 ok,    6 refused
+fuzz  fields-no-blue-header52                     3 ok,   14 refused
+fuzz  fields-overlapping-header52                 8 ok,    9 refused
+fuzz  depth32-w8-topdown                         11 ok,    6 refused
+fuzz  depth32-w4-topdown                          7 ok,    7 refused
+fuzz  depth1-w17-topdown                          9 ok,   11 refused
+fuzz  depth24-w6-topdown                          8 ok,    9 refused
+fuzz  depth4-w6-topdown                           5 ok,    8 refused
+fuzz  header40-rgb24                              8 ok,    6 refused
+fuzz  depth4-w1-topdown                          10 ok,    8 refused
+fuzz  depth16-w1                                  5 ok,    9 refused
+fuzz  depth32-w6-topdown                         10 ok,    8 refused
+fuzz  depth32-w2-topdown                          5 ok,    7 refused
+fuzz  depth1-w7-topdown                           4 ok,   11 refused
+fuzz  fields-555-header52                         6 ok,    6 refused
+fuzz  depth4-w6                                   6 ok,    5 refused
+fuzz  depth16-w17                                10 ok,    8 refused
+fuzz  depth4-w2-topdown                           7 ok,    4 refused
+fuzz  depth16-w8-topdown                          5 ok,    9 refused
+fuzz  depth16-w2-topdown                          7 ok,   15 refused
+fuzz  depth1-w31                                  6 ok,   12 refused
+fuzz  rle4-run-odd                                5 ok,    4 refused
+fuzz  header124-rgb24                             9 ok,    8 refused
+fuzz  fields-11-11-10-header108                  12 ok,    7 refused
+fuzz  fields-all-16-green-header108               4 ok,    9 refused
+fuzz  fields-32-bit-red-header40-alpha-ignored    8 ok,    3 refused
+fuzz  depth32-w3-topdown                          9 ok,    6 refused
+fuzz  fields-no-blue-header124                    7 ok,    8 refused
+fuzz  fields-xrgb-high-header52                   7 ok,    8 refused
+fuzz  depth1-w16                                  5 ok,    4 refused
+fuzz  depth4-w31-topdown                          9 ok,    6 refused
+fuzz  depth1-w1                                   8 ok,   17 refused
+fuzz  depth16-w4                                  6 ok,    7 refused
+fuzz  depth16-w31-topdown                         5 ok,    6 refused
+fuzz  depth1-w9-topdown                           6 ok,   11 refused
+fuzz  depth1-w15-topdown                          6 ok,    6 refused
+fuzz  depth24-w33-topdown                        10 ok,    7 refused
+fuzz  depth1-w15                                  8 ok,    8 refused
+fuzz  depth24-w31-topdown                         8 ok,    7 refused
+fuzz  depth2-w4-topdown                           9 ok,    3 refused
+fuzz  fields-565-header56                         3 ok,    8 refused
+fuzz  depth16-w32-topdown                         7 ok,    8 refused
+fuzz  depth32-w9                                 12 ok,    2 refused
+fuzz  rgb32-unused-bits-set                       8 ok,    6 refused
+fuzz  depth32-w1-topdown                         12 ok,    9 refused
+fuzz  depth16-w5                                  6 ok,    4 refused
+fuzz  fields-xrgb-high-header40-alpha-ignored     7 ok,    6 refused
+fuzz  fields-555-header108                        7 ok,    6 refused
+fuzz  depth24-w33                                 8 ok,    3 refused
+fuzz  depth1-w16-topdown                          7 ok,    8 refused
+fuzz  depth24-w32                                 2 ok,    6 refused
+fuzz  depth1-w8                                   4 ok,   11 refused
+fuzz  fields-4444-header56                        7 ok,    8 refused
+fuzz  depth24-w9                                  6 ok,    5 refused
+fuzz  fields-no-channels-header124                9 ok,    9 refused
+fuzz  depth1-w9                                   9 ok,    6 refused
+fuzz  depth32-w3                                  9 ok,    6 refused
+fuzz  header64-rgb24                              7 ok,    8 refused
+fuzz  fields-overlapping-header108                4 ok,    5 refused
+fuzz  fields-no-blue-header56                     9 ok,   13 refused
+fuzz  fields-no-blue-header40                     8 ok,    4 refused
+fuzz  fields-overlapping-header124                8 ok,   13 refused
+fuzz  depth24-w17                                 7 ok,    1 refused
+fuzz  depth1-w31-topdown                          5 ok,   10 refused
+fuzz  fields-1555-header108                       7 ok,    6 refused
+fuzz  depth16-w8                                  7 ok,    6 refused
+fuzz  depth24-w2-topdown                          6 ok,    5 refused
+fuzz  depth2-w9                                  11 ok,    6 refused
+fuzz  depth2-w15-topdown                          2 ok,    7 refused
+fuzz  depth4-w15                                  6 ok,   10 refused
+fuzz  palette-os2-short                           6 ok,   15 refused
+fuzz  fields-all-16-green-header40-alpha-ignored   13 ok,    3 refused
+fuzz  depth4-w2                                  10 ok,    3 refused
+fuzz  fields-32-bit-red-header56                  5 ok,    5 refused
+fuzz  depth1-w2-topdown                           6 ok,    8 refused
+fuzz  fields-11-11-10-header52                    6 ok,    8 refused
+fuzz  depth32-w5                                  8 ok,    2 refused
+fuzz  depth1-w3                                  10 ok,   10 refused
+fuzz  depth4-w1                                   4 ok,    5 refused
+fuzz  fields-555-header56                         3 ok,    7 refused
+fuzz  depth24-w31                                 7 ok,    6 refused
+fuzz  fields-4444-header124                       4 ok,   11 refused
+fuzz  depth4-w32-topdown                          5 ok,    9 refused
+fuzz  depth32-w5-topdown                          5 ok,    3 refused
+fuzz  depth2-w17-topdown                          4 ok,   13 refused
+fuzz  fields-overlapping-header56                 8 ok,   12 refused
+fuzz  rgb16-unused-bit-set                        8 ok,    8 refused
+fuzz  rle8-index-past-palette                     4 ok,    4 refused
+fuzz  depth1-w4                                   5 ok,    3 refused
+fuzz  depth32-w17-topdown                        11 ok,    6 refused
+fuzz  depth2-w3-topdown                           9 ok,    8 refused
+fuzz  fields-10-10-10-2-header56                  5 ok,    7 refused
+fuzz  depth16-w9                                  8 ok,    5 refused
+fuzz  fields-565-header40                         5 ok,    6 refused
+fuzz  fields-11-11-10-header40                    9 ok,    9 refused
+fuzz  fields-all-16-green-header124               8 ok,    4 refused
+fuzz  depth32-w17                                13 ok,    5 refused
+fuzz  depth2-w32-topdown                         13 ok,   13 refused
+fuzz  fields-all-16-green-header52                8 ok,   15 refused
+fuzz  depth24-w7-topdown                         10 ok,    7 refused
+fuzz  depth2-w7-topdown                           2 ok,    5 refused
+fuzz  fields-8888-abgr-header40-alpha-ignored     7 ok,   10 refused
+fuzz  depth16-w2                                  3 ok,   10 refused
+fuzz  fields-one-bit-each-header108               4 ok,    5 refused
+fuzz  fields-all-16-green-header56                6 ok,    7 refused
+fuzz  depth1-w2                                   3 ok,    5 refused
+fuzz  depth16-w17-topdown                         4 ok,    6 refused
+fuzz  depth32-w15-topdown                        13 ok,    1 refused
+fuzz  depth4-w16                                  8 ok,    6 refused
+fuzz  fields-10-10-10-2-header108                 4 ok,    8 refused
+fuzz  depth32-w2                                  8 ok,    9 refused
+fuzz  depth1-w32-topdown                          7 ok,    8 refused
+fuzz  fields-8888-header40-alpha-ignored         10 ok,    2 refused
+fuzz  depth1-w33                                  6 ok,    6 refused
+fuzz  depth2-w4                                  12 ok,    5 refused
+fuzz  depth4-w5-topdown                           9 ok,    7 refused
+fuzz  depth1-w7                                   3 ok,    8 refused
+fuzz  depth24-w1-topdown                          6 ok,    7 refused
+fuzz  fields-1555-header56                        8 ok,    8 refused
+fuzz  fields-xrgb-high-header56                   7 ok,    5 refused
+fuzz  depth32-w16-topdown                         9 ok,    6 refused
+fuzz  header56-rgb24                              9 ok,    2 refused
+fuzz  header52-rgb24                              7 ok,    8 refused
+fuzz  fields-565-header124                        2 ok,    4 refused
+fuzz  fields-32-bit-red-header40                  3 ok,    7 refused
+fuzz  depth1-w6-topdown                          11 ok,   11 refused
+fuzz  fields-4444-header108                      11 ok,    9 refused
+fuzz  depth4-w17                                  8 ok,    8 refused
+fuzz  depth32-w1                                  9 ok,    4 refused
+fuzz  rle4-run-past-row-end                       4 ok,    7 refused
+fuzz  depth4-w16-topdown                          5 ok,    7 refused
+fuzz  depth24-w8                                  6 ok,    5 refused
+fuzz  depth2-w2                                   8 ok,    8 refused
+fuzz  depth24-w17-topdown                         6 ok,    3 refused
+fuzz  fields-8888-header108                       4 ok,   10 refused
+fuzz  depth2-w16-topdown                          2 ok,   10 refused
+fuzz  depth1-w8-topdown                           3 ok,   11 refused
+fuzz  depth4-w33-topdown                          8 ok,    7 refused
+fuzz  depth4-w8                                   9 ok,    4 refused
+fuzz  depth32-w8                                  7 ok,    7 refused
+fuzz  fields-8888-alphabitfields                  6 ok,    7 refused
+fuzz  fields-10-10-10-2-header124                10 ok,    5 refused
+fuzz  depth16-w33-topdown                         9 ok,    3 refused
+fuzz  depth4-w5                                   4 ok,    8 refused
+fuzz  rle4-absolute-odd                           9 ok,    3 refused
+fuzz  depth24-w4-topdown                          8 ok,    7 refused
+fuzz  depth4-w31                                  6 ok,    4 refused
+fuzz  depth16-w7-topdown                          7 ok,    7 refused
+fuzz  fields-one-bit-each-alphabitfields          6 ok,    6 refused
+fuzz  fields-1555-header40-alpha-ignored          6 ok,    9 refused
+fuzz  fields-one-bit-each-header124               5 ok,    7 refused
+fuzz  fields-32-bit-red-header52                 10 ok,    4 refused
+fuzz  depth24-w9-topdown                          7 ok,    8 refused
+fuzz  depth16-w9-topdown                         11 ok,    3 refused
+fuzz  depth16-w1-topdown                          4 ok,   12 refused
+fuzz  fields-8888-abgr-header56                   6 ok,    3 refused
+fuzz  palette-one-color-1bit                      4 ok,    8 refused
+fuzz  depth32-w7-topdown                          7 ok,    6 refused
+fuzz  depth2-w9-topdown                          10 ok,    7 refused
+fuzz  fields-one-bit-each-header56                5 ok,    8 refused
+fuzz  depth4-w7                                   5 ok,    7 refused

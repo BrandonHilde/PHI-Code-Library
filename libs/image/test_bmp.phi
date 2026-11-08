@@ -1,0 +1,248 @@
+# imagelib's BMP decoder against tools/image/bmp_reference.py's rules, which make_bmp_tests.py
+# checked against BMP Suite's reference images and Pillow. tests/bmp/cases.bin holds the cases
+# and what each must give:
+#   suite   BMP Suite's files, in tests/bmp/bmpsuite
+#   made    files made for what BMP Suite doesn't cover: every bit depth at many widths, each
+#           header size, bit fields of every shape, RLE's corners, and each way a header is wrong
+#   cut     good files cut short at many lengths
+#   fuzz    small files with a few bytes changed
+# A case that's read must have the same size and pixels (by CRC-32) as the rules give, and one
+# that's refused must be refused for the same reason.
+use imagelib;
+use data.crc32;
+use memory.mem;
+
+phi.TestBmp:Program
+{
+	call ImageLib.Start;
+
+	u32 cases_size: 0;
+	ptr<u8> cases_bytes: (Load: 'tests/bmp/cases.bin' addr cases_size);
+	CoreReader r;
+	call r.Start: cases_bytes cases_size;
+	u32 count: (r.U32LE);
+	if count > 100000
+		log 'cases.bin is damaged\n';
+		exit 1;
+	;;
+
+	# every case's bytes, kept so that later cases can cut or change them
+	u32 arena_size: 16 * 1024 * 1024;
+	ptr<u8> arena: new u8[arena_size];
+	ptr<u32> at_arena: new u32[count];
+	ptr<u32> lengths: new u32[count];
+	u32 arena_used: 0;
+	if arena is 0 or at_arena is 0 or lengths is 0
+		log 'out of memory\n';
+		exit 1;
+	;;
+
+	u32 runs[4];
+	u32 right[4];
+	u32 read[4];
+	str group_names: 'suite' 'made' 'cut' 'fuzz';
+	str suite_lines: '';
+	str made_lines: '';
+
+	while u32 i: 0; i < count; i++;
+		u32 group: (r.U8);
+		u32 kind: (r.U8);
+		u32 name_len: (r.U8);
+		ptr<u8> name_at: (r.Bytes: name_len);
+		u32 most: (r.U32LE);
+		if r.failed or group > 3 or kind > 3
+			log 'cases.bin is cut short, or damaged\n';
+			exit 1;
+		;;
+		str name: '';
+		while u32 k: 0; k < name_len; k++;
+			name++ name_at:k as chr;
+		;;
+
+		# its bytes, into the arena
+		u32 length: 0;
+		u32 start: arena_used;
+		when kind
+			is 0
+				u32 path_len: (r.U8);
+				ptr<u8> path_at: (r.Bytes: path_len);
+				str path: '';
+				while u32 k: 0; k < path_len; k++;
+					path++ path_at:k as chr;
+				;;
+				u32 file_size: 0;
+				ptr<u8> file: (Load: path addr file_size);
+				call Room: arena_used file_size arena_size;
+				call Mem.Copy: arena + start file file_size;
+				free file;
+				length is file_size;
+			;;
+			is 1
+				length is (r.U32LE);
+				ptr<u8> bytes: (r.Bytes: length);
+				if bytes is 0
+					log 'cases.bin is cut short\n';
+					exit 1;
+				;;
+				call Room: arena_used length arena_size;
+				call Mem.Copy: arena + start bytes length;
+			;;
+			is 2
+				u32 source: (r.U32LE);
+				length is (r.U32LE);
+				if source >= i or length > lengths:source
+					log 'cases.bin is damaged\n';
+					exit 1;
+				;;
+				# a cut is its source's first bytes, so it needs no copy of its own
+				start is at_arena:source;
+			;;
+			else
+				u32 source: (r.U32LE);
+				u32 changes: (r.U16LE);
+				if source >= i
+					log 'cases.bin is damaged\n';
+					exit 1;
+				;;
+				length is lengths:source;
+				call Room: arena_used length arena_size;
+				call Mem.Copy: arena + start arena + at_arena:source length;
+				while u32 k: 0; k < changes; k++;
+					u32 change_at: (r.U32LE);
+					u32 value: (r.U8);
+					if change_at >= length
+						log 'cases.bin is damaged\n';
+						exit 1;
+					;;
+					arena:(start + change_at) is value as u8;
+				;;
+			;;
+		;;
+		at_arena:i is start;
+		lengths:i is length;
+		if start is arena_used
+			arena_used++ length;
+		;;
+
+		bln want_ok: ((r.U8) is 1);
+		u32 want_w: 0;
+		u32 want_h: 0;
+		u32 want_crc: 0;
+		str want_why: '';
+		if want_ok
+			want_w is (r.U32LE);
+			want_h is (r.U32LE);
+			want_crc is (r.U32LE);
+		;;
+		else
+			u32 why_len: (r.U8);
+			ptr<u8> why_at: (r.Bytes: why_len);
+			while u32 k: 0; k < why_len; k++;
+				want_why++ why_at:k as chr;
+			;;
+		;;
+		if r.failed
+			log 'cases.bin is cut short\n';
+			exit 1;
+		;;
+
+		Img.max_pixels is most;
+		ptr<ImgImage> image: (Img.DecodeBmp: arena + start length);
+		runs:group++;
+		str wrong: '';
+		if want_ok and image is 0
+			wrong is 'the rules read it, but imagelib says: ' Img.error;
+		;;
+		elif want_ok is false and image is not 0
+			wrong is 'the rules refuse it (' want_why '), but imagelib reads it, ' image.w ' by ' image.h;
+		;;
+		elif want_ok
+			if image.w as u32 is not want_w or image.h as u32 is not want_h
+				wrong is image.w ' by ' image.h ', where the rules give ' want_w ' by ' want_h;
+			;;
+			elif (PixelCrc: image) is not want_crc
+				wrong is 'its pixels differ from the rules\'';
+			;;
+		;;
+		elif Img.error is not want_why
+			wrong is 'refused for another reason: ' Img.error ', where the rules say ' want_why;
+		;;
+		if wrong.len > 0
+			log 'WRONG ' group_names:group ' ' name ': ' wrong '\n';
+		;;
+		else
+			right:group++;
+			if image is not 0
+				read:group++;
+			;;
+			if group is 0
+				if image is not 0
+					suite_lines++ '  ' name ': ' image.w ' by ' image.h '\n';
+				;;
+				else
+					suite_lines++ '  ' name ': ' Img.error '\n';
+				;;
+			;;
+			if group is 1 and image is 0
+				made_lines++ '  ' name ': ' Img.error '\n';
+			;;
+		;;
+		call Img.Free: image;
+	;;
+	if r.failed or r.pos is not cases_size
+		log 'cases.bin is damaged\n';
+		exit 1;
+	;;
+	Img.max_pixels is 0;
+
+	log 'suite: ' right:0 ' of ' runs:0 ' as the rules say (' read:0 ' read, ' right:0 - read:0 ' refused):\n' suite_lines;
+	log 'made: ' right:1 ' of ' runs:1 ' as the rules say (' read:1 ' read, ' right:1 - read:1 ' refused), refused:\n' made_lines;
+	log 'cut: ' right:2 ' of ' runs:2 ' as the rules say (' read:2 ' read, ' right:2 - read:2 ' refused)\n';
+	log 'fuzz: ' right:3 ' of ' runs:3 ' as the rules say (' read:3 ' read, ' right:3 - read:3 ' refused)\n';
+	log 'done\n';
+	exit 0;
+
+
+	# the CRC-32 of an image's pixels, each as the bytes B G R A, top row first
+	[PixelCrc: ptr<ImgImage> image: 0; : u32]
+		u32 w: image.w as u32;
+		ptr<u8> row: new u8[w * 4];
+		u32 crc: 0;
+		while u32 y: 0; y < image.h as u32; y++;
+			while u32 x: 0; x < w; x++;
+				u32 v: image.pixels:(y * w + x);
+				row:(x * 4) is (v & 255) as u8;
+				row:(x * 4 + 1) is ((v >> 8) & 255) as u8;
+				row:(x * 4 + 2) is ((v >> 16) & 255) as u8;
+				row:(x * 4 + 3) is (v >> 24) as u8;
+			;;
+			crc is (Crc32.Add: crc row w * 4);
+		;;
+		free row;
+	[end: crc]
+
+	[Room: u32 used: 0; u32 more: 0; u32 size: 0;]
+		if more > size - used
+			log 'the cases need more than ' size ' bytes\n';
+			exit 1;
+		;;
+	[end]
+
+	[Load: str path; ptr<u32> size_out: 0; : ptr<u8>]
+		int size: (OS.FileSize: path);
+		if size < 0
+			log 'cannot read ' path '\n';
+			exit 1;
+		;;
+		ptr<u8> buffer: new u8[size as u32 + 1];
+		if buffer is 0
+			log 'out of memory reading ' path '\n';
+			exit 1;
+		;;
+		if (OS.ReadFile: path buffer size) is not size
+			log 'short read of ' path '\n';
+			exit 1;
+		;;
+		size_out:0 is size as u32;
+	[end: buffer]
+}

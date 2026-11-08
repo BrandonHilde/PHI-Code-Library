@@ -7,3 +7,6 @@ build/
 
 # Fetched by a script in tools/, because it's 217 MB
 libs/web/tests/test262/
+
+# Python caches, from tools that import each other
+__pycache__/

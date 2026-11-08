@@ -1,0 +1,150 @@
+# The image every decoder gives back, and what works on any of them.
+#
+#   ptr<ImgImage> image: (Img.Decode: bytes length);     # finds the format from the bytes
+#   if image is 0
+#       log 'bad image: ' Img.error '\n';
+#       return;
+#   ;;
+#   call Draw.Blit: 10 10 image.w image.h image.pixels image.w;   # when it's opaque
+#   call Img.Free: image;
+#
+# A file that's damaged, cut short or made to cause trouble gives 0 and a reason in Img.error,
+# never a crash or a hang. Img.max_pixels is the most pixels an image may have (0, as it starts,
+# means DEFAULT_MAX_PIXELS): a bigger one is refused before any memory is taken for it, so a
+# small file can't claim gigabytes.
+
+# An image: w by h pixels, each 0xAARRGGBB with straight alpha, a row at a time from the top.
+struct.ImgImage
+{
+	int w;
+	int h;
+	ptr<u32> pixels;    # w * h of them, on the heap
+}
+
+phi.Img:Library
+{
+	const int UNKNOWN: 0;
+	const int BMP: 1;
+
+	# the limit when Img.max_pixels is 0: 4096 by 4096, 64 MB of pixels
+	const u32 DEFAULT_MAX_PIXELS: 16 * 1024 * 1024;
+
+	# the most an image's pixels may take, whatever max_pixels says: 2 GB
+	const u32 MOST_PIXELS: 0x1FFFFFFF;
+
+	str error: [383];   # why the last call failed
+	u32 max_pixels;     # the most pixels an image may have; 0 means DEFAULT_MAX_PIXELS
+
+	# which format the bytes are in, from their first few: Img.BMP, or Img.UNKNOWN
+	[Format: ptr<u8> data: 0; u32 length: 0; : int]
+		if data is not 0 and length >= 2 and data:0 is 'B' and data:1 is 'M'
+			return BMP;
+		;;
+	[end: UNKNOWN]
+
+	# an image in any format imagelib reads; 0 if it can't be read, with the reason in error
+	[Decode: ptr<u8> data: 0; u32 length: 0; : ptr<ImgImage>]
+		when (Format: data length)
+			is BMP
+				return (DecodeBmp: data length);
+			;;
+		;;
+		error is 'not an image format imagelib reads';
+	[end: 0]
+
+	# a BMP file; 0 if it can't be read, with the reason in error
+	[DecodeBmp: ptr<u8> data: 0; u32 length: 0; : ptr<ImgImage>]
+		error is '';
+		if data is 0 and length > 0
+			error is 'no data was given';
+			return 0;
+		;;
+		if length > 0x7FFFFFFF
+			error is 'more than 2 GB of data';
+			return 0;
+		;;
+		ptr<ImgBmp> d: new ImgBmp;
+		if d is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		if call d.Read: data length (Limit) throws err
+			if err.kind is ErrorKind.THROWN
+				error is err.text;
+			;;
+			else
+				error is err.message;
+			;;
+			call Free: d.image;
+			call Done: d;
+			return 0;
+		;;
+		ptr<ImgImage> image: d.image;
+		call Done: d;
+	[end: image]
+
+	# gives back an image's memory (0 is allowed, and does nothing)
+	[Free: ptr<ImgImage> image: 0;]
+		if image is 0 return;
+		if image.pixels is not 0
+			free image.pixels;
+		;;
+		free image;
+	[end]
+
+	# Draws count pixels of src over dest, which is taken as opaque: each of dest's colors
+	# becomes (src * alpha + dest * (255 - alpha)) / 255, rounded, and dest's top byte stays as
+	# it was. src is straight alpha, as decoders give it.
+	[BlendRow: ptr<u32> dest: 0; ptr<u32> src: 0; u32 count: 0;]
+		while u32 i: 0; i < count; i++;
+			u32 s: src:i;
+			u32 a: s >> 24;
+			if a is 255
+				dest:i is (dest:i & 0xFF000000) | (s & 0xFFFFFF);
+			;;
+			elif a is not 0
+				u32 d: dest:i;
+				u32 rest: 255 - a;
+				u32 r: (((s >> 16) & 255) * a + ((d >> 16) & 255) * rest + 127) / 255;
+				u32 g: (((s >> 8) & 255) * a + ((d >> 8) & 255) * rest + 127) / 255;
+				u32 b: ((s & 255) * a + (d & 255) * rest + 127) / 255;
+				dest:i is (d & 0xFF000000) | (r << 16) | (g << 8) | b;
+			;;
+		;;
+	[end]
+
+	# a BMP decoder's own memory, given back
+	[Done: ptr<ImgBmp> d: 0;]
+		if d.lut is not 0
+			free d.lut;
+		;;
+		free d;
+	[end]
+
+	# the limit on pixels a decoder works to
+	[Limit: : u32]
+		u32 most: max_pixels;
+		if most is 0
+			most is DEFAULT_MAX_PIXELS;
+		;;
+		if most > MOST_PIXELS
+			most is MOST_PIXELS;
+		;;
+	[end: most]
+
+	# A new image, for a decoder: all its pixels 0 (transparent). Throws if there's no memory.
+	# The decoder has checked the size against the limit.
+	[New: u32 width: 0; u32 height: 0; : ptr<ImgImage>]
+		ptr<ImgImage> image: new ImgImage;
+		if image is 0
+			throw 'out of memory';
+		;;
+		image.w is width as int;
+		image.h is height as int;
+		image.pixels is new u32[width * height];
+		if image.pixels is 0
+			free image;
+			throw 'out of memory for a ' width ' by ' height ' image';
+		;;
+	[end: image]
+}

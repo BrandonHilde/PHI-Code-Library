@@ -51,3 +51,7 @@ not for 64-bit Windows: libs\mid\cbmid.phi:1:1: error: drivers.ata doesn't work 
 ```
 
 The reason in brackets is right, but "16-bit program" isn't.
+
+**`phi test --help` crashes** (2026-11-08). `phi test` takes `--help` as the file to test, and .NET's
+unhandled `FileNotFoundException` comes out, with its stack trace, from `TestRunner.BuildTestLibraries`.
+`phi` with no arguments prints the usage, so that's the way to see it for now.

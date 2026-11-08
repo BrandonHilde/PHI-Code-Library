@@ -4,10 +4,10 @@ A collection of libraries written in [PHI](../PHI), each of which builds to a `.
 program can include with a single `use`. The first three are a **Web Library**, an **Image Library**
 and a **Font Library**, and more will follow.
 
-Written 2026-11-06. Status (2026-11-07): Phase 0 is done, and so is Phase 1's move (commit
-`2e9743f`). weblib builds here, and all its tests pass from here (38 of 38 runs as Linux programs,
-and the compiled test). Phase 1's tidying is left. Phase 2's corelib is built and passes its
-tests, and waits only on imagelib to use it through the chain.
+Written 2026-11-06. Status (2026-11-08): Phases 0 and 2 are done, and so is Phase 1's move (commit
+`2e9743f`): weblib builds here, and all its tests pass from here (38 of 38 runs as Linux programs,
+and the compiled test). Phase 1's tidying is left. Phase 3 has begun: imagelib reads BMP
+(milestone 3.1), and its compiled test uses corelib through the chain.
 
 | Library | File | What it does | Starts from |
 |---|---|---|---|
@@ -231,7 +231,8 @@ streams, and a fuzz test.
 
 **Done when:** every reference stream inflates byte for byte, every malformed one fails cleanly, and
 imagelib's first test uses `corelib.philib` through the chain.
-**2026-11-07:** all but the last, which waits for imagelib. In [libs/core](libs/core): 160 of 160
+**Done 2026-11-08:** imagelib's `tests/use/test_imagelib` builds against `imagelib.philib` and
+`corelib.philib` alone, and reaches corelib through imagelib. **2026-11-07,** the rest: In [libs/core](libs/core): 160 of 160
 reference streams inflate as zlib does, byte for byte; 43 of 43 broken ones and 3,513 of 3,513 cut
 short are refused; zlib's verdict and corelib's agree on 600 of 600 fuzz cases; and 100,000 random
 changes, every value of the first 48 bytes, and noise all come back without a crash. It inflates about
@@ -243,7 +244,7 @@ Output is one format whatever the input: 32-bit straight-alpha `0xAARRGGBB` pixe
 images work directly with `Draw.Blit`, and `Img.BlendRow` covers the rest.
 
 ```phi
-# proposed API
+# the API, as built in 3.1
 use imagelib;
 
 call ImageLib.Start;
@@ -258,7 +259,7 @@ call Img.Free: image;
 
 | Milestone | Scope | Checked against |
 |---|---|---|
-| 3.1 BMP | Common bit depths; the simplest format, to settle the API | Pillow |
+| 3.1 BMP ✓ | Every header size, bit depths 1 to 32, bit fields, RLE8 and RLE4; the simplest format, to settle the API | BMP Suite's reference images, and Pillow |
 | 3.2 PNG | All color types and depths, interlacing, gamma ignored at first | PngSuite: valid images match, broken ones fail cleanly |
 | 3.3 JPEG baseline | Huffman, integer IDCT, chroma subsampling | Pillow/libjpeg within a small per-pixel tolerance, since decoders legally differ |
 | 3.4 JPEG progressive | Common on the web | The same |
@@ -267,6 +268,16 @@ call Img.Free: image;
 | Later | WebP, then encoders (PNG first), SVG (shares fontlib's rasterizer), AVIF only if needed | |
 
 Tests compare decoded pixels with reference data, so no viewer program is needed here.
+
+**3.1, done 2026-11-08,** in [libs/image](libs/image). The rules are written plainly in Python
+(`tools/image/bmp_reference.py`), checked against BMP Suite's reference images and Pillow, and every
+difference is listed with its reason. Where those two disagree, the choice is BMP Suite's, which is
+the browsers': RLE's skipped pixels are transparent, channels are scaled so their top value is 255,
+and alpha comes only from an alpha mask. imagelib agrees with the rules on all 9,268 cases (BMP Suite's
+89 files, 390 made here, 4,789 cut short, 4,000 changed) as 32 and 64-bit Linux programs, and comes
+back from 526,260 fuzzed files without a crash. Not done: 64-bit pixels, Huffman 1D, RLE24 and
+embedded JPEG and PNG (refused, saying so). A 2048 by 2048 image takes 6 to 17 ms. `Img.BlendRow`
+is in, and `Img.max_pixels` is the limit, 4096 by 4096 by default.
 
 **Done when:** milestones 3.1 to 3.6 pass, PngSuite's results are in the README, every decoder has been
 fuzzed, and a pixel bomb is refused before it allocates.

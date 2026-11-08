@@ -1,0 +1,4 @@
+version: 1, corelib 1
+rle8: 2 by 2: FF00FF00 00000000 FFFF0000 FFFF0000
+adler of the file: 2099643294
+cut short: 1, the RLE data ends before the end of the image

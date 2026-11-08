@@ -1,0 +1,21 @@
+# imagelib: image files in, pixels out. Whatever the file, the pixels are 32-bit 0xAARRGGBB with
+# straight (not premultiplied) alpha, a row at a time from the top.
+#
+#   phi build imagelib.phi --library     # imagelib.philib, with corelib.philib beside it
+#
+# A program using it has both imagelib.philib and corelib.philib beside it. README.md says which
+# names are its API.
+
+use corelib;
+use imagelib.image;
+use imagelib.bmp;
+
+phi.ImageLib:Library
+{
+	const int VERSION: 1;
+
+	# Call this once, before anything else in the library. It starts corelib too.
+	[Start]
+		call CoreLib.Start;
+	[end]
+}

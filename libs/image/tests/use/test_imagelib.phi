@@ -1,0 +1,43 @@
+# imagelib through imagelib.philib alone, as a program using it has it: no source beside this, only
+# imagelib.philib and the corelib.philib it uses. So this proves the compiled library works, and
+# that corelib comes through the chain: the decoder reads its headers with corelib's CoreReader, and
+# this calls corelib itself, which it never names.
+use imagelib;
+
+phi.TestImagelib:Program
+{
+	call ImageLib.Start;
+	log 'version: ' ImageLib.VERSION ', corelib ' CoreLib.VERSION '\n';
+
+	# 2 by 2, 8-bit RLE: a run of 2 in color 1, the end of the row, 1 in color 2, and the end;
+	# so the top right pixel, which nothing reaches, is transparent
+	u8 rle8: 66 77 74 0 0 0 0 0 0 0 66 0 0 0 40 0 0 0 2 0 0 0 2 0 0 0 1 0 8 0 1 0 0 0 8 0 0 0 19 11
+		0 0 19 11 0 0 3 0 0 0 0 0 0 0 0 0 0 0 0 0 255 0 0 255 0 0 2 1 0 0 1 2 0 1;
+	ptr<ImgImage> image: (Img.Decode: rle8 74);
+	if image is 0
+		log 'refused: ' Img.error '\n';
+		exit 0;
+	;;
+	log 'rle8: ' image.w ' by ' image.h ':';
+	while u32 i: 0; i < 4; i++;
+		log ' ' (Hex: image.pixels:i);
+	;;
+	log '\n';
+
+	call Img.Free: image;
+
+	# corelib, reached through imagelib (Python's zlib.adler32 of the file: 2099643294)
+	log 'adler of the file: ' (CoreAdler.Of: rle8 74) '\n';
+
+	ptr<ImgImage> bad: (Img.Decode: rle8 70);
+	log 'cut short: ' (bad is 0) ', ' Img.error '\n';
+	exit 0;
+
+	[Hex: u32 v: 0; : str]
+		str digits: '0123456789ABCDEF';
+		str text: '';
+		while int k: 28; k >= 0; k-- 4;
+			text++ digits:((v >> k) & 15);
+		;;
+	[end: text]
+}
