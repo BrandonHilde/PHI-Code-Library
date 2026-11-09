@@ -53,6 +53,10 @@ phi.Img:Library
 	const int JPEG: 3;
 	const int GIF: 4;
 
+	# the ways of scaling, for Scale
+	const int NEAREST: 0;
+	const int BILINEAR: 1;
+
 	# the limit when Img.max_pixels is 0: 4096 by 4096, 64 MB of pixels
 	const u32 DEFAULT_MAX_PIXELS: 16 * 1024 * 1024;
 
@@ -469,6 +473,70 @@ phi.Img:Library
 				;;
 				dst:(ny * h + nx) is px:(y * w + x);
 			;;
+		;;
+	[end]
+
+	# An image scaled to new_w by new_h, nearest or bilinear, as Pillow's Image.resize scales it: a new
+	# image, which the caller frees (the old one is left as it was); 0 if it can't be, with the reason
+	# in error. The new size counts against max_pixels.
+	[Scale: ptr<ImgImage> image: 0; int new_w: 0; int new_h: 0; int how: 1; : ptr<ImgImage>]
+		error is '';
+		if image is 0 or image.pixels is 0 or image.w <= 0 or image.h <= 0
+			error is 'no image was given';
+			return 0;
+		;;
+		if new_w <= 0 or new_h <= 0
+			error is 'a size of no pixels: ' new_w ' by ' new_h;
+			return 0;
+		;;
+		if how is not NEAREST and how is not BILINEAR
+			error is 'not a way of scaling imagelib has';
+			return 0;
+		;;
+		if (new_w as u64) * (new_h as u64) > (Limit) as u64
+			error is new_w ' by ' new_h ' is more than the limit of ' (Limit) ' pixels';
+			return 0;
+		;;
+		ptr<ImgScaler> s: new ImgScaler;
+		if s is 0
+			error is 'scaled of memory';
+			return 0;
+		;;
+		s.w is image.w as u32;
+		s.h is image.h as u32;
+		s.nw is new_w as u32;
+		s.nh is new_h as u32;
+		s.src is image.pixels;
+		ptr<ImgImage> scaled: 0;
+		if call ScaleWith: s how addr scaled throws err
+			call Failed: err.kind err.text err.message;
+			call Free: scaled;
+			scaled is 0;
+		;;
+		call s.Done;
+		free s;
+	[end: scaled]
+
+	[ScaleWith: ptr<ImgScaler> s: 0; int how: 0; ptr<ptr<ImgImage>> result: 0;]
+		ptr<ImgImage> scaled: (New: s.nw s.nh);
+		result:0 is scaled;
+		s.dst is scaled.pixels;
+		if s.nw is s.w and s.nh is s.h
+			u32 n: s.w * s.h;
+			call Copy: (s.src as u32[n]) (s.dst as u32[n]);
+			return;
+		;;
+		if how is NEAREST
+			call s.Nearest;
+		;;
+		else
+			call s.Bilinear;
+		;;
+	[end]
+
+	[Copy: u32 from_px[]; u32 to_px[];]
+		while u32 i: 0; i < from_px.len; i++;
+			to_px:i is from_px:i;
 		;;
 	[end]
 

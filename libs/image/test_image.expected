@@ -37,6 +37,10 @@ png animation: 2 by 2, loops -1
   end:
 bad animation: refused: the file is cut short
 next frame of nothing: 0
+rgb24 scaled to 3 by 3, bilinear: 3 by 3: FFFF0000 FF808000 FF00FF00 FF800080 FF808080 FF80FF80 FF0000FF FF8080FF FFFFFFFF
+rgb24 scaled to 1 by 2, nearest: 1 by 2: FF00FF00 FFFFFFFF
+rgb24 scaled to 0 by 2: refused: a size of no pixels: 0 by 2
+nothing scaled: refused: no image was given
 empty: refused: not an image format imagelib reads
 no data: refused: no data was given
 cut short: 2 by 2: 00000000 00000000 FF0000FF FFFFFFFF

@@ -1,0 +1,11 @@
+# Img.Scale against all the release cases, in tests/scale/release.bin: the everyday ones at more sizes
+# and kinds of pixels, and 1,500 at random, for when the library is near release (build.ps1 -Test
+# -Release). scalecases.phi says how they're checked.
+use imagelib;
+use scalecases;
+
+phi.ReleaseScale:Program
+{
+	call ImageLib.Start;
+	call ImgTestScale.Run: 'tests/scale/release.bin';
+}

@@ -24,7 +24,9 @@ libjpeg-turbo's is in them but its encoding.
 
 - **BMP Suite's reference images** (its `html/*.png`), which `make_bmp_tests.py --bmpsuite DIR` compares
   against, from a copy of the suite that isn't committed.
-- **Pillow**, which `make_bmp_tests.py`, `make_png_tests.py` and `make_gif_tests.py` compare against.
+- **Pillow**, which `make_bmp_tests.py`, `make_png_tests.py`, `make_gif_tests.py` and `make_scale_tests.py`
+  compare against. `Img.Scale` gives the pixels Pillow's `Image.resize` gives; nothing of Pillow's code is in
+  it, and nothing was copied from it: the rules follow what its resampling does, worked out in integers.
 - **The GIF test suite** (`test-suite` in <https://github.com/robert-ancell/pygif>, CC-BY-SA 4.0), which
   `make_gif_tests.py --gifsuite DIR` compares against, from a copy that isn't committed. Nothing of it is
   here.

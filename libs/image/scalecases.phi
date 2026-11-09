@@ -1,0 +1,171 @@
+# Img.Scale against the cases in tests/scale/cases.bin (every day, for test_scale) or release.bin (for
+# release_scale), made by tools/image/make_scale_tests.py, whose rules give Pillow's pixels exactly. A
+# case's old pixels are made here as the script makes them, from a seed; its new pixels must have the
+# CRC-32 the rules give, or it must be refused for the same reason.
+# This is test code, which imagelib.phi doesn't use, so it's no part of the library.
+use imagelib;
+use data.crc32;
+
+phi.ImgTestScale:Library
+{
+	[Run: str cases_path;]
+		int size: (OS.FileSize: cases_path);
+		if size < 0
+			log 'cannot read ' cases_path '\n';
+			exit 1;
+		;;
+		ptr<u8> bytes: new u8[size as u32 + 1];
+		if bytes is 0 or (OS.ReadFile: cases_path bytes size) is not size
+			log 'cannot read ' cases_path '\n';
+			exit 1;
+		;;
+		CoreReader r;
+		call r.Start: bytes size as u32;
+		u32 count: (r.U32LE);
+		u32 right: 0;
+		u32 read: 0;
+		str refused_lines: '';
+		while u32 i: 0; i < count; i++;
+			u32 name_len: (r.U8);
+			ptr<u8> name_at: (r.Bytes: name_len);
+			int how: (r.U8) as int;
+			u32 kind: (r.U8);
+			u32 seed: (r.U32LE);
+			int w: (r.I32LE);
+			int h: (r.I32LE);
+			int nw: (r.I32LE);
+			int nh: (r.I32LE);
+			u32 most: (r.U32LE);
+			bln want_ok: ((r.U8) is 1);
+			u32 want_crc: 0;
+			str want_why: '';
+			if want_ok
+				want_crc is (r.U32LE);
+			;;
+			else
+				u32 why_len: (r.U8);
+				ptr<u8> why_at: (r.Bytes: why_len);
+				while u32 k: 0; k < why_len; k++;
+					want_why++ why_at:k as chr;
+				;;
+			;;
+			if r.failed or w <= 0 or h <= 0 or w * h > 4000000
+				log cases_path ' is cut short, or damaged\n';
+				exit 1;
+			;;
+			str name: '';
+			while u32 k: 0; k < name_len; k++;
+				name++ name_at:k as chr;
+			;;
+
+			ImgImage old;
+			old.w is w;
+			old.h is h;
+			old.pixels is new u32[(w * h) as u32];
+			call Pixels: (old.pixels as u32[(w * h) as u32]) kind seed w h;
+			Img.max_pixels is most;
+			ptr<ImgImage> scaled: (Img.Scale: addr old nw nh how);
+			Img.max_pixels is 0;
+			str wrong: '';
+			if want_ok and scaled is 0
+				wrong is 'the rules scale it, but imagelib says: ' Img.error;
+			;;
+			elif not want_ok and scaled is not 0
+				wrong is 'the rules refuse it (' want_why '), but imagelib scales it';
+			;;
+			elif want_ok
+				if scaled.w is not nw or scaled.h is not nh
+					wrong is scaled.w ' by ' scaled.h ', where it should be ' nw ' by ' nh;
+				;;
+				elif (Crc: scaled) is not want_crc
+					wrong is 'its pixels differ from the rules\'';
+				;;
+			;;
+			elif Img.error is not want_why
+				wrong is 'refused for another reason: ' Img.error ', where the rules say ' want_why;
+			;;
+			if wrong.len > 0
+				log 'WRONG ' name ': ' wrong '\n';
+			;;
+			else
+				right++;
+				if scaled is not 0
+					read++;
+				;;
+				else
+					refused_lines++ '  ' name ': ' Img.error '\n';
+				;;
+			;;
+			call Img.Free: scaled;
+			free old.pixels;
+		;;
+		if r.pos is not size as u32
+			log cases_path ' is damaged\n';
+			exit 1;
+		;;
+		log 'scaled: ' right ' of ' count ' as the rules say, which are Pillow\'s (' read ' scaled, ' right - read ' refused):\n' refused_lines;
+		log 'done\n';
+		exit 0;
+	[end]
+
+	# a case's old pixels, made as make_scale_tests.py makes them
+	[Pixels: u32 px[]; u32 kind: 0; u32 seed: 0; int w: 0; int h: 0;]
+		u32 s: seed;
+		if s is 0
+			s is 1;
+		;;
+		u32 wide: w as u32;
+		u32 tall: h as u32;
+		u32 wd: 1;
+		if wide > 1
+			wd is wide - 1;
+		;;
+		u32 hd: 1;
+		if tall > 1
+			hd is tall - 1;
+		;;
+		while u32 i: 0; i < wide * tall; i++;
+			u32 x: i % wide;
+			u32 y: i / wide;
+			s is s ^ (s << 13);
+			s is s ^ (s >> 17);
+			s is s ^ (s << 5);
+			u32 v: s;
+			if kind is 1
+				v is s | 0xFF000000;
+			;;
+			elif kind is 2
+				if (s & 0x80000000) is not 0
+					v is s | 0xFF000000;
+				;;
+				else
+					v is s & 0x00FFFFFF;
+				;;
+			;;
+			elif kind >= 3
+				u32 red: x * 255 / wd;
+				u32 green: y * 255 / hd;
+				u32 blue: ((x + y) * 7) & 255;
+				u32 alpha: 255;
+				if kind is 4
+					alpha is red;
+				;;
+				v is (alpha << 24) | (red << 16) | (green << 8) | blue;
+			;;
+			px:i is v;
+		;;
+	[end]
+
+	[Crc: ptr<ImgImage> image: 0; : u32]
+		u32 crc: 0;
+		u8 word[4];
+		while u32 i: 0; i < (image.w * image.h) as u32; i++;
+			u32 v: image.pixels:i;
+			word:0 is (v & 255) as u8;
+			word:1 is ((v >> 8) & 255) as u8;
+			word:2 is ((v >> 16) & 255) as u8;
+			word:3 is (v >> 24) as u8;
+			crc is (Crc32.Add: crc word 4);
+		;;
+	[end: crc]
+}

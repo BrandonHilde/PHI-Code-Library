@@ -12,6 +12,7 @@ use imagelib.bmp;
 use imagelib.png;
 use imagelib.jpeg;
 use imagelib.gif;
+use imagelib.scale;
 
 phi.ImageLib:Library
 {

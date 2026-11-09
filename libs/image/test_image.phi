@@ -86,6 +86,12 @@ phi.TestImage:Program
 	call Animate: 'bad' png_start 8;
 	call Img.CloseAnimation: 0;
 	log 'next frame of nothing: ' (Img.NextFrame: 0) '\n';
+	ptr<ImgImage> small: (Img.Decode: rgb24 70);
+	call Show: 'rgb24 scaled to 3 by 3, bilinear' (Img.Scale: small 3 3);
+	call Show: 'rgb24 scaled to 1 by 2, nearest' (Img.Scale: small 1 2 Img.NEAREST);
+	call Show: 'rgb24 scaled to 0 by 2' (Img.Scale: small 0 2);
+	call Img.Free: small;
+	call Show: 'nothing scaled' (Img.Scale: 0 3 3);
 	call Show: 'empty' (Img.Decode: rgb24 0);
 	call Show: 'no data' (Img.DecodeBmp: 0 70);
 	call Show: 'cut short' (Img.DecodeBmp: rgb24 60);

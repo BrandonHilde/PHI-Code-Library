@@ -1,0 +1,354 @@
+# Scaling an image, as Pillow's Image.resize scales it, nearest or bilinear; Img.Scale is how it's
+# called. The rules are tools/image/scale_reference.py's, which give Pillow's pixels exactly.
+#
+#   - Nearest: each new pixel takes the old pixel under its center, found as Pillow finds it, with a
+#     running sum of doubles (f64 math is IEEE's, so it's the same everywhere). One that comes to the
+#     old image's edge is transparent.
+#   - Bilinear: Pillow's triangle filter, as wide as an old pixel when growing and as a new pixel when
+#     shrinking, so that shrinking averages every old pixel under each new one. The weights are worked
+#     out in exact 64-bit integers, normalized, and made 22-bit fixed point. The image is premultiplied
+#     by its alpha first, and divided by it after; it's scaled across first, each row rounded to 8
+#     bits, and then down, a row at a time.
+#
+# Memory: the new image, the weights (a few for each new pixel along each axis), and the old rows,
+# scaled across, that one new row needs, kept in a ring when there aren't too many of them.
+
+use corelib;
+use imagelib.image;
+
+# One image being scaled. It's on the heap, as it's bigger than a method's variables may be.
+struct.ImgScaler
+{
+	u32 w;                  # the old size
+	u32 h;
+	u32 nw;                 # the new size
+	u32 nh;
+	ptr<u32> src;           # the old pixels
+	ptr<u32> dst;           # the new pixels
+
+	# the weights across: for each new x, the first old x, how many, and where its weights start in kx
+	ptr<u32> lo_x;
+	ptr<u32> n_x;
+	ptr<u32> at_x;
+	ptr<u32> kx;
+	u32 kx_len;
+	# and down
+	ptr<u32> lo_y;
+	ptr<u32> n_y;
+	ptr<u32> at_y;
+	ptr<u32> ky;
+	u32 ky_len;
+
+	ptr<u32> pre;           # an old row, premultiplied
+	ptr<u32> ring;          # old rows scaled across, premultiplied: slots rows of nw pixels
+	ptr<int> ring_row;      # which old row each slot holds; -1 none
+	u32 slots;
+	ptr<u32> sums;          # a new row's sums, 4 channels a pixel
+
+	# the new pixels, nearest
+	[Nearest]
+		ptr<int> xs: new int[nw];
+		if xs is 0
+			throw 'out of memory';
+		;;
+		call Centers: (xs as int[nw]) w nw;
+		u32 n: nw * nh;
+		u32 old: w * h;
+		call Rows: (src as u32[old]) (dst as u32[n]) (xs as int[nw]);
+		free xs;
+	[end]
+
+	[Rows: u32 old[]; u32 dst_px[]; int xs[];]
+		f64 step: h;
+		step is step / nh;
+		f64 pos: step * 0.5;
+		while u32 y: 0; y < nh; y++;
+			int sy: pos as int;
+			pos is pos + step;
+			if sy >= h as int
+				continue;
+			;;
+			u32 row: (sy as u32) * w;
+			while u32 x: 0; x < nw; x++;
+				if xs:x >= 0
+					dst_px:(y * nw + x) is old:(row + (xs:x as u32));
+				;;
+			;;
+		;;
+	[end]
+
+	# the old pixel under each new one's center, as Pillow's running sum of doubles finds it; -1 past
+	# the edge
+	[Centers: int dst_px[]; u32 old: 0; u32 to_size: 0;]
+		f64 step: old;
+		step is step / to_size;
+		f64 pos: step * 0.5;
+		while u32 i: 0; i < to_size; i++;
+			int at_old: pos as int;
+			if at_old >= old as int
+				at_old is -1;
+			;;
+			dst_px:i is at_old;
+			pos is pos + step;
+		;;
+	[end]
+
+	# the new pixels, bilinear
+	[Bilinear]
+		lo_x is new u32[nw];
+		n_x is new u32[nw];
+		at_x is new u32[nw];
+		lo_y is new u32[nh];
+		n_y is new u32[nh];
+		at_y is new u32[nh];
+		if lo_x is 0 or n_x is 0 or at_x is 0 or lo_y is 0 or n_y is 0 or at_y is 0
+			throw 'out of memory';
+		;;
+		u32 tx: (Taps: w nw (lo_x as u32[nw]) (n_x as u32[nw]) (at_x as u32[nw]));
+		u32 ty: (Taps: h nh (lo_y as u32[nh]) (n_y as u32[nh]) (at_y as u32[nh]));
+		kx_len is tx;
+		ky_len is ty;
+		kx is new u32[tx + 1];
+		ky is new u32[ty + 1];
+		pre is new u32[w];
+		sums is new u32[nw * 4];
+		if kx is 0 or ky is 0 or pre is 0 or sums is 0
+			throw 'out of memory';
+		;;
+		call Weights: w nw (lo_x as u32[nw]) (n_x as u32[nw]) (at_x as u32[nw]) (kx as u32[tx]);
+		call Weights: h nh (lo_y as u32[nh]) (n_y as u32[nh]) (at_y as u32[nh]) (ky as u32[ty]);
+
+		# a ring of as many old rows as a new row needs, if that's no more than 4 million pixels;
+		# otherwise one, and each row is scaled across again when it's needed again
+		slots is 1;
+		while u32 y: 0; y < nh; y++;
+			if n_y:y > slots
+				slots is n_y:y;
+			;;
+		;;
+		if (slots as u64) * (nw as u64) > 4 * 1024 * 1024
+			slots is 1;
+		;;
+		ring is new u32[slots * nw];
+		ring_row is new int[slots];
+		if ring is 0 or ring_row is 0
+			throw 'out of memory';
+		;;
+		while u32 s: 0; s < slots; s++;
+			ring_row:s is -1;
+		;;
+		u32 n: nw * nh;
+		u32 old: w * h;
+		call Down: (src as u32[old]) (dst as u32[n]) (ky as u32[ty]) (sums as u32[nw * 4]);
+	[end]
+
+	# how many weights each new pixel along an axis has, and where its own start: the old pixels from
+	# Pillow's bounds, (int)(center - support + 0.5) to (int)(center + support + 0.5), where center is
+	# (i + 0.5) old / new and support max(old / new, 1); all of them
+	[Taps: u32 old: 0; u32 to_size: 0; u32 los[]; u32 counts[]; u32 starts[]; : u32]
+		i64 o: old;
+		i64 nn: to_size;
+		i64 support2: o;
+		if nn > o
+			support2 is nn;
+		;;
+		support2 is support2 * 2;
+		u32 total: 0;
+		while u32 i: 0; i < to_size; i++;
+			i64 c2: (2 * (i as i64) + 1) * o;       # the center, times 2 new
+			i64 lo2: c2 - support2 + nn;
+			i64 hi2: c2 + support2 + nn;
+			i64 lo: 0;
+			if lo2 > 0
+				lo is lo2 / (2 * nn);
+			;;
+			i64 hi: hi2 / (2 * nn);
+			if hi > o
+				hi is o;
+			;;
+			los:i is lo as u32;
+			counts:i is (hi - lo) as u32;
+			starts:i is total;
+			total++ (hi - lo) as u32;
+		;;
+	[end: total]
+
+	# Each new pixel's weights, in 22-bit fixed point: the triangle filter's value at each old pixel's
+	# center, times 2 big, is max(0, 2 big - |d|), where d is (2x + 1) new - (2i + 1) old; and each is
+	# that over their sum, rounded.
+	[Weights: u32 old: 0; u32 to_size: 0; u32 los[]; u32 counts[]; u32 starts[]; u32 ks[];]
+		i64 o: old;
+		i64 nn: to_size;
+		i64 big2: o;
+		if nn > o
+			big2 is nn;
+		;;
+		big2 is big2 * 2;
+		while u32 i: 0; i < to_size; i++;
+			i64 c2: (2 * (i as i64) + 1) * o;
+			u64 total: 0;
+			while u32 j: 0; j < counts:i; j++;
+				i64 d: (2 * ((los:i + j) as i64) + 1) * nn - c2;
+				if d < 0
+					d is 0 - d;
+				;;
+				i64 v: big2 - d;
+				if v < 0
+					v is 0;
+				;;
+				ks:(starts:i + j) is v as u32;
+				total++ v as u64;
+			;;
+			if total is 0
+				continue;
+			;;
+			while u32 j: 0; j < counts:i; j++;
+				u64 v: ks:(starts:i + j);
+				ks:(starts:i + j) is ((2 * v * 4194304 + total) / (2 * total)) as u32;
+			;;
+		;;
+	[end]
+
+	# each new row: the old rows it needs, scaled across, added up with their weights down
+	[Down: u32 old[]; u32 dst_px[]; u32 ks[]; u32 acc[];]
+		while u32 y: 0; y < nh; y++;
+			while u32 k: 0; k < nw * 4; k++;
+				acc:k is 2097152;
+			;;
+			u32 first_k: at_y:y;
+			while u32 j: 0; j < n_y:y; j++;
+				u32 sy: lo_y:y + j;
+				u32 slot: (Across: old sy);
+				call Add: (ring as u32[slots * nw]) (slot * nw) ks:(first_k + j) acc;
+			;;
+			u32 row: y * nw;
+			while u32 x: 0; x < nw; x++;
+				u32 r: (Clip8: acc:(x * 4));
+				u32 g: (Clip8: acc:(x * 4 + 1));
+				u32 b: (Clip8: acc:(x * 4 + 2));
+				u32 a: (Clip8: acc:(x * 4 + 3));
+				dst_px:(row + x) is (Unpremultiply: (a << 24) | (r << 16) | (g << 8) | b);
+			;;
+		;;
+	[end]
+
+	[Add: u32 rows[]; u32 base: 0; u32 k: 0; u32 acc[];]
+		while u32 x: 0; x < nw; x++;
+			u32 v: rows:(base + x);
+			acc:(x * 4) is acc:(x * 4) + ((v >> 16) & 255) * k;
+			acc:(x * 4 + 1) is acc:(x * 4 + 1) + ((v >> 8) & 255) * k;
+			acc:(x * 4 + 2) is acc:(x * 4 + 2) + (v & 255) * k;
+			acc:(x * 4 + 3) is acc:(x * 4 + 3) + (v >> 24) * k;
+		;;
+	[end]
+
+	# the ring slot holding old row sy scaled across, premultiplied: scaled now if it isn't there
+	[Across: u32 old[]; u32 sy: 0; : u32]
+		u32 slot: sy % slots;
+		if ring_row:slot is sy as int
+			return slot;
+		;;
+		ring_row:slot is sy as int;
+		u32 row: sy * w;
+		while u32 x: 0; x < w; x++;
+			pre:x is (Premultiply: old:(row + x));
+		;;
+		call Scaled: (pre as u32[w]) (ring as u32[slots * nw]) (slot * nw) (kx as u32[kx_len]);
+	[end: slot]
+
+	[Scaled: u32 line[]; u32 rows[]; u32 base: 0; u32 ks[];]
+		while u32 x: 0; x < nw; x++;
+			u32 r: 2097152;
+			u32 g: 2097152;
+			u32 b: 2097152;
+			u32 a: 2097152;
+			u32 first_k: at_x:x;
+			u32 first_x: lo_x:x;
+			while u32 j: 0; j < n_x:x; j++;
+				u32 v: line:(first_x + j);
+				u32 k: ks:(first_k + j);
+				r is r + ((v >> 16) & 255) * k;
+				g is g + ((v >> 8) & 255) * k;
+				b is b + (v & 255) * k;
+				a is a + (v >> 24) * k;
+			;;
+			rows:(base + x) is ((Clip8: a) << 24) | ((Clip8: r) << 16) | ((Clip8: g) << 8) | (Clip8: b);
+		;;
+	[end]
+
+	[Clip8: u32 s: 0; : u32]
+		u32 v: s >> 22;
+		if v > 255
+			return 255;
+		;;
+	[end: v]
+
+	# each color times alpha / 255, rounded as Pillow rounds it
+	[Premultiply: u32 v: 0; : u32]
+		u32 a: v >> 24;
+		if a is 255
+			return v;
+		;;
+		u32 out_v: a << 24;
+		while u32 shift: 0; shift <= 16; shift++ 8;
+			u32 t: ((v >> shift) & 255) * a + 128;
+			out_v is out_v | (((t + (t >> 8)) >> 8) << shift);
+		;;
+	[end: out_v]
+
+	# and back: each color times 255 / alpha, rounded down, at most 255; as it is for alpha 0 or 255
+	[Unpremultiply: u32 v: 0; : u32]
+		u32 a: v >> 24;
+		if a is 0 or a is 255
+			return v;
+		;;
+		u32 out_v: a << 24;
+		while u32 shift: 0; shift <= 16; shift++ 8;
+			u32 c: 255 * ((v >> shift) & 255) / a;
+			if c > 255
+				c is 255;
+			;;
+			out_v is out_v | (c << shift);
+		;;
+	[end: out_v]
+
+	# its memory given back, but for the new image
+	[Done]
+		if lo_x is not 0
+			free lo_x;
+		;;
+		if n_x is not 0
+			free n_x;
+		;;
+		if at_x is not 0
+			free at_x;
+		;;
+		if kx is not 0
+			free kx;
+		;;
+		if lo_y is not 0
+			free lo_y;
+		;;
+		if n_y is not 0
+			free n_y;
+		;;
+		if at_y is not 0
+			free at_y;
+		;;
+		if ky is not 0
+			free ky;
+		;;
+		if pre is not 0
+			free pre;
+		;;
+		if ring is not 0
+			free ring;
+		;;
+		if ring_row is not 0
+			free ring_row;
+		;;
+		if sums is not 0
+			free sums;
+		;;
+	[end]
+}

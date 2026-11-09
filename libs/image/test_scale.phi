@@ -1,0 +1,10 @@
+# Img.Scale against the everyday cases, in tests/scale/cases.bin: a few sizes of growing, shrinking
+# and both, each way of scaling, with and without alpha. scalecases.phi says how they're checked.
+use imagelib;
+use scalecases;
+
+phi.TestScale:Program
+{
+	call ImageLib.Start;
+	call ImgTestScale.Run: 'tests/scale/cases.bin';
+}

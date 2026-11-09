@@ -1,0 +1,6 @@
+scaled: 67 of 67 as the rules say, which are Pillow's (63 scaled, 4 refused):
+  limit-11-pixels: 4 by 3 is more than the limit of 11 pixels
+  no-width: a size of no pixels: 0 by 3
+  negative-height: a size of no pixels: 3 by -2
+  no-such-way: not a way of scaling imagelib has
+done

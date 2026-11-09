@@ -278,7 +278,7 @@ call Img.Free: image;
 | 3.3 JPEG baseline ✓ | Huffman, integer IDCT, chroma subsampling | Pillow/libjpeg within a small per-pixel tolerance, since decoders legally differ |
 | 3.4 JPEG progressive ✓ | Common on the web | The same |
 | 3.5 GIF ✓ | LZW, transparency, and animation frames with their timing | Pillow |
-| 3.6 Scaling | Nearest and bilinear, working by rows | Pillow, within a tolerance |
+| 3.6 Scaling ✓ | Nearest and bilinear, working by rows | Pillow, within a tolerance |
 | Later | WebP, then encoders (PNG first), SVG (shares fontlib's rasterizer), AVIF only if needed | |
 
 Tests compare decoded pixels with reference data, so no viewer program is needed here.
@@ -346,6 +346,13 @@ Chrome grows it, disposal 4 read as 3. Checked against Pillow, ImageMagick and t
 75 files the same; the rest differ as listed), with every pixel the rules draw matching theirs. imagelib
 agrees with the rules on all 161 everyday cases and the 5,536 release cases, as 32 and 64-bit programs, and
 comes back from about 318,000 fuzzed files, every frame, without a crash.
+
+**3.6, done 2026-11-09,** in [libs/image](libs/image): `Img.Scale`, nearest and bilinear, a row at a
+time. Better than the tolerance planned: the rules (`tools/image/scale_reference.py`) give Pillow's pixels
+exactly, nearest by Pillow's own running sum of doubles, bilinear (Pillow's triangle filter, premultiplied
+alpha, across then down) with its weights worked out in exact integers. imagelib agrees on all 67 everyday
+cases and the 1,707 release cases, as 32 and 64-bit programs. Phase 3's milestones are done; WebP and the
+encoders are "later".
 
 **Done when:** milestones 3.1 to 3.6 pass, PngSuite's results are in the README, every decoder has been
 fuzzed, and a pixel bomb is refused before it allocates.
