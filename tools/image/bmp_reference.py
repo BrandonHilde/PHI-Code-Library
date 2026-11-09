@@ -13,8 +13,12 @@ reference images, and Pillow. Where those disagree with each other, the choice i
   - Alpha only comes from an alpha mask: in a header of 56 bytes or more, or BI_ALPHABITFIELDS.
     The unused bits of 16 and 32-bit pixels without one are ignored, so those images are opaque.
   - An index past the end of the palette is opaque black.
+  - Pixels that end too soon show what there is, as the browsers show it: the rows that came whole
+    (from the bottom, for an image stored bottom-up), and for RLE, what it drew before its data
+    ended. The rest is transparent.
 
-What it refuses: anything it can't read whole (it's cut short), headers of sizes no BMP has, bit
+What it refuses: headers and a palette that are cut short, pixels that start past the end of the
+file, headers of sizes no BMP has, bit
 depths and compressions it doesn't do (2-bit is done; 64-bit, Huffman 1D, RLE24 and embedded
 JPEG and PNG aren't), RLE stored top-down, masks that aren't one run of bits, and any image of
 more than max_pixels pixels, which is checked before anything is allocated.
@@ -179,10 +183,10 @@ def _decode(d, max_pixels):
         return width, height, pixels
 
     row_bytes = (width * bpp + 31) // 32 * 4
-    need = row_bytes * (height - 1) + (width * bpp + 7) // 8
-    if offset + need > len(d):
-        raise Refused('the file is cut short')
-    for row in range(height):
+    row_len = (width * bpp + 7) // 8           # the last row may be missing its padding
+    left = len(d) - offset
+    whole = 0 if left < row_len else min(height, (left - row_len) // row_bytes + 1)
+    for row in range(whole):
         y = row if top_down else height - 1 - row
         p = offset + row * row_bytes
         out = y * width
@@ -212,7 +216,8 @@ def _decode(d, max_pixels):
 
 def rle_decode(src, width, height, four, color, pixels):
     """RLE8 or RLE4, from the bottom row up. What it never reaches stays transparent; runs that go
-    past the end of a row are cut off there; data that ends without an end-of-image is a failure.
+    past the end of a row are cut off there; data that ends without an end-of-image ends the image
+    there, as a command that's cut short does.
     x stops at width, which changes nothing drawn but keeps it small (as imagelib's u32 must be)."""
     x, y = 0, 0
     i = 0
@@ -226,7 +231,7 @@ def rle_decode(src, width, height, four, color, pixels):
         if y >= height:
             return
         if i + 2 > n:
-            raise Refused('the RLE data ends before the end of the image')
+            return
         count, value = src[i], src[i + 1]
         i += 2
         if count:
@@ -240,14 +245,14 @@ def rle_decode(src, width, height, four, color, pixels):
             return
         elif value == 2:
             if i + 2 > n:
-                raise Refused('the RLE data ends before the end of the image')
+                return
             x = min(x + src[i], width)
             y += src[i + 1]
             i += 2
         else:
             size = (value + 1) // 2 if four else value
             if i + size > n:
-                raise Refused('the RLE data ends before the end of the image')
+                return
             for k in range(value):
                 if four:
                     byte = src[i + k // 2]

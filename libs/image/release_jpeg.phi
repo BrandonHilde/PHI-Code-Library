@@ -1,0 +1,11 @@
+# imagelib's JPEG decoder against all the release cases, in tests/jpeg/release.bin: the everyday
+# ones at every size, and good files cut short at many lengths and fuzzed, for when the library is
+# near release (build.ps1 -Test -Release). testcases.phi says how they're checked.
+use imagelib;
+use testcases;
+
+phi.ReleaseJpeg:Program
+{
+	call ImageLib.Start;
+	call ImgTestCases.Run: 'tests/jpeg/release.bin' Img.JPEG 'libjpeg';
+}

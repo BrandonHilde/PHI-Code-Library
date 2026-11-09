@@ -1,0 +1,6 @@
+files to change: 359
+changed at random: 63621 read, 33668 refused, 2711 over the limit
+every byte of the headers: 350357 read, 51388 refused, 7855 over the limit
+troublesome numbers: 8377 read, 5070 refused, 203 over the limit
+noise: 295 read, 2715 refused, 0 over the limit
+done

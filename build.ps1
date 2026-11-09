@@ -2,7 +2,10 @@
 #
 #   .\build.ps1             every library
 #   .\build.ps1 image       one library, and what it depends on
-#   .\build.ps1 -Test       and run the tests
+#   .\build.ps1 -Test       and run the tests: the everyday ones, test_*.phi
+#   .\build.ps1 -Test -Release
+#                           and the release ones too, release_*.phi: the edge cases, fuzzing and
+#                           stress that wait until a library is near release
 #
 # This only makes .philib files. Which systems they hold, and which systems a program built with
 # them runs on, is up to PHI's compiler and the project using the library.
@@ -19,6 +22,8 @@ param(
 	[string[]]$Name = @(),
 
 	[switch]$Test,
+
+	[switch]$Release,
 
 	[int]$Timeout = 60
 )
@@ -162,12 +167,12 @@ if (-not $Test) {
 $results = New-Object System.Collections.Generic.List[object]
 
 function Add-Run {
-	param([string]$LibraryName, [string]$Kind, [string]$Folder)
+	param([string]$LibraryName, [string]$Kind, [string]$Folder, [string]$Prefix = 'test_')
 
 	Write-Host "== $LibraryName, $Kind tests"
 	Push-Location $Folder
 	try {
-		$run = Invoke-Phi @('test', '.', '-f', 'test_', '--timeout', "$Timeout")
+		$run = Invoke-Phi @('test', '.', '-f', $Prefix, '--timeout', "$Timeout")
 	}
 	finally {
 		Pop-Location
@@ -190,6 +195,9 @@ foreach ($library in $built) {
 	}
 	if ($hasInternal) {
 		Add-Run $library.Name 'internal' $folder
+	}
+	if ($Release -and @(Get-ChildItem $folder -Filter 'release_*.phi').Count -gt 0) {
+		Add-Run $library.Name 'release' $folder 'release_'
 	}
 	if ($hasCompiled) {
 		foreach ($item in @((Get-Closure $library.Name)) + $library.Name) {

@@ -5,7 +5,7 @@
 use corelib;
 use memory.mem;
 
-phi.TestInflateFuzz:Program
+phi.ReleaseInflateFuzz:Program
 {
 	u32 seed: 0x2545F491;
 	u32 inflated: 0;

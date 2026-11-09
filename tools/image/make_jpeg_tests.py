@@ -49,6 +49,12 @@ LIB = os.path.normpath(os.path.join(HERE, '..', '..', 'libs', 'image'))
 OUT = os.path.join(LIB, 'tests', 'jpeg')
 
 LIBJPEG, MADE, CUT, FUZZ = 0, 1, 2, 3
+
+# The everyday cases prove each feature, and are what build.ps1 -Test runs. With --release, this
+# also makes the release cases (release.bin): every size, and files cut short at many lengths and
+# fuzzed, all checked against the outside evidence; those are for when the library is near release.
+RELEASE = False
+
 GROUP_NAMES = ['libjpeg', 'made', 'cut', 'fuzz']
 
 
@@ -471,7 +477,7 @@ def libjpeg_cases():
                              check=True).stdout
         cases.append((name, out, 0, 'auto'))
 
-    for w, h in ((1, 1), (2, 2), (3, 5), (8, 8), (17, 9), (33, 31), (64, 48)):
+    for w, h in (((1, 1), (2, 2), (3, 5), (8, 8), (17, 9), (33, 31), (64, 48)) if RELEASE else ((1, 1), (17, 9), (33, 31))):
         a = picture(w, h)
         for sub, sname in ((0, '444'), (1, '422'), (2, '420')):
             for q in (10, 75, 95):
@@ -507,7 +513,8 @@ def made_cases():
     # every sampling layout, at sizes that are and aren't whole MCUs
     seed = 1
     for sname in SAMPLINGS:
-        for w, h in ((1, 1), (2, 3), (3, 3), (5, 7), (8, 8), (16, 16), (17, 13), (33, 31), (47, 9)):
+        for w, h in (((1, 1), (2, 3), (3, 3), (5, 7), (8, 8), (16, 16), (17, 13), (33, 31), (47, 9)) if RELEASE
+                     else ((1, 1), (17, 13), (33, 31))):
             add('%s-%dx%d' % (sname, w, h), jpeg(w, h, comps_of(sname), seed))
             seed += 1
     # gray, with sampling factors that don't matter for one component
@@ -812,6 +819,12 @@ def small_image(data):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--release', action='store_true', help='make the release cases too')
+    args = ap.parse_args()
+    global RELEASE
+    RELEASE = args.release
     os.makedirs(OUT, exist_ok=True)
     groups = (('libjpeg', libjpeg_cases()), ('made', made_cases()))
     problems = []
@@ -823,6 +836,13 @@ def main():
     for group, (label, made) in zip((LIBJPEG, MADE), groups):
         for name, data, max_pixels, _ in made:
             index[name] = cases.add(group, 1, name, data, max_pixels)
+    if not RELEASE:
+        if problems:
+            print('\n'.join(problems))
+            sys.exit('the rules and libjpeg disagree, %d times' % len(problems))
+        size = cases.write()
+        print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
+        return
 
     # cut short: every length near the start, and then every 7th, and near the end
     for name in ('pil-17x9-420-q75', 'pil-33x31-444-q95', 'pil-restart-every-3-blocks', 'pil-8x8-gray',
@@ -857,8 +877,8 @@ def main():
         print('\n'.join(problems[:200]))
         sys.exit('the rules and libjpeg disagree, %d times' % len(problems))
 
-    size = cases.write()
-    print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
+    size = cases.write('release')
+    print('release.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
 
 
 if __name__ == '__main__':

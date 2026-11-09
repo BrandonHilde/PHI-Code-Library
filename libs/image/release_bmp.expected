@@ -1,0 +1,141 @@
+suite: 89 of 89 as the rules say (77 read, 12 refused):
+  g/pal1.bmp: 127 by 64
+  g/pal1bg.bmp: 127 by 64
+  g/pal1wb.bmp: 127 by 64
+  g/pal4.bmp: 127 by 64
+  g/pal4gs.bmp: 127 by 64
+  g/pal4rle.bmp: 127 by 64
+  g/pal8-0.bmp: 127 by 64
+  g/pal8.bmp: 127 by 64
+  g/pal8gs.bmp: 127 by 64
+  g/pal8nonsquare.bmp: 127 by 32
+  g/pal8os2.bmp: 127 by 64
+  g/pal8rle.bmp: 127 by 64
+  g/pal8topdown.bmp: 127 by 64
+  g/pal8v4.bmp: 127 by 64
+  g/pal8v5.bmp: 127 by 64
+  g/pal8w124.bmp: 124 by 61
+  g/pal8w125.bmp: 125 by 62
+  g/pal8w126.bmp: 126 by 63
+  g/rgb16-565.bmp: 127 by 64
+  g/rgb16-565pal.bmp: 127 by 64
+  g/rgb16.bmp: 127 by 64
+  g/rgb16bfdef.bmp: 127 by 64
+  g/rgb24.bmp: 127 by 64
+  g/rgb24pal.bmp: 127 by 64
+  g/rgb32.bmp: 127 by 64
+  g/rgb32bf.bmp: 127 by 64
+  g/rgb32bfdef.bmp: 127 by 64
+  q/pal1huffmsb.bmp: Huffman 1D compression, which isn't supported
+  q/pal1p1.bmp: 127 by 64
+  q/pal2.bmp: 127 by 64
+  q/pal2color.bmp: 127 by 64
+  q/pal4rlecut.bmp: 127 by 64
+  q/pal4rletrns.bmp: 127 by 64
+  q/pal8offs.bmp: 127 by 64
+  q/pal8os2-hs.bmp: 127 by 64
+  q/pal8os2-sz.bmp: 127 by 64
+  q/pal8os2sp.bmp: 127 by 64
+  q/pal8os2v2-16.bmp: 127 by 64
+  q/pal8os2v2-40sz.bmp: 127 by 64
+  q/pal8os2v2-sz.bmp: 127 by 64
+  q/pal8os2v2.bmp: 127 by 64
+  q/pal8oversizepal.bmp: 127 by 64
+  q/pal8rlecut.bmp: 127 by 64
+  q/pal8rletrns.bmp: 127 by 64
+  q/rgb16-231.bmp: 127 by 64
+  q/rgb16-3103.bmp: 127 by 64
+  q/rgb16faketrns.bmp: 127 by 64
+  q/rgb24jpeg.bmp: an embedded JPEG or PNG, which isn't supported
+  q/rgb24largepal.bmp: 127 by 64
+  q/rgb24lprof.bmp: 127 by 64
+  q/rgb24png.bmp: an embedded JPEG or PNG, which isn't supported
+  q/rgb24rle24.bmp: RLE24 compression, which isn't supported
+  q/rgb32-111110.bmp: 127 by 64
+  q/rgb32-7187.bmp: 127 by 64
+  q/rgb32-xbgr.bmp: 127 by 64
+  q/rgb32fakealpha.bmp: 127 by 64
+  q/rgb32h52.bmp: 127 by 64
+  q/rgba16-1924.bmp: 127 by 64
+  q/rgba16-4444.bmp: 127 by 64
+  q/rgba16-5551.bmp: 127 by 64
+  q/rgba32-1.bmp: 127 by 64
+  q/rgba32-1010102.bmp: 127 by 64
+  q/rgba32-2.bmp: 127 by 64
+  q/rgba32-61754.bmp: 127 by 64
+  q/rgba32-81284.bmp: 127 by 64
+  q/rgba32abf.bmp: 127 by 64
+  q/rgba32h56.bmp: 127 by 64
+  q/rgba64.bmp: 64 bits a pixel, which isn't supported
+  b/badbitcount.bmp: 30000 bits a pixel, which isn't supported
+  b/badbitssize.bmp: 127 by 64
+  b/baddens1.bmp: 127 by 64
+  b/baddens2.bmp: 127 by 64
+  b/badfilesize.bmp: 127 by 64
+  b/badheadersize.bmp: a header of 66 bytes, which no BMP has
+  b/badpalettesize.bmp: a palette of 305402420 colors, which doesn't fit before the pixels
+  b/badplanes.bmp: 127 by 64
+  b/badrle.bmp: 127 by 64
+  b/badrle4.bmp: 127 by 64
+  b/badrle4bis.bmp: 127 by 64
+  b/badrle4ter.bmp: 127 by 64
+  b/badrlebis.bmp: 127 by 64
+  b/badrleter.bmp: 127 by 64
+  b/badwidth.bmp: a width or height of 0 or less
+  b/pal8badindex.bmp: 127 by 64
+  b/reallybig.bmp: 3000000 by 2000000 is more than the limit of 16777216 pixels
+  b/rgb16-880.bmp: 127 by 64
+  b/rletopdown.bmp: RLE compression stored top-down, which BMP doesn't allow
+  b/shortfile.bmp: 127 by 64
+  x/ba-bm.bmp: not a BMP file
+made: 390 of 390 as the rules say (343 read, 47 refused), refused:
+  bad-signature: not a BMP file
+  bad-too-short: not a BMP file
+  bad-empty: not a BMP file
+  bad-header-size-0: a header of 0 bytes, which no BMP has
+  bad-header-size-11: a header of 11 bytes, which no BMP has
+  bad-header-size-13: a header of 13 bytes, which no BMP has
+  bad-header-size-39: a header of 39 bytes, which no BMP has
+  bad-header-size-41: a header of 41 bytes, which no BMP has
+  bad-header-size-100: a header of 100 bytes, which no BMP has
+  bad-header-size-4294967295: a header of 4294967295 bytes, which no BMP has
+  bad-header-cut: the file is cut short
+  bad-width-0: a width or height of 0 or less
+  bad-width-negative: a width or height of 0 or less
+  bad-height-0: a width or height of 0 or less
+  bad-height-most-negative: a width or height of 0 or less
+  bad-os2-width-0: a width or height of 0 or less
+  bad-bpp-0: 0 bits a pixel, which isn't supported
+  bad-bpp-3: 3 bits a pixel, which isn't supported
+  bad-bpp-5: 5 bits a pixel, which isn't supported
+  bad-bpp-12: 12 bits a pixel, which isn't supported
+  bad-bpp-48: 48 bits a pixel, which isn't supported
+  bad-bpp-64: 64 bits a pixel, which isn't supported
+  bad-bpp-65535: 65535 bits a pixel, which isn't supported
+  bad-compression-4: an embedded JPEG or PNG, which isn't supported
+  bad-compression-5: an embedded JPEG or PNG, which isn't supported
+  bad-compression-7: compression 7, which isn't supported
+  bad-compression-11: compression 11, which isn't supported
+  bad-compression-4294967295: compression 4294967295, which isn't supported
+  bad-os2v2-huffman: Huffman 1D compression, which isn't supported
+  bad-os2v2-rle24: RLE24 compression, which isn't supported
+  bad-rle8-with-4-bits: RLE compression with the wrong number of bits a pixel
+  bad-rle4-with-8-bits: RLE compression with the wrong number of bits a pixel
+  bad-rle-top-down: RLE compression stored top-down, which BMP doesn't allow
+  bad-fields-with-24-bits: bit fields with 24 bits a pixel
+  bad-fields-with-8-bits: bit fields with 8 bits a pixel
+  bad-mask-gap: a color mask that isn't one run of bits
+  bad-mask-wider-than-16: a color mask wider than the pixel
+  bad-masks-cut-off: the file is cut short
+  bad-palette-too-big: a palette of 268435456 colors, which doesn't fit before the pixels
+  bad-palette-cut-off: the file is cut short
+  bad-offset-past-end: the pixels' offset is outside the file
+  bad-offset-in-header: the pixels' offset is outside the file
+  bomb-65536-square: 65536 by 65536 is more than the limit of 16777216 pixels
+  bomb-wide: 2147483647 by 1 is more than the limit of 16777216 pixels
+  bomb-tall-top-down: 3 by 2147483647 is more than the limit of 16777216 pixels
+  bomb-os2: 65535 by 65535 is more than the limit of 16777216 pixels
+  limit-one-over: 10 by 10 is more than the limit of 99 pixels
+cut: 4789 of 4789 as the rules say (3129 read, 1660 refused)
+fuzz: 4000 of 4000 as the rules say (2311 read, 1689 refused)
+done

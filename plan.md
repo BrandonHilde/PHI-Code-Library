@@ -137,6 +137,15 @@ anyone using the library. If a later library wants `WlBuf` or `WlAtoms`, that's 
 [docs/conventions.md](docs/conventions.md) has the rules: name prefixes, bytes in and data out, handling
 hostile input, code that can go anywhere, the two kinds of test, what counts as done, and how to add a library.
 
+## Testing while in development
+
+Nothing here has been released: it's all in development. During development we will use a light weight
+minimum necessary tests to move forward quickly. Then when preparing for release we will do the full suite
+of tests. But until then we will be efficient with our time. `build.ps1 -Test` runs the everyday tests, and
+`-Release` adds the full suite ([the conventions](docs/conventions.md#tests)). imagelib's tests were split
+so on 2026-11-08 (about 1,000 decodes every day, where there had been 23,600); corelib's and weblib's
+everyday tests haven't been trimmed yet.
+
 ## Phases
 
 ### Phase 0: Foundation

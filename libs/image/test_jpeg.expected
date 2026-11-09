@@ -1,4 +1,4 @@
-libjpeg: 124 of 124 as the rules say (121 read, 3 refused):
+libjpeg: 60 of 60 as the rules say (57 read, 3 refused):
   pil-1x1-444-q10: 1 by 1
   pil-1x1-444-q75: 1 by 1
   pil-1x1-444-q95: 1 by 1
@@ -15,54 +15,6 @@ libjpeg: 124 of 124 as the rules say (121 read, 3 refused):
   im-1x1-4x2: 1 by 1
   im-1x1-2x1-1x2-1x1: 1 by 1
   im-1x1-1x1-2x2-2x2: 1 by 1
-  pil-2x2-444-q10: 2 by 2
-  pil-2x2-444-q75: 2 by 2
-  pil-2x2-444-q95: 2 by 2
-  pil-2x2-422-q10: 2 by 2
-  pil-2x2-422-q75: 2 by 2
-  pil-2x2-422-q95: 2 by 2
-  pil-2x2-420-q10: 2 by 2
-  pil-2x2-420-q75: 2 by 2
-  pil-2x2-420-q95: 2 by 2
-  pil-2x2-gray: 2 by 2
-  pil-2x2-optimized: 2 by 2
-  im-2x2-1x2: 2 by 2
-  im-2x2-4x1: 2 by 2
-  im-2x2-4x2: 2 by 2
-  im-2x2-2x1-1x2-1x1: 2 by 2
-  im-2x2-1x1-2x2-2x2: 2 by 2
-  pil-3x5-444-q10: 3 by 5
-  pil-3x5-444-q75: 3 by 5
-  pil-3x5-444-q95: 3 by 5
-  pil-3x5-422-q10: 3 by 5
-  pil-3x5-422-q75: 3 by 5
-  pil-3x5-422-q95: 3 by 5
-  pil-3x5-420-q10: 3 by 5
-  pil-3x5-420-q75: 3 by 5
-  pil-3x5-420-q95: 3 by 5
-  pil-3x5-gray: 3 by 5
-  pil-3x5-optimized: 3 by 5
-  im-3x5-1x2: 3 by 5
-  im-3x5-4x1: 3 by 5
-  im-3x5-4x2: 3 by 5
-  im-3x5-2x1-1x2-1x1: 3 by 5
-  im-3x5-1x1-2x2-2x2: 3 by 5
-  pil-8x8-444-q10: 8 by 8
-  pil-8x8-444-q75: 8 by 8
-  pil-8x8-444-q95: 8 by 8
-  pil-8x8-422-q10: 8 by 8
-  pil-8x8-422-q75: 8 by 8
-  pil-8x8-422-q95: 8 by 8
-  pil-8x8-420-q10: 8 by 8
-  pil-8x8-420-q75: 8 by 8
-  pil-8x8-420-q95: 8 by 8
-  pil-8x8-gray: 8 by 8
-  pil-8x8-optimized: 8 by 8
-  im-8x8-1x2: 8 by 8
-  im-8x8-4x1: 8 by 8
-  im-8x8-4x2: 8 by 8
-  im-8x8-2x1-1x2-1x1: 8 by 8
-  im-8x8-1x1-2x2-2x2: 8 by 8
   pil-17x9-444-q10: 17 by 9
   pil-17x9-444-q75: 17 by 9
   pil-17x9-444-q95: 17 by 9
@@ -95,22 +47,6 @@ libjpeg: 124 of 124 as the rules say (121 read, 3 refused):
   im-33x31-4x2: 33 by 31
   im-33x31-2x1-1x2-1x1: 33 by 31
   im-33x31-1x1-2x2-2x2: 33 by 31
-  pil-64x48-444-q10: 64 by 48
-  pil-64x48-444-q75: 64 by 48
-  pil-64x48-444-q95: 64 by 48
-  pil-64x48-422-q10: 64 by 48
-  pil-64x48-422-q75: 64 by 48
-  pil-64x48-422-q95: 64 by 48
-  pil-64x48-420-q10: 64 by 48
-  pil-64x48-420-q75: 64 by 48
-  pil-64x48-420-q95: 64 by 48
-  pil-64x48-gray: 64 by 48
-  pil-64x48-optimized: 64 by 48
-  im-64x48-1x2: 64 by 48
-  im-64x48-4x1: 64 by 48
-  im-64x48-4x2: 64 by 48
-  im-64x48-2x1-1x2-1x1: 64 by 48
-  im-64x48-1x1-2x2-2x2: 64 by 48
   pil-restart-every-3-blocks: 37 by 53
   pil-restart-every-row-420: 37 by 53
   pil-restart-every-block-gray: 37 by 53
@@ -123,7 +59,7 @@ libjpeg: 124 of 124 as the rules say (121 read, 3 refused):
   im-arithmetic: arithmetic coding, which isn't supported
   pil-100x75-q90: 100 by 75
   im-100x75-q60-420: 100 by 75
-made: 261 of 261 as the rules say (212 read, 49 refused), refused:
+made: 183 of 183 as the rules say (134 read, 49 refused), refused:
   bad-empty: not a JPEG file
   bad-not-jpeg: not a JPEG file
   bad-soi-only: no image data
@@ -173,6 +109,4 @@ made: 261 of 261 as the rules say (212 read, 49 refused), refused:
   bad-quant-table-undefined: a component whose quantization table isn't defined
   limit-over: 10 by 10 is more than the limit of 99 pixels
   limit-default-over: 65535 by 65535 is more than the limit of 16777216 pixels
-cut: 3050 of 3050 as the rules say (894 read, 2156 refused)
-fuzz: 4000 of 4000 as the rules say (2229 read, 1771 refused)
 done

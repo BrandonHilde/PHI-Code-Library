@@ -8,7 +8,7 @@
 use imagelib;
 use memory.mem;
 
-phi.TestJpegFuzz:Program
+phi.ReleaseJpegFuzz:Program
 {
 	u32 seed: 0x2545F491;
 	u32 read: 0;
@@ -28,7 +28,7 @@ phi.TestJpegFuzz:Program
 
 	# the starting points: the good files of test_jpeg's cases, of up to 6000 bytes
 	u32 cases_size: 0;
-	ptr<u8> cases_bytes: (Load: 'tests/jpeg/cases.bin' addr cases_size);
+	ptr<u8> cases_bytes: (Load: 'tests/jpeg/release.bin' addr cases_size);
 	CoreReader r;
 	call r.Start: cases_bytes cases_size;
 	u32 count: (r.U32LE);
@@ -69,7 +69,7 @@ phi.TestJpegFuzz:Program
 		;;
 	;;
 	if r.failed or bases_count < 6
-		log 'cases.bin is damaged\n';
+		log 'release.bin is damaged\n';
 		exit 1;
 	;;
 	log 'files to change: ' bases_count '\n';

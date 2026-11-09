@@ -54,6 +54,12 @@ OUT = os.path.join(LIB, 'tests', 'png')
 SUITE = os.path.join(OUT, 'pngsuite')
 
 SUITE_GROUP, MADE, CUT, FUZZ = 0, 1, 2, 3
+
+# The everyday cases prove each feature, and are what build.ps1 -Test runs. With --release, this
+# also makes the release cases (release.bin): every size, and files cut short at many lengths and
+# fuzzed, all checked against the outside evidence; those are for when the library is near release.
+RELEASE = False
+
 GROUP_NAMES = ['suite', 'made', 'cut', 'fuzz']
 
 # Where Pillow 11.1 differs from the rules on PngSuite, and why. ImageMagick must agree on every one.
@@ -250,7 +256,7 @@ def made_cases():
         cases.append((name, data, max_pixels, rule))
 
     # every color type and bit depth, at many sizes, interlaced and not, with every filter
-    sizes = [(1, 1), (2, 3), (3, 2), (4, 4), (5, 9), (7, 3), (8, 8), (9, 5), (13, 1), (1, 13),
+    sizes = [(1, 1), (5, 9), (8, 8), (17, 9)] if not RELEASE else [(1, 1), (2, 3), (3, 2), (4, 4), (5, 9), (7, 3), (8, 8), (9, 5), (13, 1), (1, 13),
              (16, 2), (17, 9), (33, 6)]
     seed = 1
     for color, depths in sorted(DEPTHS.items()):
@@ -609,7 +615,10 @@ def small_image(data):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--pngsuite', help='PngSuite-2017jul19 unpacked, to copy and check against')
+    ap.add_argument('--release', action='store_true', help='make the release cases too')
     args = ap.parse_args()
+    global RELEASE
+    RELEASE = args.release
     os.makedirs(OUT, exist_ok=True)
     if args.pngsuite:
         copy_suite(args.pngsuite)
@@ -630,6 +639,13 @@ def main():
         index[name] = cases.add(SUITE_GROUP, 0, name, data, payload='tests/png/pngsuite/' + name)
     for name, data, max_pixels, _ in made:
         index[name] = cases.add(MADE, 1, name, data, max_pixels)
+    if not RELEASE:
+        if problems:
+            print('\n'.join(problems))
+            sys.exit('the rules and the outside evidence disagree, %d times' % len(problems))
+        size = cases.write()
+        print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
+        return
 
     # cut short: every length near the start, and then every 13th, and near the end
     for name in ('basn0g01.png', 'basi2c08.png', 'basn3p04.png', 'basi6a16.png', 'tbrn2c08.png',
@@ -685,8 +701,8 @@ def main():
             cases.write()               # for looking into the problems: OUT is the caller's
         sys.exit('the rules and the outside evidence disagree, %d times' % len(problems))
 
-    size = cases.write()
-    print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
+    size = cases.write('release')
+    print('release.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
 
 
 if __name__ == '__main__':

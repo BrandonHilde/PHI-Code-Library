@@ -177,395 +177,125 @@ suite z03n2c08.png                                 232 bytes  ok, 32 by 32
 suite z06n2c08.png                                 224 bytes  ok, 32 by 32
 suite z09n2c08.png                                 224 bytes  ok, 32 by 32
 made  c0-d1-n-1x1                                   67 bytes  ok, 1 by 1
-made  c0-d1-n-2x3                                   71 bytes  ok, 2 by 3
-made  c0-d1-n-3x2                                   69 bytes  ok, 3 by 2
-made  c0-d1-n-4x4                                   73 bytes  ok, 4 by 4
 made  c0-d1-n-5x9                                   83 bytes  ok, 5 by 9
-made  c0-d1-n-7x3                                   71 bytes  ok, 7 by 3
 made  c0-d1-n-8x8                                   81 bytes  ok, 8 by 8
-made  c0-d1-n-9x5                                   80 bytes  ok, 9 by 5
-made  c0-d1-n-13x1                                  68 bytes  ok, 13 by 1
-made  c0-d1-n-1x13                                  80 bytes  ok, 1 by 13
-made  c0-d1-n-16x2                                  71 bytes  ok, 16 by 2
 made  c0-d1-n-17x9                                 102 bytes  ok, 17 by 9
-made  c0-d1-n-33x6                                 102 bytes  ok, 33 by 6
 made  c0-d1-i-1x1                                   67 bytes  ok, 1 by 1
-made  c0-d1-i-2x3                                   75 bytes  ok, 2 by 3
-made  c0-d1-i-3x2                                   73 bytes  ok, 3 by 2
-made  c0-d1-i-4x4                                   79 bytes  ok, 4 by 4
-made  c0-d1-i-5x9                                  101 bytes  ok, 5 by 9
-made  c0-d1-i-7x3                                   79 bytes  ok, 7 by 3
+made  c0-d1-i-5x9                                  100 bytes  ok, 5 by 9
 made  c0-d1-i-8x8                                   95 bytes  ok, 8 by 8
-made  c0-d1-i-9x5                                   89 bytes  ok, 9 by 5
-made  c0-d1-i-13x1                                  73 bytes  ok, 13 by 1
-made  c0-d1-i-1x13                                  88 bytes  ok, 1 by 13
-made  c0-d1-i-16x2                                  76 bytes  ok, 16 by 2
-made  c0-d1-i-17x9                                 114 bytes  ok, 17 by 9
-made  c0-d1-i-33x6                                 110 bytes  ok, 33 by 6
+made  c0-d1-i-17x9                                 113 bytes  ok, 17 by 9
 made  c0-d2-n-1x1                                   67 bytes  ok, 1 by 1
-made  c0-d2-n-2x3                                   71 bytes  ok, 2 by 3
-made  c0-d2-n-3x2                                   69 bytes  ok, 3 by 2
-made  c0-d2-n-4x4                                   73 bytes  ok, 4 by 4
-made  c0-d2-n-5x9                                   92 bytes  ok, 5 by 9
-made  c0-d2-n-7x3                                   74 bytes  ok, 7 by 3
+made  c0-d2-n-5x9                                   93 bytes  ok, 5 by 9
 made  c0-d2-n-8x8                                   89 bytes  ok, 8 by 8
-made  c0-d2-n-9x5                                   85 bytes  ok, 9 by 5
-made  c0-d2-n-13x1                                  70 bytes  ok, 13 by 1
-made  c0-d2-n-1x13                                  90 bytes  ok, 1 by 13
-made  c0-d2-n-16x2                                  75 bytes  ok, 16 by 2
 made  c0-d2-n-17x9                                 122 bytes  ok, 17 by 9
-made  c0-d2-n-33x6                                 128 bytes  ok, 33 by 6
 made  c0-d2-i-1x1                                   67 bytes  ok, 1 by 1
-made  c0-d2-i-2x3                                   75 bytes  ok, 2 by 3
-made  c0-d2-i-3x2                                   73 bytes  ok, 3 by 2
-made  c0-d2-i-4x4                                   79 bytes  ok, 4 by 4
 made  c0-d2-i-5x9                                  108 bytes  ok, 5 by 9
-made  c0-d2-i-7x3                                   80 bytes  ok, 7 by 3
 made  c0-d2-i-8x8                                  100 bytes  ok, 8 by 8
-made  c0-d2-i-9x5                                   93 bytes  ok, 9 by 5
-made  c0-d2-i-13x1                                  74 bytes  ok, 13 by 1
-made  c0-d2-i-1x13                                  91 bytes  ok, 1 by 13
-made  c0-d2-i-16x2                                  79 bytes  ok, 16 by 2
 made  c0-d2-i-17x9                                 132 bytes  ok, 17 by 9
-made  c0-d2-i-33x6                                 134 bytes  ok, 33 by 6
 made  c0-d4-n-1x1                                   67 bytes  ok, 1 by 1
-made  c0-d4-n-2x3                                   71 bytes  ok, 2 by 3
-made  c0-d4-n-3x2                                   71 bytes  ok, 3 by 2
-made  c0-d4-n-4x4                                   77 bytes  ok, 4 by 4
 made  c0-d4-n-5x9                                  102 bytes  ok, 5 by 9
-made  c0-d4-n-7x3                                   80 bytes  ok, 7 by 3
-made  c0-d4-n-8x8                                  106 bytes  ok, 8 by 8
-made  c0-d4-n-9x5                                   96 bytes  ok, 9 by 5
-made  c0-d4-n-13x1                                  73 bytes  ok, 13 by 1
-made  c0-d4-n-1x13                                  91 bytes  ok, 1 by 13
-made  c0-d4-n-16x2                                  84 bytes  ok, 16 by 2
+made  c0-d4-n-8x8                                  108 bytes  ok, 8 by 8
 made  c0-d4-n-17x9                                 158 bytes  ok, 17 by 9
-made  c0-d4-n-33x6                                 176 bytes  ok, 33 by 6
 made  c0-d4-i-1x1                                   67 bytes  ok, 1 by 1
-made  c0-d4-i-2x3                                   75 bytes  ok, 2 by 3
-made  c0-d4-i-3x2                                   74 bytes  ok, 3 by 2
-made  c0-d4-i-4x4                                   81 bytes  ok, 4 by 4
-made  c0-d4-i-5x9                                  116 bytes  ok, 5 by 9
-made  c0-d4-i-7x3                                   85 bytes  ok, 7 by 3
-made  c0-d4-i-8x8                                  116 bytes  ok, 8 by 8
-made  c0-d4-i-9x5                                  102 bytes  ok, 9 by 5
-made  c0-d4-i-13x1                                  76 bytes  ok, 13 by 1
-made  c0-d4-i-1x13                                  91 bytes  ok, 1 by 13
-made  c0-d4-i-16x2                                  87 bytes  ok, 16 by 2
+made  c0-d4-i-5x9                                  114 bytes  ok, 5 by 9
+made  c0-d4-i-8x8                                  114 bytes  ok, 8 by 8
 made  c0-d4-i-17x9                                 168 bytes  ok, 17 by 9
-made  c0-d4-i-33x6                                 182 bytes  ok, 33 by 6
 made  c0-d8-n-1x1                                   67 bytes  ok, 1 by 1
-made  c0-d8-n-2x3                                   74 bytes  ok, 2 by 3
-made  c0-d8-n-3x2                                   73 bytes  ok, 3 by 2
-made  c0-d8-n-4x4                                   85 bytes  ok, 4 by 4
 made  c0-d8-n-5x9                                  122 bytes  ok, 5 by 9
-made  c0-d8-n-7x3                                   90 bytes  ok, 7 by 3
 made  c0-d8-n-8x8                                  140 bytes  ok, 8 by 8
-made  c0-d8-n-9x5                                  118 bytes  ok, 9 by 5
-made  c0-d8-n-13x1                                  79 bytes  ok, 13 by 1
-made  c0-d8-n-1x13                                  91 bytes  ok, 1 by 13
-made  c0-d8-n-16x2                                 100 bytes  ok, 16 by 2
 made  c0-d8-n-17x9                                 230 bytes  ok, 17 by 9
-made  c0-d8-n-33x6                                 272 bytes  ok, 33 by 6
 made  c0-d8-i-1x1                                   67 bytes  ok, 1 by 1
-made  c0-d8-i-2x3                                   76 bytes  ok, 2 by 3
-made  c0-d8-i-3x2                                   75 bytes  ok, 3 by 2
-made  c0-d8-i-4x4                                   88 bytes  ok, 4 by 4
 made  c0-d8-i-5x9                                  132 bytes  ok, 5 by 9
-made  c0-d8-i-7x3                                   94 bytes  ok, 7 by 3
 made  c0-d8-i-8x8                                  147 bytes  ok, 8 by 8
-made  c0-d8-i-9x5                                  124 bytes  ok, 9 by 5
-made  c0-d8-i-13x1                                  83 bytes  ok, 13 by 1
-made  c0-d8-i-1x13                                  91 bytes  ok, 1 by 13
-made  c0-d8-i-16x2                                 103 bytes  ok, 16 by 2
 made  c0-d8-i-17x9                                 240 bytes  ok, 17 by 9
-made  c0-d8-i-33x6                                 278 bytes  ok, 33 by 6
 made  c0-d16-n-1x1                                  68 bytes  ok, 1 by 1
-made  c0-d16-n-2x3                                  81 bytes  ok, 2 by 3
-made  c0-d16-n-3x2                                  80 bytes  ok, 3 by 2
-made  c0-d16-n-4x4                                 104 bytes  ok, 4 by 4
 made  c0-d16-n-5x9                                 167 bytes  ok, 5 by 9
-made  c0-d16-n-7x3                                 113 bytes  ok, 7 by 3
 made  c0-d16-n-8x8                                 204 bytes  ok, 8 by 8
-made  c0-d16-n-9x5                                 163 bytes  ok, 9 by 5
-made  c0-d16-n-13x1                                 93 bytes  ok, 13 by 1
-made  c0-d16-n-1x13                                105 bytes  ok, 1 by 13
-made  c0-d16-n-16x2                                134 bytes  ok, 16 by 2
 made  c0-d16-n-17x9                                383 bytes  ok, 17 by 9
-made  c0-d16-n-33x6                                470 bytes  ok, 33 by 6
 made  c0-d16-i-1x1                                  68 bytes  ok, 1 by 1
-made  c0-d16-i-2x3                                  82 bytes  ok, 2 by 3
-made  c0-d16-i-3x2                                  81 bytes  ok, 3 by 2
-made  c0-d16-i-4x4                                 107 bytes  ok, 4 by 4
 made  c0-d16-i-5x9                                 177 bytes  ok, 5 by 9
-made  c0-d16-i-7x3                                 117 bytes  ok, 7 by 3
 made  c0-d16-i-8x8                                 211 bytes  ok, 8 by 8
-made  c0-d16-i-9x5                                 169 bytes  ok, 9 by 5
-made  c0-d16-i-13x1                                 96 bytes  ok, 13 by 1
-made  c0-d16-i-1x13                                105 bytes  ok, 1 by 13
-made  c0-d16-i-16x2                                137 bytes  ok, 16 by 2
 made  c0-d16-i-17x9                                393 bytes  ok, 17 by 9
-made  c0-d16-i-33x6                                476 bytes  ok, 33 by 6
 made  c2-d8-n-1x1                                   69 bytes  ok, 1 by 1
-made  c2-d8-n-2x3                                   87 bytes  ok, 2 by 3
-made  c2-d8-n-3x2                                   86 bytes  ok, 3 by 2
-made  c2-d8-n-4x4                                  120 bytes  ok, 4 by 4
 made  c2-d8-n-5x9                                  212 bytes  ok, 5 by 9
-made  c2-d8-n-7x3                                  134 bytes  ok, 7 by 3
 made  c2-d8-n-8x8                                  268 bytes  ok, 8 by 8
-made  c2-d8-n-9x5                                  208 bytes  ok, 9 by 5
-made  c2-d8-n-13x1                                 108 bytes  ok, 13 by 1
-made  c2-d8-n-1x13                                 120 bytes  ok, 1 by 13
-made  c2-d8-n-16x2                                 166 bytes  ok, 16 by 2
 made  c2-d8-n-17x9                                 536 bytes  ok, 17 by 9
-made  c2-d8-n-33x6                                 668 bytes  ok, 33 by 6
 made  c2-d8-i-1x1                                   69 bytes  ok, 1 by 1
-made  c2-d8-i-2x3                                   88 bytes  ok, 2 by 3
-made  c2-d8-i-3x2                                   88 bytes  ok, 3 by 2
-made  c2-d8-i-4x4                                  123 bytes  ok, 4 by 4
 made  c2-d8-i-5x9                                  222 bytes  ok, 5 by 9
-made  c2-d8-i-7x3                                  138 bytes  ok, 7 by 3
 made  c2-d8-i-8x8                                  275 bytes  ok, 8 by 8
-made  c2-d8-i-9x5                                  214 bytes  ok, 9 by 5
-made  c2-d8-i-13x1                                 111 bytes  ok, 13 by 1
-made  c2-d8-i-1x13                                 120 bytes  ok, 1 by 13
-made  c2-d8-i-16x2                                 169 bytes  ok, 16 by 2
 made  c2-d8-i-17x9                                 546 bytes  ok, 17 by 9
-made  c2-d8-i-33x6                                 674 bytes  ok, 33 by 6
 made  c2-d16-n-1x1                                  72 bytes  ok, 1 by 1
-made  c2-d16-n-2x3                                 105 bytes  ok, 2 by 3
-made  c2-d16-n-3x2                                 106 bytes  ok, 3 by 2
-made  c2-d16-n-4x4                                 168 bytes  ok, 4 by 4
 made  c2-d16-n-5x9                                 347 bytes  ok, 5 by 9
-made  c2-d16-n-7x3                                 197 bytes  ok, 7 by 3
 made  c2-d16-n-8x8                                 460 bytes  ok, 8 by 8
-made  c2-d16-n-9x5                                 343 bytes  ok, 9 by 5
-made  c2-d16-n-13x1                                147 bytes  ok, 13 by 1
-made  c2-d16-n-1x13                                159 bytes  ok, 1 by 13
-made  c2-d16-n-16x2                                262 bytes  ok, 16 by 2
 made  c2-d16-n-17x9                                995 bytes  ok, 17 by 9
-made  c2-d16-n-33x6                               1262 bytes  ok, 33 by 6
 made  c2-d16-i-1x1                                  72 bytes  ok, 1 by 1
-made  c2-d16-i-2x3                                 107 bytes  ok, 2 by 3
-made  c2-d16-i-3x2                                 106 bytes  ok, 3 by 2
-made  c2-d16-i-4x4                                 171 bytes  ok, 4 by 4
 made  c2-d16-i-5x9                                 357 bytes  ok, 5 by 9
-made  c2-d16-i-7x3                                 201 bytes  ok, 7 by 3
 made  c2-d16-i-8x8                                 467 bytes  ok, 8 by 8
-made  c2-d16-i-9x5                                 349 bytes  ok, 9 by 5
-made  c2-d16-i-13x1                                150 bytes  ok, 13 by 1
-made  c2-d16-i-1x13                                159 bytes  ok, 1 by 13
-made  c2-d16-i-16x2                                265 bytes  ok, 16 by 2
 made  c2-d16-i-17x9                               1005 bytes  ok, 17 by 9
-made  c2-d16-i-33x6                               1268 bytes  ok, 33 by 6
 made  c3-d1-n-1x1                                   85 bytes  ok, 1 by 1
-made  c3-d1-n-2x3                                   89 bytes  ok, 2 by 3
-made  c3-d1-n-3x2                                   87 bytes  ok, 3 by 2
-made  c3-d1-n-4x4                                   91 bytes  ok, 4 by 4
 made  c3-d1-n-5x9                                  101 bytes  ok, 5 by 9
-made  c3-d1-n-7x3                                   89 bytes  ok, 7 by 3
 made  c3-d1-n-8x8                                   99 bytes  ok, 8 by 8
-made  c3-d1-n-9x5                                   98 bytes  ok, 9 by 5
-made  c3-d1-n-13x1                                  86 bytes  ok, 13 by 1
-made  c3-d1-n-1x13                                 107 bytes  ok, 1 by 13
-made  c3-d1-n-16x2                                  89 bytes  ok, 16 by 2
 made  c3-d1-n-17x9                                 120 bytes  ok, 17 by 9
-made  c3-d1-n-33x6                                 120 bytes  ok, 33 by 6
 made  c3-d1-i-1x1                                   85 bytes  ok, 1 by 1
-made  c3-d1-i-2x3                                   93 bytes  ok, 2 by 3
-made  c3-d1-i-3x2                                   91 bytes  ok, 3 by 2
-made  c3-d1-i-4x4                                   97 bytes  ok, 4 by 4
 made  c3-d1-i-5x9                                  121 bytes  ok, 5 by 9
-made  c3-d1-i-7x3                                   97 bytes  ok, 7 by 3
-made  c3-d1-i-8x8                                  114 bytes  ok, 8 by 8
-made  c3-d1-i-9x5                                  107 bytes  ok, 9 by 5
-made  c3-d1-i-13x1                                  91 bytes  ok, 13 by 1
-made  c3-d1-i-1x13                                 106 bytes  ok, 1 by 13
-made  c3-d1-i-16x2                                  94 bytes  ok, 16 by 2
+made  c3-d1-i-8x8                                  113 bytes  ok, 8 by 8
 made  c3-d1-i-17x9                                 132 bytes  ok, 17 by 9
-made  c3-d1-i-33x6                                 126 bytes  ok, 33 by 6
 made  c3-d2-n-1x1                                   91 bytes  ok, 1 by 1
-made  c3-d2-n-2x3                                   95 bytes  ok, 2 by 3
-made  c3-d2-n-3x2                                   93 bytes  ok, 3 by 2
-made  c3-d2-n-4x4                                   97 bytes  ok, 4 by 4
-made  c3-d2-n-5x9                                  116 bytes  ok, 5 by 9
-made  c3-d2-n-7x3                                   98 bytes  ok, 7 by 3
+made  c3-d2-n-5x9                                  117 bytes  ok, 5 by 9
 made  c3-d2-n-8x8                                  113 bytes  ok, 8 by 8
-made  c3-d2-n-9x5                                  110 bytes  ok, 9 by 5
-made  c3-d2-n-13x1                                  94 bytes  ok, 13 by 1
-made  c3-d2-n-1x13                                 112 bytes  ok, 1 by 13
-made  c3-d2-n-16x2                                  99 bytes  ok, 16 by 2
 made  c3-d2-n-17x9                                 146 bytes  ok, 17 by 9
-made  c3-d2-n-33x6                                 152 bytes  ok, 33 by 6
 made  c3-d2-i-1x1                                   91 bytes  ok, 1 by 1
-made  c3-d2-i-2x3                                   99 bytes  ok, 2 by 3
-made  c3-d2-i-3x2                                   97 bytes  ok, 3 by 2
-made  c3-d2-i-4x4                                  103 bytes  ok, 4 by 4
-made  c3-d2-i-5x9                                  131 bytes  ok, 5 by 9
-made  c3-d2-i-7x3                                  104 bytes  ok, 7 by 3
+made  c3-d2-i-5x9                                  132 bytes  ok, 5 by 9
 made  c3-d2-i-8x8                                  124 bytes  ok, 8 by 8
-made  c3-d2-i-9x5                                  117 bytes  ok, 9 by 5
-made  c3-d2-i-13x1                                  98 bytes  ok, 13 by 1
-made  c3-d2-i-1x13                                 114 bytes  ok, 1 by 13
-made  c3-d2-i-16x2                                 103 bytes  ok, 16 by 2
 made  c3-d2-i-17x9                                 156 bytes  ok, 17 by 9
-made  c3-d2-i-33x6                                 158 bytes  ok, 33 by 6
 made  c3-d4-n-1x1                                  127 bytes  ok, 1 by 1
-made  c3-d4-n-2x3                                  131 bytes  ok, 2 by 3
-made  c3-d4-n-3x2                                  131 bytes  ok, 3 by 2
-made  c3-d4-n-4x4                                  137 bytes  ok, 4 by 4
-made  c3-d4-n-5x9                                  164 bytes  ok, 5 by 9
-made  c3-d4-n-7x3                                  140 bytes  ok, 7 by 3
-made  c3-d4-n-8x8                                  168 bytes  ok, 8 by 8
-made  c3-d4-n-9x5                                  156 bytes  ok, 9 by 5
-made  c3-d4-n-13x1                                 133 bytes  ok, 13 by 1
-made  c3-d4-n-1x13                                 152 bytes  ok, 1 by 13
-made  c3-d4-n-16x2                                 143 bytes  ok, 16 by 2
+made  c3-d4-n-5x9                                  162 bytes  ok, 5 by 9
+made  c3-d4-n-8x8                                  166 bytes  ok, 8 by 8
 made  c3-d4-n-17x9                                 218 bytes  ok, 17 by 9
-made  c3-d4-n-33x6                                 236 bytes  ok, 33 by 6
 made  c3-d4-i-1x1                                  127 bytes  ok, 1 by 1
-made  c3-d4-i-2x3                                  135 bytes  ok, 2 by 3
-made  c3-d4-i-3x2                                  134 bytes  ok, 3 by 2
-made  c3-d4-i-4x4                                  141 bytes  ok, 4 by 4
 made  c3-d4-i-5x9                                  174 bytes  ok, 5 by 9
-made  c3-d4-i-7x3                                  145 bytes  ok, 7 by 3
-made  c3-d4-i-8x8                                  176 bytes  ok, 8 by 8
-made  c3-d4-i-9x5                                  162 bytes  ok, 9 by 5
-made  c3-d4-i-13x1                                 136 bytes  ok, 13 by 1
-made  c3-d4-i-1x13                                 151 bytes  ok, 1 by 13
-made  c3-d4-i-16x2                                 147 bytes  ok, 16 by 2
+made  c3-d4-i-8x8                                  174 bytes  ok, 8 by 8
 made  c3-d4-i-17x9                                 228 bytes  ok, 17 by 9
-made  c3-d4-i-33x6                                 242 bytes  ok, 33 by 6
 made  c3-d8-n-1x1                                  847 bytes  ok, 1 by 1
-made  c3-d8-n-2x3                                  854 bytes  ok, 2 by 3
-made  c3-d8-n-3x2                                  853 bytes  ok, 3 by 2
-made  c3-d8-n-4x4                                  865 bytes  ok, 4 by 4
 made  c3-d8-n-5x9                                  902 bytes  ok, 5 by 9
-made  c3-d8-n-7x3                                  870 bytes  ok, 7 by 3
 made  c3-d8-n-8x8                                  920 bytes  ok, 8 by 8
-made  c3-d8-n-9x5                                  898 bytes  ok, 9 by 5
-made  c3-d8-n-13x1                                 859 bytes  ok, 13 by 1
-made  c3-d8-n-1x13                                 871 bytes  ok, 1 by 13
-made  c3-d8-n-16x2                                 880 bytes  ok, 16 by 2
 made  c3-d8-n-17x9                                1010 bytes  ok, 17 by 9
-made  c3-d8-n-33x6                                1052 bytes  ok, 33 by 6
 made  c3-d8-i-1x1                                  847 bytes  ok, 1 by 1
-made  c3-d8-i-2x3                                  856 bytes  ok, 2 by 3
-made  c3-d8-i-3x2                                  855 bytes  ok, 3 by 2
-made  c3-d8-i-4x4                                  868 bytes  ok, 4 by 4
 made  c3-d8-i-5x9                                  912 bytes  ok, 5 by 9
-made  c3-d8-i-7x3                                  874 bytes  ok, 7 by 3
 made  c3-d8-i-8x8                                  927 bytes  ok, 8 by 8
-made  c3-d8-i-9x5                                  904 bytes  ok, 9 by 5
-made  c3-d8-i-13x1                                 863 bytes  ok, 13 by 1
-made  c3-d8-i-1x13                                 872 bytes  ok, 1 by 13
-made  c3-d8-i-16x2                                 883 bytes  ok, 16 by 2
 made  c3-d8-i-17x9                                1020 bytes  ok, 17 by 9
-made  c3-d8-i-33x6                                1058 bytes  ok, 33 by 6
 made  c4-d8-n-1x1                                   68 bytes  ok, 1 by 1
-made  c4-d8-n-2x3                                   81 bytes  ok, 2 by 3
-made  c4-d8-n-3x2                                   79 bytes  ok, 3 by 2
-made  c4-d8-n-4x4                                  102 bytes  ok, 4 by 4
 made  c4-d8-n-5x9                                  167 bytes  ok, 5 by 9
-made  c4-d8-n-7x3                                  113 bytes  ok, 7 by 3
 made  c4-d8-n-8x8                                  204 bytes  ok, 8 by 8
-made  c4-d8-n-9x5                                  163 bytes  ok, 9 by 5
-made  c4-d8-n-13x1                                  93 bytes  ok, 13 by 1
-made  c4-d8-n-1x13                                 105 bytes  ok, 1 by 13
-made  c4-d8-n-16x2                                 134 bytes  ok, 16 by 2
 made  c4-d8-n-17x9                                 383 bytes  ok, 17 by 9
-made  c4-d8-n-33x6                                 470 bytes  ok, 33 by 6
 made  c4-d8-i-1x1                                   68 bytes  ok, 1 by 1
-made  c4-d8-i-2x3                                   82 bytes  ok, 2 by 3
-made  c4-d8-i-3x2                                   82 bytes  ok, 3 by 2
-made  c4-d8-i-4x4                                  105 bytes  ok, 4 by 4
 made  c4-d8-i-5x9                                  177 bytes  ok, 5 by 9
-made  c4-d8-i-7x3                                  117 bytes  ok, 7 by 3
 made  c4-d8-i-8x8                                  211 bytes  ok, 8 by 8
-made  c4-d8-i-9x5                                  169 bytes  ok, 9 by 5
-made  c4-d8-i-13x1                                  96 bytes  ok, 13 by 1
-made  c4-d8-i-1x13                                 105 bytes  ok, 1 by 13
-made  c4-d8-i-16x2                                 137 bytes  ok, 16 by 2
 made  c4-d8-i-17x9                                 393 bytes  ok, 17 by 9
-made  c4-d8-i-33x6                                 476 bytes  ok, 33 by 6
 made  c4-d16-n-1x1                                  70 bytes  ok, 1 by 1
-made  c4-d16-n-2x3                                  93 bytes  ok, 2 by 3
-made  c4-d16-n-3x2                                  92 bytes  ok, 3 by 2
-made  c4-d16-n-4x4                                 136 bytes  ok, 4 by 4
 made  c4-d16-n-5x9                                 257 bytes  ok, 5 by 9
-made  c4-d16-n-7x3                                 155 bytes  ok, 7 by 3
 made  c4-d16-n-8x8                                 332 bytes  ok, 8 by 8
-made  c4-d16-n-9x5                                 253 bytes  ok, 9 by 5
-made  c4-d16-n-13x1                                121 bytes  ok, 13 by 1
-made  c4-d16-n-1x13                                133 bytes  ok, 1 by 13
-made  c4-d16-n-16x2                                198 bytes  ok, 16 by 2
 made  c4-d16-n-17x9                                689 bytes  ok, 17 by 9
-made  c4-d16-n-33x6                                866 bytes  ok, 33 by 6
 made  c4-d16-i-1x1                                  70 bytes  ok, 1 by 1
-made  c4-d16-i-2x3                                  94 bytes  ok, 2 by 3
-made  c4-d16-i-3x2                                  94 bytes  ok, 3 by 2
-made  c4-d16-i-4x4                                 139 bytes  ok, 4 by 4
 made  c4-d16-i-5x9                                 267 bytes  ok, 5 by 9
-made  c4-d16-i-7x3                                 159 bytes  ok, 7 by 3
 made  c4-d16-i-8x8                                 339 bytes  ok, 8 by 8
-made  c4-d16-i-9x5                                 259 bytes  ok, 9 by 5
-made  c4-d16-i-13x1                                124 bytes  ok, 13 by 1
-made  c4-d16-i-1x13                                133 bytes  ok, 1 by 13
-made  c4-d16-i-16x2                                201 bytes  ok, 16 by 2
 made  c4-d16-i-17x9                                699 bytes  ok, 17 by 9
-made  c4-d16-i-33x6                                872 bytes  ok, 33 by 6
 made  c6-d8-n-1x1                                   70 bytes  ok, 1 by 1
-made  c6-d8-n-2x3                                   93 bytes  ok, 2 by 3
-made  c6-d8-n-3x2                                   92 bytes  ok, 3 by 2
-made  c6-d8-n-4x4                                  136 bytes  ok, 4 by 4
 made  c6-d8-n-5x9                                  257 bytes  ok, 5 by 9
-made  c6-d8-n-7x3                                  155 bytes  ok, 7 by 3
 made  c6-d8-n-8x8                                  332 bytes  ok, 8 by 8
-made  c6-d8-n-9x5                                  253 bytes  ok, 9 by 5
-made  c6-d8-n-13x1                                 121 bytes  ok, 13 by 1
-made  c6-d8-n-1x13                                 133 bytes  ok, 1 by 13
-made  c6-d8-n-16x2                                 198 bytes  ok, 16 by 2
 made  c6-d8-n-17x9                                 689 bytes  ok, 17 by 9
-made  c6-d8-n-33x6                                 866 bytes  ok, 33 by 6
 made  c6-d8-i-1x1                                   70 bytes  ok, 1 by 1
-made  c6-d8-i-2x3                                   95 bytes  ok, 2 by 3
-made  c6-d8-i-3x2                                   94 bytes  ok, 3 by 2
-made  c6-d8-i-4x4                                  139 bytes  ok, 4 by 4
 made  c6-d8-i-5x9                                  267 bytes  ok, 5 by 9
-made  c6-d8-i-7x3                                  159 bytes  ok, 7 by 3
 made  c6-d8-i-8x8                                  339 bytes  ok, 8 by 8
-made  c6-d8-i-9x5                                  259 bytes  ok, 9 by 5
-made  c6-d8-i-13x1                                 124 bytes  ok, 13 by 1
-made  c6-d8-i-1x13                                 133 bytes  ok, 1 by 13
-made  c6-d8-i-16x2                                 201 bytes  ok, 16 by 2
 made  c6-d8-i-17x9                                 699 bytes  ok, 17 by 9
-made  c6-d8-i-33x6                                 872 bytes  ok, 33 by 6
 made  c6-d16-n-1x1                                  74 bytes  ok, 1 by 1
-made  c6-d16-n-2x3                                 119 bytes  ok, 2 by 3
-made  c6-d16-n-3x2                                 118 bytes  ok, 3 by 2
-made  c6-d16-n-4x4                                 200 bytes  ok, 4 by 4
 made  c6-d16-n-5x9                                 437 bytes  ok, 5 by 9
-made  c6-d16-n-7x3                                 239 bytes  ok, 7 by 3
 made  c6-d16-n-8x8                                 588 bytes  ok, 8 by 8
-made  c6-d16-n-9x5                                 433 bytes  ok, 9 by 5
-made  c6-d16-n-13x1                                173 bytes  ok, 13 by 1
-made  c6-d16-n-1x13                                185 bytes  ok, 1 by 13
-made  c6-d16-n-16x2                                326 bytes  ok, 16 by 2
 made  c6-d16-n-17x9                               1301 bytes  ok, 17 by 9
-made  c6-d16-n-33x6                               1658 bytes  ok, 33 by 6
 made  c6-d16-i-1x1                                  74 bytes  ok, 1 by 1
-made  c6-d16-i-2x3                                 121 bytes  ok, 2 by 3
-made  c6-d16-i-3x2                                 120 bytes  ok, 3 by 2
-made  c6-d16-i-4x4                                 203 bytes  ok, 4 by 4
 made  c6-d16-i-5x9                                 447 bytes  ok, 5 by 9
-made  c6-d16-i-7x3                                 243 bytes  ok, 7 by 3
 made  c6-d16-i-8x8                                 595 bytes  ok, 8 by 8
-made  c6-d16-i-9x5                                 439 bytes  ok, 9 by 5
-made  c6-d16-i-13x1                                176 bytes  ok, 13 by 1
-made  c6-d16-i-1x13                                185 bytes  ok, 1 by 13
-made  c6-d16-i-16x2                                329 bytes  ok, 16 by 2
 made  c6-d16-i-17x9                               1311 bytes  ok, 17 by 9
-made  c6-d16-i-33x6                               1664 bytes  ok, 33 by 6
 made  filter0-c0-d1                                 86 bytes  ok, 11 by 7
 made  filter0-c0-d8                                152 bytes  ok, 11 by 7
 made  filter0-c2-d8                                306 bytes  ok, 11 by 7
@@ -707,552 +437,3 @@ made  limit-over                                   178 bytes  refused: 10 by 10 
 made  limit-default-over                            65 bytes  refused: 4097 by 4096 is more than the limit of 16777216 pixels
 made  bomb-claims-big                               74 bytes  ok, 4096 by 4096
 made  bomb-too-much                              20450 bytes  ok, 1 by 1
-cut   basn0g01.png                               91 ok,   61 refused
-cut   basi2c08.png                              110 ok,   61 refused
-cut   basn3p04.png                               35 ok,  121 refused
-cut   basi6a16.png                              399 ok,   61 refused
-cut   tbrn2c08.png                              168 ok,   97 refused
-cut   c3-d2-i-17x9                               87 ok,   69 refused
-cut   c6-d8-n-33x6                              161 ok,   45 refused
-cut   idat-one-byte-each                        293 ok,   49 refused
-cut   idat-stored                               118 ok,   45 refused
-cut   trns-rgb16                                 92 ok,   63 refused
-fuzz  c6-d16-i-1x1                                1 ok,   10 refused
-fuzz  iend-with-data                              0 ok,    7 refused
-fuzz  idat-stored                                 0 ok,   14 refused
-fuzz  s05n3p02.png                                0 ok,    5 refused
-fuzz  ancillary-bad-crc                           1 ok,    5 refused
-fuzz  c6-d8-i-4x4                                 1 ok,    6 refused
-fuzz  filter3-c0-d8                               0 ok,    9 refused
-fuzz  g03n0g16.png                                0 ok,   10 refused
-fuzz  c3-d4-i-1x1                                 1 ok,    5 refused
-fuzz  s06i3p02.png                                1 ok,    6 refused
-fuzz  c2-d16-n-5x9                                0 ok,    7 refused
-fuzz  bgbn4a08.png                                3 ok,    9 refused
-fuzz  c3-d2-i-2x3                                 2 ok,    8 refused
-fuzz  c0-d16-i-1x13                               0 ok,    6 refused
-fuzz  c0-d1-n-3x2                                 0 ok,    4 refused
-fuzz  c0-d4-n-13x1                                2 ok,    9 refused
-fuzz  c0-d4-n-17x9                                1 ok,    6 refused
-fuzz  filter2-c2-d16                              0 ok,    4 refused
-fuzz  c6-d16-i-8x8                                0 ok,    9 refused
-fuzz  s33n3p04.png                                1 ok,    7 refused
-fuzz  c3-d1-i-1x1                                 2 ok,    7 refused
-fuzz  g03n2c08.png                                1 ok,   10 refused
-fuzz  g25n0g16.png                                2 ok,   10 refused
-fuzz  g05n3p04.png                                1 ok,    3 refused
-fuzz  c2-d16-n-16x2                               1 ok,    8 refused
-fuzz  filter0-c2-d8                               0 ok,    6 refused
-fuzz  trns-twice                                  2 ok,    6 refused
-fuzz  c0-d8-i-5x9                                 0 ok,    8 refused
-fuzz  c3-d4-n-4x4                                 2 ok,    6 refused
-fuzz  c0-d4-n-4x4                                 0 ok,    8 refused
-fuzz  c6-d16-n-4x4                                1 ok,    9 refused
-fuzz  s32n3p04.png                                1 ok,    4 refused
-fuzz  c3-d4-n-17x9                                2 ok,    5 refused
-fuzz  c0-d4-n-33x6                                0 ok,    8 refused
-fuzz  c0-d2-n-16x2                                1 ok,    6 refused
-fuzz  c0-d4-i-5x9                                 0 ok,    8 refused
-fuzz  c0-d4-n-3x2                                 1 ok,    7 refused
-fuzz  c3-d4-n-3x2                                 4 ok,    6 refused
-fuzz  c6-d8-i-1x1                                 0 ok,    3 refused
-fuzz  c6-d16-n-13x1                               1 ok,   11 refused
-fuzz  c4-d8-n-5x9                                 0 ok,    8 refused
-fuzz  c0-d8-n-5x9                                 0 ok,    6 refused
-fuzz  basi0g04.png                                0 ok,    6 refused
-fuzz  c0-d16-n-17x9                               0 ok,   11 refused
-fuzz  basn2c08.png                                2 ok,   11 refused
-fuzz  c6-d16-i-2x3                                2 ok,    4 refused
-fuzz  c3-d4-i-4x4                                 2 ok,    4 refused
-fuzz  c6-d8-n-1x1                                 0 ok,    9 refused
-fuzz  g25n2c08.png                                1 ok,    5 refused
-fuzz  s07i3p02.png                                2 ok,    6 refused
-fuzz  cs3n3p08.png                                1 ok,   12 refused
-fuzz  c6-d16-i-5x9                                2 ok,   11 refused
-fuzz  c3-d4-i-16x2                                2 ok,    8 refused
-fuzz  g05n0g16.png                                0 ok,    6 refused
-fuzz  c3-d1-i-7x3                                 1 ok,    6 refused
-fuzz  c0-d8-n-33x6                                0 ok,   12 refused
-fuzz  s35n3p04.png                                2 ok,    5 refused
-fuzz  c3-d4-i-5x9                                 1 ok,    6 refused
-fuzz  s01n3p01.png                                1 ok,    1 refused
-fuzz  c3-d4-n-2x3                                 2 ok,    5 refused
-fuzz  c4-d16-n-16x2                               1 ok,    4 refused
-fuzz  s34i3p04.png                                1 ok,    6 refused
-fuzz  c0-d8-n-7x3                                 1 ok,    7 refused
-fuzz  c3-d2-i-17x9                                3 ok,    7 refused
-fuzz  c0-d4-i-1x1                                 2 ok,    6 refused
-fuzz  c3-d4-n-1x1                                 3 ok,    8 refused
-fuzz  c3-d4-n-5x9                                 2 ok,    5 refused
-fuzz  c0-d2-n-2x3                                 1 ok,    7 refused
-fuzz  ct0n0g04.png                                1 ok,   11 refused
-fuzz  cdfn2c08.png                                2 ok,    6 refused
-fuzz  c6-d8-i-1x13                                1 ok,    7 refused
-fuzz  c0-d8-i-3x2                                 0 ok,    6 refused
-fuzz  c0-d8-n-1x13                                2 ok,    2 refused
-fuzz  c0-d1-n-7x3                                 1 ok,    5 refused
-fuzz  filter1-c0-d8                               0 ok,    7 refused
-fuzz  c2-d16-i-2x3                                0 ok,   10 refused
-fuzz  c6-d8-n-1x13                                1 ok,    6 refused
-fuzz  c3-d1-i-9x5                                 0 ok,   10 refused
-fuzz  c3-d1-i-33x6                                1 ok,    7 refused
-fuzz  c2-d8-n-7x3                                 2 ok,    7 refused
-fuzz  c3-d4-i-1x13                                2 ok,    6 refused
-fuzz  c3-d4-n-1x13                                2 ok,    4 refused
-fuzz  c0-d1-n-16x2                                1 ok,    4 refused
-fuzz  trns-gray16-top-byte-only                   0 ok,    5 refused
-fuzz  c0-d4-n-2x3                                 3 ok,    6 refused
-fuzz  c3-d4-i-17x9                                3 ok,    1 refused
-fuzz  trns-gray8                                  0 ok,    9 refused
-fuzz  c3-d2-n-5x9                                 1 ok,   11 refused
-fuzz  c3-d2-n-1x13                                0 ok,   10 refused
-fuzz  filter0-c2-d16                              0 ok,   11 refused
-fuzz  c3-d1-i-13x1                                0 ok,    3 refused
-fuzz  basi2c08.png                                0 ok,    5 refused
-fuzz  c0-d4-i-3x2                                 0 ok,    6 refused
-fuzz  c3-d1-n-2x3                                 5 ok,    8 refused
-fuzz  c0-d8-i-8x8                                 1 ok,   13 refused
-fuzz  c3-d1-n-5x9                                 2 ok,    7 refused
-fuzz  c0-d2-i-1x1                                 0 ok,    7 refused
-fuzz  c0-d4-n-5x9                                 1 ok,   11 refused
-fuzz  c0-d4-n-16x2                                1 ok,    7 refused
-fuzz  idat-empty-ones                             0 ok,    8 refused
-fuzz  c6-d8-i-2x3                                 1 ok,    4 refused
-fuzz  f99n0g04.png                                1 ok,   12 refused
-fuzz  basn0g04.png                                1 ok,    4 refused
-fuzz  c3-d2-i-8x8                                 2 ok,    4 refused
-fuzz  s37n3p04.png                                4 ok,    7 refused
-fuzz  z06n2c08.png                                2 ok,    9 refused
-fuzz  c0-d16-n-1x1                                0 ok,    5 refused
-fuzz  gradient-level9                             0 ok,    6 refused
-fuzz  c0-d4-n-7x3                                 1 ok,    6 refused
-fuzz  trns-palette-all                            3 ok,    7 refused
-fuzz  c4-d8-n-33x6                                0 ok,    6 refused
-fuzz  c0-d1-i-8x8                                 1 ok,    4 refused
-fuzz  c0-d16-i-17x9                               1 ok,    4 refused
-fuzz  c0-d16-n-2x3                                1 ok,   11 refused
-fuzz  basi0g08.png                                0 ok,    5 refused
-fuzz  filter1-c2-d8                               1 ok,   10 refused
-fuzz  c4-d16-i-8x8                                1 ok,    2 refused
-fuzz  c0-d2-n-1x13                                0 ok,    8 refused
-fuzz  c6-d16-i-4x4                                0 ok,    8 refused
-fuzz  c4-d8-n-13x1                                3 ok,    3 refused
-fuzz  basi6a08.png                                1 ok,    6 refused
-fuzz  c0-d2-i-8x8                                 2 ok,    5 refused
-fuzz  c3-d1-i-5x9                                 1 ok,    8 refused
-fuzz  c3-d1-i-17x9                                1 ok,    6 refused
-fuzz  filter0-c0-d8                               0 ok,    7 refused
-fuzz  g04n3p04.png                                1 ok,    7 refused
-fuzz  c0-d2-i-4x4                                 1 ok,    3 refused
-fuzz  c2-d8-i-8x8                                 1 ok,    5 refused
-fuzz  c0-d1-i-13x1                                0 ok,    8 refused
-fuzz  c3-d2-n-4x4                                 4 ok,    9 refused
-fuzz  g04n0g16.png                                1 ok,   10 refused
-fuzz  trns-gray-wrong-length                      0 ok,    4 refused
-fuzz  c3-d2-i-13x1                                0 ok,    6 refused
-fuzz  c0-d1-i-7x3                                 1 ok,    7 refused
-fuzz  c4-d8-n-1x1                                 0 ok,    5 refused
-fuzz  c4-d16-n-5x9                                1 ok,    5 refused
-fuzz  c0-d8-n-2x3                                 0 ok,   10 refused
-fuzz  filter2-c0-d1                               0 ok,    6 refused
-fuzz  s07n3p02.png                                2 ok,    6 refused
-fuzz  c0-d8-n-4x4                                 0 ok,   12 refused
-fuzz  c4-d16-i-5x9                                0 ok,    5 refused
-fuzz  c2-d16-i-9x5                                1 ok,    7 refused
-fuzz  g10n3p04.png                                3 ok,    4 refused
-fuzz  c2-d16-i-4x4                                0 ok,    7 refused
-fuzz  g03n3p04.png                                1 ok,    4 refused
-fuzz  c6-d16-n-8x8                                0 ok,   13 refused
-fuzz  basi0g02.png                                2 ok,    8 refused
-fuzz  c0-d2-i-13x1                                1 ok,   10 refused
-fuzz  c3-d1-i-1x13                                0 ok,    7 refused
-fuzz  c4-d8-n-1x13                                1 ok,   11 refused
-fuzz  c2-d8-i-1x1                                 2 ok,    9 refused
-fuzz  filter1-c0-d1                               3 ok,    7 refused
-fuzz  c0-d16-i-7x3                                0 ok,    8 refused
-fuzz  c4-d8-n-3x2                                 0 ok,    8 refused
-fuzz  plte-in-gray                                1 ok,    5 refused
-fuzz  c2-d8-i-4x4                                 0 ok,    8 refused
-fuzz  c0-d16-i-16x2                               0 ok,    5 refused
-fuzz  c2-d16-n-4x4                                1 ok,    7 refused
-fuzz  filter2-c0-d16                              1 ok,    8 refused
-fuzz  basn6a08.png                                0 ok,    7 refused
-fuzz  s03n3p01.png                                2 ok,    5 refused
-fuzz  filter2-c4-d8                               1 ok,    6 refused
-fuzz  cm7n0g04.png                                1 ok,    7 refused
-fuzz  c3-d1-i-16x2                                0 ok,    6 refused
-fuzz  c3-d2-n-13x1                                2 ok,    6 refused
-fuzz  c3-d1-n-8x8                                 1 ok,    9 refused
-fuzz  c3-d4-n-8x8                                 1 ok,   13 refused
-fuzz  s09i3p02.png                                0 ok,    7 refused
-fuzz  c2-d16-i-3x2                                1 ok,    7 refused
-fuzz  trns-rgb8                                   0 ok,    5 refused
-fuzz  c0-d4-i-13x1                                0 ok,    9 refused
-fuzz  c4-d8-n-9x5                                 1 ok,   10 refused
-fuzz  s34n3p04.png                                3 ok,    8 refused
-fuzz  c3-d4-i-33x6                                1 ok,    4 refused
-fuzz  cs8n3p08.png                                3 ok,    7 refused
-fuzz  c2-d16-i-13x1                               0 ok,   10 refused
-fuzz  cdsn2c08.png                                2 ok,    4 refused
-fuzz  c3-d1-n-33x6                                1 ok,    4 refused
-fuzz  filter3-c6-d8                               0 ok,    9 refused
-fuzz  c0-d2-n-9x5                                 2 ok,    4 refused
-fuzz  c3-d2-n-9x5                                 0 ok,    5 refused
-fuzz  basi3p01.png                                2 ok,    7 refused
-fuzz  c0-d2-i-2x3                                 4 ok,    5 refused
-fuzz  c2-d16-i-7x3                                0 ok,    4 refused
-fuzz  c0-d1-n-2x3                                 0 ok,    8 refused
-fuzz  c6-d16-n-3x2                                0 ok,   10 refused
-fuzz  g07n0g16.png                                0 ok,    8 refused
-fuzz  c3-d2-n-17x9                                2 ok,    7 refused
-fuzz  c0-d4-i-2x3                                 2 ok,    4 refused
-fuzz  c0-d2-i-3x2                                 0 ok,    9 refused
-fuzz  c0-d2-n-33x6                                0 ok,    6 refused
-fuzz  c4-d16-i-9x5                                0 ok,    7 refused
-fuzz  s40n3p04.png                                1 ok,    8 refused
-fuzz  c3-d1-i-3x2                                 1 ok,    5 refused
-fuzz  c4-d16-n-13x1                               0 ok,   12 refused
-fuzz  basn3p02.png                                2 ok,    6 refused
-fuzz  trns-palette-longer-than-plte               0 ok,    5 refused
-fuzz  c0-d1-n-1x1                                 1 ok,   10 refused
-fuzz  trns-palette-empty                          1 ok,    6 refused
-fuzz  bgwn6a08.png                                5 ok,    7 refused
-fuzz  s38i3p04.png                                0 ok,    4 refused
-fuzz  c0-d2-n-1x1                                 1 ok,    5 refused
-fuzz  c0-d8-i-9x5                                 0 ok,    6 refused
-fuzz  c2-d8-n-17x9                                1 ok,    5 refused
-fuzz  c6-d16-i-13x1                               0 ok,   11 refused
-fuzz  c0-d2-i-9x5                                 1 ok,    9 refused
-fuzz  oi2n2c16.png                                0 ok,    9 refused
-fuzz  c3-d4-i-2x3                                 2 ok,    7 refused
-fuzz  c2-d8-i-16x2                                2 ok,   10 refused
-fuzz  c3-d1-n-3x2                                 4 ok,   10 refused
-fuzz  c2-d16-n-7x3                                1 ok,    6 refused
-fuzz  c0-d2-i-16x2                                3 ok,    3 refused
-fuzz  c0-d16-n-9x5                                0 ok,    3 refused
-fuzz  c0-d2-i-5x9                                 0 ok,   11 refused
-fuzz  filter3-c0-d16                              2 ok,    5 refused
-fuzz  c2-d8-i-5x9                                 0 ok,    4 refused
-fuzz  c0-d4-i-33x6                                1 ok,   12 refused
-fuzz  c0-d4-i-17x9                                0 ok,    6 refused
-fuzz  filter4-c0-d8                               0 ok,   12 refused
-fuzz  c0-d16-i-1x1                                2 ok,    5 refused
-fuzz  c3-d2-n-7x3                                 3 ok,   10 refused
-fuzz  limit-at                                    3 ok,    6 refused
-fuzz  trns-in-rgba                                1 ok,    3 refused
-fuzz  c2-d16-i-8x8                                0 ok,   12 refused
-fuzz  c2-d8-n-4x4                                 0 ok,    5 refused
-fuzz  c2-d8-n-5x9                                 1 ok,    6 refused
-fuzz  c4-d8-i-9x5                                 0 ok,   12 refused
-fuzz  basn3p01.png                                1 ok,   10 refused
-fuzz  c4-d8-i-17x9                                0 ok,    5 refused
-fuzz  c0-d8-n-13x1                                0 ok,    4 refused
-fuzz  c0-d8-i-7x3                                 1 ok,    3 refused
-fuzz  c0-d1-i-16x2                                2 ok,    8 refused
-fuzz  c0-d16-i-5x9                                0 ok,    8 refused
-fuzz  s05i3p02.png                                1 ok,    4 refused
-fuzz  after-zlib-end                              1 ok,    6 refused
-fuzz  oi1n2c16.png                                2 ok,    2 refused
-fuzz  c0-d1-i-9x5                                 1 ok,    7 refused
-fuzz  c0-d8-n-8x8                                 0 ok,    5 refused
-fuzz  gradient-level1                             0 ok,    6 refused
-fuzz  c0-d8-i-4x4                                 1 ok,    7 refused
-fuzz  s02n3p01.png                                2 ok,    8 refused
-fuzz  plte-in-rgba                                2 ok,    4 refused
-fuzz  c6-d16-n-7x3                                0 ok,    8 refused
-fuzz  c2-d8-i-7x3                                 2 ok,   12 refused
-fuzz  after-iend                                  0 ok,    9 refused
-fuzz  c6-d16-n-5x9                                0 ok,   10 refused
-fuzz  trns-palette-some                           1 ok,    8 refused
-fuzz  cs3n2c16.png                                0 ok,   10 refused
-fuzz  f02n0g08.png                                0 ok,    7 refused
-fuzz  plte-one-color                              0 ok,    9 refused
-fuzz  c0-d8-i-13x1                                1 ok,    3 refused
-fuzz  filter0-c0-d16                              0 ok,    9 refused
-fuzz  c2-d16-n-3x2                                0 ok,    6 refused
-fuzz  c0-d16-i-13x1                               1 ok,    7 refused
-fuzz  c6-d16-n-16x2                               2 ok,    8 refused
-fuzz  c0-d1-n-9x5                                 1 ok,    6 refused
-fuzz  filter4-c0-d1                               0 ok,    6 refused
-fuzz  basn4a08.png                                2 ok,    5 refused
-fuzz  c4-d16-n-2x3                                2 ok,    7 refused
-fuzz  c4-d8-i-5x9                                 0 ok,    3 refused
-fuzz  c4-d16-n-4x4                                0 ok,    5 refused
-fuzz  s33i3p04.png                                0 ok,    7 refused
-fuzz  c0-d4-i-4x4                                 1 ok,    9 refused
-fuzz  basn0g01.png                                0 ok,    4 refused
-fuzz  c0-d1-n-33x6                                2 ok,    7 refused
-fuzz  bad-plte-after-idat                         0 ok,    7 refused
-fuzz  filter3-c2-d16                              0 ok,    9 refused
-fuzz  c0-d8-n-1x1                                 1 ok,    6 refused
-fuzz  c0-d2-i-33x6                                0 ok,    5 refused
-fuzz  c6-d16-n-2x3                                1 ok,    5 refused
-fuzz  c0-d4-n-8x8                                 2 ok,    3 refused
-fuzz  c2-d8-i-1x13                                2 ok,    6 refused
-fuzz  filter0-c0-d1                               2 ok,    7 refused
-fuzz  c6-d8-i-5x9                                 0 ok,   10 refused
-fuzz  c0-d1-i-1x1                                 1 ok,    3 refused
-fuzz  c0-d4-i-1x13                                2 ok,    9 refused
-fuzz  filter3-c2-d8                               0 ok,    7 refused
-fuzz  basi0g16.png                                1 ok,   13 refused
-fuzz  g05n2c08.png                                3 ok,   11 refused
-fuzz  c4-d8-n-8x8                                 0 ok,   10 refused
-fuzz  trns-gray2                                  1 ok,    5 refused
-fuzz  c3-d2-i-5x9                                 0 ok,   11 refused
-fuzz  c0-d8-i-1x1                                 1 ok,   13 refused
-fuzz  basn3p04.png                                2 ok,   10 refused
-fuzz  c0-d2-n-8x8                                 0 ok,    7 refused
-fuzz  c0-d16-i-4x4                                0 ok,    6 refused
-fuzz  filter4-c2-d8                               0 ok,    9 refused
-fuzz  c0-d8-i-2x3                                 0 ok,    6 refused
-fuzz  filter1-c4-d8                               0 ok,    7 refused
-fuzz  c0-d16-n-7x3                                0 ok,    6 refused
-fuzz  filter0-c6-d8                               0 ok,    1 refused
-fuzz  c4-d8-i-8x8                                 2 ok,    4 refused
-fuzz  c2-d16-i-1x13                               0 ok,    5 refused
-fuzz  c3-d2-n-2x3                                 1 ok,    7 refused
-fuzz  c2-d8-n-13x1                                1 ok,    7 refused
-fuzz  c0-d8-i-1x13                                0 ok,    7 refused
-fuzz  basn0g08.png                                1 ok,    6 refused
-fuzz  f00n0g08.png                                0 ok,    9 refused
-fuzz  c4-d8-i-13x1                                2 ok,    3 refused
-fuzz  basi4a08.png                                2 ok,   10 refused
-fuzz  unknown-ancillary                           1 ok,    5 refused
-fuzz  gamma-and-srgb                              1 ok,   12 refused
-fuzz  s03i3p01.png                                0 ok,    6 refused
-fuzz  c0-d2-n-17x9                                1 ok,    8 refused
-fuzz  s32i3p04.png                                0 ok,   11 refused
-fuzz  c3-d2-i-1x13                                1 ok,    8 refused
-fuzz  basi0g01.png                                1 ok,    5 refused
-fuzz  c4-d16-i-7x3                                0 ok,    6 refused
-fuzz  c3-d2-n-1x1                                 4 ok,    2 refused
-fuzz  c6-d16-n-1x13                               0 ok,    8 refused
-fuzz  bgan6a08.png                                1 ok,    4 refused
-fuzz  c2-d16-i-1x1                                2 ok,    7 refused
-fuzz  c3-d2-i-1x1                                 3 ok,    1 refused
-fuzz  c2-d16-n-1x13                               1 ok,    8 refused
-fuzz  c4-d8-i-1x13                                1 ok,    7 refused
-fuzz  c4-d8-n-17x9                                0 ok,    6 refused
-fuzz  bad-zlib-cut                                1 ok,    8 refused
-fuzz  c4-d16-i-3x2                                0 ok,    4 refused
-fuzz  basi2c16.png                                1 ok,    4 refused
-fuzz  c3-d4-i-8x8                                 1 ok,    5 refused
-fuzz  basn2c16.png                                0 ok,    7 refused
-fuzz  c0-d1-i-2x3                                 0 ok,   13 refused
-fuzz  trns-rgb16                                  1 ok,   10 refused
-fuzz  c2-d8-n-2x3                                 4 ok,    5 refused
-fuzz  s35i3p04.png                                1 ok,    8 refused
-fuzz  c3-d1-i-2x3                                 4 ok,    4 refused
-fuzz  c3-d1-n-13x1                                1 ok,    9 refused
-fuzz  c0-d2-n-13x1                                3 ok,    3 refused
-fuzz  z09n2c08.png                                1 ok,    3 refused
-fuzz  c6-d8-n-9x5                                 0 ok,   12 refused
-fuzz  c0-d8-n-9x5                                 1 ok,    7 refused
-fuzz  z03n2c08.png                                2 ok,    3 refused
-fuzz  c0-d8-i-33x6                                1 ok,   11 refused
-fuzz  basn0g02.png                                4 ok,    4 refused
-fuzz  c0-d8-i-16x2                                1 ok,   10 refused
-fuzz  c0-d16-i-33x6                               3 ok,    9 refused
-fuzz  s39n3p04.png                                1 ok,    5 refused
-fuzz  c3-d2-i-4x4                                 2 ok,    5 refused
-fuzz  c3-d4-n-7x3                                 0 ok,    7 refused
-fuzz  c2-d16-n-8x8                                0 ok,    4 refused
-fuzz  c2-d8-n-16x2                                1 ok,    2 refused
-fuzz  c4-d16-i-13x1                               1 ok,   13 refused
-fuzz  c0-d4-i-16x2                                0 ok,    7 refused
-fuzz  f01n0g08.png                                0 ok,    9 refused
-fuzz  bad-too-little                              0 ok,    7 refused
-fuzz  c0-d16-n-16x2                               0 ok,    7 refused
-fuzz  c0-d1-n-17x9                                4 ok,    4 refused
-fuzz  c2-d8-n-1x13                                0 ok,   13 refused
-fuzz  c4-d16-i-1x1                                1 ok,    2 refused
-fuzz  c0-d16-n-1x13                               0 ok,    4 refused
-fuzz  c6-d8-n-5x9                                 0 ok,    7 refused
-fuzz  c4-d16-i-1x13                               2 ok,   10 refused
-fuzz  c3-d1-n-1x13                                5 ok,    6 refused
-fuzz  c0-d16-n-33x6                               0 ok,    6 refused
-fuzz  c2-d8-n-3x2                                 0 ok,    3 refused
-fuzz  plte-in-gray-alpha                          1 ok,    5 refused
-fuzz  s08n3p02.png                                0 ok,    6 refused
-fuzz  c0-d8-n-3x2                                 1 ok,   11 refused
-fuzz  c0-d16-n-3x2                                0 ok,    8 refused
-fuzz  cdhn2c08.png                                2 ok,    5 refused
-fuzz  c2-d8-i-2x3                                 3 ok,    9 refused
-fuzz  c0-d1-n-8x8                                 1 ok,    6 refused
-fuzz  g10n0g16.png                                3 ok,    4 refused
-fuzz  c3-d1-i-8x8                                 1 ok,    4 refused
-fuzz  filter4-c0-d16                              1 ok,    2 refused
-fuzz  s36i3p04.png                                1 ok,    8 refused
-fuzz  c2-d16-i-16x2                               0 ok,   11 refused
-fuzz  c2-d8-i-9x5                                 0 ok,    6 refused
-fuzz  oi1n0g16.png                                2 ok,    3 refused
-fuzz  c2-d16-n-1x1                                1 ok,    5 refused
-fuzz  c2-d16-n-13x1                               0 ok,    5 refused
-fuzz  c6-d8-i-7x3                                 0 ok,    7 refused
-fuzz  c6-d8-n-7x3                                 0 ok,    9 refused
-fuzz  trns-rgb-wrong-length                       0 ok,    6 refused
-fuzz  c0-d8-n-17x9                                0 ok,    4 refused
-fuzz  trns-in-gray-alpha                          1 ok,    4 refused
-fuzz  c0-d1-n-4x4                                 0 ok,    9 refused
-fuzz  basn0g16.png                                0 ok,    3 refused
-fuzz  c3-d1-n-1x1                                 1 ok,    4 refused
-fuzz  s08i3p02.png                                1 ok,   10 refused
-fuzz  c3-d2-i-3x2                                 0 ok,    4 refused
-fuzz  c0-d1-i-5x9                                 1 ok,    8 refused
-fuzz  c0-d16-n-4x4                                2 ok,    3 refused
-fuzz  c2-d8-i-3x2                                 1 ok,    9 refused
-fuzz  g10n2c08.png                                0 ok,   10 refused
-fuzz  c4-d16-i-16x2                               1 ok,    6 refused
-fuzz  c0-d16-n-5x9                                1 ok,    9 refused
-fuzz  c0-d16-i-3x2                                1 ok,    9 refused
-fuzz  cs5n3p08.png                                0 ok,    9 refused
-fuzz  c4-d16-i-2x3                                0 ok,    8 refused
-fuzz  filter2-c0-d8                               0 ok,    9 refused
-fuzz  c4-d16-i-4x4                                0 ok,    6 refused
-fuzz  c0-d8-i-17x9                                1 ok,    4 refused
-fuzz  c3-d1-n-17x9                                0 ok,   10 refused
-fuzz  c0-d4-i-8x8                                 0 ok,    8 refused
-fuzz  c3-d2-i-7x3                                 0 ok,    8 refused
-fuzz  s02i3p01.png                                2 ok,    7 refused
-fuzz  tbbn0g04.png                                0 ok,    8 refused
-fuzz  c0-d8-n-16x2                                0 ok,    3 refused
-fuzz  filter3-c4-d8                               1 ok,    8 refused
-fuzz  c4-d8-i-4x4                                 2 ok,    5 refused
-fuzz  c3-d4-i-7x3                                 1 ok,    7 refused
-fuzz  oi2n0g16.png                                2 ok,    3 refused
-fuzz  c6-d16-i-9x5                                0 ok,    3 refused
-fuzz  trns-gray16                                 1 ok,    7 refused
-fuzz  c0-d1-i-33x6                                1 ok,    5 refused
-fuzz  filter1-c0-d16                              1 ok,    5 refused
-fuzz  g25n3p04.png                                0 ok,    4 refused
-fuzz  c3-d1-i-4x4                                 0 ok,    3 refused
-fuzz  c6-d8-i-9x5                                 0 ok,    5 refused
-fuzz  c6-d8-n-2x3                                 1 ok,    9 refused
-fuzz  c0-d1-n-5x9                                 1 ok,    8 refused
-fuzz  c0-d1-i-1x13                                2 ok,    9 refused
-fuzz  c4-d16-n-1x1                                1 ok,    7 refused
-fuzz  c0-d2-i-17x9                                0 ok,    8 refused
-fuzz  c0-d1-i-17x9                                0 ok,    4 refused
-fuzz  c0-d2-n-7x3                                 1 ok,    4 refused
-fuzz  c4-d8-i-33x6                                0 ok,    6 refused
-fuzz  oi4n2c16.png                                0 ok,    7 refused
-fuzz  trns-gray1                                  0 ok,    2 refused
-fuzz  c4-d16-n-1x13                               0 ok,    7 refused
-fuzz  c0-d4-i-9x5                                 0 ok,    8 refused
-fuzz  c3-d2-i-9x5                                 0 ok,    6 refused
-fuzz  c0-d2-n-4x4                                 1 ok,    2 refused
-fuzz  bad-much-too-much                           0 ok,    7 refused
-fuzz  c2-d8-n-9x5                                 1 ok,    7 refused
-fuzz  c6-d8-n-8x8                                 0 ok,   10 refused
-fuzz  c3-d4-n-33x6                                0 ok,    8 refused
-fuzz  cm9n0g04.png                                2 ok,    3 refused
-fuzz  s39i3p04.png                                2 ok,    5 refused
-fuzz  c3-d1-n-16x2                                0 ok,    4 refused
-fuzz  c0-d1-i-3x2                                 2 ok,    2 refused
-fuzz  c0-d1-i-4x4                                 0 ok,    6 refused
-fuzz  c4-d16-n-3x2                                1 ok,    2 refused
-fuzz  s09n3p02.png                                0 ok,    7 refused
-fuzz  c4-d8-i-2x3                                 2 ok,    3 refused
-fuzz  filter3-c0-d1                               1 ok,    4 refused
-fuzz  c0-d1-n-13x1                                0 ok,    4 refused
-fuzz  c0-d1-n-1x13                                2 ok,    9 refused
-fuzz  c0-d4-n-1x1                                 0 ok,    6 refused
-fuzz  filter2-c6-d8                               1 ok,    9 refused
-fuzz  c6-d16-n-9x5                                2 ok,    6 refused
-fuzz  apng-chunks                                 1 ok,    4 refused
-fuzz  c3-d4-n-13x1                                3 ok,    4 refused
-fuzz  tm3n3p02.png                                0 ok,    7 refused
-fuzz  s04n3p01.png                                1 ok,    7 refused
-fuzz  c3-d2-n-8x8                                 1 ok,    1 refused
-fuzz  c6-d16-i-1x13                               0 ok,    5 refused
-fuzz  c2-d16-n-9x5                                0 ok,    7 refused
-fuzz  c4-d8-n-2x3                                 1 ok,    7 refused
-fuzz  c3-d2-n-3x2                                 2 ok,    5 refused
-fuzz  oi4n0g16.png                                1 ok,    7 refused
-fuzz  c6-d8-i-3x2                                 0 ok,    6 refused
-fuzz  c6-d16-i-16x2                               0 ok,    6 refused
-fuzz  bad-unknown-critical-after                  0 ok,    5 refused
-fuzz  g07n2c08.png                                1 ok,   11 refused
-fuzz  bad-too-little-rows                         0 ok,    5 refused
-fuzz  s01i3p01.png                                1 ok,    3 refused
-fuzz  filter4-c2-d16                              2 ok,    6 refused
-fuzz  filter0-c4-d8                               1 ok,    5 refused
-fuzz  bad-zlib-no-adler                           0 ok,   11 refused
-fuzz  c0-d4-n-9x5                                 0 ok,    7 refused
-fuzz  c0-d2-i-7x3                                 1 ok,    4 refused
-fuzz  basi3p04.png                                0 ok,    2 refused
-fuzz  c0-d2-n-3x2                                 1 ok,    2 refused
-fuzz  c2-d8-i-13x1                                0 ok,    5 refused
-fuzz  c4-d8-n-4x4                                 1 ok,    7 refused
-fuzz  c6-d8-i-8x8                                 0 ok,    6 refused
-fuzz  c2-d16-n-2x3                                1 ok,    8 refused
-fuzz  c3-d4-i-3x2                                 2 ok,    2 refused
-fuzz  c2-d8-n-8x8                                 0 ok,   14 refused
-fuzz  c6-d16-i-7x3                                0 ok,    8 refused
-fuzz  c0-d16-i-8x8                                0 ok,    5 refused
-fuzz  c4-d8-i-1x1                                 2 ok,    7 refused
-fuzz  s38n3p04.png                                1 ok,    7 refused
-fuzz  c4-d16-n-8x8                                0 ok,    5 refused
-fuzz  c6-d16-i-3x2                                0 ok,    7 refused
-fuzz  bad-idat-not-together                       2 ok,    2 refused
-fuzz  f04n0g08.png                                0 ok,    7 refused
-fuzz  cs5n2c08.png                                3 ok,    6 refused
-fuzz  c3-d1-n-4x4                                 3 ok,    5 refused
-fuzz  c6-d8-i-13x1                                0 ok,    5 refused
-fuzz  c4-d8-n-16x2                                0 ok,    4 refused
-fuzz  c6-d8-n-13x1                                0 ok,    1 refused
-fuzz  c0-d4-i-7x3                                 2 ok,    5 refused
-fuzz  c3-d2-i-16x2                                1 ok,    9 refused
-fuzz  basi3p02.png                                0 ok,    8 refused
-fuzz  c0-d16-n-13x1                               1 ok,    5 refused
-fuzz  c4-d16-n-9x5                                0 ok,    4 refused
-fuzz  bgai4a08.png                                1 ok,   11 refused
-fuzz  c2-d16-i-5x9                                0 ok,    7 refused
-fuzz  c3-d4-n-16x2                                0 ok,    4 refused
-fuzz  g04n2c08.png                                2 ok,    5 refused
-fuzz  c4-d16-n-7x3                                0 ok,    4 refused
-fuzz  c4-d8-i-3x2                                 0 ok,    6 refused
-fuzz  c0-d16-i-9x5                                0 ok,    3 refused
-fuzz  c0-d16-i-2x3                                0 ok,    5 refused
-fuzz  cs8n2c08.png                                1 ok,    6 refused
-fuzz  plte-in-rgb                                 1 ok,    2 refused
-fuzz  s40i3p04.png                                0 ok,    7 refused
-fuzz  ch1n3p04.png                                1 ok,    4 refused
-fuzz  c3-d1-n-9x5                                 0 ok,    5 refused
-fuzz  c3-d2-n-33x6                                0 ok,    5 refused
-fuzz  c2-d8-n-1x1                                 1 ok,    7 refused
-fuzz  s06n3p02.png                                1 ok,    7 refused
-fuzz  c4-d8-i-16x2                                1 ok,    9 refused
-fuzz  c2-d8-i-17x9                                0 ok,    2 refused
-fuzz  filter1-c2-d16                              0 ok,    4 refused
-fuzz  c0-d2-i-1x13                                0 ok,    6 refused
-fuzz  c6-d8-n-4x4                                 0 ok,    6 refused
-fuzz  c3-d4-n-9x5                                 2 ok,    5 refused
-fuzz  c3-d4-i-13x1                                0 ok,    3 refused
-fuzz  s36n3p04.png                                0 ok,    3 refused
-fuzz  bad-no-iend                                 0 ok,    6 refused
-fuzz  trns-after-idat                             2 ok,    4 refused
-fuzz  s37i3p04.png                                0 ok,    6 refused
-fuzz  c3-d2-n-16x2                                3 ok,    6 refused
-fuzz  c6-d8-i-16x2                                0 ok,    9 refused
-fuzz  s04i3p01.png                                1 ok,    4 refused
-fuzz  trns-gray4-out-of-range                     0 ok,    9 refused
-fuzz  filter4-c4-d8                               0 ok,    4 refused
-fuzz  g07n3p04.png                                1 ok,    8 refused
-fuzz  c0-d2-n-5x9                                 0 ok,    6 refused
-fuzz  c6-d8-n-16x2                                0 ok,    5 refused
-fuzz  f03n0g08.png                                1 ok,    2 refused
-fuzz  c4-d8-n-7x3                                 1 ok,    3 refused
-fuzz  c0-d4-n-1x13                                1 ok,    7 refused
-fuzz  c3-d2-i-33x6                                1 ok,    3 refused
-fuzz  c3-d4-i-9x5                                 1 ok,    5 refused
-fuzz  c6-d16-n-1x1                                1 ok,    6 refused
-fuzz  filter4-c6-d8                               0 ok,    8 refused
-fuzz  cm0n0g04.png                                0 ok,    3 refused
-fuzz  plte-short-index-past-end                   1 ok,    5 refused
-fuzz  c6-d8-n-3x2                                 1 ok,    7 refused
-fuzz  filter1-c6-d8                               1 ok,    5 refused
-fuzz  c4-d8-i-7x3                                 0 ok,    6 refused
-fuzz  filter2-c2-d8                               0 ok,    4 refused
-fuzz  c3-d1-n-7x3                                 0 ok,    5 refused
-fuzz  c0-d16-n-8x8                                0 ok,    2 refused

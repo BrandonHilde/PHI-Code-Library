@@ -49,6 +49,12 @@ OUT = os.path.join(LIB, 'tests', 'bmp')
 SUITE = os.path.join(OUT, 'bmpsuite')
 
 SUITE_GROUP, MADE, CUT, FUZZ = 0, 1, 2, 3
+
+# The everyday cases prove each feature, and are what build.ps1 -Test runs. With --release, this
+# also makes the release cases (release.bin): every size, and files cut short at many lengths and
+# fuzzed, all checked against the outside evidence; those are for when the library is near release.
+RELEASE = False
+
 GROUP_NAMES = ['suite', 'made', 'cut', 'fuzz']
 
 # Left out of the copy: their embedded ICC profiles aren't BMP Suite's to give away.
@@ -98,10 +104,11 @@ def difference(a, b):
     return int(np.abs(a.astype(np.int16) - b.astype(np.int16)).max())
 
 
-def pillow(data):
+def pillow(data, truncated=False):
     import io
     import numpy as np
-    from PIL import Image
+    from PIL import Image, ImageFile
+    ImageFile.LOAD_TRUNCATED_IMAGES = truncated
     try:
         im = Image.open(io.BytesIO(data))
         if im.format != 'BMP':
@@ -234,7 +241,7 @@ def made_cases():
 
     # every bit depth, at widths around each padding boundary, both ways up
     for bpp in (1, 2, 4, 8, 16, 24, 32):
-        for w in (1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 31, 32, 33):
+        for w in ((1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 31, 32, 33) if RELEASE else (1, 3, 9, 33)):
             for top_down in (False, True):
                 h = 3
                 rows = gradient(w, h, bpp if bpp <= 8 else min(bpp, 32), bpp * 1000 + w)
@@ -399,9 +406,8 @@ def made_cases():
         'refuses')
     add('bad-offset-past-end', patch(good, 10, '<I', len(good) + 1), 'refuses')
     add('bad-offset-in-header', patch(bmp(2, 1, 24, [[1, 2]]), 10, '<I', 20), 'pilreads')
-    add('bad-pixels-cut-off', good[:-5], 'refuses')
-    add('bad-pixels-one-short', bmp(5, 2, 8, [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]], palette=pal8)[:-4],
-        'refuses')
+    add('pixels-cut-off', good[:-5], 'partial')
+    add('pixels-one-short', bmp(5, 2, 8, [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]], palette=pal8)[:-4], 'partial')
     # sizes: a pixel bomb in a tiny file, the limit exactly, and one over it
     bomb = bmp(1, 1, 8, palette=pal8[:2], compression=1, data=rle('end'))
     add('bomb-65536-square', patch(patch(bomb, 18, '<i', 65536), 22, '<i', 65536), 'skip')
@@ -505,7 +511,7 @@ def check_suite(source):
 
 def check_made(cases):
     problems = []
-    counts = {'same': 0, 'within1': 0, 'refuses': 0, 'pilreads': 0, 'skip': 0}
+    counts = {'same': 0, 'within1': 0, 'refuses': 0, 'pilreads': 0, 'skip': 0, 'partial': 0}
     for name, data, max_pixels, rule in cases:
         ok, result = decode(data, max_pixels or MAX_PIXELS)
         if rule == 'skip':
@@ -528,6 +534,16 @@ def check_made(cases):
         if not ok:
             problems.append('%s: the rules refuse it: %s' % (name, result))
             continue
+        if rule == 'partial':
+            # cut short: Pillow, reading as far as it goes, gives the same on every pixel the rules made
+            mine = as_rgba(*result)
+            q = pillow(data, truncated=True)
+            made = ~((mine[:, :, 3] == 0) & (mine[:, :, :3].sum(axis=2) == 0))
+            if q is None or q.shape != mine.shape or not (mine[made] == q[made]).all():
+                problems.append('%s: Pillow, reading as far as it goes, differs' % name)
+            else:
+                counts['partial'] += 1
+            continue
         if p is None:
             problems.append('%s: Pillow refuses it' % name)
             continue
@@ -542,7 +558,10 @@ def check_made(cases):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--bmpsuite', help='the unpacked bmpsuite-2.8, to copy and check against')
+    ap.add_argument('--release', action='store_true', help='make the release cases too')
     args = ap.parse_args()
+    global RELEASE
+    RELEASE = args.release
     os.makedirs(OUT, exist_ok=True)
     if args.bmpsuite:
         copy_suite(args.bmpsuite)
@@ -566,6 +585,10 @@ def main():
         index[name] = cases.add(SUITE_GROUP, 0, name, data, payload='tests/bmp/bmpsuite/' + name)
     for name, data, max_pixels, _ in made:
         index[name] = cases.add(MADE, 1, name, data, max_pixels)
+    if not RELEASE:
+        size = cases.write()
+        print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
+        return
 
     # cut short: every length near the start, and then every 29th, and near the end
     for name in ('g/pal8.bmp', 'g/pal4rle.bmp', 'g/pal8rle.bmp', 'g/rgb16-565.bmp', 'q/rgba32h56.bmp',
@@ -594,8 +617,23 @@ def main():
             changes.append((at, v))
         cases.add(FUZZ, 3, 'fuzz-%d-%s' % (k, name), bytes(data), 0, (source, changes))
 
-    size = cases.write()
-    print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
+    # every cut that's read shows the image it was cut from, wherever it shows anything
+    shown = 0
+    for c in cases.list:
+        if c[0] != CUT or not c[6][0]:
+            continue
+        ok, result = decode(c[5])
+        source = cases.list[c[4][0]]
+        ok_full, full = decode(source[5], source[3] or MAX_PIXELS)
+        mine, whole = as_rgba(*result), as_rgba(*full)
+        made = ~((mine[:, :, 3] == 0) & (mine[:, :, :3].sum(axis=2) == 0))
+        if mine.shape != whole.shape or not (mine[made] == whole[made]).all():
+            sys.exit('%s: what the rules show of it isn\'t the image it was cut from' % c[2])
+        shown += 1
+    print('cut short and read: %d, each showing the image it was cut from' % shown)
+
+    size = cases.write('release')
+    print('release.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
 
 
 if __name__ == '__main__':

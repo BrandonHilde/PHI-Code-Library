@@ -87,7 +87,22 @@ weblib doesn't fully meet these rules yet: [plan.md](../plan.md) lists what's le
 
 ## Tests
 
-Each library has two kinds:
+**The principle:** during development we will use a light weight minimum necessary tests to move forward
+quickly. Then when preparing for release we will do the full suite of tests. But until then we will be
+efficient with our time.
+
+So there are two tiers:
+
+| Tier | Files | What's in it | Run by |
+|---|---|---|---|
+| Everyday | `test_*.phi` | The least that shows each feature works: an outside suite's files, and one or a few made cases for each feature and each kind of error. Quick to run, and quick to remake | `.\build.ps1 -Test` |
+| Release | `release_*.phi` | The full suite: every size, files cut short at many lengths, thousands of fuzzed files checked against outside decoders, crash fuzzers of hundreds of thousands, stress runs with other seeds | `.\build.ps1 -Test -Release`, when preparing a library for release |
+
+Nothing has been released yet, so the release tier waits. A new feature gets everyday tests. Its edge cases,
+fuzzing and stress go in the release tier, or wait until release is near. Don't run the release tier as part
+of everyday work.
+
+Each library's tests are of two kinds:
 
 | Kind | Where | What it proves |
 |---|---|---|
@@ -105,8 +120,12 @@ files in first, so use it rather than `phi test` for the first run in that folde
 - Don't save one through PowerShell's `>`, which re-encodes it.
 
 **Fuzzing and outside evidence.** Parsers and decoders are fuzzed with fixed seeds, so a failure can be
-repeated. Each library is measured against an outside suite or a reference implementation where one
-exists, and its README reports the result as it stands.
+repeated: in the release tier. Each library is measured against an outside suite or a reference
+implementation where one exists, and its README reports the result as it stands.
+
+**Memory.** Test generators keep only what they need of each case (its size and a CRC, not its pixels), and
+outside decoders run with limits on their memory and time (`tools/image/cases.py`'s `run_magick`). Run one
+heavy job at a time.
 
 **Warnings** fail the build, because `phi`'s warnings are usually real problems.
 

@@ -9,7 +9,7 @@ use imagelib;
 use memory.mem;
 use data.crc32;
 
-phi.TestPngFuzz:Program
+phi.ReleasePngFuzz:Program
 {
 	u32 seed: 0x2545F491;
 	u32 read: 0;
@@ -37,7 +37,7 @@ phi.TestPngFuzz:Program
 		bases_count++;
 	;;
 	u32 cases_size: 0;
-	ptr<u8> cases_bytes: (Load: 'tests/png/cases.bin' addr cases_size);
+	ptr<u8> cases_bytes: (Load: 'tests/png/release.bin' addr cases_size);
 	CoreReader r;
 	call r.Start: cases_bytes cases_size;
 	u32 count: (r.U32LE);
@@ -78,7 +78,7 @@ phi.TestPngFuzz:Program
 		;;
 	;;
 	if r.failed
-		log 'cases.bin is damaged\n';
+		log 'release.bin is damaged\n';
 		exit 1;
 	;;
 	log 'files to change: ' bases_count '\n';

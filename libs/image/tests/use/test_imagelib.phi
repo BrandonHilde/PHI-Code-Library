@@ -68,8 +68,18 @@ phi.TestImagelib:Program
 	# corelib, reached through imagelib (Python's zlib.adler32 of the file: 2099643294)
 	log 'adler of the file: ' (CoreAdler.Of: rle8 74) '\n';
 
-	ptr<ImgImage> bad: (Img.Decode: rle8 70);
-	log 'cut short: ' (bad is 0) ', ' Img.error '\n';
+	# cut short, it shows what it drew before its data ended: the first run, of 2 in color 1
+	ptr<ImgImage> cut: (Img.Decode: rle8 70);
+	if cut is 0
+		log 'cut short: refused: ' Img.error '\n';
+		exit 0;
+	;;
+	log 'cut short: ' cut.w ' by ' cut.h ':';
+	while u32 i: 0; i < 4; i++;
+		log ' ' (Hex: cut.pixels:i);
+	;;
+	log '\n';
+	call Img.Free: cut;
 	exit 0;
 
 	[Hex: u32 v: 0; : str]

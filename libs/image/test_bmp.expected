@@ -1,4 +1,4 @@
-suite: 89 of 89 as the rules say (76 read, 13 refused):
+suite: 89 of 89 as the rules say (77 read, 12 refused):
   g/pal1.bmp: 127 by 64
   g/pal1bg.bmp: 127 by 64
   g/pal1wb.bmp: 127 by 64
@@ -86,12 +86,9 @@ suite: 89 of 89 as the rules say (76 read, 13 refused):
   b/reallybig.bmp: 3000000 by 2000000 is more than the limit of 16777216 pixels
   b/rgb16-880.bmp: 127 by 64
   b/rletopdown.bmp: RLE compression stored top-down, which BMP doesn't allow
-  b/shortfile.bmp: the file is cut short
+  b/shortfile.bmp: 127 by 64
   x/ba-bm.bmp: not a BMP file
-made: 390 of 390 as the rules say (338 read, 52 refused), refused:
-  rle8-no-end: the RLE data ends before the end of the image
-  rle8-ends-in-delta: the RLE data ends before the end of the image
-  rle8-ends-in-absolute: the RLE data ends before the end of the image
+made: 236 of 236 as the rules say (189 read, 47 refused), refused:
   bad-signature: not a BMP file
   bad-too-short: not a BMP file
   bad-empty: not a BMP file
@@ -134,13 +131,9 @@ made: 390 of 390 as the rules say (338 read, 52 refused), refused:
   bad-palette-cut-off: the file is cut short
   bad-offset-past-end: the pixels' offset is outside the file
   bad-offset-in-header: the pixels' offset is outside the file
-  bad-pixels-cut-off: the file is cut short
-  bad-pixels-one-short: the file is cut short
   bomb-65536-square: 65536 by 65536 is more than the limit of 16777216 pixels
   bomb-wide: 2147483647 by 1 is more than the limit of 16777216 pixels
   bomb-tall-top-down: 3 by 2147483647 is more than the limit of 16777216 pixels
   bomb-os2: 65535 by 65535 is more than the limit of 16777216 pixels
   limit-one-over: 10 by 10 is more than the limit of 99 pixels
-cut: 4789 of 4789 as the rules say (7 read, 4782 refused)
-fuzz: 4000 of 4000 as the rules say (2050 read, 1950 refused)
 done

@@ -90,7 +90,8 @@ class Cases:
         self.list.append((group, kind, name, max_pixels, payload, data, (ok, result)))
         return len(self.list) - 1
 
-    def write(self):
+    def write(self, filename='cases'):
+        """FILENAME.bin and FILENAME.txt, in out: cases (the everyday ones) or release (all of them)"""
         out = bytearray(struct.pack('<I', len(self.list)))
         lines = ['# made by tools/image/%s: what imagelib must make of each case in cases.bin' % self.maker,
                  '# (the cut and fuzz cases are summed up by the case they come from, at the end)']
@@ -126,9 +127,9 @@ class Cases:
                 lines.append('%-5s %-40s %7d bytes  %s' % (self.group_names[group], name, len(data), verdict))
         for (group, source), (good, bad) in summary.items():
             lines.append('%-5s %-40s %4d ok, %4d refused' % (group, source, good, bad))
-        with open(os.path.join(self.out, 'cases.bin'), 'wb') as f:
+        with open(os.path.join(self.out, filename + '.bin'), 'wb') as f:
             f.write(out)
-        with open(os.path.join(self.out, 'cases.txt'), 'w', newline='\n') as f:
+        with open(os.path.join(self.out, filename + '.txt'), 'w', newline='\n') as f:
             f.write('\n'.join(lines) + '\n')
         return len(out)
 

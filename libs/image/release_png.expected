@@ -1,0 +1,227 @@
+suite: 176 of 176 as the rules say (162 read, 14 refused):
+  PngSuite.png: 256 by 256
+  basi0g01.png: 32 by 32
+  basi0g02.png: 32 by 32
+  basi0g04.png: 32 by 32
+  basi0g08.png: 32 by 32
+  basi0g16.png: 32 by 32
+  basi2c08.png: 32 by 32
+  basi2c16.png: 32 by 32
+  basi3p01.png: 32 by 32
+  basi3p02.png: 32 by 32
+  basi3p04.png: 32 by 32
+  basi3p08.png: 32 by 32
+  basi4a08.png: 32 by 32
+  basi4a16.png: 32 by 32
+  basi6a08.png: 32 by 32
+  basi6a16.png: 32 by 32
+  basn0g01.png: 32 by 32
+  basn0g02.png: 32 by 32
+  basn0g04.png: 32 by 32
+  basn0g08.png: 32 by 32
+  basn0g16.png: 32 by 32
+  basn2c08.png: 32 by 32
+  basn2c16.png: 32 by 32
+  basn3p01.png: 32 by 32
+  basn3p02.png: 32 by 32
+  basn3p04.png: 32 by 32
+  basn3p08.png: 32 by 32
+  basn4a08.png: 32 by 32
+  basn4a16.png: 32 by 32
+  basn6a08.png: 32 by 32
+  basn6a16.png: 32 by 32
+  bgai4a08.png: 32 by 32
+  bgai4a16.png: 32 by 32
+  bgan6a08.png: 32 by 32
+  bgan6a16.png: 32 by 32
+  bgbn4a08.png: 32 by 32
+  bggn4a16.png: 32 by 32
+  bgwn6a08.png: 32 by 32
+  bgyn6a16.png: 32 by 32
+  ccwn2c08.png: 32 by 32
+  ccwn3p08.png: 32 by 32
+  cdfn2c08.png: 8 by 32
+  cdhn2c08.png: 32 by 8
+  cdsn2c08.png: 8 by 8
+  cdun2c08.png: 32 by 32
+  ch1n3p04.png: 32 by 32
+  ch2n3p08.png: 32 by 32
+  cm0n0g04.png: 32 by 32
+  cm7n0g04.png: 32 by 32
+  cm9n0g04.png: 32 by 32
+  cs3n2c16.png: 32 by 32
+  cs3n3p08.png: 32 by 32
+  cs5n2c08.png: 32 by 32
+  cs5n3p08.png: 32 by 32
+  cs8n2c08.png: 32 by 32
+  cs8n3p08.png: 32 by 32
+  ct0n0g04.png: 32 by 32
+  ct1n0g04.png: 32 by 32
+  cten0g04.png: 32 by 32
+  ctfn0g04.png: 32 by 32
+  ctgn0g04.png: 32 by 32
+  cthn0g04.png: 32 by 32
+  ctjn0g04.png: 32 by 32
+  ctzn0g04.png: 32 by 32
+  exif2c08.png: 32 by 32
+  f00n0g08.png: 32 by 32
+  f00n2c08.png: 32 by 32
+  f01n0g08.png: 32 by 32
+  f01n2c08.png: 32 by 32
+  f02n0g08.png: 32 by 32
+  f02n2c08.png: 32 by 32
+  f03n0g08.png: 32 by 32
+  f03n2c08.png: 32 by 32
+  f04n0g08.png: 32 by 32
+  f04n2c08.png: 32 by 32
+  f99n0g04.png: 32 by 32
+  g03n0g16.png: 32 by 32
+  g03n2c08.png: 32 by 32
+  g03n3p04.png: 32 by 32
+  g04n0g16.png: 32 by 32
+  g04n2c08.png: 32 by 32
+  g04n3p04.png: 32 by 32
+  g05n0g16.png: 32 by 32
+  g05n2c08.png: 32 by 32
+  g05n3p04.png: 32 by 32
+  g07n0g16.png: 32 by 32
+  g07n2c08.png: 32 by 32
+  g07n3p04.png: 32 by 32
+  g10n0g16.png: 32 by 32
+  g10n2c08.png: 32 by 32
+  g10n3p04.png: 32 by 32
+  g25n0g16.png: 32 by 32
+  g25n2c08.png: 32 by 32
+  g25n3p04.png: 32 by 32
+  oi1n0g16.png: 32 by 32
+  oi1n2c16.png: 32 by 32
+  oi2n0g16.png: 32 by 32
+  oi2n2c16.png: 32 by 32
+  oi4n0g16.png: 32 by 32
+  oi4n2c16.png: 32 by 32
+  oi9n0g16.png: 32 by 32
+  oi9n2c16.png: 32 by 32
+  pp0n2c16.png: 32 by 32
+  pp0n6a08.png: 32 by 32
+  ps1n0g08.png: 32 by 32
+  ps1n2c16.png: 32 by 32
+  ps2n0g08.png: 32 by 32
+  ps2n2c16.png: 32 by 32
+  s01i3p01.png: 1 by 1
+  s01n3p01.png: 1 by 1
+  s02i3p01.png: 2 by 2
+  s02n3p01.png: 2 by 2
+  s03i3p01.png: 3 by 3
+  s03n3p01.png: 3 by 3
+  s04i3p01.png: 4 by 4
+  s04n3p01.png: 4 by 4
+  s05i3p02.png: 5 by 5
+  s05n3p02.png: 5 by 5
+  s06i3p02.png: 6 by 6
+  s06n3p02.png: 6 by 6
+  s07i3p02.png: 7 by 7
+  s07n3p02.png: 7 by 7
+  s08i3p02.png: 8 by 8
+  s08n3p02.png: 8 by 8
+  s09i3p02.png: 9 by 9
+  s09n3p02.png: 9 by 9
+  s32i3p04.png: 32 by 32
+  s32n3p04.png: 32 by 32
+  s33i3p04.png: 33 by 33
+  s33n3p04.png: 33 by 33
+  s34i3p04.png: 34 by 34
+  s34n3p04.png: 34 by 34
+  s35i3p04.png: 35 by 35
+  s35n3p04.png: 35 by 35
+  s36i3p04.png: 36 by 36
+  s36n3p04.png: 36 by 36
+  s37i3p04.png: 37 by 37
+  s37n3p04.png: 37 by 37
+  s38i3p04.png: 38 by 38
+  s38n3p04.png: 38 by 38
+  s39i3p04.png: 39 by 39
+  s39n3p04.png: 39 by 39
+  s40i3p04.png: 40 by 40
+  s40n3p04.png: 40 by 40
+  tbbn0g04.png: 32 by 32
+  tbbn2c16.png: 32 by 32
+  tbbn3p08.png: 32 by 32
+  tbgn2c16.png: 32 by 32
+  tbgn3p08.png: 32 by 32
+  tbrn2c08.png: 32 by 32
+  tbwn0g16.png: 32 by 32
+  tbwn3p08.png: 32 by 32
+  tbyn3p08.png: 32 by 32
+  tm3n3p02.png: 32 by 32
+  tp0n0g08.png: 32 by 32
+  tp0n2c08.png: 32 by 32
+  tp0n3p08.png: 32 by 32
+  tp1n3p08.png: 32 by 32
+  xc1n0g08.png: color type 1, which PNG doesn't have
+  xc9n2c08.png: color type 9, which PNG doesn't have
+  xcrn0g04.png: not a PNG file
+  xcsn0g01.png: the IDAT chunk's CRC doesn't match it
+  xd0n2c08.png: a bit depth of 0 with color type 2, which PNG doesn't allow
+  xd3n2c08.png: a bit depth of 3 with color type 2, which PNG doesn't allow
+  xd9n2c08.png: a bit depth of 99 with color type 2, which PNG doesn't allow
+  xdtn0g01.png: no image data (no IDAT chunk)
+  xhdn0g08.png: the IHDR chunk's CRC doesn't match it
+  xlfn0g04.png: not a PNG file
+  xs1n0g01.png: not a PNG file
+  xs2n0g01.png: not a PNG file
+  xs4n0g01.png: not a PNG file
+  xs7n0g01.png: not a PNG file
+  z00n2c08.png: 32 by 32
+  z03n2c08.png: 32 by 32
+  z06n2c08.png: 32 by 32
+  z09n2c08.png: 32 by 32
+made: 531 of 531 as the rules say (485 read, 46 refused), refused:
+  bad-plte-missing: a palette image with no PLTE chunk before its image data
+  bad-plte-empty: a PLTE chunk of 0 bytes
+  bad-plte-length: a PLTE chunk of 4 bytes
+  bad-plte-too-long: a PLTE chunk of 771 bytes
+  bad-plte-twice: more than one PLTE chunk
+  bad-signature: not a PNG file
+  bad-empty: not a PNG file
+  bad-signature-only: the file is cut short
+  bad-ihdr-crc: the IHDR chunk's CRC doesn't match it
+  bad-idat-crc: the IDAT chunk's CRC doesn't match it
+  bad-ihdr-not-first: the file doesn't start with an IHDR chunk
+  bad-ihdr-twice: more than one IHDR chunk
+  bad-ihdr-short: an IHDR chunk of 12 bytes, where it has 13
+  bad-ihdr-long: an IHDR chunk of 14 bytes, where it has 13
+  bad-width-0: a width or height of 0, or of more than 2^31 - 1
+  bad-height-0: a width or height of 0, or of more than 2^31 - 1
+  bad-width-2^31: a width or height of 0, or of more than 2^31 - 1
+  bad-c1-d8: color type 1, which PNG doesn't have
+  bad-c5-d8: color type 5, which PNG doesn't have
+  bad-c7-d8: color type 7, which PNG doesn't have
+  bad-c2-d1: a bit depth of 1 with color type 2, which PNG doesn't allow
+  bad-c2-d4: a bit depth of 4 with color type 2, which PNG doesn't allow
+  bad-c3-d16: a bit depth of 16 with color type 3, which PNG doesn't allow
+  bad-c4-d4: a bit depth of 4 with color type 4, which PNG doesn't allow
+  bad-c6-d2: a bit depth of 2 with color type 6, which PNG doesn't allow
+  bad-c0-d0: a bit depth of 0 with color type 0, which PNG doesn't allow
+  bad-c0-d3: a bit depth of 3 with color type 0, which PNG doesn't allow
+  bad-c0-d32: a bit depth of 32 with color type 0, which PNG doesn't allow
+  bad-compression-method: compression method 1, which PNG doesn't have
+  bad-filter-method: filter method 1, which PNG doesn't have
+  bad-interlace-method: interlace method 2, which PNG doesn't have
+  bad-chunk-name: a chunk whose name isn't four letters
+  bad-chunk-length: a chunk of more than 2 GB
+  bad-chunk-past-end: the file is cut short
+  bad-unknown-critical: a critical chunk imagelib doesn't know, CgBI
+  bad-no-idat: no image data (no IDAT chunk)
+  bad-zlib-damaged: the image data is damaged
+  bad-zlib-header: the image data is damaged
+  bad-zlib-dictionary: the image data is damaged
+  bad-zlib-adler: the image data is damaged
+  bad-filter-type-5: a row with filter type 5, which PNG doesn't have
+  bad-filter-type-9: a row with filter type 9, which PNG doesn't have
+  bad-filter-type-255: a row with filter type 255, which PNG doesn't have
+  bad-filter-type-interlaced: a row with filter type 7, which PNG doesn't have
+  limit-over: 10 by 10 is more than the limit of 99 pixels
+  limit-default-over: 4097 by 4096 is more than the limit of 16777216 pixels
+cut: 2226 of 2226 as the rules say (1554 read, 672 refused)
+fuzz: 4000 of 4000 as the rules say (478 read, 3522 refused)
+done

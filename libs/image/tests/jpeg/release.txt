@@ -1,0 +1,709 @@
+# made by tools/image/make_jpeg_tests.py: what imagelib must make of each case in cases.bin
+# (the cut and fuzz cases are summed up by the case they come from, at the end)
+libjpeg pil-1x1-444-q10                              628 bytes  ok, 1 by 1
+libjpeg pil-1x1-444-q75                              629 bytes  ok, 1 by 1
+libjpeg pil-1x1-444-q95                              631 bytes  ok, 1 by 1
+libjpeg pil-1x1-422-q10                              629 bytes  ok, 1 by 1
+libjpeg pil-1x1-422-q75                              630 bytes  ok, 1 by 1
+libjpeg pil-1x1-422-q95                              632 bytes  ok, 1 by 1
+libjpeg pil-1x1-420-q10                              630 bytes  ok, 1 by 1
+libjpeg pil-1x1-420-q75                              632 bytes  ok, 1 by 1
+libjpeg pil-1x1-420-q95                              633 bytes  ok, 1 by 1
+libjpeg pil-1x1-gray                                 333 bytes  ok, 1 by 1
+libjpeg pil-1x1-optimized                            287 bytes  ok, 1 by 1
+libjpeg im-1x1-1x2                                   287 bytes  ok, 1 by 1
+libjpeg im-1x1-4x1                                   287 bytes  ok, 1 by 1
+libjpeg im-1x1-4x2                                   288 bytes  ok, 1 by 1
+libjpeg im-1x1-2x1-1x2-1x1                           288 bytes  ok, 1 by 1
+libjpeg im-1x1-1x1-2x2-2x2                           288 bytes  ok, 1 by 1
+libjpeg pil-2x2-444-q10                              640 bytes  ok, 2 by 2
+libjpeg pil-2x2-444-q75                              677 bytes  ok, 2 by 2
+libjpeg pil-2x2-444-q95                              707 bytes  ok, 2 by 2
+libjpeg pil-2x2-422-q10                              640 bytes  ok, 2 by 2
+libjpeg pil-2x2-422-q75                              674 bytes  ok, 2 by 2
+libjpeg pil-2x2-422-q95                              708 bytes  ok, 2 by 2
+libjpeg pil-2x2-420-q10                              639 bytes  ok, 2 by 2
+libjpeg pil-2x2-420-q75                              664 bytes  ok, 2 by 2
+libjpeg pil-2x2-420-q95                              687 bytes  ok, 2 by 2
+libjpeg pil-2x2-gray                                 348 bytes  ok, 2 by 2
+libjpeg pil-2x2-optimized                            327 bytes  ok, 2 by 2
+libjpeg im-2x2-1x2                                   334 bytes  ok, 2 by 2
+libjpeg im-2x2-4x1                                   345 bytes  ok, 2 by 2
+libjpeg im-2x2-4x2                                   327 bytes  ok, 2 by 2
+libjpeg im-2x2-2x1-1x2-1x1                           330 bytes  ok, 2 by 2
+libjpeg im-2x2-1x1-2x2-2x2                           341 bytes  ok, 2 by 2
+libjpeg pil-3x5-444-q10                              636 bytes  ok, 3 by 5
+libjpeg pil-3x5-444-q75                              658 bytes  ok, 3 by 5
+libjpeg pil-3x5-444-q95                              713 bytes  ok, 3 by 5
+libjpeg pil-3x5-422-q10                              637 bytes  ok, 3 by 5
+libjpeg pil-3x5-422-q75                              661 bytes  ok, 3 by 5
+libjpeg pil-3x5-422-q95                              708 bytes  ok, 3 by 5
+libjpeg pil-3x5-420-q10                              638 bytes  ok, 3 by 5
+libjpeg pil-3x5-420-q75                              664 bytes  ok, 3 by 5
+libjpeg pil-3x5-420-q95                              710 bytes  ok, 3 by 5
+libjpeg pil-3x5-gray                                 349 bytes  ok, 3 by 5
+libjpeg pil-3x5-optimized                            339 bytes  ok, 3 by 5
+libjpeg im-3x5-1x2                                   344 bytes  ok, 3 by 5
+libjpeg im-3x5-4x1                                   341 bytes  ok, 3 by 5
+libjpeg im-3x5-4x2                                   344 bytes  ok, 3 by 5
+libjpeg im-3x5-2x1-1x2-1x1                           351 bytes  ok, 3 by 5
+libjpeg im-3x5-1x1-2x2-2x2                           340 bytes  ok, 3 by 5
+libjpeg pil-8x8-444-q10                              633 bytes  ok, 8 by 8
+libjpeg pil-8x8-444-q75                              659 bytes  ok, 8 by 8
+libjpeg pil-8x8-444-q95                              723 bytes  ok, 8 by 8
+libjpeg pil-8x8-422-q10                              634 bytes  ok, 8 by 8
+libjpeg pil-8x8-422-q75                              658 bytes  ok, 8 by 8
+libjpeg pil-8x8-422-q95                              717 bytes  ok, 8 by 8
+libjpeg pil-8x8-420-q10                              636 bytes  ok, 8 by 8
+libjpeg pil-8x8-420-q75                              661 bytes  ok, 8 by 8
+libjpeg pil-8x8-420-q95                              704 bytes  ok, 8 by 8
+libjpeg pil-8x8-gray                                 352 bytes  ok, 8 by 8
+libjpeg pil-8x8-optimized                            341 bytes  ok, 8 by 8
+libjpeg im-8x8-1x2                                   348 bytes  ok, 8 by 8
+libjpeg im-8x8-4x1                                   347 bytes  ok, 8 by 8
+libjpeg im-8x8-4x2                                   345 bytes  ok, 8 by 8
+libjpeg im-8x8-2x1-1x2-1x1                           337 bytes  ok, 8 by 8
+libjpeg im-8x8-1x1-2x2-2x2                           351 bytes  ok, 8 by 8
+libjpeg pil-17x9-444-q10                             655 bytes  ok, 17 by 9
+libjpeg pil-17x9-444-q75                             767 bytes  ok, 17 by 9
+libjpeg pil-17x9-444-q95                             943 bytes  ok, 17 by 9
+libjpeg pil-17x9-422-q10                             651 bytes  ok, 17 by 9
+libjpeg pil-17x9-422-q75                             725 bytes  ok, 17 by 9
+libjpeg pil-17x9-422-q95                             852 bytes  ok, 17 by 9
+libjpeg pil-17x9-420-q10                             649 bytes  ok, 17 by 9
+libjpeg pil-17x9-420-q75                             713 bytes  ok, 17 by 9
+libjpeg pil-17x9-420-q95                             821 bytes  ok, 17 by 9
+libjpeg pil-17x9-gray                                414 bytes  ok, 17 by 9
+libjpeg pil-17x9-optimized                           404 bytes  ok, 17 by 9
+libjpeg im-17x9-1x2                                  441 bytes  ok, 17 by 9
+libjpeg im-17x9-4x1                                  426 bytes  ok, 17 by 9
+libjpeg im-17x9-4x2                                  407 bytes  ok, 17 by 9
+libjpeg im-17x9-2x1-1x2-1x1                          393 bytes  ok, 17 by 9
+libjpeg im-17x9-1x1-2x2-2x2                          444 bytes  ok, 17 by 9
+libjpeg pil-33x31-444-q10                            722 bytes  ok, 33 by 31
+libjpeg pil-33x31-444-q75                           1230 bytes  ok, 33 by 31
+libjpeg pil-33x31-444-q95                           2336 bytes  ok, 33 by 31
+libjpeg pil-33x31-422-q10                            710 bytes  ok, 33 by 31
+libjpeg pil-33x31-422-q75                           1066 bytes  ok, 33 by 31
+libjpeg pil-33x31-422-q95                           1807 bytes  ok, 33 by 31
+libjpeg pil-33x31-420-q10                            692 bytes  ok, 33 by 31
+libjpeg pil-33x31-420-q75                            988 bytes  ok, 33 by 31
+libjpeg pil-33x31-420-q95                           1504 bytes  ok, 33 by 31
+libjpeg pil-33x31-gray                               735 bytes  ok, 33 by 31
+libjpeg pil-33x31-optimized                          735 bytes  ok, 33 by 31
+libjpeg im-33x31-1x2                                 910 bytes  ok, 33 by 31
+libjpeg im-33x31-4x1                                 862 bytes  ok, 33 by 31
+libjpeg im-33x31-4x2                                 776 bytes  ok, 33 by 31
+libjpeg im-33x31-2x1-1x2-1x1                         679 bytes  ok, 33 by 31
+libjpeg im-33x31-1x1-2x2-2x2                         943 bytes  ok, 33 by 31
+libjpeg pil-64x48-444-q10                            836 bytes  ok, 64 by 48
+libjpeg pil-64x48-444-q75                           2185 bytes  ok, 64 by 48
+libjpeg pil-64x48-444-q95                           5212 bytes  ok, 64 by 48
+libjpeg pil-64x48-422-q10                            792 bytes  ok, 64 by 48
+libjpeg pil-64x48-422-q75                           1685 bytes  ok, 64 by 48
+libjpeg pil-64x48-422-q95                           3637 bytes  ok, 64 by 48
+libjpeg pil-64x48-420-q10                            759 bytes  ok, 64 by 48
+libjpeg pil-64x48-420-q75                           1518 bytes  ok, 64 by 48
+libjpeg pil-64x48-420-q95                           2914 bytes  ok, 64 by 48
+libjpeg pil-64x48-gray                              1407 bytes  ok, 64 by 48
+libjpeg pil-64x48-optimized                         1325 bytes  ok, 64 by 48
+libjpeg im-64x48-1x2                                1853 bytes  ok, 64 by 48
+libjpeg im-64x48-4x1                                1559 bytes  ok, 64 by 48
+libjpeg im-64x48-4x2                                1440 bytes  ok, 64 by 48
+libjpeg im-64x48-2x1-1x2-1x1                        1147 bytes  ok, 64 by 48
+libjpeg im-64x48-1x1-2x2-2x2                        1854 bytes  ok, 64 by 48
+libjpeg pil-restart-every-3-blocks                  1314 bytes  ok, 37 by 53
+libjpeg pil-restart-every-row-420                   1314 bytes  ok, 37 by 53
+libjpeg pil-restart-every-block-gray                1067 bytes  ok, 37 by 53
+libjpeg pil-rgb                                     3653 bytes  ok, 37 by 53
+libjpeg pil-q100-444                                7057 bytes  ok, 37 by 53
+libjpeg pil-q1-420                                   687 bytes  ok, 37 by 53
+libjpeg pil-exif-and-comment                        1332 bytes  ok, 37 by 53
+libjpeg pil-progressive                             1178 bytes  refused: progressive JPEG, which isn't supported yet
+libjpeg pil-cmyk                                    2468 bytes  refused: four components (CMYK), which isn't supported
+libjpeg im-arithmetic                                514 bytes  refused: arithmetic coding, which isn't supported
+libjpeg pil-100x75-q90                              4973 bytes  ok, 100 by 75
+libjpeg im-100x75-q60-420                           1828 bytes  ok, 100 by 75
+made  444-1x1                                      268 bytes  ok, 1 by 1
+made  444-2x3                                      302 bytes  ok, 2 by 3
+made  444-3x3                                      308 bytes  ok, 3 by 3
+made  444-5x7                                      331 bytes  ok, 5 by 7
+made  444-8x8                                      336 bytes  ok, 8 by 8
+made  444-16x16                                    565 bytes  ok, 16 by 16
+made  444-17x13                                    616 bytes  ok, 17 by 13
+made  444-33x31                                   1450 bytes  ok, 33 by 31
+made  444-47x9                                     845 bytes  ok, 47 by 9
+made  422-1x1                                      271 bytes  ok, 1 by 1
+made  422-2x3                                      308 bytes  ok, 2 by 3
+made  422-3x3                                      314 bytes  ok, 3 by 3
+made  422-5x7                                      333 bytes  ok, 5 by 7
+made  422-8x8                                      344 bytes  ok, 8 by 8
+made  422-16x16                                    452 bytes  ok, 16 by 16
+made  422-17x13                                    549 bytes  ok, 17 by 13
+made  422-33x31                                   1189 bytes  ok, 33 by 31
+made  422-47x9                                     676 bytes  ok, 47 by 9
+made  440-1x1                                      271 bytes  ok, 1 by 1
+made  440-2x3                                      316 bytes  ok, 2 by 3
+made  440-3x3                                      316 bytes  ok, 3 by 3
+made  440-5x7                                      341 bytes  ok, 5 by 7
+made  440-8x8                                      344 bytes  ok, 8 by 8
+made  440-16x16                                    461 bytes  ok, 16 by 16
+made  440-17x13                                    500 bytes  ok, 17 by 13
+made  440-33x31                                   1119 bytes  ok, 33 by 31
+made  440-47x9                                     695 bytes  ok, 47 by 9
+made  420-1x1                                      272 bytes  ok, 1 by 1
+made  420-2x3                                      325 bytes  ok, 2 by 3
+made  420-3x3                                      333 bytes  ok, 3 by 3
+made  420-5x7                                      345 bytes  ok, 5 by 7
+made  420-8x8                                      353 bytes  ok, 8 by 8
+made  420-16x16                                    407 bytes  ok, 16 by 16
+made  420-17x13                                    469 bytes  ok, 17 by 13
+made  420-33x31                                   1011 bytes  ok, 33 by 31
+made  420-47x9                                     614 bytes  ok, 47 by 9
+made  411-1x1                                      272 bytes  ok, 1 by 1
+made  411-2x3                                      326 bytes  ok, 2 by 3
+made  411-3x3                                      314 bytes  ok, 3 by 3
+made  411-5x7                                      338 bytes  ok, 5 by 7
+made  411-8x8                                      350 bytes  ok, 8 by 8
+made  411-16x16                                    485 bytes  ok, 16 by 16
+made  411-17x13                                    481 bytes  ok, 17 by 13
+made  411-33x31                                   1110 bytes  ok, 33 by 31
+made  411-47x9                                     628 bytes  ok, 47 by 9
+made  410-1x1                                      273 bytes  ok, 1 by 1
+made  410-2x3                                      324 bytes  ok, 2 by 3
+made  410-3x3                                      327 bytes  ok, 3 by 3
+made  410-5x7                                      357 bytes  ok, 5 by 7
+made  410-8x8                                      357 bytes  ok, 8 by 8
+made  410-16x16                                    455 bytes  ok, 16 by 16
+made  410-17x13                                    449 bytes  ok, 17 by 13
+made  410-33x31                                    964 bytes  ok, 33 by 31
+made  410-47x9                                     586 bytes  ok, 47 by 9
+made  311-1x1                                      271 bytes  ok, 1 by 1
+made  311-2x3                                      317 bytes  ok, 2 by 3
+made  311-3x3                                      319 bytes  ok, 3 by 3
+made  311-5x7                                      335 bytes  ok, 5 by 7
+made  311-8x8                                      353 bytes  ok, 8 by 8
+made  311-16x16                                    487 bytes  ok, 16 by 16
+made  311-17x13                                    468 bytes  ok, 17 by 13
+made  311-33x31                                   1091 bytes  ok, 33 by 31
+made  311-47x9                                     612 bytes  ok, 47 by 9
+made  321-1x1                                      272 bytes  ok, 1 by 1
+made  321-2x3                                      318 bytes  ok, 2 by 3
+made  321-3x3                                      324 bytes  ok, 3 by 3
+made  321-5x7                                      359 bytes  ok, 5 by 7
+made  321-8x8                                      355 bytes  ok, 8 by 8
+made  321-16x16                                    434 bytes  ok, 16 by 16
+made  321-17x13                                    439 bytes  ok, 17 by 13
+made  321-33x31                                    934 bytes  ok, 33 by 31
+made  321-47x9                                     563 bytes  ok, 47 by 9
+made  14-1x1                                       272 bytes  ok, 1 by 1
+made  14-2x3                                       301 bytes  ok, 2 by 3
+made  14-3x3                                       319 bytes  ok, 3 by 3
+made  14-5x7                                       341 bytes  ok, 5 by 7
+made  14-8x8                                       358 bytes  ok, 8 by 8
+made  14-16x16                                     490 bytes  ok, 16 by 16
+made  14-17x13                                     524 bytes  ok, 17 by 13
+made  14-33x31                                     918 bytes  ok, 33 by 31
+made  14-47x9                                      756 bytes  ok, 47 by 9
+made  mixed-1x1                                    272 bytes  ok, 1 by 1
+made  mixed-2x3                                    310 bytes  ok, 2 by 3
+made  mixed-3x3                                    333 bytes  ok, 3 by 3
+made  mixed-5x7                                    359 bytes  ok, 5 by 7
+made  mixed-8x8                                    362 bytes  ok, 8 by 8
+made  mixed-16x16                                  421 bytes  ok, 16 by 16
+made  mixed-17x13                                  494 bytes  ok, 17 by 13
+made  mixed-33x31                                 1107 bytes  ok, 33 by 31
+made  mixed-47x9                                   645 bytes  ok, 47 by 9
+made  crossed-1x1                                  272 bytes  ok, 1 by 1
+made  crossed-2x3                                  300 bytes  ok, 2 by 3
+made  crossed-3x3                                  322 bytes  ok, 3 by 3
+made  crossed-5x7                                  340 bytes  ok, 5 by 7
+made  crossed-8x8                                  351 bytes  ok, 8 by 8
+made  crossed-16x16                                379 bytes  ok, 16 by 16
+made  crossed-17x13                                435 bytes  ok, 17 by 13
+made  crossed-33x31                                832 bytes  ok, 33 by 31
+made  crossed-47x9                                 575 bytes  ok, 47 by 9
+made  low-luma-1x1                                 272 bytes  ok, 1 by 1
+made  low-luma-2x3                                 321 bytes  ok, 2 by 3
+made  low-luma-3x3                                 337 bytes  ok, 3 by 3
+made  low-luma-5x7                                 360 bytes  ok, 5 by 7
+made  low-luma-8x8                                 365 bytes  ok, 8 by 8
+made  low-luma-16x16                               481 bytes  ok, 16 by 16
+made  low-luma-17x13                               558 bytes  ok, 17 by 13
+made  low-luma-33x31                              1173 bytes  ok, 33 by 31
+made  low-luma-47x9                                724 bytes  ok, 47 by 9
+made  all-21-1x1                                   273 bytes  ok, 1 by 1
+made  all-21-2x3                                   332 bytes  ok, 2 by 3
+made  all-21-3x3                                   327 bytes  ok, 3 by 3
+made  all-21-5x7                                   368 bytes  ok, 5 by 7
+made  all-21-8x8                                   371 bytes  ok, 8 by 8
+made  all-21-16x16                                 546 bytes  ok, 16 by 16
+made  all-21-17x13                                 661 bytes  ok, 17 by 13
+made  all-21-33x31                                1567 bytes  ok, 33 by 31
+made  all-21-47x9                                  854 bytes  ok, 47 by 9
+made  gray-1x1-1x1                                 156 bytes  ok, 1 by 1
+made  gray-1x1-2x2                                 156 bytes  ok, 1 by 1
+made  gray-1x1-4x1                                 156 bytes  ok, 1 by 1
+made  gray-7x9-1x1                                 200 bytes  ok, 7 by 9
+made  gray-7x9-2x2                                 200 bytes  ok, 7 by 9
+made  gray-7x9-4x1                                 197 bytes  ok, 7 by 9
+made  gray-16x8-1x1                                212 bytes  ok, 16 by 8
+made  gray-16x8-2x2                                212 bytes  ok, 16 by 8
+made  gray-16x8-4x1                                212 bytes  ok, 16 by 8
+made  gray-41x23-1x1                               580 bytes  ok, 41 by 23
+made  gray-41x23-2x2                               585 bytes  ok, 41 by 23
+made  gray-41x23-4x1                               568 bytes  ok, 41 by 23
+made  scans-each-444                              1008 bytes  ok, 29 by 19
+made  scans-1-2-444                                990 bytes  ok, 29 by 19
+made  scans-backwards-444                          993 bytes  ok, 29 by 19
+made  scans-each-420                               713 bytes  ok, 29 by 19
+made  scans-1-2-420                                684 bytes  ok, 29 by 19
+made  scans-backwards-420                          691 bytes  ok, 29 by 19
+made  scans-each-411                               688 bytes  ok, 29 by 19
+made  scans-1-2-411                                669 bytes  ok, 29 by 19
+made  scans-backwards-411                          677 bytes  ok, 29 by 19
+made  scans-each-mixed                             776 bytes  ok, 29 by 19
+made  scans-1-2-mixed                              767 bytes  ok, 29 by 19
+made  scans-backwards-mixed                        770 bytes  ok, 29 by 19
+made  scans-each-low-luma                          812 bytes  ok, 29 by 19
+made  scans-1-2-low-luma                           879 bytes  ok, 29 by 19
+made  scans-backwards-low-luma                     823 bytes  ok, 29 by 19
+made  restart-1-420                               1477 bytes  ok, 45 by 37
+made  restart-1-scans                             1529 bytes  ok, 45 by 37
+made  restart-2-420                               1470 bytes  ok, 45 by 37
+made  restart-2-scans                             1468 bytes  ok, 45 by 37
+made  restart-3-420                               1460 bytes  ok, 45 by 37
+made  restart-3-scans                             1440 bytes  ok, 45 by 37
+made  restart-7-420                               1468 bytes  ok, 45 by 37
+made  restart-7-scans                             1434 bytes  ok, 45 by 37
+made  restart-50-420                              1466 bytes  ok, 45 by 37
+made  restart-50-scans                            1430 bytes  ok, 45 by 37
+made  restart-gray-every-block                     532 bytes  ok, 70 by 9
+made  quality-1                                    303 bytes  ok, 23 by 17
+made  quality-5                                    318 bytes  ok, 23 by 17
+made  quality-50                                   533 bytes  ok, 23 by 17
+made  quality-90                                   769 bytes  ok, 23 by 17
+made  quality-100                                 1052 bytes  ok, 23 by 17
+made  dqt-16-bit                                   406 bytes  ok, 23 by 17
+made  dqt-16-bit-small-values                      757 bytes  ok, 23 by 17
+made  tables-shared                                626 bytes  ok, 23 by 17
+made  tables-2-and-3                               679 bytes  ok, 23 by 17
+made  quant-tables-each                            809 bytes  ok, 23 by 17
+made  sof1                                         629 bytes  ok, 23 by 17
+made  tables-redefined-between-scans               779 bytes  ok, 23 by 17
+made  jfif                                         307 bytes  ok, 9 by 9
+made  no-markers-ids-123                           289 bytes  ok, 9 by 9
+made  no-markers-ids-rgb                           289 bytes  ok, 9 by 9
+made  no-markers-ids-012                           289 bytes  ok, 9 by 9
+made  adobe-0                                      305 bytes  ok, 9 by 9
+made  adobe-1                                      305 bytes  ok, 9 by 9
+made  adobe-2                                      305 bytes  ok, 9 by 9
+made  jfif-and-adobe-0                             323 bytes  ok, 9 by 9
+made  adobe-short                                  299 bytes  ok, 9 by 9
+made  jfif-short-ids-rgb                           298 bytes  ok, 9 by 9
+made  marker-com                                   415 bytes  ok, 13 by 11
+made  marker-app1                                  432 bytes  ok, 13 by 11
+made  marker-app15                                 706 bytes  ok, 13 by 11
+made  marker-dac                                   408 bytes  ok, 13 by 11
+made  marker-dri-0                                 408 bytes  ok, 13 by 11
+made  marker-fill-bytes                            405 bytes  ok, 13 by 11
+made  marker-empty-app                             406 bytes  ok, 13 by 11
+made  fill-before-eoi                              403 bytes  ok, 13 by 11
+made  after-eoi                                    422 bytes  ok, 13 by 11
+made  bad-empty                                      0 bytes  refused: not a JPEG file
+made  bad-not-jpeg                                 408 bytes  refused: not a JPEG file
+made  bad-soi-only                                   2 bytes  refused: no image data
+made  bad-no-eoi                                   406 bytes  ok, 13 by 11
+made  bad-second-soi                               410 bytes  refused: a second start of image
+made  bad-garbage-between                          410 bytes  ok, 13 by 11
+made  bad-rst-outside                              410 bytes  ok, 13 by 11
+made  bad-tem                                      410 bytes  ok, 13 by 11
+made  bad-unknown-marker                           412 bytes  refused: marker FF02, which JPEG doesn't use here
+made  bad-segment-length-0                         412 bytes  ok, 13 by 11
+made  bad-segment-past-end                           9 bytes  refused: no image data
+made  bad-dnl                                      414 bytes  ok, 13 by 11
+made  bad-jpg-marker                               412 bytes  refused: marker FFC8, which JPEG doesn't use here
+made  bad-jpgn-marker                              415 bytes  refused: marker FFF0, which JPEG doesn't use here
+made  bad-progressive                              402 bytes  refused: progressive JPEG, which isn't supported yet
+made  bad-lossless                                 402 bytes  refused: lossless JPEG, which isn't supported
+made  bad-hierarchical                             402 bytes  refused: hierarchical JPEG, which isn't supported
+made  bad-arithmetic                               402 bytes  refused: arithmetic coding, which isn't supported
+made  bad-dhp                                      421 bytes  refused: hierarchical JPEG, which isn't supported
+made  bad-sof-12-bit                               402 bytes  refused: 12-bit samples, which aren't supported
+made  bad-sof-short                                401 bytes  refused: a frame header of the wrong length
+made  bad-sof-long                                 403 bytes  refused: a frame header of the wrong length
+made  bad-sof-tiny                                 391 bytes  refused: a frame header of the wrong length
+made  bad-two-frames                               421 bytes  refused: more than one frame header
+made  bad-width-0                                  402 bytes  refused: a width of 0
+made  bad-height-0                                 402 bytes  refused: a height of 0, to be set by a DNL marker, which isn't supported
+made  bad-2-components                             399 bytes  refused: 2 components, which isn't supported
+made  bad-4-components                             446 bytes  refused: four components (CMYK), which isn't supported
+made  bad-sampling-0                               402 bytes  refused: a sampling factor JPEG doesn't have
+made  bad-sampling-5                               402 bytes  refused: a sampling factor JPEG doesn't have
+made  bad-quant-table-4                            402 bytes  refused: a component whose quantization table isn't defined
+made  bad-same-ids                                 402 bytes  refused: two components with the same ID
+made  bad-uneven-sampling                          399 bytes  refused: sampling factors that don't divide evenly
+made  bad-mcu-11-blocks                            363 bytes  refused: more than 10 blocks in an MCU
+made  bad-mcu-12-blocks                            400 bytes  refused: more than 10 blocks in an MCU
+made  bad-dqt-precision-2                          402 bytes  refused: a quantization table of precision 2, which JPEG doesn't have
+made  bad-dqt-table-4                              402 bytes  refused: quantization table 4, which JPEG doesn't have
+made  bad-dqt-short                                401 bytes  refused: a DQT segment of the wrong length
+made  bad-no-dqt                                   268 bytes  refused: a component whose quantization table isn't defined
+made  bad-dht-class-2                              402 bytes  refused: Huffman table 0 of class 2, which JPEG doesn't have
+made  bad-dht-table-4                              402 bytes  refused: Huffman table 4 of class 0, which JPEG doesn't have
+made  bad-dht-short                                401 bytes  refused: a DHT segment of the wrong length
+made  bad-dht-counts-only                          307 bytes  refused: a DHT segment of the wrong length
+made  bad-no-dht                                   293 bytes  ok, 13 by 11
+made  dht-overfull-unused                          426 bytes  ok, 13 by 11
+made  bad-dht-overfull                             426 bytes  refused: a Huffman table with more codes than there's room for
+made  bad-dht-257                                  571 bytes  refused: a Huffman table of more than 256 codes
+made  bad-dc-value-16                              424 bytes  refused: a DC Huffman table with a value over 15
+made  bad-sos-short                                401 bytes  refused: a scan header of the wrong length
+made  bad-sos-0-components                         396 bytes  refused: a scan of 0 components
+made  bad-sos-unknown-component                    402 bytes  refused: a scan of a component the frame doesn't have
+made  bad-sos-component-twice                      402 bytes  refused: a component twice in one scan
+made  bad-sos-table-undefined                      402 bytes  refused: a scan using a Huffman table that isn't defined
+made  bad-sos-ss                                   402 bytes  ok, 13 by 11
+made  bad-sos-se                                   402 bytes  ok, 13 by 11
+made  bad-sos-approximation                        402 bytes  ok, 13 by 11
+made  bad-sos-before-sof                           441 bytes  refused: image data before the frame header
+made  bad-component-left-out                       394 bytes  ok, 13 by 11
+made  bad-component-in-two-scans                   503 bytes  ok, 13 by 11
+made  bad-quant-table-undefined                    388 bytes  refused: a component whose quantization table isn't defined
+made  bad-data-cut                                 350 bytes  ok, 13 by 11
+made  bad-data-empty                               298 bytes  ok, 13 by 11
+made  bad-data-all-ones                            402 bytes  ok, 13 by 11
+made  bad-data-zeros                               402 bytes  ok, 13 by 11
+made  bad-restart-missing                         1481 bytes  ok, 45 by 37
+made  bad-restart-out-of-order                    1483 bytes  ok, 45 by 37
+made  bad-restart-extra                           1467 bytes  ok, 45 by 37
+made  bad-run-past-end                             158 bytes  ok, 8 by 8
+made  zrl-then-eob                                 158 bytes  ok, 8 by 8
+made  zrl-to-the-end                               159 bytes  ok, 8 by 8
+made  bad-huffman-code                             160 bytes  ok, 8 by 8
+made  limit-at                                     386 bytes  ok, 10 by 10
+made  limit-over                                   381 bytes  refused: 10 by 10 is more than the limit of 99 pixels
+made  limit-default-over                           396 bytes  refused: 65535 by 65535 is more than the limit of 16777216 pixels
+made  bomb-claims-big                              388 bytes  ok, 4096 by 4096
+cut   pil-17x9-420-q75                           45 ok,  260 refused
+cut   pil-33x31-444-q95                         276 ok,  260 refused
+cut   pil-restart-every-3-blocks                129 ok,  261 refused
+cut   pil-8x8-gray                               27 ok,  229 refused
+cut   420-17x13                                  55 ok,  216 refused
+cut   scans-each-420                             89 ok,  216 refused
+cut   restart-3-scans                           188 ok,  220 refused
+cut   dqt-16-bit                                 14 ok,  248 refused
+cut   tables-redefined-between-scans             71 ok,  246 refused
+fuzz  311-47x9                                    6 ok,    8 refused
+fuzz  low-luma-3x3                                6 ok,    8 refused
+fuzz  low-luma-1x1                                3 ok,    7 refused
+fuzz  im-17x9-4x2                                 8 ok,   12 refused
+fuzz  low-luma-2x3                                7 ok,    3 refused
+fuzz  410-47x9                                    5 ok,   12 refused
+fuzz  bad-sos-ss                                 10 ok,    6 refused
+fuzz  411-47x9                                   15 ok,    2 refused
+fuzz  422-5x7                                     7 ok,    6 refused
+fuzz  im-1x1-4x1                                  5 ok,    5 refused
+fuzz  422-17x13                                   3 ok,    9 refused
+fuzz  restart-7-scans                             7 ok,    5 refused
+fuzz  pil-8x8-444-q75                             4 ok,    4 refused
+fuzz  no-markers-ids-123                          3 ok,    7 refused
+fuzz  pil-2x2-420-q95                            14 ok,    3 refused
+fuzz  gray-7x9-4x1                               15 ok,    6 refused
+fuzz  scans-backwards-420                        15 ok,    5 refused
+fuzz  im-8x8-1x1-2x2-2x2                          4 ok,    3 refused
+fuzz  pil-1x1-444-q75                             7 ok,    5 refused
+fuzz  im-2x2-2x1-1x2-1x1                          8 ok,    5 refused
+fuzz  pil-8x8-444-q10                             6 ok,    5 refused
+fuzz  pil-1x1-420-q95                            11 ok,    7 refused
+fuzz  321-3x3                                     5 ok,    8 refused
+fuzz  quality-50                                 11 ok,    4 refused
+fuzz  pil-64x48-422-q10                          10 ok,    0 refused
+fuzz  scans-each-low-luma                        13 ok,    6 refused
+fuzz  scans-backwards-411                         8 ok,    4 refused
+fuzz  pil-33x31-422-q10                           7 ok,    5 refused
+fuzz  im-8x8-1x2                                  2 ok,    4 refused
+fuzz  crossed-16x16                               5 ok,    6 refused
+fuzz  im-3x5-1x1-2x2-2x2                         10 ok,    7 refused
+fuzz  low-luma-47x9                               8 ok,    7 refused
+fuzz  pil-33x31-optimized                         9 ok,    3 refused
+fuzz  restart-2-420                               6 ok,    4 refused
+fuzz  dqt-16-bit-small-values                    10 ok,    6 refused
+fuzz  pil-3x5-444-q10                             8 ok,    6 refused
+fuzz  pil-2x2-444-q95                             8 ok,    6 refused
+fuzz  bad-data-all-ones                           8 ok,    7 refused
+fuzz  mixed-1x1                                   5 ok,    8 refused
+fuzz  all-21-3x3                                  9 ok,    6 refused
+fuzz  14-16x16                                    6 ok,    4 refused
+fuzz  321-5x7                                     8 ok,    6 refused
+fuzz  jfif-short-ids-rgb                          9 ok,    7 refused
+fuzz  422-47x9                                    6 ok,    5 refused
+fuzz  pil-33x31-420-q75                          11 ok,    8 refused
+fuzz  adobe-short                                 3 ok,    6 refused
+fuzz  pil-8x8-420-q75                             4 ok,    8 refused
+fuzz  bad-data-zeros                             13 ok,    6 refused
+fuzz  gray-1x1-1x1                                5 ok,    9 refused
+fuzz  14-17x13                                    5 ok,    1 refused
+fuzz  adobe-1                                     6 ok,    6 refused
+fuzz  marker-fill-bytes                           9 ok,    6 refused
+fuzz  gray-7x9-2x2                                3 ok,   10 refused
+fuzz  pil-3x5-444-q95                             7 ok,    6 refused
+fuzz  410-17x13                                   5 ok,    5 refused
+fuzz  bad-segment-length-0                        5 ok,    6 refused
+fuzz  im-3x5-4x2                                 11 ok,    3 refused
+fuzz  quality-100                                 6 ok,    5 refused
+fuzz  restart-2-scans                             6 ok,    7 refused
+fuzz  marker-dri-0                                6 ok,    4 refused
+fuzz  scans-each-420                              3 ok,    8 refused
+fuzz  pil-3x5-gray                                6 ok,    4 refused
+fuzz  444-47x9                                    8 ok,    3 refused
+fuzz  422-1x1                                     4 ok,    6 refused
+fuzz  422-3x3                                     7 ok,    6 refused
+fuzz  pil-8x8-420-q10                             6 ok,    5 refused
+fuzz  no-markers-ids-rgb                          6 ok,    8 refused
+fuzz  gray-16x8-1x1                              10 ok,    8 refused
+fuzz  311-3x3                                     6 ok,    8 refused
+fuzz  im-3x5-2x1-1x2-1x1                          5 ok,   10 refused
+fuzz  im-3x5-1x2                                  7 ok,    7 refused
+fuzz  pil-1x1-444-q95                             9 ok,    5 refused
+fuzz  14-33x31                                    3 ok,    7 refused
+fuzz  14-1x1                                      2 ok,    8 refused
+fuzz  pil-33x31-422-q75                           3 ok,    6 refused
+fuzz  im-64x48-4x2                               11 ok,    8 refused
+fuzz  pil-restart-every-3-blocks                  4 ok,    3 refused
+fuzz  pil-17x9-422-q10                            5 ok,    8 refused
+fuzz  422-33x31                                  13 ok,    4 refused
+fuzz  dht-overfull-unused                         9 ok,    5 refused
+fuzz  im-33x31-1x1-2x2-2x2                       14 ok,    5 refused
+fuzz  pil-33x31-gray                             15 ok,    5 refused
+fuzz  pil-8x8-420-q95                             5 ok,    3 refused
+fuzz  im-3x5-4x1                                  6 ok,    5 refused
+fuzz  pil-64x48-420-q10                           8 ok,    7 refused
+fuzz  all-21-5x7                                  5 ok,    8 refused
+fuzz  pil-3x5-444-q75                             9 ok,    7 refused
+fuzz  im-33x31-1x2                               13 ok,    6 refused
+fuzz  crossed-33x31                              10 ok,    2 refused
+fuzz  crossed-17x13                               5 ok,    9 refused
+fuzz  pil-restart-every-row-420                   7 ok,    6 refused
+fuzz  marker-empty-app                            4 ok,    6 refused
+fuzz  tables-shared                              13 ok,    3 refused
+fuzz  pil-restart-every-block-gray               12 ok,    3 refused
+fuzz  311-33x31                                   5 ok,    4 refused
+fuzz  440-2x3                                    10 ok,    7 refused
+fuzz  444-5x7                                    10 ok,   10 refused
+fuzz  mixed-16x16                                 6 ok,    4 refused
+fuzz  no-markers-ids-012                          2 ok,    5 refused
+fuzz  pil-3x5-optimized                           5 ok,    8 refused
+fuzz  pil-17x9-444-q10                           11 ok,    2 refused
+fuzz  pil-8x8-422-q75                            10 ok,    7 refused
+fuzz  pil-17x9-gray                              13 ok,    3 refused
+fuzz  im-17x9-4x1                                 4 ok,   11 refused
+fuzz  440-16x16                                   7 ok,    6 refused
+fuzz  quant-tables-each                          11 ok,    2 refused
+fuzz  gray-7x9-1x1                                6 ok,    8 refused
+fuzz  440-47x9                                   11 ok,   10 refused
+fuzz  all-21-17x13                                7 ok,    6 refused
+fuzz  pil-2x2-420-q10                             7 ok,    1 refused
+fuzz  pil-64x48-gray                              8 ok,    2 refused
+fuzz  scans-1-2-420                               7 ok,    8 refused
+fuzz  321-16x16                                   5 ok,    8 refused
+fuzz  scans-1-2-411                               8 ok,    4 refused
+fuzz  pil-2x2-422-q95                            10 ok,    6 refused
+fuzz  pil-17x9-optimized                          5 ok,    2 refused
+fuzz  pil-1x1-optimized                           5 ok,   11 refused
+fuzz  mixed-17x13                                 3 ok,    5 refused
+fuzz  crossed-3x3                                 8 ok,    6 refused
+fuzz  444-17x13                                  11 ok,    5 refused
+fuzz  pil-1x1-gray                               14 ok,    4 refused
+fuzz  440-8x8                                     7 ok,    5 refused
+fuzz  311-5x7                                     9 ok,    7 refused
+fuzz  im-17x9-1x1-2x2-2x2                         6 ok,    3 refused
+fuzz  14-5x7                                      8 ok,    7 refused
+fuzz  restart-50-scans                            5 ok,    6 refused
+fuzz  gray-41x23-2x2                              9 ok,    2 refused
+fuzz  pil-3x5-420-q95                             8 ok,    5 refused
+fuzz  411-17x13                                   7 ok,    8 refused
+fuzz  scans-backwards-mixed                       3 ok,    7 refused
+fuzz  pil-33x31-420-q10                           9 ok,    3 refused
+fuzz  bad-run-past-end                            4 ok,    4 refused
+fuzz  bad-data-cut                                9 ok,   11 refused
+fuzz  440-33x31                                   8 ok,    5 refused
+fuzz  420-3x3                                    10 ok,    4 refused
+fuzz  bad-huffman-code                            8 ok,    7 refused
+fuzz  scans-backwards-low-luma                    6 ok,    3 refused
+fuzz  410-8x8                                     9 ok,    9 refused
+fuzz  pil-exif-and-comment                        6 ok,    1 refused
+fuzz  gray-16x8-4x1                               7 ok,    5 refused
+fuzz  im-17x9-1x2                                 9 ok,    9 refused
+fuzz  321-2x3                                     9 ok,   11 refused
+fuzz  mixed-2x3                                   9 ok,    8 refused
+fuzz  pil-3x5-422-q95                             6 ok,    6 refused
+fuzz  quality-1                                   9 ok,    8 refused
+fuzz  im-17x9-2x1-1x2-1x1                         7 ok,    8 refused
+fuzz  mixed-33x31                                12 ok,    7 refused
+fuzz  bad-sos-approximation                       6 ok,    5 refused
+fuzz  pil-3x5-420-q75                             6 ok,    2 refused
+fuzz  pil-8x8-gray                                8 ok,    4 refused
+fuzz  gray-41x23-1x1                             11 ok,    2 refused
+fuzz  marker-com                                  9 ok,    5 refused
+fuzz  321-17x13                                   9 ok,    9 refused
+fuzz  pil-64x48-444-q10                          14 ok,    6 refused
+fuzz  marker-app1                                 4 ok,    2 refused
+fuzz  zrl-to-the-end                              6 ok,    4 refused
+fuzz  pil-17x9-420-q75                           15 ok,    2 refused
+fuzz  pil-3x5-422-q75                             8 ok,    3 refused
+fuzz  tables-redefined-between-scans              3 ok,    4 refused
+fuzz  quality-90                                 11 ok,    4 refused
+fuzz  411-5x7                                    10 ok,   14 refused
+fuzz  low-luma-33x31                              8 ok,    5 refused
+fuzz  all-21-8x8                                  9 ok,    7 refused
+fuzz  scans-each-mixed                            7 ok,    5 refused
+fuzz  marker-app15                                9 ok,    6 refused
+fuzz  321-47x9                                    9 ok,    8 refused
+fuzz  420-1x1                                     4 ok,   11 refused
+fuzz  all-21-47x9                                 9 ok,    8 refused
+fuzz  422-2x3                                     6 ok,    3 refused
+fuzz  bad-tem                                     9 ok,    8 refused
+fuzz  410-33x31                                   8 ok,    4 refused
+fuzz  bad-component-left-out                     13 ok,    6 refused
+fuzz  pil-2x2-420-q75                             8 ok,    7 refused
+fuzz  im-1x1-1x2                                 13 ok,    8 refused
+fuzz  pil-2x2-422-q10                            12 ok,    4 refused
+fuzz  311-2x3                                     2 ok,    9 refused
+fuzz  411-16x16                                  11 ok,    5 refused
+fuzz  14-8x8                                      6 ok,    6 refused
+fuzz  420-8x8                                     6 ok,    8 refused
+fuzz  pil-8x8-444-q95                             4 ok,   10 refused
+fuzz  pil-1x1-422-q95                            10 ok,    4 refused
+fuzz  bad-no-dht                                  8 ok,    1 refused
+fuzz  gray-1x1-4x1                                7 ok,   13 refused
+fuzz  pil-2x2-444-q10                             7 ok,    7 refused
+fuzz  311-17x13                                   7 ok,    9 refused
+fuzz  14-3x3                                      7 ok,    5 refused
+fuzz  zrl-then-eob                                7 ok,    4 refused
+fuzz  low-luma-16x16                              8 ok,    5 refused
+fuzz  adobe-0                                     4 ok,    5 refused
+fuzz  scans-1-2-444                               7 ok,    4 refused
+fuzz  restart-7-420                               8 ok,    4 refused
+fuzz  411-2x3                                     3 ok,    6 refused
+fuzz  bad-restart-out-of-order                    7 ok,    6 refused
+fuzz  pil-17x9-422-q95                           11 ok,    4 refused
+fuzz  low-luma-8x8                                6 ok,    4 refused
+fuzz  crossed-8x8                                 6 ok,    6 refused
+fuzz  scans-backwards-444                         9 ok,    6 refused
+fuzz  im-8x8-2x1-1x2-1x1                          3 ok,    8 refused
+fuzz  scans-each-411                             11 ok,    4 refused
+fuzz  bad-component-in-two-scans                  9 ok,    4 refused
+fuzz  quality-5                                   8 ok,    6 refused
+fuzz  crossed-47x9                                7 ok,    5 refused
+fuzz  im-33x31-4x1                                9 ok,   10 refused
+fuzz  pil-8x8-422-q95                             8 ok,    8 refused
+fuzz  scans-1-2-low-luma                         12 ok,    6 refused
+fuzz  440-3x3                                     5 ok,    9 refused
+fuzz  pil-2x2-gray                                9 ok,    1 refused
+fuzz  im-2x2-1x1-2x2-2x2                          4 ok,    7 refused
+fuzz  410-16x16                                   8 ok,    5 refused
+fuzz  422-16x16                                   6 ok,    7 refused
+fuzz  mixed-5x7                                   8 ok,    6 refused
+fuzz  tables-2-and-3                              4 ok,    4 refused
+fuzz  bad-dnl                                     3 ok,    7 refused
+fuzz  pil-2x2-422-q75                             6 ok,    2 refused
+fuzz  mixed-47x9                                  5 ok,    4 refused
+fuzz  444-8x8                                     4 ok,    6 refused
+fuzz  321-33x31                                   8 ok,    4 refused
+fuzz  im-8x8-4x1                                  5 ok,    7 refused
+fuzz  311-1x1                                    10 ok,    8 refused
+fuzz  pil-8x8-optimized                           9 ok,    4 refused
+fuzz  im-8x8-4x2                                  7 ok,    7 refused
+fuzz  410-2x3                                     5 ok,   11 refused
+fuzz  444-2x3                                     5 ok,   12 refused
+fuzz  411-33x31                                  10 ok,    1 refused
+fuzz  14-47x9                                    13 ok,    3 refused
+fuzz  all-21-1x1                                  6 ok,    5 refused
+fuzz  crossed-2x3                                 1 ok,   11 refused
+fuzz  pil-17x9-420-q10                            8 ok,    3 refused
+fuzz  restart-50-420                              8 ok,    5 refused
+fuzz  bad-no-eoi                                  7 ok,    3 refused
+fuzz  321-8x8                                     9 ok,    4 refused
+fuzz  444-3x3                                     5 ok,    5 refused
+fuzz  bad-garbage-between                         6 ok,    4 refused
+fuzz  pil-17x9-444-q75                            5 ok,    2 refused
+fuzz  bad-restart-missing                         7 ok,    5 refused
+fuzz  pil-2x2-444-q75                             9 ok,    4 refused
+fuzz  444-16x16                                  12 ok,    2 refused
+fuzz  pil-1x1-422-q75                             9 ok,    7 refused
+fuzz  411-8x8                                     8 ok,    6 refused
+fuzz  dqt-16-bit                                 10 ok,    9 refused
+fuzz  restart-1-420                               5 ok,    4 refused
+fuzz  440-5x7                                     6 ok,    6 refused
+fuzz  410-3x3                                     5 ok,    6 refused
+fuzz  pil-33x31-444-q10                          11 ok,    1 refused
+fuzz  after-eoi                                   5 ok,    9 refused
+fuzz  im-1x1-1x1-2x2-2x2                          4 ok,    7 refused
+fuzz  bad-rst-outside                            11 ok,    9 refused
+fuzz  422-8x8                                     6 ok,    1 refused
+fuzz  pil-17x9-444-q95                            3 ok,    1 refused
+fuzz  fill-before-eoi                             7 ok,    5 refused
+fuzz  crossed-1x1                                 3 ok,    5 refused
+fuzz  pil-q1-420                                  9 ok,    2 refused
+fuzz  410-1x1                                     5 ok,    4 refused
+fuzz  jfif                                        7 ok,    7 refused
+fuzz  pil-2x2-optimized                           5 ok,    5 refused
+fuzz  restart-gray-every-block                    6 ok,    4 refused
+fuzz  gray-16x8-2x2                               5 ok,    2 refused
+fuzz  im-64x48-2x1-1x2-1x1                        6 ok,    4 refused
+fuzz  adobe-2                                     6 ok,    6 refused
+fuzz  sof1                                        8 ok,    7 refused
+fuzz  im-1x1-4x2                                  9 ok,   11 refused
+fuzz  pil-64x48-optimized                         6 ok,    3 refused
+fuzz  mixed-8x8                                   7 ok,    6 refused
+fuzz  restart-3-scans                             8 ok,    8 refused
+fuzz  311-16x16                                   9 ok,    6 refused
+fuzz  crossed-5x7                                 4 ok,    4 refused
+fuzz  420-33x31                                   9 ok,    2 refused
+fuzz  pil-1x1-422-q10                             4 ok,    4 refused
+fuzz  444-33x31                                   8 ok,    3 refused
+fuzz  pil-3x5-420-q10                             4 ok,    4 refused
+fuzz  im-2x2-4x2                                  3 ok,    8 refused
+fuzz  gray-1x1-2x2                                5 ok,    8 refused
+fuzz  pil-8x8-422-q10                             2 ok,    7 refused
+fuzz  321-1x1                                     6 ok,    3 refused
+fuzz  bad-data-empty                              6 ok,    6 refused
+fuzz  pil-1x1-444-q10                            10 ok,    6 refused
+fuzz  all-21-16x16                                5 ok,    3 refused
+fuzz  bad-restart-extra                           8 ok,    3 refused
+fuzz  bad-sos-se                                  5 ok,    8 refused
+fuzz  420-5x7                                     3 ok,    5 refused
+fuzz  420-47x9                                    4 ok,    4 refused
+fuzz  pil-3x5-422-q10                             7 ok,    3 refused
+fuzz  jfif-and-adobe-0                            4 ok,   10 refused
+fuzz  mixed-3x3                                   6 ok,    4 refused
+fuzz  420-2x3                                     7 ok,    5 refused
+fuzz  scans-each-444                              9 ok,    7 refused
+fuzz  pil-17x9-422-q75                            9 ok,    5 refused
+fuzz  im-2x2-4x1                                  6 ok,    9 refused
+fuzz  pil-1x1-420-q75                             4 ok,    8 refused
+fuzz  420-16x16                                   6 ok,    3 refused
+fuzz  restart-3-420                               7 ok,    4 refused
+fuzz  14-2x3                                      5 ok,    9 refused
+fuzz  im-33x31-4x2                                5 ok,    5 refused
+fuzz  low-luma-5x7                                4 ok,    6 refused
+fuzz  low-luma-17x13                              9 ok,    3 refused
+fuzz  440-1x1                                     7 ok,    7 refused
+fuzz  scans-1-2-mixed                             6 ok,    5 refused
+fuzz  411-1x1                                     3 ok,    3 refused
+fuzz  420-17x13                                   3 ok,    7 refused
+fuzz  444-1x1                                     4 ok,    9 refused
+fuzz  im-1x1-2x1-1x2-1x1                          2 ok,    8 refused
+fuzz  all-21-2x3                                  5 ok,    3 refused
+fuzz  410-5x7                                     3 ok,    6 refused
+fuzz  440-17x13                                   3 ok,    7 refused
+fuzz  pil-1x1-420-q10                             7 ok,    2 refused
+fuzz  pil-17x9-420-q95                            6 ok,    7 refused
+fuzz  pil-33x31-444-q75                           7 ok,    3 refused
+fuzz  im-33x31-2x1-1x2-1x1                        6 ok,    3 refused
+fuzz  411-3x3                                     3 ok,    7 refused
+fuzz  im-2x2-1x2                                  4 ok,    5 refused
+fuzz  311-8x8                                     3 ok,    3 refused
+fuzz  gray-41x23-4x1                              6 ok,    4 refused
+fuzz  marker-dac                                  3 ok,    2 refused

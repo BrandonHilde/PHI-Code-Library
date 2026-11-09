@@ -1,0 +1,178 @@
+libjpeg: 124 of 124 as the rules say (121 read, 3 refused):
+  pil-1x1-444-q10: 1 by 1
+  pil-1x1-444-q75: 1 by 1
+  pil-1x1-444-q95: 1 by 1
+  pil-1x1-422-q10: 1 by 1
+  pil-1x1-422-q75: 1 by 1
+  pil-1x1-422-q95: 1 by 1
+  pil-1x1-420-q10: 1 by 1
+  pil-1x1-420-q75: 1 by 1
+  pil-1x1-420-q95: 1 by 1
+  pil-1x1-gray: 1 by 1
+  pil-1x1-optimized: 1 by 1
+  im-1x1-1x2: 1 by 1
+  im-1x1-4x1: 1 by 1
+  im-1x1-4x2: 1 by 1
+  im-1x1-2x1-1x2-1x1: 1 by 1
+  im-1x1-1x1-2x2-2x2: 1 by 1
+  pil-2x2-444-q10: 2 by 2
+  pil-2x2-444-q75: 2 by 2
+  pil-2x2-444-q95: 2 by 2
+  pil-2x2-422-q10: 2 by 2
+  pil-2x2-422-q75: 2 by 2
+  pil-2x2-422-q95: 2 by 2
+  pil-2x2-420-q10: 2 by 2
+  pil-2x2-420-q75: 2 by 2
+  pil-2x2-420-q95: 2 by 2
+  pil-2x2-gray: 2 by 2
+  pil-2x2-optimized: 2 by 2
+  im-2x2-1x2: 2 by 2
+  im-2x2-4x1: 2 by 2
+  im-2x2-4x2: 2 by 2
+  im-2x2-2x1-1x2-1x1: 2 by 2
+  im-2x2-1x1-2x2-2x2: 2 by 2
+  pil-3x5-444-q10: 3 by 5
+  pil-3x5-444-q75: 3 by 5
+  pil-3x5-444-q95: 3 by 5
+  pil-3x5-422-q10: 3 by 5
+  pil-3x5-422-q75: 3 by 5
+  pil-3x5-422-q95: 3 by 5
+  pil-3x5-420-q10: 3 by 5
+  pil-3x5-420-q75: 3 by 5
+  pil-3x5-420-q95: 3 by 5
+  pil-3x5-gray: 3 by 5
+  pil-3x5-optimized: 3 by 5
+  im-3x5-1x2: 3 by 5
+  im-3x5-4x1: 3 by 5
+  im-3x5-4x2: 3 by 5
+  im-3x5-2x1-1x2-1x1: 3 by 5
+  im-3x5-1x1-2x2-2x2: 3 by 5
+  pil-8x8-444-q10: 8 by 8
+  pil-8x8-444-q75: 8 by 8
+  pil-8x8-444-q95: 8 by 8
+  pil-8x8-422-q10: 8 by 8
+  pil-8x8-422-q75: 8 by 8
+  pil-8x8-422-q95: 8 by 8
+  pil-8x8-420-q10: 8 by 8
+  pil-8x8-420-q75: 8 by 8
+  pil-8x8-420-q95: 8 by 8
+  pil-8x8-gray: 8 by 8
+  pil-8x8-optimized: 8 by 8
+  im-8x8-1x2: 8 by 8
+  im-8x8-4x1: 8 by 8
+  im-8x8-4x2: 8 by 8
+  im-8x8-2x1-1x2-1x1: 8 by 8
+  im-8x8-1x1-2x2-2x2: 8 by 8
+  pil-17x9-444-q10: 17 by 9
+  pil-17x9-444-q75: 17 by 9
+  pil-17x9-444-q95: 17 by 9
+  pil-17x9-422-q10: 17 by 9
+  pil-17x9-422-q75: 17 by 9
+  pil-17x9-422-q95: 17 by 9
+  pil-17x9-420-q10: 17 by 9
+  pil-17x9-420-q75: 17 by 9
+  pil-17x9-420-q95: 17 by 9
+  pil-17x9-gray: 17 by 9
+  pil-17x9-optimized: 17 by 9
+  im-17x9-1x2: 17 by 9
+  im-17x9-4x1: 17 by 9
+  im-17x9-4x2: 17 by 9
+  im-17x9-2x1-1x2-1x1: 17 by 9
+  im-17x9-1x1-2x2-2x2: 17 by 9
+  pil-33x31-444-q10: 33 by 31
+  pil-33x31-444-q75: 33 by 31
+  pil-33x31-444-q95: 33 by 31
+  pil-33x31-422-q10: 33 by 31
+  pil-33x31-422-q75: 33 by 31
+  pil-33x31-422-q95: 33 by 31
+  pil-33x31-420-q10: 33 by 31
+  pil-33x31-420-q75: 33 by 31
+  pil-33x31-420-q95: 33 by 31
+  pil-33x31-gray: 33 by 31
+  pil-33x31-optimized: 33 by 31
+  im-33x31-1x2: 33 by 31
+  im-33x31-4x1: 33 by 31
+  im-33x31-4x2: 33 by 31
+  im-33x31-2x1-1x2-1x1: 33 by 31
+  im-33x31-1x1-2x2-2x2: 33 by 31
+  pil-64x48-444-q10: 64 by 48
+  pil-64x48-444-q75: 64 by 48
+  pil-64x48-444-q95: 64 by 48
+  pil-64x48-422-q10: 64 by 48
+  pil-64x48-422-q75: 64 by 48
+  pil-64x48-422-q95: 64 by 48
+  pil-64x48-420-q10: 64 by 48
+  pil-64x48-420-q75: 64 by 48
+  pil-64x48-420-q95: 64 by 48
+  pil-64x48-gray: 64 by 48
+  pil-64x48-optimized: 64 by 48
+  im-64x48-1x2: 64 by 48
+  im-64x48-4x1: 64 by 48
+  im-64x48-4x2: 64 by 48
+  im-64x48-2x1-1x2-1x1: 64 by 48
+  im-64x48-1x1-2x2-2x2: 64 by 48
+  pil-restart-every-3-blocks: 37 by 53
+  pil-restart-every-row-420: 37 by 53
+  pil-restart-every-block-gray: 37 by 53
+  pil-rgb: 37 by 53
+  pil-q100-444: 37 by 53
+  pil-q1-420: 37 by 53
+  pil-exif-and-comment: 37 by 53
+  pil-progressive: progressive JPEG, which isn't supported yet
+  pil-cmyk: four components (CMYK), which isn't supported
+  im-arithmetic: arithmetic coding, which isn't supported
+  pil-100x75-q90: 100 by 75
+  im-100x75-q60-420: 100 by 75
+made: 261 of 261 as the rules say (212 read, 49 refused), refused:
+  bad-empty: not a JPEG file
+  bad-not-jpeg: not a JPEG file
+  bad-soi-only: no image data
+  bad-second-soi: a second start of image
+  bad-unknown-marker: marker FF02, which JPEG doesn't use here
+  bad-segment-past-end: no image data
+  bad-jpg-marker: marker FFC8, which JPEG doesn't use here
+  bad-jpgn-marker: marker FFF0, which JPEG doesn't use here
+  bad-progressive: progressive JPEG, which isn't supported yet
+  bad-lossless: lossless JPEG, which isn't supported
+  bad-hierarchical: hierarchical JPEG, which isn't supported
+  bad-arithmetic: arithmetic coding, which isn't supported
+  bad-dhp: hierarchical JPEG, which isn't supported
+  bad-sof-12-bit: 12-bit samples, which aren't supported
+  bad-sof-short: a frame header of the wrong length
+  bad-sof-long: a frame header of the wrong length
+  bad-sof-tiny: a frame header of the wrong length
+  bad-two-frames: more than one frame header
+  bad-width-0: a width of 0
+  bad-height-0: a height of 0, to be set by a DNL marker, which isn't supported
+  bad-2-components: 2 components, which isn't supported
+  bad-4-components: four components (CMYK), which isn't supported
+  bad-sampling-0: a sampling factor JPEG doesn't have
+  bad-sampling-5: a sampling factor JPEG doesn't have
+  bad-quant-table-4: a component whose quantization table isn't defined
+  bad-same-ids: two components with the same ID
+  bad-uneven-sampling: sampling factors that don't divide evenly
+  bad-mcu-11-blocks: more than 10 blocks in an MCU
+  bad-mcu-12-blocks: more than 10 blocks in an MCU
+  bad-dqt-precision-2: a quantization table of precision 2, which JPEG doesn't have
+  bad-dqt-table-4: quantization table 4, which JPEG doesn't have
+  bad-dqt-short: a DQT segment of the wrong length
+  bad-no-dqt: a component whose quantization table isn't defined
+  bad-dht-class-2: Huffman table 0 of class 2, which JPEG doesn't have
+  bad-dht-table-4: Huffman table 4 of class 0, which JPEG doesn't have
+  bad-dht-short: a DHT segment of the wrong length
+  bad-dht-counts-only: a DHT segment of the wrong length
+  bad-dht-overfull: a Huffman table with more codes than there's room for
+  bad-dht-257: a Huffman table of more than 256 codes
+  bad-dc-value-16: a DC Huffman table with a value over 15
+  bad-sos-short: a scan header of the wrong length
+  bad-sos-0-components: a scan of 0 components
+  bad-sos-unknown-component: a scan of a component the frame doesn't have
+  bad-sos-component-twice: a component twice in one scan
+  bad-sos-table-undefined: a scan using a Huffman table that isn't defined
+  bad-sos-before-sof: image data before the frame header
+  bad-quant-table-undefined: a component whose quantization table isn't defined
+  limit-over: 10 by 10 is more than the limit of 99 pixels
+  limit-default-over: 65535 by 65535 is more than the limit of 16777216 pixels
+cut: 3050 of 3050 as the rules say (894 read, 2156 refused)
+fuzz: 4000 of 4000 as the rules say (2229 read, 1771 refused)
+done
