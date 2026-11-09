@@ -1,9 +1,10 @@
 # fontlib
 
 Fonts in; metrics, outlines and smooth glyph bitmaps out. So far it reads TrueType fonts: the face, each
-glyph's outline and metrics, in font units, and which glyph a character is; and it makes glyphs' bitmaps
-at a size, exactly as FreeType makes them ([plan.md](../../plan.md#phase-4-font-library), milestones 4.1
-and 4.2). It uses [corelib](../core), so a program
+glyph's outline and metrics, in font units, and which glyph a character is; it makes glyphs' bitmaps at
+a size, exactly as FreeType makes them; and it measures and draws runs of UTF-8 text in a list of fonts,
+with HarfBuzz's glyphs and advances ([plan.md](../../plan.md#phase-4-font-library), milestones 4.1 to
+4.3). It uses [corelib](../core), so a program
 using it has both `fontlib.philib` and `corelib.philib` beside it.
 
 ```phi
@@ -28,6 +29,13 @@ if b is not 0
 	# b.width by b.height bytes of coverage at b.pixels, top row first, b.left right of the pen and
 	# b.top above the baseline; then move the pen b.advance / 64 pixels
 ;;
+
+FntStack stack;                                     # fonts tried in turn for each character
+stack.sizes:0 is size;
+stack.count is 1;
+int width: (Fnt.Measure: addr stack text length);  # 64ths of a pixel
+int pen: (Fnt.Draw: addr stack text length canvas canvas_w canvas_h (10 * 64) 30 0xFF000000);
+
 call Fnt.FreeSize: size;                            # its bitmaps too
 call Fnt.Free: face;
 ```
@@ -35,9 +43,9 @@ call Fnt.Free: face;
 ## API
 
 These names are the API. Everything else the library declares (`FntTrueType`, `FntFrame`,
-`FntMacRoman`, `FntRaster`, `FntCell`, `FntSize`'s `scale`, `cache`, `outline` and `raster`, and
-`Fnt`'s `Grow`, `Release`, `ReleasePoints`, `Done`, `Failed`, `DivFix`, `Make` and `FreeBitmap`) is how it
-works, and may change.
+`FntMacRoman`, `FntRaster`, `FntCell`, `FntText`, `FntSize`'s `scale`, `mult`, `cache`, `outline` and
+`raster`, and `Fnt`'s `Grow`, `Release`, `ReleasePoints`, `Done`, `Failed`, `DivFix`, `Make`, `FreeBitmap`,
+`Blit` and `BlitRows`) is how it works, and may change.
 
 | Name | What it is |
 |---|---|
@@ -58,6 +66,9 @@ works, and may change.
 | `FntBitmap` | A struct: `width` by `height` bytes of coverage (0 to 255) at `pixels`, a row at a time from the top (`pixels` is 0 when there are none); `left` (pixels right of the pen), `top` (pixels above the baseline), and `advance` (64ths of a pixel) |
 | `Fnt.FreeSize: size` | Gives back a size's memory and its bitmaps (0 does nothing) |
 | `Fnt.MOST_BITMAP_PIXELS` | 1,048,576: the most pixels a glyph's bitmap may have, so that a damaged font's glyph can't ask for gigabytes |
+| `FntStack` | A struct: `sizes` (up to 8 `ptr<FntSize>`) and `count`: fonts tried in turn for each character, the first being the main one |
+| `Fnt.Measure: stack text length` → | How wide `length` bytes of UTF-8 are, in 64ths of a pixel |
+| `Fnt.Draw: stack text length canvas width height x y color` → | Draws the text on `canvas` (`width` by `height` pixels of `0xAARRGGBB`, a row at a time from the top), the pen starting `x` 64ths of a pixel from the left on the baseline `y` pixels from the top; gives where the pen ends. Each glyph's coverage, times `color`'s alpha, blends `color` over the canvas, whose alpha is kept |
 | `Fnt.error` | Why the last call failed |
 
 **A bad font** gives 0 or false and a reason, never a crash or a hang. **One thread at a time:**
@@ -105,6 +116,22 @@ A glyph's bitmap is FreeType's, exactly, as its smooth rasterizer makes it unhin
 **Not done:** hinting (left out on purpose, as the plan says), and the 4 times oversampling FreeType gives
 a glyph that says its contours overlap (none of the fonts tested does).
 
+## Text
+
+A run of text is laid out as HarfBuzz lays it out with its shaping turned off, and drawn with the bitmaps
+above:
+
+- **UTF-8** is decoded as the WHATWG Encoding Standard decodes it: each malformed sequence, as far as it's
+  a valid start, is one U+FFFD.
+- **Each character** is the glyph of the first font in the stack that has one for it; if none has, the
+  first font's `.notdef`.
+- **Advances** are HarfBuzz's at the size (the `hmtx` advance times `(ppem * 64 << 16) / units_per_em`,
+  rounded, over 65536), added up in 64ths of a pixel.
+- **Each glyph** goes at the pen rounded to a whole pixel, and blends as imagelib's `Img.BlendRow` blends.
+
+**Not done yet:** kerning (4.4), and shaping: ligatures, marks, and the scripts that need it, which are
+left out on purpose.
+
 ## How it's checked
 
 From the repo's root:
@@ -113,6 +140,7 @@ From the repo's root:
 pwsh ./build.ps1 font -Test                       # (or .\build.ps1 font -Test on Windows)
 python3 -P tools/font/make_font_tests.py          # remakes tests/ttf/cases.bin (it's committed)
 python3 -P tools/font/make_raster_tests.py        # remakes tests/raster/cases.bin
+python3 -P tools/font/make_text_tests.py          # remakes tests/text/cases.bin
 pwsh ./build.ps1 font -Test -Release              # and the release tests too
 python3 -P tools/font/make_font_tests.py --release
 ```
@@ -138,3 +166,11 @@ pixel. A case is a font at a size, and its verdict the size's line and one CRC-3
 | Cases (2026-11-10, as 32 and 64-bit Linux programs) | Result |
 |---|---|
 | Everyday: Liberation Sans at 12 and 19 pixels, each made font at 12, 16 fuzzed at 5, 12 or 30 | 55 of 55 as the rules say, which are FreeType's, 5,422 glyphs |
+
+**Text:** [text_reference.py](../../tools/font/text_reference.py)'s glyphs and advances are HarfBuzz's
+(shaping off), and `make_text_tests.py` stops if they aren't on any case with one font. A case is a run of
+text in a stack of fonts on a canvas; its verdict its width, the pen after it, and the canvas's CRC-32.
+
+| Cases (2026-11-10, as 32 and 64-bit Linux programs) | Result |
+|---|---|
+| ASCII, characters beyond code page 437, Greek and Cyrillic, missing glyphs, malformed UTF-8 and nothing, each at 12, 19 and 33 pixels on white, noise and transparent canvases; a half-transparent color; text off each edge; three stacks with fallback | 26 of 26 measured and drawn as the rules say; the 23 with one font have HarfBuzz's glyphs and advances |

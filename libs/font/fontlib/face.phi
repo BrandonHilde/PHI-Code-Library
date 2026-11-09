@@ -48,6 +48,7 @@ struct.FntSize
 	ptr<FntFace> face;
 	u32 ppem;
 	i64 scale;              # 16.16: font units to 64ths of a pixel
+	i64 mult;               # HarfBuzz's: advances to 64ths of a pixel, over 65536
 	int ascender;           # rounded up to a whole pixel
 	int descender;          # rounded down
 	int height;             # rounded
@@ -162,7 +163,8 @@ phi.Fnt:Library
 		;;
 		size.face is face;
 		size.ppem is ppem;
-		size.scale is (DivFix: (ppem as i64) * 64 face.units_per_em);
+		size.scale is (DivFix: ((ppem as i64) * 64) face.units_per_em);
+		size.mult is (((ppem as i64) * 64) << 16) / (face.units_per_em as i64);
 		i64 asc: (face.tt.MulFix: face.ascender size.scale);
 		i64 desc: (face.tt.MulFix: face.descender size.scale);
 		i64 height: (face.tt.MulFix: face.height size.scale);
@@ -250,7 +252,7 @@ phi.Fnt:Library
 		ptr<FntTrueType> tt: size.face.tt;
 		ptr<FntOutline> o: size.outline;
 		call tt.Glyph: glyph o size.scale;
-		bitmap.advance is ((tt.MulFix: tt.pp1 + tt.advance size.scale) - (tt.MulFix: tt.pp1 size.scale)) as int;
+		bitmap.advance is ((tt.MulFix: (tt.pp1 + tt.advance) size.scale) - (tt.MulFix: tt.pp1 size.scale)) as int;
 		if o.points is 0
 			return;
 		;;
@@ -300,6 +302,80 @@ phi.Fnt:Library
 			first is o.ends:k + 1;
 		;;
 		call r.Sweep: (bitmap.pixels as u8[(w * h) as u32]);
+	[end]
+
+	# How wide text is (length bytes of UTF-8) in the stack's fonts, in 64ths of a pixel: each character's
+	# glyph from the first font that has one, its advance as HarfBuzz scales it
+	[Measure: ptr<FntStack> stack: 0; ptr<u8> text: 0; u32 length: 0; : int]
+		if stack is 0 or stack.count is 0 or (text is 0 and length > 0)
+			return 0;
+		;;
+		FntText.pos is 0;
+		int width: 0;
+		while (FntText.Decode: (text as u8[length]))
+			u32 which: 0;
+			u32 g: (FntText.Pick: stack FntText.code addr which);
+			width is width + (FntText.Advance: stack.sizes:which g);
+		;;
+	[end: width]
+
+	# Draws text (length bytes of UTF-8) in the stack's fonts on canvas, width by height pixels of
+	# 0xAARRGGBB, a row at a time from the top: the pen starts x 64ths of a pixel from the left, on the
+	# baseline y pixels from the top, and each glyph's coverage, times color's alpha, blends color over
+	# the canvas (its alpha kept). Gives where the pen ends, in 64ths of a pixel. What's off the canvas
+	# isn't drawn, and a glyph that can't be made is left out (but its advance isn't).
+	[Draw: ptr<FntStack> stack: 0; ptr<u8> text: 0; u32 length: 0; ptr<u32> canvas: 0; u32 width: 0; u32 height: 0; int x: 0; int y: 0; u32 color: 0; : int]
+		if stack is 0 or stack.count is 0 or canvas is 0 or (text is 0 and length > 0)
+			return x;
+		;;
+		FntText.pos is 0;
+		int pen: x;
+		while (FntText.Decode: (text as u8[length]))
+			u32 which: 0;
+			u32 g: (FntText.Pick: stack FntText.code addr which);
+			ptr<FntSize> size: stack.sizes:which;
+			ptr<FntBitmap> b: (Bitmap: size g);
+			if b is not 0 and b.pixels is not 0
+				call Blit: (canvas as u32[width * height]) width height b (((pen + 32) >> 6) + b.left) (y - b.top) color;
+			;;
+			pen is pen + (FntText.Advance: size g);
+		;;
+	[end: pen]
+
+	[Blit: u32 canvas[]; u32 width: 0; u32 height: 0; ptr<FntBitmap> b: 0; int ox: 0; int oy: 0; u32 color: 0;]
+		u32 ca: color >> 24;
+		u32 n: b.width * b.height;
+		call BlitRows: canvas width height (b.pixels as u8[n]) b.width b.height ox oy color ca;
+	[end]
+
+	[BlitRows: u32 canvas[]; u32 width: 0; u32 height: 0; u8 cov[]; u32 bw: 0; u32 bh: 0; int ox: 0; int oy: 0; u32 color: 0; u32 ca: 0;]
+		while u32 row: 0; row < bh; row++;
+			int cy: oy + row as int;
+			if cy < 0 or cy >= height as int
+				continue;
+			;;
+			while u32 col: 0; col < bw; col++;
+				int cx: ox + col as int;
+				if cx < 0 or cx >= width as int
+					continue;
+				;;
+				u32 c: cov:(row * bw + col);
+				if c is 0
+					continue;
+				;;
+				u32 a: (c * ca + 127) / 255;
+				if a is 0
+					continue;
+				;;
+				u32 at_px: (cy as u32) * width + (cx as u32);
+				u32 d: canvas:at_px;
+				u32 rest: 255 - a;
+				u32 r: (((color >> 16) & 255) * a + ((d >> 16) & 255) * rest + 127) / 255;
+				u32 gr: (((color >> 8) & 255) * a + ((d >> 8) & 255) * rest + 127) / 255;
+				u32 bl: ((color & 255) * a + (d & 255) * rest + 127) / 255;
+				canvas:at_px is (d & 0xFF000000) | (r << 16) | (gr << 8) | bl;
+			;;
+		;;
 	[end]
 
 	# an outline to load glyphs into, again and again; 0 if there isn't the memory

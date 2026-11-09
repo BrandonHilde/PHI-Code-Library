@@ -1,0 +1,27 @@
+# made by tools/font/make_text_tests.py: what fontlib must make of each run of text
+ascii-12                             width   8709, pen   8918
+ascii-19                             width  13787, pen  13996
+ascii-33                             width  23958, pen  24167
+beyond-437-12                        width  15711, pen  15920
+beyond-437-19                        width  24876, pen  25085
+beyond-437-33                        width  43217, pen  43426
+greek-cyrillic-12                    width   9959, pen  10168
+greek-cyrillic-19                    width  15768, pen  15977
+greek-cyrillic-33                    width  27394, pen  27603
+missing-glyphs-12                    width   3306, pen   3515
+missing-glyphs-19                    width   5236, pen   5445
+missing-glyphs-33                    width   9094, pen   9303
+malformed-utf8-12                    width   8767, pen   8976
+malformed-utf8-19                    width  13886, pen  14095
+malformed-utf8-33                    width  24121, pen  24330
+empty-12                             width      0, pen    209
+empty-19                             width      0, pen    209
+empty-33                             width      0, pen    209
+half-transparent-color               width  20966, pen  20966
+off-the-left                         width  17417, pen  14217
+off-the-right                        width  17417, pen  19977
+off-the-top                          width   4837, pen   4901
+off-the-bottom                       width   4837, pen   4901
+fallback-squares-then-liberation     width   4794, pen   4858
+fallback-liberation-then-emoji       width   3223, pen   3287
+fallback-none-has-it                 width    896, pen    960

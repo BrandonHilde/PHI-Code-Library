@@ -377,7 +377,7 @@ call Fnt.Free: face;
 |---|---|---|
 | 4.1 TrueType reading ✓ | Table directory, `head`, `hhea`, `hmtx`, `maxp`, `cmap`, `loca`, `glyf`, composite glyphs | FreeType's numbers (through `freetype-py`), for outlines and metrics |
 | 4.2 Rasterizer ✓ | Anti-aliased coverage in fixed-point, with a glyph cache | FreeType's bitmaps, within a tolerance |
-| 4.3 Simple text | UTF-8, advances, line metrics, measuring and drawing a run, fallback across faces | HarfBuzz advances, and reference bitmaps |
+| 4.3 Simple text ✓ | UTF-8, advances, line metrics, measuring and drawing a run, fallback across faces | HarfBuzz advances, and reference bitmaps |
 | 4.4 Kerning | `kern`, and pair adjustment in `GPOS` | FreeType/HarfBuzz advances |
 | 4.5 OpenType CFF | `.otf` outlines | FreeType |
 | 4.6 Web fonts | WOFF 1 (uses inflate) | Sample fonts, compared with the same font unpacked |
@@ -411,6 +411,12 @@ the rules (`tools/font/raster_reference.py`) give FreeType's unhinted bitmaps ex
 with the same box and advance, by following ftgrays.c's integer arithmetic, and fontlib gives the rules'
 on every case, as 32 and 64-bit programs. Not done: FreeType's oversampling of glyphs marked as
 overlapping.
+
+**4.3, done 2026-11-10,** in [libs/font](libs/font): `Fnt.Measure` and `Fnt.Draw`, UTF-8 (decoded as
+WHATWG decodes it), a stack of up to 8 fonts tried in turn for each character, HarfBuzz's advances, and
+each size's line. The rules (`tools/font/text_reference.py`) give HarfBuzz's glyphs and advances with its
+shaping turned off, and fontlib gives the rules' width, pen and canvas on every case, including text
+beyond code page 437, as 32 and 64-bit programs.
 
 **Done when:** milestones 4.1 to 4.4 pass, a test draws Unicode text beyond code page 437 that matches its
 reference, and every parser has been fuzzed.

@@ -1,0 +1,143 @@
+# fontlib's simple text against the cases in tests/text/cases.bin, made by tools/font/make_text_tests.py,
+# whose glyphs and advances are HarfBuzz's: each run of text, in a list of fonts at sizes, must measure
+# as the rules say, leave the pen where they say, and draw the canvas they draw (its CRC-32).
+# This is test code, which fontlib.phi doesn't use, so it's no part of the library.
+use fontlib;
+use data.crc32;
+
+phi.FntTestText:Library
+{
+	[Run: str cases_path;]
+		int size: (OS.FileSize: cases_path);
+		ptr<u8> file: new u8[size as u32 + 1];
+		if size < 0 or file is 0 or (OS.ReadFile: cases_path file size) is not size
+			log 'cannot read ' cases_path '\n';
+			exit 1;
+		;;
+		CoreReader r;
+		call r.Start: file size as u32;
+		u32 count: (r.U32LE);
+		u32 right: 0;
+		ptr<u8> loaded[8];
+		ptr<FntFace> faces[8];
+		while u32 i: 0; i < count; i++;
+			u32 name_len: (r.U8);
+			ptr<u8> name_at: (r.Bytes: name_len);
+			u32 nfonts: (r.U8);
+			if nfonts > 8 or nfonts is 0
+				log cases_path ' is damaged\n';
+				exit 1;
+			;;
+			FntStack stack;
+			stack.count is nfonts;
+			bln ok: true;
+			while u32 k: 0; k < nfonts; k++;
+				u32 kind: (r.U8);
+				ptr<u8> data: 0;
+				u32 length: 0;
+				loaded:k is 0;
+				if kind is 0
+					u32 path_len: (r.U8);
+					ptr<u8> path_at: (r.Bytes: path_len);
+					str path: '';
+					while u32 j: 0; j < path_len; j++;
+						path++ path_at:j as chr;
+					;;
+					int fsize: (OS.FileSize: path);
+					loaded:k is new u8[fsize as u32 + 1];
+					call OS.ReadFile: path loaded:k fsize;
+					data is loaded:k;
+					length is fsize as u32;
+				;;
+				else
+					length is (r.U32LE);
+					data is (r.Bytes: length);
+				;;
+				u32 ppem: (r.U32LE);
+				faces:k is (Fnt.Load: data length);
+				if faces:k is 0
+					ok is false;
+					stack.sizes:k is 0;
+				;;
+				else
+					stack.sizes:k is (Fnt.AtSize: faces:k ppem);
+				;;
+			;;
+			u32 w: (r.U32LE);
+			u32 h: (r.U32LE);
+			u32 bg: (r.U8);
+			int x: (r.I32LE);
+			int y: (r.I32LE);
+			u32 color: (r.U32LE);
+			u32 text_len: (r.U32LE);
+			ptr<u8> text: (r.Bytes: text_len);
+			int want_width: (r.I32LE);
+			int want_pen: (r.I32LE);
+			u32 want_crc: (r.U32LE);
+			if r.failed
+				log cases_path ' is cut short, or damaged\n';
+				exit 1;
+			;;
+			str name: '';
+			while u32 k: 0; k < name_len; k++;
+				name++ name_at:k as chr;
+			;;
+			str wrong: '';
+			if not ok
+				wrong is 'a font didn\'t load: ' Fnt.error;
+			;;
+			else
+				ptr<u32> canvas: new u32[w * h + 1];
+				call Background: (canvas as u32[w * h]) bg;
+				int width: (Fnt.Measure: addr stack text text_len);
+				int pen: (Fnt.Draw: addr stack text text_len canvas w h x y color);
+				u32 crc: (Crc32.Of: (canvas as ptr<u8>) (w * h * 4));
+				if width is not want_width
+					wrong is 'it measures ' width ', where the rules have ' want_width;
+				;;
+				elif pen is not want_pen
+					wrong is 'the pen ends at ' pen ', where the rules have ' want_pen;
+				;;
+				elif crc is not want_crc
+					wrong is 'the canvas differs from the rules\'';
+				;;
+				free canvas;
+			;;
+			if wrong.len > 0
+				log 'WRONG ' name ': ' wrong '\n';
+			;;
+			else
+				right++;
+			;;
+			while u32 k: 0; k < nfonts; k++;
+				call Fnt.FreeSize: stack.sizes:k;
+				call Fnt.Free: faces:k;
+				if loaded:k is not 0
+					free loaded:k;
+				;;
+			;;
+		;;
+		if r.pos is not size as u32
+			log cases_path ' is damaged\n';
+			exit 1;
+		;;
+		log 'runs of text: ' right ' of ' count ' measured and drawn as the rules say, whose glyphs and advances are HarfBuzz\'s\n';
+		log 'done\n';
+		exit 0;
+	[end]
+
+	# the canvas the case starts with: white, noise, or transparent black
+	[Background: u32 px[]; u32 bg: 0;]
+		while u32 i: 0; i < px.len; i++;
+			if bg is 0
+				px:i is 0xFFFFFFFF;
+			;;
+			elif bg is 2
+				px:i is 0;
+			;;
+			else
+				px:i is 0xFF000000 | ((i * 0x9E3779B1) >> 8);
+			;;
+		;;
+	[end]
+}

@@ -1,0 +1,11 @@
+# fontlib's simple text against the everyday cases, in tests/text/cases.bin: Liberation Sans at three
+# sizes on three canvases, ASCII, characters beyond code page 437, Greek and Cyrillic, missing glyphs,
+# malformed UTF-8, text off each edge, and fallback across fonts. textcases.phi says how they're checked.
+use fontlib;
+use textcases;
+
+phi.TestText:Program
+{
+	call FontLib.Start;
+	call FntTestText.Run: 'tests/text/cases.bin';
+}

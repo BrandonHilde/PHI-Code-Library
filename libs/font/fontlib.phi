@@ -10,6 +10,7 @@ use corelib;
 use fontlib.face;
 use fontlib.truetype;
 use fontlib.raster;
+use fontlib.text;
 
 phi.FontLib:Library
 {

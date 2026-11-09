@@ -1,0 +1,110 @@
+# Simple text: UTF-8 in, glyphs from a list of fonts, measured and drawn. The rules are
+# tools/font/text_reference.py's, whose glyphs and advances are HarfBuzz's (with shaping turned off):
+#
+#   - UTF-8 is decoded as the WHATWG Encoding Standard decodes it: each malformed sequence, as far as
+#     it's a valid start, is one U+FFFD.
+#   - Each character is the glyph of the first font in the list that has one for it; if none has, the
+#     first font's .notdef.
+#   - Advances are HarfBuzz's at the size, added up in 64ths of a pixel, with nothing between them
+#     (kerning is 4.4's).
+#   - Each glyph's bitmap goes at the pen rounded to a whole pixel, and its coverage, times the color's
+#     alpha, blends the color over the canvas as imagelib's BlendRow does, the canvas's alpha kept.
+
+use corelib;
+use fontlib.face;
+
+# Up to 8 fonts at sizes, tried in turn for each character: the first is the main one
+struct.FntStack
+{
+	ptr<FntSize> sizes[8];
+	u32 count;
+}
+
+phi.FntText:Library
+{
+	# where Decode left off: the next byte, and the character it found
+	u32 pos;
+	u32 code;
+
+	# The next character of text from byte pos, as the WHATWG decoder finds it, into code (and pos moved
+	# past it); false at the end
+	[Decode: u8 text[]; : bln]
+		u32 n: text.len as u32;
+		if pos >= n
+			return false;
+		;;
+		u32 b: text:pos;
+		pos++;
+		if b <= 0x7F
+			code is b;
+			return true;
+		;;
+		u32 need: 0;
+		u32 lower: 0x80;
+		u32 upper: 0xBF;
+		u32 cp: 0;
+		if b >= 0xC2 and b <= 0xDF
+			need is 1;
+			cp is b & 0x1F;
+		;;
+		elif b >= 0xE0 and b <= 0xEF
+			if b is 0xE0
+				lower is 0xA0;
+			;;
+			if b is 0xED
+				upper is 0x9F;
+			;;
+			need is 2;
+			cp is b & 0xF;
+		;;
+		elif b >= 0xF0 and b <= 0xF4
+			if b is 0xF0
+				lower is 0x90;
+			;;
+			if b is 0xF4
+				upper is 0x8F;
+			;;
+			need is 3;
+			cp is b & 7;
+		;;
+		else
+			code is 0xFFFD;
+			return true;
+		;;
+		while need > 0
+			if pos >= n
+				code is 0xFFFD;
+				return true;
+			;;
+			u32 c: text:pos;
+			if c < lower or c > upper
+				code is 0xFFFD;     # c starts what comes next
+				return true;
+			;;
+			lower is 0x80;
+			upper is 0xBF;
+			cp is (cp << 6) | (c & 0x3F);
+			pos++;
+			need--;
+		;;
+		code is cp;
+	[end: true]
+
+	# which font of the stack has a glyph for u, and the glyph, in which_out
+	[Pick: ptr<FntStack> stack: 0; u32 u: 0; ptr<u32> which_out: 0; : u32]
+		while u32 k: 0; k < stack.count; k++;
+			ptr<FntSize> size: stack.sizes:k;
+			u32 g: (Fnt.GlyphOf: size.face u);
+			if g is not 0 and g < size.face.glyph_count
+				which_out:0 is k;
+				return g;
+			;;
+		;;
+		which_out:0 is 0;
+	[end: 0]
+
+	# glyph g's advance at a size, as HarfBuzz scales it, in 64ths of a pixel
+	[Advance: ptr<FntSize> size: 0; u32 g: 0; : int]
+		i64 adv: (Fnt.Advance: size.face g);
+	[end: ((adv * size.mult + 32768) >> 16) as int]
+}
