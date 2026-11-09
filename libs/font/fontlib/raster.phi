@@ -398,29 +398,30 @@ struct.FntRaster
 		;;
 	[end: c as u32]
 
-	# one contour of points first to last, as FT_Outline_Decompose gives it, shifted by (dx, dy)
-	[Contour: ptr<FntOutline> o: 0; u32 first: 0; u32 last: 0; i64 dx: 0; i64 dy: 0;]
-		i64 sx: (o.x:first as i64) + dx;
-		i64 sy: (o.y:first as i64) + dy;
+	# one contour of points first to last, as FT_Outline_Decompose gives it, shifted by (dx, dy) and
+	# made k times as big
+	[Contour: ptr<FntOutline> o: 0; u32 first: 0; u32 last: 0; i64 dx: 0; i64 dy: 0; i64 k: 1;]
+		i64 sx: ((o.x:first as i64) + dx) * k;
+		i64 sy: ((o.y:first as i64) + dy) * k;
 		int i: first as int;
 		int limit: last as int;
 		if o.on:first is 0
 			if o.on:last is not 0
-				sx is (o.x:last as i64) + dx;
-				sy is (o.y:last as i64) + dy;
+				sx is ((o.x:last as i64) + dx) * k;
+				sy is ((o.y:last as i64) + dy) * k;
 				limit--;
 			;;
 			else
-				sx is (Half: sx + (o.x:last as i64) + dx);
-				sy is (Half: sy + (o.y:last as i64) + dy);
+				sx is (Half: sx + ((o.x:last as i64) + dx) * k);
+				sy is (Half: sy + ((o.y:last as i64) + dy) * k);
 			;;
 			i--;
 		;;
 		call MoveTo: sx sy;
 		while i < limit
 			i++;
-			i64 px: (o.x:(i as u32) as i64) + dx;
-			i64 py: (o.y:(i as u32) as i64) + dy;
+			i64 px: ((o.x:(i as u32) as i64) + dx) * k;
+			i64 py: ((o.y:(i as u32) as i64) + dy) * k;
 			if o.on:(i as u32) is not 0
 				call LineTo: px py;
 				continue;
@@ -430,8 +431,8 @@ struct.FntRaster
 			while true
 				if i < limit
 					i++;
-					i64 qx: (o.x:(i as u32) as i64) + dx;
-					i64 qy: (o.y:(i as u32) as i64) + dy;
+					i64 qx: ((o.x:(i as u32) as i64) + dx) * k;
+					i64 qy: ((o.y:(i as u32) as i64) + dy) * k;
 					if o.on:(i as u32) is not 0
 						call ConicTo: ctl_x ctl_y qx qy;
 						break;

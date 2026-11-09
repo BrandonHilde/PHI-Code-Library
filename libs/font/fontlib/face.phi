@@ -290,18 +290,57 @@ phi.Fnt:Library
 		if w * h is 0
 			return;
 		;;
+		# a glyph marked as overlapping is drawn 4 times as fine, as FreeType draws it
+		i64 k: 1;
+		if tt.overlap
+			if w * 4 > 0x7FFF
+				throw 'a glyph too wide to draw 4 times as fine';
+			;;
+			k is 4;
+		;;
 		bitmap.pixels is new u8[(w * h) as u32];
 		if bitmap.pixels is 0
 			throw 'out of memory';
 		;;
-		ptr<FntRaster> r: size.raster;
-		call r.Start: w as u32 h as u32;
-		u32 first: 0;
-		while u32 k: 0; k < o.contours; k++;
-			call r.Contour: o first o.ends:k (0 - left * 64) (0 - bottom * 64);
-			first is o.ends:k + 1;
+		ptr<u8> fine: bitmap.pixels;
+		if k is 4
+			fine is new u8[(w * h * 16) as u32];
+			if fine is 0
+				throw 'out of memory';
+			;;
 		;;
-		call r.Sweep: (bitmap.pixels as u8[(w * h) as u32]);
+		ptr<FntRaster> r: size.raster;
+		call r.Start: (w * k) as u32 (h * k) as u32;
+		u32 first: 0;
+		while u32 c: 0; c < o.contours; c++;
+			call r.Contour: o first o.ends:c (0 - left * 64) (0 - bottom * 64) k;
+			first is o.ends:c + 1;
+		;;
+		call r.Sweep: (fine as u8[(w * h * k * k) as u32]);
+		if k is 4
+			call Average: (fine as u8[(w * h * 16) as u32]) (bitmap.pixels as u8[(w * h) as u32]) w as u32 h as u32;
+			free fine;
+		;;
+	[end]
+
+	# each pixel the sum of its 16 subpixels' coverage in 16ths, rounded, at most 255, as FreeType's
+	# ft_smooth_raster_overlap adds them up
+	[Average: u8 fine[]; u8 px[]; u32 w: 0; u32 h: 0;]
+		while u32 row: 0; row < h; row++;
+			while u32 col: 0; col < w; col++;
+				u32 total: 0;
+				while u32 sy: 0; sy < 4; sy++;
+					u32 base: (row * 4 + sy) * w * 4 + col * 4;
+					while u32 sx: 0; sx < 4; sx++;
+						total++ (fine:(base + sx) + 8) / 16;
+					;;
+				;;
+				if total > 255
+					total is 255;
+				;;
+				px:(row * w + col) is total as u8;
+			;;
+		;;
 	[end]
 
 	# How wide text is (length bytes of UTF-8) in the stack's fonts, in 64ths of a pixel: each character's

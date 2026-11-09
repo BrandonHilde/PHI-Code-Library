@@ -43,7 +43,7 @@ class Font:
             if isinstance(res, str):
                 self.bitmaps[g] = None
             else:
-                self.bitmaps[g] = R.render(res[0], res[1], res[2])
+                self.bitmaps[g] = R.render(res[0], res[1], res[2], self.face.overlap)
         return self.bitmaps[g]
 
 

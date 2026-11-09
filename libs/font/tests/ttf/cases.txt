@@ -60,23 +60,27 @@ made  glyph-contours-out-of-order                  704 bytes  ok, 4 glyphs
 made  glyph-instructions-too-long                  704 bytes  ok, 4 glyphs
 made  glyph-flags-repeat-too-far                   704 bytes  ok, 4 glyphs
 made  glyph-contour-end-negative                   704 bytes  ok, 4 glyphs
+made  overlap-simple                               652 bytes  ok, 2 glyphs
+made  overlap-compound-second                      676 bytes  ok, 3 glyphs
+made  overlap-compound                             676 bytes  ok, 3 glyphs
 made  points-2x16380                             42416 bytes  ok, 3 glyphs
 made  points-2x16400                             42468 bytes  ok, 3 glyphs
 cut   simple                                      2 ok,    5 refused
 cut   composite-nested                            2 ok,    5 refused
 fuzz  composite-offset                            3 ok,    1 refused
 fuzz  composite-nested                            3 ok,    0 refused
-fuzz  cmap-format-4                               2 ok,    0 refused
+fuzz  cmap-format-4                               1 ok,    0 refused
 fuzz  composite-2x2                               1 ok,    0 refused
 fuzz  composite-of-empty                          2 ok,    0 refused
 fuzz  composite-xy-scale                          3 ok,    0 refused
 fuzz  cmap-0-3                                    1 ok,    0 refused
 fuzz  os2-win-metrics                             0 ok,    1 refused
 fuzz  composite-offset-words                      2 ok,    0 refused
-fuzz  points-2x16400                              1 ok,    0 refused
+fuzz  overlap-compound-second                     1 ok,    0 refused
 fuzz  cmap-format-12                              2 ok,    1 refused
-fuzz  cmap-0-4-before-3-1                         1 ok,    0 refused
-fuzz  composite-use-my-metrics                    1 ok,    1 refused
+fuzz  points-2x16380                              2 ok,    0 refused
+fuzz  composite-scaled-offset-2x2                 1 ok,    0 refused
+fuzz  composite-use-my-metrics                    1 ok,    2 refused
 fuzz  composite-two                               1 ok,    0 refused
 fuzz  upem-16                                     1 ok,    0 refused
 fuzz  upem-16384                                  0 ok,    1 refused
@@ -84,8 +88,7 @@ fuzz  short-metrics                               1 ok,    0 refused
 fuzz  cmap-none                                   1 ok,    0 refused
 fuzz  cmap-mac-roman                              1 ok,    0 refused
 fuzz  line-gap                                    1 ok,    0 refused
-fuzz  points-2x16380                              1 ok,    1 refused
+fuzz  overlap-simple                              1 ok,    1 refused
 fuzz  lsb-not-xmin                                1 ok,    0 refused
 fuzz  cmap-symbol                                 1 ok,    0 refused
-fuzz  simple                                      2 ok,    0 refused
-fuzz  os2-typo-metrics                            1 ok,    0 refused
+fuzz  simple                                      1 ok,    0 refused

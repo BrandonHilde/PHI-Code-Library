@@ -38,19 +38,22 @@ cmap-symbol                                       12 px  3 glyphs
 cmap-mac-roman                                    12 px  3 glyphs
 cmap-none                                         12 px  3 glyphs
 tag-true                                          12 px  4 glyphs
+overlap-simple                                    12 px  2 glyphs
+overlap-compound-second                           12 px  3 glyphs
+overlap-compound                                  12 px  3 glyphs
 fuzz-0-composite-scaled-offset-2x2-b              30 px  4 glyphs
-fuzz-1-cmap-format-13                             12 px  3 glyphs
-fuzz-2-cmap-0-4-before-3-1                         5 px  3 glyphs
-fuzz-3-cmap-0-4-before-3-1                         5 px  refused: a font with no hhea table
-fuzz-4-short-metrics                               5 px  4 glyphs
-fuzz-5-cmap-3-1-before-0-3                        12 px  0 glyphs
-fuzz-6-upem-16                                     5 px  4 glyphs
-fuzz-7-composite-scaled-offset                    30 px  4 glyphs
-fuzz-8-composite-of-empty                          5 px  4 glyphs
-fuzz-9-short-metrics                              30 px  4 glyphs
-fuzz-10-lsb-not-xmin                               5 px  2 glyphs
-fuzz-11-os2-typo-metrics                           5 px  4 glyphs
-fuzz-12-composite-two                              5 px  4 glyphs
-fuzz-13-composite-offset                          12 px  refused: a font with no head table
-fuzz-14-long-loca                                 30 px  4 glyphs
-fuzz-15-line-gap                                   5 px  4 glyphs
+fuzz-1-overlap-simple                              5 px  2 glyphs
+fuzz-2-composite-2x2                               5 px  4 glyphs
+fuzz-3-composite-two                              12 px  4 glyphs
+fuzz-4-composite-scaled-offset-2x2-b              12 px  refused: a font with no head table
+fuzz-5-overlap-simple                              5 px  2 glyphs
+fuzz-6-composite-xy-scale                         12 px  4 glyphs
+fuzz-7-cmap-format-6                               5 px  3 glyphs
+fuzz-8-cmap-3-10-before-3-1                        5 px  3 glyphs
+fuzz-9-cmap-0-4-before-3-1                        30 px  3 glyphs
+fuzz-10-composite-scale                           30 px  4 glyphs
+fuzz-11-overlap-compound-second                   12 px  3 glyphs
+fuzz-12-short-loca                                30 px  4 glyphs
+fuzz-13-composite-nested                          30 px  6 glyphs
+fuzz-14-cmap-format-12                            30 px  3 glyphs
+fuzz-15-cmap-0-4-before-3-1                       30 px  3 glyphs

@@ -326,6 +326,8 @@ class Face:
         if g >= self.num_glyphs:
             return 'no such glyph'
         self.scale = scale
+        self.overlap = False      # FreeType's FT_OUTLINE_OVERLAP: any simple glyph's first point, or
+                                  # the outermost composite's first component, says they overlap
         self.loading = []
         self.points = []
         self.flags = []
@@ -410,6 +412,9 @@ class Face:
             elif flags & 0x80:
                 xx, yx, xy, yy = (i16(d, q + 2 * k) * 4 for k in range(4))
                 q += 8
+            # OVERLAP_COMPOUND counts only on the outermost composite's first component
+            if depth == 0 and not subs and flags & 0x400:
+                self.overlap = True
             subs.append((flags, index, a1, a2, xx, xy, yx, yy))
             if not flags & 0x20:
                 break
@@ -492,6 +497,8 @@ class Face:
                 if len(flags) + count > n_points:
                     raise Refused('a glyph whose flags run past its points')
                 flags.extend([c] * count)
+        if n_points and flags[0] & 0x40:
+            self.overlap = True
         xs = []
         x = 0
         for f in flags:

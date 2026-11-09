@@ -383,6 +383,27 @@ def made_cases():
     add('glyph-flags-repeat-too-far', patch(simple, gp + 16, b'\x09\xff'), 'damaged')
     add('glyph-contour-end-negative', patch(simple, gp + 10, struct.pack('>h', -3)), 'damaged')
 
+    # contours that overlap, and say so: FreeType draws such a glyph 4 times as fine
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+    pen = TTGlyphPen(None)
+    pen.moveTo((50, 0))
+    pen.lineTo((50, 600))
+    pen.lineTo((450, 600))
+    pen.lineTo((450, 0))
+    pen.closePath()
+    pen.moveTo((250, 200))
+    pen.qCurveTo((250, 800), (650, 800), (650, 200))
+    pen.closePath()
+    overlapping = pen.glyph()
+    overlapping.flags[0] |= 0x40
+    add('overlap-simple', build({'.notdef': square(0, 0, 10, 10), 'A': overlapping}, {'.notdef': (500, 0), 'A': (700, 50)}, {0x41: 'A'}))
+    add('overlap-compound-second', build({'.notdef': square(0, 0, 10, 10), 'b': curvy(10, 20, 100),
+                                          'A': [comp('b'), comp('b', x=60, y=40, flags=0x400)]},
+                                         {'.notdef': (500, 0), 'b': (500, 10), 'A': (600, 10)}, {0x41: 'A'}))
+    add('overlap-compound', build({'.notdef': square(0, 0, 10, 10), 'b': curvy(10, 20, 100),
+                                   'A': [comp('b', flags=0x400), comp('b', x=60, y=40)]},
+                                  {'.notdef': (500, 0), 'b': (500, 10), 'A': (600, 10)}, {0x41: 'A'}))
+
     # FreeType's limit of 32,767 points: two components of 16,380 are in, two of 16,400 aren't
     def many(n, per):
         from fontTools.pens.ttGlyphPen import TTGlyphPen

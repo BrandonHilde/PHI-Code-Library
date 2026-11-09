@@ -61,7 +61,10 @@ def glyph_part(face, g, scale):
         h = ((max(ys) + 63) >> 6) - (min(ys) >> 6)
         if w * h > MOST_PIXELS:
             return struct.pack('<I', 0xFFFFFFFE), None
-    left, top, w, h, bitmap = R.render(points, flags, ends)
+    drawn = R.render(points, flags, ends, face.overlap)
+    if drawn is None:
+        return struct.pack('<I', 0xFFFFFFFE), None
+    left, top, w, h, bitmap = drawn
     return struct.pack('<iiiii', advance, left, top, w, h) + bitmap, (advance, left, top, w, h, bitmap)
 
 

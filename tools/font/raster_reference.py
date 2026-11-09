@@ -16,6 +16,9 @@ follows. They're FreeType's (2.13, unhinted, FT_RENDER_MODE_NORMAL), as browsers
     point, as gray_render_conic does.
   - Each row is swept from the left, its cover added up: a pixel's coverage is (cover * 512 - area)
     >> 9, by the non-zero winding rule: a negative one is complemented, and more than 255 is 255.
+  - A glyph FreeType marks as overlapping (FT_OUTLINE_OVERLAP) is drawn 4 times as wide and high, and
+    each pixel is the sum of its 16 subpixels' coverage in 16ths, rounded ((c + 8) / 16), at most 255,
+    as ft_smooth_raster_overlap does; one whose bitmap is wider than 0x7FFF / 4 can't be drawn.
 """
 PIXEL_BITS = 8
 ONE = 1 << PIXEL_BITS
@@ -233,8 +236,8 @@ def coverage(area):
     return 255 if c > 255 else c & 255
 
 
-def render(points, flags, ends):
-    """(left, top, width, height, bitmap) of an outline in 26.6 pixels"""
+def render(points, flags, ends, overlap=False):
+    """(left, top, width, height, bitmap) of an outline in 26.6 pixels; None if FreeType can't draw it"""
     if not points:
         return 0, 0, 0, 0, b''
     xs = [x for x, _ in points]
@@ -242,15 +245,30 @@ def render(points, flags, ends):
     left, bottom = min(xs) >> 6, min(ys) >> 6
     right, top = (max(xs) + 63) >> 6, (max(ys) + 63) >> 6
     w, h = right - left, top - bottom
-    r = Raster(w, h)
+    k = 4 if overlap else 1
+    if overlap and w * 4 > 0x7FFF:
+        return None
+    r = Raster(w * k, h * k)
     dx, dy = -left * 64, -bottom * 64
     first = 0
     for last in ends:
-        pts = [(x + dx, y + dy) for x, y in points[first:last + 1]]
+        pts = [((x + dx) * k, (y + dy) * k) for x, y in points[first:last + 1]]
         tags = flags[first:last + 1]
         decompose(r, pts, tags)
         first = last + 1
-    return left, top, w, h, bytes(r.sweep())
+    fine = r.sweep()
+    if not overlap:
+        return left, top, w, h, bytes(fine)
+    out = bytearray(w * h)
+    for row in range(h):
+        for col in range(w):
+            total = 0
+            for sy in range(4):
+                base = (row * 4 + sy) * w * 4 + col * 4
+                for sx in range(4):
+                    total += (fine[base + sx] + 8) // 16
+            out[row * w + col] = min(total, 255)
+    return left, top, w, h, bytes(out)
 
 
 def decompose(r, pts, tags):
