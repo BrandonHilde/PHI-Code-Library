@@ -87,12 +87,23 @@ Where the standard leaves a choice, it does what libpng does, which is what the 
 - **Lenient where libpng gives up:** a palette index past the end of the palette is opaque black, as BMP's
   is.
 
-**Stricter than libpng,** where it would show something after a warning: the file must run through IEND,
-the image data must be exactly what the image needs (no more, and no less), and every critical chunk's CRC
-must match. **Refused as invalid:** what PNG doesn't have (color types, bit depths, methods, filter types),
-chunks whose names aren't letters, a missing or late PLTE in a palette image, IDATs that aren't one after
-another, unknown critical chunks (such as Apple's `CgBI`), and image data that's damaged, cut short, or the
-wrong size. **Not done:** APNG's other frames, and showing an image that's cut short (it's refused).
+**It shows what it can,** as Pillow and the browsers do:
+
+- **The image is done at the end of the IDATs,** so nothing after them is read: no IEND is needed, and a
+  chunk after them that's wrong in any way (a bad CRC, an unknown critical chunk, a late PLTE) is no matter.
+- **Image data past what the image needs is ignored.**
+- **Image data that ends too soon** (the file cut short, inside an IDAT or before the next, or a zlib stream
+  that stops early or has no Adler-32) gives the rows that came whole, and the rest of the image is
+  transparent: as a browser shows such a file, and as Pillow gives it with `LOAD_TRUNCATED_IMAGES`. For an
+  interlaced image, that's the passes that came whole and the rows of the next.
+
+The image data is inflated with corelib's `ZlibUpTo`, which stops at the image's size and keeps what it made
+when the data ends.
+
+**Refused** is what libpng refuses: what PNG doesn't have (color types, bit depths, methods, filter types),
+chunks whose names aren't letters, a missing or doubled PLTE in a palette image, an IDAT whose CRC is wrong,
+unknown critical chunks before the image data (such as Apple's `CgBI`), image data that's damaged, and a file
+with no IDAT. **Not done:** APNG's other frames.
 
 ## JPEG
 
@@ -162,9 +173,15 @@ BMP Suite 2.8 unpacked, for its reference images. Without it, the script checks 
 **PNG:** the rules are [png_reference.py](../../tools/image/png_reference.py), and `make_png_tests.py` checks
 them against PngSuite (its broken files are named so) and two decoders that share no code: ImageMagick,
 which reads PNG with libpng, and Pillow. Every pixel must be what libpng gives, at 16 bits and rounded the
-same way, and every file the rules refuse must be refused by libpng too, except for the few listed where the
-rules are stricter or more lenient. Pillow's differences are counted, and each has a reason below. It needs
-`magick` on the path; `--pngsuite DIR` copies PngSuite-2017jul19 in from `DIR` first.
+same way, and every file the rules refuse must be refused by libpng too. That goes for the files cut short and
+fuzzed as well. libpng refuses a file whose image data ends too soon, which the rules read as far as it goes,
+so then a cut file's rows must be the rows of the image it was cut from. A fuzzed one must be what Pillow
+gives, reading as far as it goes (`LOAD_TRUNCATED_IMAGES`), on every pixel the rules made, apart from where
+Pillow always differs (16-bit samples, tRNS). A file whose IDATs are followed by a broken chunk, which libpng
+and Pillow both give up on, must be what libpng gives with an IEND there instead. Images of more than a
+million pixels (fuzzed headers claim up to the limit) aren't compared, to keep the checking's memory small.
+Every ImageMagick run has limits on its memory, its address space and its time. It needs `magick` on the
+path; `--pngsuite DIR` copies PngSuite-2017jul19 in from `DIR` first.
 
 **JPEG:** the rules are [jpeg_reference.py](../../tools/image/jpeg_reference.py). There's no free JPEG test
 suite, so `make_jpeg_tests.py` makes its files: with libjpeg-turbo itself, through Pillow and ImageMagick,
@@ -232,7 +249,9 @@ of 65,536 pixels or more works out each of the 65,536 values once.
 |---|---|
 | PngSuite (2017jul19), its 176 files | All as it says: 162 read, and its 14 broken ones refused |
 | ImageMagick 7 (libpng), on PngSuite | 162 of 162 the same, pixel for pixel at 16 bits; the 14 broken ones refused by both |
-| ImageMagick, on the 531 files made here | 472 the same, pixel for pixel; 52 refused by both; 4 refused here where libpng warns and shows something (a PLTE after the image data, and image data that's too long, three ways); 1 read here where libpng gives up (a palette index past the end of the palette); 2 refused for the pixel limit |
+| ImageMagick, on the 531 files made here | 476 the same, pixel for pixel (image data that's too long, and a late PLTE, among them); 44 refused by both; 8 read where libpng refuses (image data that ends too soon, and a palette index past the end of the palette), each the same as Pillow gives; 2 refused for the pixel limit; 1 of more than a million pixels, not compared |
+| The 2,226 good files cut short | 1,554 read, each one's rows the rows of the image it was cut from (Pillow gives the same on 1,155, within 1 on 335 of 16 bits, and differs on 40, on the last row it gives, which it shows before the row is all there, or with a 16-bit tRNS); 672 refused by both (cut before the image data) |
+| The 4,000 fuzzed files | 282 the same as libpng; 3,522 refused by both; 154 that libpng refuses, as Pillow gives them (140 the same, 12 within 1, 1 differing with a tRNS, 1 with nothing whole, where Pillow gives up too) and 20 more of 16-bit gray, which Pillow clips; 5 whose IDATs are followed by a broken chunk, 4 of them the same as libpng with an IEND there, and 1 within 1 of Pillow then; 17 of more than a million pixels, not compared |
 | Pillow 11.1, on PngSuite | 130 the same; 18 within 1 (16-bit color); 13 differ (16-bit gray); 1 differs (`tbbn0g04`, a 4-bit gray image's tRNS); 13 of the 14 broken ones refused, and `xcsn0g01` read, though its IDAT's CRC is wrong |
 | Pillow 11.1, on the files made here | 343 the same; 82 within 1; 44 differ, for the reasons below; 37 refused by both; 2 refused for the pixel limit, which Pillow doesn't have (it reads one, and refuses the other); 19 refused here but read by Pillow, which checks less (a missing, short, doubled or late PLTE; IHDR not first, or doubled, or too long; an unknown critical chunk; image data short, too long or without its check; no IEND); 4 read here but refused by Pillow (a tRNS of the wrong length, or a bad CRC on an ancillary chunk, which libpng ignores; and APNG's chunks) |
 
@@ -247,9 +266,9 @@ before the palette).
 | Cases | Result |
 |---|---|
 | PngSuite | 176 of 176 as the rules say: 162 read, 14 refused |
-| Made here | 531 of 531: 473 read, 58 refused |
-| Good files cut short | 2,226 of 2,226 refused (the file must run through IEND) |
-| Files with a few bytes changed | 4,000 of 4,000 (294 read, 3,706 refused); and 40,000 of 40,000 with another seed, run once |
+| Made here | 531 of 531: 485 read, 46 refused |
+| Good files cut short | 2,226 of 2,226: 1,554 read, 672 refused |
+| Files with a few bytes changed | 4,000 of 4,000 (478 read, 3,522 refused) |
 | Fuzzing: 100,000 random changes, 131,072 values of the first 64 bytes, 14,952 troublesome numbers, 30,000 files from noise | No crash or hang, and every image within the limit |
 
 **Speed,** for 2048 by 2048 images saved by Pillow (a gradient with noise, so each is a few MB), as a 64-bit

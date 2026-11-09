@@ -113,6 +113,8 @@ struct.CoreInflater
 	u32 cap;
 	u32 limit;
 	u32 used;           # how many bytes of the input the stream took
+	bln keep;           # ZlibUpTo's way: stop at the limit, and keep what's made when the data ends
+	bln full;           # it stopped at the limit, with more to come
 	CoreHuff lit;       # literals and lengths
 	CoreHuff dist;      # distances
 	CoreHuff codes;     # the code lengths of a dynamic block's codes
@@ -301,6 +303,31 @@ struct.CoreInflater
 			throw 'a stored block's length doesn't match its check';
 		;;
 		call bits.Release;
+		if keep
+			# as much of it as there is, and as there's room for
+			u32 part: n;
+			if part > bits.len - bits.pos
+				part is bits.len - bits.pos;
+			;;
+			if part > limit - size
+				part is limit - size;
+			;;
+			if part > cap - size
+				call Grow: part;
+			;;
+			if part > 0
+				call Mem.Copy: dest + size bits.data + bits.pos part;
+			;;
+			bits.pos++ part;
+			size++ part;
+			if part < n
+				if size is limit
+					call Full;
+				;;
+				throw 'the data ends inside a stored block';
+			;;
+			return;
+		;;
 		if n > bits.len - bits.pos
 			throw 'the data ends inside a stored block';
 		;;
@@ -404,6 +431,9 @@ struct.CoreInflater
 			u32 sym: (Decode: lit);
 			if sym < 256
 				if size is cap
+					if keep and size is limit
+						call Full;
+					;;
 					call Grow: 1;
 				;;
 				dest:size is sym as u8;
@@ -424,8 +454,25 @@ struct.CoreInflater
 			if bits.failed
 				throw 'the data ends before its last block';
 			;;
+			if keep and size is limit
+				call Full;          # nothing past the limit is checked, the match's distance too
+			;;
 			if distance > size
 				throw 'a match from ' distance ' back, before the start of the output';
+			;;
+			if keep and length > limit - size
+				# as much of the match as there's room for, and then stop
+				u32 part: limit - size;
+				if part > cap - size
+					call Grow: part;
+				;;
+				ptr<u8> to_part: dest + size;
+				ptr<u8> from_part: to_part - distance;
+				while u32 i: 0; i < part; i++;
+					to_part:i is from_part:i;
+				;;
+				size++ part;
+				call Full;
 			;;
 			if length > cap - size
 				call Grow: length;
@@ -611,6 +658,12 @@ struct.CoreInflater
 		throw 'a code that isn't in the block's Huffman code';
 	[end: 0]
 
+	# ZlibUpTo's stop at the limit, with more to come
+	[Full]
+		full is true;
+		throw 'it reached the limit';
+	[end]
+
 	# room for more bytes on the end of the output, within the limit
 	[Grow: u32 more: 0;]
 		if more > limit - size
@@ -648,8 +701,9 @@ phi.CoreInflate:Library
 	# how much input must be left for CoreInflater's Fast to take the next symbol
 	const u32 FAST_INPUT: 16;
 
-	str error: [383];   # why the last call failed
+	str error: [383];   # why the last call failed (or, for ZlibUpTo, stopped short)
 	u32 used;           # how many bytes of the input the last call's stream took
+	bln more;           # for ZlibUpTo: it stopped at the limit, with more to come
 
 	u16 length_base: 3 4 5 6 7 8 9 10 11 13 15 17 19 23 27 31 35 43 51 59 67 83 99 115 131 163 195 227 258;
 	u8 length_extra: 0 0 0 0 0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3 4 4 4 4 5 5 5 5 0;
@@ -666,13 +720,22 @@ phi.CoreInflate:Library
 	[Zlib: ptr<u8> data: 0; u32 length: 0; u32 limit: 0; ptr<u32> size_out: 0; : ptr<u8>]
 	[end: (Run: data length limit size_out ZLIB)]
 
+	# zlib data, inflated up to limit bytes and no more, for a reader that knows how much it needs:
+	# it stops at the limit, where more is true if the stream had more to give (and nothing after
+	# that point is checked), and when the data ends too soon, it gives back what it made, with the
+	# reason in error. It fails (0) only when the stream is damaged before the limit, or there isn't
+	# the memory. The output can be shorter than the limit, and empty.
+	[ZlibUpTo: ptr<u8> data: 0; u32 length: 0; u32 limit: 0; ptr<u32> size_out: 0; : ptr<u8>]
+	[end: (Run: data length limit size_out ZLIB true)]
+
 	# gzip data: one or more members, each with its header and CRC-32 check
 	[Gzip: ptr<u8> data: 0; u32 length: 0; u32 limit: 0; ptr<u32> size_out: 0; : ptr<u8>]
 	[end: (Run: data length limit size_out GZIP)]
 
-	[Run: ptr<u8> data: 0; u32 length: 0; u32 limit: 0; ptr<u32> size_out: 0; int format: 0; : ptr<u8>]
+	[Run: ptr<u8> data: 0; u32 length: 0; u32 limit: 0; ptr<u32> size_out: 0; int format: 0; bln keep: false; : ptr<u8>]
 		error is '';
 		used is 0;
+		more is false;
 		if size_out is not 0
 			size_out:0 is 0;
 		;;
@@ -687,12 +750,26 @@ phi.CoreInflate:Library
 			error is 'out of memory';
 			return 0;
 		;;
+		s.keep is keep;
 		if call s.Go: data length limit format throws err
 			if err.kind is ErrorKind.THROWN
 				error is err.text;
 			;;
 			else
 				error is err.message;
+			;;
+			# ZlibUpTo keeps what it made when it stopped at the limit or the data ended
+			if keep and s.dest is not 0 and (s.full or error has 'the data ends' or error has 'too short for a zlib header')
+				more is s.full;
+				if s.full
+					error is '';
+				;;
+				ptr<u8> kept: s.dest;
+				if size_out is not 0
+					size_out:0 is s.size;
+				;;
+				free s;
+				return kept;
 			;;
 			if s.dest is not 0
 				free s.dest;

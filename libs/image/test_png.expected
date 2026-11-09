@@ -175,13 +175,12 @@ suite: 176 of 176 as the rules say (162 read, 14 refused):
   z03n2c08.png: 32 by 32
   z06n2c08.png: 32 by 32
   z09n2c08.png: 32 by 32
-made: 531 of 531 as the rules say (473 read, 58 refused), refused:
+made: 531 of 531 as the rules say (485 read, 46 refused), refused:
   bad-plte-missing: a palette image with no PLTE chunk before its image data
   bad-plte-empty: a PLTE chunk of 0 bytes
   bad-plte-length: a PLTE chunk of 4 bytes
   bad-plte-too-long: a PLTE chunk of 771 bytes
   bad-plte-twice: more than one PLTE chunk
-  bad-plte-after-idat: a PLTE chunk after the image data
   bad-signature: not a PNG file
   bad-empty: not a PNG file
   bad-signature-only: the file is cut short
@@ -212,28 +211,17 @@ made: 531 of 531 as the rules say (473 read, 58 refused), refused:
   bad-chunk-length: a chunk of more than 2 GB
   bad-chunk-past-end: the file is cut short
   bad-unknown-critical: a critical chunk imagelib doesn't know, CgBI
-  bad-unknown-critical-after: a critical chunk imagelib doesn't know, ABCD
   bad-no-idat: no image data (no IDAT chunk)
-  bad-no-iend: the file is cut short
-  bad-idat-not-together: IDAT chunks that aren't one after another
   bad-zlib-damaged: the image data is damaged
   bad-zlib-header: the image data is damaged
   bad-zlib-dictionary: the image data is damaged
   bad-zlib-adler: the image data is damaged
-  bad-zlib-no-adler: the image data is cut short
-  bad-zlib-cut: the image data is cut short
-  bad-too-little: the image data ends before the image does
-  bad-too-little-rows: the image data ends before the image does
-  bad-too-much: more image data than the image needs
-  bad-much-too-much: more image data than the image needs
   bad-filter-type-5: a row with filter type 5, which PNG doesn't have
   bad-filter-type-9: a row with filter type 9, which PNG doesn't have
   bad-filter-type-255: a row with filter type 255, which PNG doesn't have
   bad-filter-type-interlaced: a row with filter type 7, which PNG doesn't have
   limit-over: 10 by 10 is more than the limit of 99 pixels
   limit-default-over: 4097 by 4096 is more than the limit of 16777216 pixels
-  bomb-claims-big: the image data ends before the image does
-  bomb-too-much: more image data than the image needs
-cut: 2226 of 2226 as the rules say (0 read, 2226 refused)
-fuzz: 4000 of 4000 as the rules say (294 read, 3706 refused)
+cut: 2226 of 2226 as the rules say (1554 read, 672 refused)
+fuzz: 4000 of 4000 as the rules say (478 read, 3522 refused)
 done

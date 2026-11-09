@@ -43,7 +43,7 @@ os.environ['JSIMD_FORCENONE'] = '1'
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from jpeg_reference import decode, MAX_PIXELS, ZIGZAG  # noqa: E402
-from cases import Cases as CaseFile, as_rgba  # noqa: E402
+from cases import Cases as CaseFile, as_rgba, run_magick  # noqa: E402
 
 LIB = os.path.normpath(os.path.join(HERE, '..', '..', 'libs', 'image'))
 OUT = os.path.join(LIB, 'tests', 'jpeg')
@@ -70,8 +70,10 @@ def magick(data):
     # libjpeg-turbo's C code, not its SIMD: the two give the same pixels for every block of a good
     # file, but the SIMD IDCT saturates where the C one wraps, so they differ on the garbage
     # blocks of a damaged one, and the C code is the reference the SIMD is tested against
-    r = subprocess.run(['magick', 'jpg:-', '-depth', '8', '-format', '%w %h\n', '-write', 'info:-', 'rgb:-'],
-                       input=data, capture_output=True, env=dict(os.environ, JSIMD_FORCENONE='1'))
+    r = run_magick(['jpg:-', '-depth', '8', '-format', '%w %h\n', '-write', 'info:-', 'rgb:-'], data,
+                   env=dict(os.environ, JSIMD_FORCENONE='1'))
+    if r is None:
+        return None, 'gave up'
     warned = b'warning/' in r.stderr or b'error/' in r.stderr
     if r.returncode != 0:
         return None, 'gave up' if b'insufficient image data' in r.stderr else warned
@@ -721,6 +723,12 @@ NOT_YET = ('progressive JPEG, which isn\'t supported yet', 'arithmetic coding, w
            'lossless JPEG, which isn\'t supported')
 
 
+# Images bigger than this aren't compared with libjpeg: fuzzed headers claim up to the pixel limit,
+# and each such image would be held several times over. They're still checked, against the rules, by
+# imagelib's own tests.
+BIGGEST_CHECKED = 1 << 20
+
+
 def check(cases):
     """the rules against libjpeg (through ImageMagick), and Pillow counted; cases are
     (name, data, max_pixels, rule)"""
@@ -731,6 +739,9 @@ def check(cases):
            'refuses where the rules read': []}
     for name, data, max_pixels, rule in cases:
         ok, result = decode(data, max_pixels or MAX_PIXELS)
+        if ok and result[0] * result[1] > BIGGEST_CHECKED and rule == 'auto':
+            counts['more than a million pixels, so not compared'] = counts.get('more than a million pixels, so not compared', 0) + 1
+            continue
         m, warned = magick(data)
         why = None
         if rule == 'unsupported':

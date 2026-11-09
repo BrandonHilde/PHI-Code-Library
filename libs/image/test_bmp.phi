@@ -203,20 +203,31 @@ phi.TestBmp:Program
 	exit 0;
 
 
-	# the CRC-32 of an image's pixels, each as the bytes B G R A, top row first
+	# the CRC-32 of an image's pixels, each as the bytes B G R A, top row first: 4,096 pixels at a
+	# time, so that an image millions of pixels across needs no more memory than a small one
 	[PixelCrc: ptr<ImgImage> image: 0; : u32]
-		u32 w: image.w as u32;
-		ptr<u8> row: new u8[w * 4];
+		u32 total: (image.w * image.h) as u32;
+		ptr<u8> row: new u8[4 * 4096];
+		if row is 0
+			log 'out of memory\n';
+			exit 1;
+		;;
 		u32 crc: 0;
-		while u32 y: 0; y < image.h as u32; y++;
-			while u32 x: 0; x < w; x++;
-				u32 v: image.pixels:(y * w + x);
+		u32 done: 0;
+		while done < total
+			u32 part: total - done;
+			if part > 4096
+				part is 4096;
+			;;
+			while u32 x: 0; x < part; x++;
+				u32 v: image.pixels:(done + x);
 				row:(x * 4) is (v & 255) as u8;
 				row:(x * 4 + 1) is ((v >> 8) & 255) as u8;
 				row:(x * 4 + 2) is ((v >> 16) & 255) as u8;
 				row:(x * 4 + 3) is (v >> 24) as u8;
 			;;
-			crc is (Crc32.Add: crc row w * 4);
+			crc is (Crc32.Add: crc row (part * 4));
+			done++ part;
 		;;
 		free row;
 	[end: crc]

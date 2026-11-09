@@ -18,10 +18,21 @@ a choice, the choice is libpng's, which is the browsers':
   - Ancillary chunks that are wrong are ignored, as libpng does: a bad CRC, a tRNS of the wrong
     length or out of place, a PLTE in a gray image. Critical ones are refused.
 
-Stricter than libpng, where being sure is worth more than showing something: the file must run
-through IEND, the image data must be exactly what the image needs (no more, and no less), and every
-CRC of a critical chunk must match. Not done: APNG's other frames (the default image is read).
+And it shows what it can, as Pillow and the browsers do:
+
+  - The image is done at the end of the IDATs, so nothing after them is read: no IEND is needed,
+    and a chunk after them that's wrong in any way is no matter.
+  - Image data past what the image needs is ignored.
+  - Image data that ends too soon (the file cut short, in an IDAT or before one more, or a zlib
+    stream that stops early or has no Adler-32) gives the rows that came whole, and the rest of
+    the image is transparent (0), as Pillow gives it with LOAD_TRUNCATED_IMAGES and the browsers
+    show it.
+
+What it refuses is what libpng and Pillow both refuse: image data that's damaged, an IDAT's CRC that
+doesn't match it, headers that are wrong, and a file with no IDAT. Not done: APNG's other frames (the
+default image is read).
 """
+import array
 import zlib
 
 MAX_PIXELS = 16 * 1024 * 1024          # imagelib's default for Img.max_pixels
@@ -77,26 +88,33 @@ def read(d, max_pixels):
     expected = 0
     while True:
         if n - at < 12:
+            if idat_state:
+                break                           # the image data is all there is
             raise Refused('the file is cut short')
         length = u32(d, at)
         kind = d[at + 4:at + 8]
+        if idat_state and kind != b'IDAT':
+            break                               # the end of the IDATs: the image is done
         if length > 0x7FFFFFFF:
             raise Refused('a chunk of more than 2 GB')
-        if length > n - at - 12:
+        cut = length > n - at - 12
+        if cut and kind != b'IDAT':
             raise Refused('the file is cut short')
         if not all(65 <= c <= 90 or 97 <= c <= 122 for c in kind):
             raise Refused('a chunk whose name isn\'t four letters')
         name = kind.decode('ascii')
-        body = d[at + 8:at + 8 + length]
-        crc = u32(d, at + 8 + length)
-        at += 12 + length
         critical = kind[0] <= 90
-        if idat_state == 1 and name != 'IDAT':
-            idat_state = 2                      # any other chunk ends the IDATs, even one skipped
-        if zlib.crc32(kind + body) != crc:
-            if critical:
-                raise Refused('the ' + name + ' chunk\'s CRC doesn\'t match it')
-            continue
+        if cut:
+            body = d[at + 8:n]                  # an IDAT cut short: what there is of it, unchecked
+            at = n
+        else:
+            body = d[at + 8:at + 8 + length]
+            crc = u32(d, at + 8 + length)
+            at += 12 + length
+            if zlib.crc32(kind + body) != crc:
+                if critical:
+                    raise Refused('the ' + name + ' chunk\'s CRC doesn\'t match it')
+                continue
         if not have_header and name != 'IHDR':
             raise Refused('the file doesn\'t start with an IHDR chunk')
 
@@ -130,8 +148,6 @@ def read(d, max_pixels):
         elif name == 'PLTE':
             if color in (0, 4):
                 continue                        # not allowed in a gray image, and ignored
-            if idat_state:
-                raise Refused('a PLTE chunk after the image data')
             if palette is not None:
                 raise Refused('more than one PLTE chunk')
             if length == 0 or length > 768 or length % 3:
@@ -139,7 +155,7 @@ def read(d, max_pixels):
             palette = [0xFF000000 | body[k] << 16 | body[k + 1] << 8 | body[k + 2] for k in range(0, length, 3)]
         elif name == 'tRNS':
             # wrong in any way, it's ignored, as libpng does
-            if idat_state or trns is not None:
+            if trns is not None:
                 continue
             if color == 3:
                 if palette is not None and 0 < length <= len(palette):
@@ -153,10 +169,10 @@ def read(d, max_pixels):
         elif name == 'IDAT':
             if color == 3 and palette is None:
                 raise Refused('a palette image with no PLTE chunk before its image data')
-            if idat_state == 2:
-                raise Refused('IDAT chunks that aren\'t one after another')
             idat_state = 1
             idat.append(body)
+            if cut:
+                break
         elif name == 'IEND':
             if not idat_state:
                 raise Refused('no image data (no IDAT chunk)')
@@ -169,31 +185,15 @@ def read(d, max_pixels):
 
 
 def inflate(data, expected):
-    """the image data, which must be exactly expected bytes. Going past expected is found at the
-    first byte too many, before anything later in the stream (damage, or its check), as imagelib's
-    inflate does: so this takes expected bytes, and then asks for one more."""
+    """the image data, up to expected bytes: as much as there is, when it ends too soon. What comes
+    after the last byte the image needs isn't looked at, as libpng doesn't look at it (zlib still
+    reads on past it while that takes no room, through the end of a block, and so does imagelib's
+    inflate)."""
     z = zlib.decompressobj()
     try:
         out = z.decompress(data, expected)
     except zlib.error:
         raise Refused('the image data is damaged')
-    if not z.eof and len(out) == expected:
-        # zlib stopped for room, with a literal or a match waiting. A literal comes out before
-        # zlib can find damage further on, so an error then still means one more byte. A match's
-        # distance is only checked once there's room, where imagelib checks it first, so a
-        # distance before the start is damage, not one more byte.
-        try:
-            more = z.decompress(z.unconsumed_tail, 1)
-        except zlib.error as e:
-            if 'too far back' in str(e):
-                raise Refused('the image data is damaged')
-            more = b'?'
-        if more:
-            raise Refused('more image data than the image needs')
-    if not z.eof:
-        raise Refused('the image data is cut short')
-    if len(out) < expected:
-        raise Refused('the image data ends before the image does')
     return out
 
 
@@ -251,12 +251,14 @@ def scale(v, depth):
 
 
 def pixels(raw, w, h, depth, color, interlace, palette, trns):
-    out = [0] * (w * h)
+    out = array.array('I', [0]) * (w * h)
     channels = CHANNELS[color]
     bits = depth * channels
     at = 0
     for x0, y0, dx, dy, pw, ph in passes(w, h, interlace):
-        rows, at = unfilter(raw, at, pw, ph, bits)
+        # the rows of the pass that came whole; when they stop, the rest of the image is 0
+        whole = min(ph, (len(raw) - at) // (1 + (pw * bits + 7) // 8))
+        rows, at = unfilter(raw, at, pw, whole, bits)
         for y, row in enumerate(rows):
             s = samples(row, pw * channels, depth)
             o = (y0 + y * dy) * w
@@ -283,4 +285,6 @@ def pixels(raw, w, h, depth, color, interlace, palette, trns):
                     else:
                         p = c[3] << 24 | c[0] << 16 | c[1] << 8 | c[2]
                 out[o + x0 + x * dx] = p
+        if whole < ph:
+            break
     return out

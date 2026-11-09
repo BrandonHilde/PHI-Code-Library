@@ -32,6 +32,7 @@ These names are the API. Everything else the library declares (`CoreHuff`, `Core
 | `CoreBits` | A struct reading bits: `Start: bytes length msb_first`; `Bits: n` → (n at most 24), `Bit` →, `Peek: n` →, `Drop: n`, `AlignByte`, `Release` (gives back whole bytes it's holding, so `pos` is the next unread byte); `failed` |
 | `CoreAdler` | `Of: data length` → Adler-32, `Add: adler data length` → (carries on from an earlier one). CRC-32 is the standard library's `data.crc32` |
 | `CoreInflate` | `Raw`, `Zlib`, `Gzip`, each `: data length limit size_out` → the output, or 0 with the reason in `CoreInflate.error`. `CoreInflate.used` is how many bytes of the input the stream took |
+| `CoreInflate.ZlibUpTo: data length limit size_out` → | zlib data inflated up to `limit` bytes and no more, for a reader that knows how much it needs (as a PNG's image data is): it stops at the limit, with `CoreInflate.more` true if the stream had more to give, and when the data ends too soon it gives back what it made, with the reason in `error`. It fails (0) only when the stream is damaged before the limit |
 
 **A read past the end** of a `CoreReader` or `CoreBits` gives 0 and sets `failed`, which stays set.
 `CoreBits` reads zeros past the end without failing until one of them is used, so a decoder can look
@@ -48,7 +49,13 @@ codes (except a lone 1-bit code, which zlib allows), matches reaching before the
 doesn't have, and checks that don't match. Like zlib's one-shot inflate, a zlib header's window size
 isn't enforced.
 
-**One thread at a time:** `CoreInflate.error` and `used` are shared.
+**ZlibUpTo** gives what zlib gives of the same data when asked for at most `limit` bytes: every symbol
+decoded whole before the data ends (a stored block as far as it goes), and nothing past the limit is
+checked, except that a match just past it whose distance reaches before the start is damage (corelib checks
+a match's distance before its room; zlib checks it once there's room, so asking zlib for one byte more is
+how the test finds this out).
+
+**One thread at a time:** `CoreInflate.error`, `used` and `more` are shared.
 
 ## How it's checked
 
@@ -63,6 +70,7 @@ python3 -I tools/core/make_inflate_tests.py       # remakes tests/inflate/ (it's
 |---|---|
 | `test_reader` | `CoreReader`, `CoreBits` and `CoreAdler`, on values worked out by hand and with Python |
 | `test_inflate` | Inflate against zlib, on the cases in [tests/inflate](tests/inflate) (listed in `cases.txt`), and every good stream cut short |
+| `test_inflate_upto` | `ZlibUpTo` against zlib, on the cases in `upto.bin`: every good zlib stream cut at many lengths, and whole with limits below, at and past its size, and the bad and fuzzed zlib streams. Each must give what zlib gives of it as far as it goes, by length and CRC-32, and say whether there's more past the limit, or be damaged where zlib finds it damaged |
 | `test_inflate_fuzz` | 100,000 random changes to good streams, every value of each of the first 48 bytes of one stream in each format, and noise. All of them must come back, with a result or a failure |
 | `tests/use/test_corelib` | The compiled `corelib.philib`, on its own |
 
@@ -77,6 +85,7 @@ for each way a stream can be broken. Every case's expected result is zlib's own 
 | Broken streams, refused | 43 of 43 |
 | Fuzz cases (small streams with bits changed), agreeing with zlib | 600 of 600 (230 good, 370 bad) |
 | Good streams cut short, refused | 3,513 of 3,513 |
+| `ZlibUpTo`, as zlib gives it (2026-11-08) | 2,689 of 2,689: 323 to the limit exactly, 353 with more past it, 2,008 shorter as the data ends first, 5 damaged |
 
 **Speed** (2026-11-08, as a 64-bit Linux program, with Python's zlib on the same data for comparison):
 

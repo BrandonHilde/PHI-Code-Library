@@ -31,6 +31,35 @@ def as_rgba(w, h, px):
     return np.stack([(a >> 16) & 255, (a >> 8) & 255, a & 255, a >> 24], axis=2).astype(np.uint8)
 
 
+# What ImageMagick may take to read one test file: hostile files claim huge images, and without
+# limits one can hold gigabytes for an hour. A file it can't read within them counts as refused.
+MAGICK_LIMITS = ['-limit', 'memory', '256MiB', '-limit', 'map', '512MiB', '-limit', 'disk', '0',
+                 '-limit', 'area', '64MP', '-limit', 'time', '30']
+MAGICK_TIMEOUT = 60
+
+
+# and the address space each magick process may have, set by the system: ImageMagick's own limits
+# are for its pixel cache, not for what libpng or libjpeg take while reading, and a fuzzed file once
+# took one to over 7 GB
+MAGICK_ADDRESS_SPACE = 2 << 30
+
+
+def _limit_child():
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (MAGICK_ADDRESS_SPACE, MAGICK_ADDRESS_SPACE))
+
+
+def run_magick(args, data, env=None):
+    """magick with args (after the limits), data on its input; the finished process, or None if it
+    ran past the timeout (and was stopped)"""
+    import subprocess
+    try:
+        return subprocess.run(['magick'] + MAGICK_LIMITS + args, input=data, capture_output=True,
+                              env=env, timeout=MAGICK_TIMEOUT, preexec_fn=_limit_child)
+    except subprocess.TimeoutExpired:
+        return None
+
+
 def pixel_crc(px):
     """the CRC-32 of pixels, each as 4 bytes, B G R A (a 0xAARRGGBB value, little-endian)"""
     a = px if isinstance(px, array.array) and px.typecode == 'I' else array.array('I', px)

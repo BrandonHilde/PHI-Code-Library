@@ -290,6 +290,14 @@ more fuzz cases with another seed), as 32 and 64-bit Linux programs, and comes b
 files without a crash. A 2048 by 2048 RGBA image took 363 ms, 294 of them corelib's inflate; with
 inflate's fast path it takes 190 ms, 126 of them inflate (Pillow: 56 ms). Not done: APNG's other frames.
 
+**3.2, made to show what it can, 2026-11-08,** as the owner asked: not stricter than libpng and
+Pillow. The image is done at the end of its IDATs (no IEND needed), image data past what it needs is
+ignored, and image data that ends too soon gives the rows that came whole, the rest transparent, as a
+browser shows it. corelib's new `ZlibUpTo` inflates up to a limit and keeps what it made when the data
+ends; it agrees with zlib on 2,689 of 2,689 cases. The 1,554 cut files now read show exactly the rows of
+the images they were cut from, and every fuzzed one libpng refuses is what Pillow gives, reading as far
+as it goes. imagelib agrees with the rules on all 6,933 cases.
+
 **3.3, done 2026-11-08,** in [libs/image](libs/image). Better than the tolerance planned: the rules
 (`tools/image/jpeg_reference.py`) decode as libjpeg-turbo does by default, step for step (its integer
 IDCT as its C code works it out, its fancy upsampling, its color tables, and its recovery from damage),

@@ -9,9 +9,12 @@
 #   - tRNS makes a gray or RGB color transparent when it matches all 16 bits of the sample.
 #   - A palette index past the end of the palette is opaque black.
 #   - Gamma, color profiles and the rest are ignored. Ancillary chunks that are wrong (a bad CRC,
-#     a tRNS of the wrong length or out of place, a PLTE in a gray image) are ignored, as libpng
-#     does. Critical ones are refused.
-#   - The file must run through IEND, and the image data must be exactly what the image needs.
+#     a tRNS of the wrong length, a PLTE in a gray image) are ignored, as libpng does. Critical
+#     ones are refused.
+#   - It shows what it can, as Pillow and the browsers do: the image is done at the end of the
+#     IDATs, so nothing after them is read (no IEND is needed); image data past what the image
+#     needs is ignored; and image data that ends too soon gives the rows that came whole, with the
+#     rest of the image transparent.
 #
 # Every read is checked: the chunks through CoreReader, and the image data through arrays, whose
 # indexes are checked. The size is checked against the limit before anything is allocated, and
@@ -57,42 +60,54 @@ struct.ImgPng
 		CoreReader r;
 		call r.Start: data length;
 		bln have_header: false;
-		u32 idat_state: 0;      # 0: none yet, 1: in them, 2: past them
+		bln in_idats: false;    # whether the IDATs have begun
 		u32 idat_at: 0;         # where the first IDAT chunk starts
 		u32 idat_count: 0;
 		u32 idat_total: 0;
+		u32 last_size: 0;       # how much of the last IDAT's data there is, when it's cut short
 		u32 pos: 8;
 		# each chunk takes at least 12 bytes, so the loop ends
 		while true
 			if length - pos < 12
+				if in_idats
+					break;          # the image data is all there is
+				;;
 				throw 'the file is cut short';
 			;;
 			call r.Seek: pos;
 			u32 size: (r.U32BE);
 			u32 kind: (r.U32BE);
+			if in_idats and kind is not ImgPngTables.IDAT
+				break;              # the end of the IDATs: the image is done
+			;;
 			if size > 0x7FFFFFFF
 				throw 'a chunk of more than 2 GB';
 			;;
-			if size > length - pos - 12
+			bln cut: size > length - pos - 12;
+			if cut and kind is not ImgPngTables.IDAT
 				throw 'the file is cut short';
 			;;
 			if not (Letters: kind)
 				throw 'a chunk whose name isn't four letters';
 			;;
 			u32 body: pos + 8;
-			call r.Seek: body + size;
-			u32 crc: (r.U32BE);
 			u32 chunk_at: pos;
-			pos++ 12 + size;
 			bln critical: ((kind >> 24) & 0x20) is 0;
-			if idat_state is 1 and kind is not ImgPngTables.IDAT
-				idat_state is 2;
+			if cut
+				# an IDAT cut short: what there is of it, unchecked
+				size is length - body;
+				pos is length;
 			;;
-			if (Crc32.Of: (data + chunk_at + 4) (size + 4)) is not crc
-				if critical
-					throw 'the ' (Name: kind) ' chunk's CRC doesn't match it';
+			else
+				call r.Seek: body + size;
+				u32 crc: (r.U32BE);
+				pos++ 12 + size;
+				if (Crc32.Of: (data + chunk_at + 4) (size + 4)) is not crc
+					if critical
+						throw 'the ' (Name: kind) ' chunk's CRC doesn't match it';
+					;;
+					continue;
 				;;
-				continue;
 			;;
 			if not have_header and kind is not ImgPngTables.IHDR
 				throw 'the file doesn't start with an IHDR chunk';
@@ -120,9 +135,6 @@ struct.ImgPng
 				if color is 0 or color is 4
 					continue;           # not allowed in a gray image, and ignored
 				;;
-				if idat_state is not 0
-					throw 'a PLTE chunk after the image data';
-				;;
 				if have_palette
 					throw 'more than one PLTE chunk';
 				;;
@@ -138,7 +150,7 @@ struct.ImgPng
 			;;
 			elif kind is ImgPngTables.TRNS
 				# wrong in any way, it's ignored, as libpng does
-				if idat_state is not 0 or have_trns
+				if have_trns
 					continue;
 				;;
 				call r.Seek: body;
@@ -169,21 +181,19 @@ struct.ImgPng
 				if color is 3 and not have_palette
 					throw 'a palette image with no PLTE chunk before its image data';
 				;;
-				if idat_state is 2
-					throw 'IDAT chunks that aren't one after another';
-				;;
-				if idat_state is 0
+				if not in_idats
 					idat_at is chunk_at;
 				;;
-				idat_state is 1;
+				in_idats is true;
 				idat_count++;
 				idat_total++ size;
+				last_size is size;
+				if cut
+					break;
+				;;
 			;;
 			elif kind is ImgPngTables.IEND
-				if idat_state is 0
-					throw 'no image data (no IDAT chunk)';
-				;;
-				break;
+				throw 'no image data (no IDAT chunk)';
 			;;
 			elif critical
 				throw 'a critical chunk imagelib doesn't know, ' (Name: kind);
@@ -202,34 +212,29 @@ struct.ImgPng
 			while u32 k: 0; k < idat_count; k++;
 				call r.Seek: from;
 				u32 size: (r.U32BE);
+				if k + 1 is idat_count
+					size is last_size;  # the last one may be cut short
+				;;
 				call Mem.Copy: (joined + put) (data + from + 8) size;
 				put++ size;
 				from++ 12 + size;
 			;;
 			zdata is joined;
 		;;
+		# up to the image's size, and no more; as much as there is, when it ends too soon
 		u32 got: 0;
-		raw is (CoreInflate.Zlib: zdata idat_total expected addr got);
+		raw is (CoreInflate.ZlibUpTo: zdata idat_total expected addr got);
 		if raw is 0
 			str why: CoreInflate.error;
-			if why has 'the data ends' or why has 'too short for a zlib header'
-				throw 'the image data is cut short';
-			;;
-			if why has 'more than the limit'
-				throw 'more image data than the image needs';
-			;;
 			if why has 'out of memory'
 				throw why;
 			;;
 			throw 'the image data is damaged';
 		;;
-		if got < expected
-			throw 'the image data ends before the image does';
-		;;
 
 		u32 count: width * height;
 		image is (Img.New: width height);
-		call Passes: (raw as u8[expected]) (image.pixels as u32[count]);
+		call Passes: (raw as u8[got]) got (image.pixels as u32[count]);
 	[end]
 
 	# IHDR's numbers, checked; and the size of the image data, worked out
@@ -311,7 +316,7 @@ struct.ImgPng
 	[end: (height - y0 + dy - 1) / dy]
 
 	# each pass's rows, unfiltered and made pixels
-	[Passes: u8 src[]; u32 pixels_out[];]
+	[Passes: u8 src[]; u32 got: 0; u32 pixels_out[];]
 		u32 first: 7;
 		if interlace is 1
 			first is 0;
@@ -325,9 +330,17 @@ struct.ImgPng
 				continue;
 			;;
 			u32 stride: (pw * bits + 7) / 8;
-			call Unfilter: src pos ph stride;
-			call Pixels: src pixels_out pos p pw ph stride;
-			pos++ ph * (stride + 1);
+			# the rows of the pass that came whole; when they stop, the rest of the image stays 0
+			u32 whole: (got - pos) / (stride + 1);
+			if whole > ph
+				whole is ph;
+			;;
+			call Unfilter: src pos whole stride;
+			call Pixels: src pixels_out pos p pw whole stride;
+			pos++ whole * (stride + 1);
+			if whole < ph
+				return;
+			;;
 		;;
 	[end]
 

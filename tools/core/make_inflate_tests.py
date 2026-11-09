@@ -8,6 +8,8 @@ Writes libs/core/tests/inflate/:
     sources.bin    the uncompressed data the good streams were made from
     cases.bin      every case: its stream, and what zlib says it inflates to (or that it's bad)
     cases.txt      the same cases, readable: one a line
+    upto.bin       cases for ZlibUpTo: good zlib streams cut at many lengths, and with limits below
+                   their size, and what zlib gives of each, as far as it goes
 
 Three groups of cases:
 
@@ -28,6 +30,9 @@ The formats of the .bin files (every number little-endian):
                   u8 group (0 good, 1 bad, 2 fuzz), u8 format (0 raw, 1 zlib, 2 gzip),
                   u8 name length, name, u32 limit (0: the default), u32 length, bytes,
                   u8 ok, u32 output length, u32 output CRC-32, u32 bytes used, i32 source (-1: none)
+    upto.bin:     u32 count, then for each:
+                  u32 case (in cases.bin), u32 length (its first length bytes), u32 limit,
+                  u8 ok, u32 output length, u32 output CRC-32, u8 more
 """
 import gzip
 import io
@@ -68,6 +73,26 @@ def zlib_verdict(data, fmt):
 
 
 # ---------------------------------------------------------------- the data the streams hold
+
+def upto_verdict(data, limit):
+    """what ZlibUpTo must give for zlib data and a limit, from zlib: the bytes it gives, up to the
+    limit, as far as the data goes; whether there's more past the limit; or None when the data is
+    damaged before the limit. Past the limit nothing is checked: a literal or a match waiting there
+    is more, even when the match's distance reaches before the start (which zlib checks only once
+    there's room for it, so asking it for one byte more finds it)."""
+    z = zlib.decompressobj()
+    try:
+        out = z.decompress(data, limit)
+    except zlib.error:
+        return None
+    more = False
+    if len(out) == limit and not z.eof:
+        try:
+            more = len(z.decompress(z.unconsumed_tail, 1)) > 0
+        except zlib.error:
+            more = True
+    return out, more
+
 
 def make_sources(rng):
     words = []
@@ -506,6 +531,34 @@ def main():
     with open(os.path.join(OUT, 'cases.txt'), 'w', newline='\n') as f:
         f.write('# made by tools/core/make_inflate_tests.py: what zlib says of each case in cases.bin\n')
         f.write('\n'.join(lines) + '\n')
+
+    # ZlibUpTo: every good zlib stream cut at lengths through it, and whole with limits below,
+    # at and past its size; and the fuzz and bad zlib streams with a limit past their size
+    upto = []
+    for i, (group, fmt, name, limit, data, source) in enumerate(cases):
+        if fmt != ZLIB:
+            continue
+        size = len(zlib_verdict(data, fmt)[1]) if group == GOOD else 0
+        if group == GOOD:
+            cuts = sorted(set([0, 1, 2, 3, len(data) - 4, len(data) - 1] + [len(data) * k // 17 for k in range(1, 17)]))
+            for cut in cuts:
+                if 0 <= cut < len(data):
+                    upto.append((i, cut, max(size, 1)))
+            for most in sorted(set([1, 2, size // 3, size - 1, size, size + 1])):
+                if most > 0:
+                    upto.append((i, len(data), most))
+        else:
+            upto.append((i, len(data), 1 << 20))
+    with open(os.path.join(OUT, 'upto.bin'), 'wb') as f:
+        f.write(struct.pack('<I', len(upto)))
+        for i, cut, most in upto:
+            v = upto_verdict(cases[i][4][:cut], most)
+            if v is None:
+                f.write(struct.pack('<IIIBIIB', i, cut, most, 0, 0, 0, 0))
+            else:
+                out, more = v
+                f.write(struct.pack('<IIIBIIB', i, cut, most, 1, len(out), zlib.crc32(out), 1 if more else 0))
+    print('upto.bin: %d cases' % len(upto))
 
     fuzz_ok = sum(1 for c in cases if c[0] == FUZZ and zlib_verdict(c[4], c[1])[0])
     print('%d sources, %d cases (%d good, %d bad, %d fuzz, of which zlib accepts %d), in %s' % (
