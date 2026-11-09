@@ -220,7 +220,10 @@ phases after it):
       JS-INTERNALS.md; the README's dated results say which programs ran)
 - [x] Move the use of `OS.Now` and `OS.GetTicks` (`Date`, and seeding `Math.random`) behind hooks
       (2026-11-10: `Js.SetClockHook` and `Js.SetRandomSeed`; without them, the start of 1970 and a fixed seed)
-- [ ] List its x87 assembly, and write plain PHI versions where they're practical
+- [ ] List its x87 assembly, and write plain PHI versions where they're practical. **2026-11-10:** listed in
+      [DESIGN.md](libs/web/docs/DESIGN.md#assembly-the-x87): two FPU control-word setters, 8 `Math`
+      functions and `**`. Plain PHI versions would be fdlibm ports (as V8 uses), which would match browsers
+      to the last bit and build anywhere, but change results in the last bit: the owner's call
 
 | Suite | Last recorded (browse README, Windows) | Linux, 2026-11-07 |
 |---|---|---|

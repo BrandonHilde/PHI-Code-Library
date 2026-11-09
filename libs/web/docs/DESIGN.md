@@ -128,6 +128,25 @@ These compile and then do the wrong thing, or surprise you:
 25. NASM's default optimizer takes minutes on this much code (258 s against 3 s, for a program 3.5% smaller).
     Set the environment variable `NASMENV=-O1` while developing. NASM reads it itself; nothing else changes.
 
+## Assembly: the x87
+
+All of weblib is plain PHI but for these, each written twice (`asm.` for 32-bit programs, `x64.` for
+64-bit ones), all for the x86's floating point unit, so they're why weblib builds only for x86 systems
+(listed 2026-11-10):
+
+| Where | What | Why |
+|---|---|---|
+| `weblib.phi` `WlSetFpu`, `js/js.phi` `JsSetFpu` | Set the x87's control word to double precision | So that `f64` math rounds once, as JS's must (trap 15) |
+| `js/builtins/math.phi` `JsX87Ln`, `JsX87Log2`, `JsX87Log10`, `JsX87Log1p` | `fyl2x`, `fyl2xp1` | `Math.log`, `log2`, `log10`, `log1p` |
+| `js/builtins/math.phi` `JsX87Exp`, `JsX87Expm1` | `f2xm1`, `fscale`, `frndint` | `Math.exp`, `expm1` |
+| `js/builtins/math.phi` `JsX87Tan`, `JsX87Atan2` | `fptan`, `fpatan` | `Math.tan`, `atan2` (and what's built on them) |
+| `js/vm.phi` `JsPowX87` | `fyl2x`, `f2xm1`, `fscale` | `**` and `Math.pow` for what isn't exact |
+
+Each `math.phi` routine sets the x87 to extended precision for its instruction and back to double. Plain
+PHI versions would be ports of fdlibm (the library V8 uses for these): they'd give browsers' results to the
+last bit, which the x87 doesn't always, and build anywhere, but the JS tests' expected digits would need
+checking again. Not done yet.
+
 ## Testing
 
 Set `NASMENV=-O1` first (trap 25), or a build takes minutes (`build.ps1` sets it). Tests are programs next to `weblib.phi`, because that's where `use` can find the modules:
