@@ -3,7 +3,8 @@
 # small ones made for test_ttf) are changed at random with a fixed seed; every value of each of the
 # first 200 bytes of several is tried; and numbers that cause trouble are put in every 16 and 32-bit
 # field of their first 400 bytes (the table directory, and the tables at the start). Every font that
-# loads has every glyph's outline loaded (up to 3,000) and a range of characters looked up. Each must
+# loads has every glyph's outline loaded (up to 3,000), a range of characters looked up, and bitmaps
+# made at 12 pixels (up to 300). Each must
 # come back, as a face, outlines within FreeType's limits and glyphs that are the font's, or a reason:
 # a crash or a hang fails the test. (Whether fontlib is right about each is test_ttf's job.)
 # This is test code, which fontlib.phi doesn't use, so it's no part of the library.
@@ -17,6 +18,7 @@ phi.FntFuzzTtf:Library
 	u32 refused: 0;
 	u32 glyphs: 0;
 	u32 bad_glyphs: 0;
+	u32 bitmaps: 0;
 	u32 bases_count: 0;
 	ptr<u8> base_data[512];
 	u32 base_len[512];
@@ -113,7 +115,7 @@ phi.FntFuzzTtf:Library
 			;;
 			call Try: work len;
 		;;
-		log 'changed at random: ' read ' read, ' refused ' refused, ' glyphs ' glyphs (' bad_glyphs ' that can\'t be loaded)\n';
+		log 'changed at random: ' read ' read, ' refused ' refused, ' glyphs ' glyphs (' bad_glyphs ' that can\'t be loaded), ' bitmaps ' bitmaps\n';
 
 		# every value of each of the first 200 bytes
 		read is 0;
@@ -198,6 +200,25 @@ phi.FntFuzzTtf:Library
 		while u < 0x30000
 			call Fnt.GlyphOf: face u;
 			u++ 1 + u / 64;
+		;;
+		# and bitmaps at 12 pixels, each within its box
+		ptr<FntSize> sz: (Fnt.AtSize: face 12);
+		if sz is not 0
+			u32 most: face.glyph_count;
+			if most > 300
+				most is 300;
+			;;
+			while u32 g: 0; g < most; g++;
+				ptr<FntBitmap> b: (Fnt.Bitmap: sz g);
+				if b is not 0
+					bitmaps++;
+					if b.width * b.height > Fnt.MOST_BITMAP_PIXELS or ((b.width * b.height is 0) is not (b.pixels is 0))
+						log 'WRONG: a bitmap of ' b.width ' by ' b.height '\n';
+						exit 1;
+					;;
+				;;
+			;;
+			call Fnt.FreeSize: sz;
 		;;
 		call Fnt.Free: face;
 	[end]

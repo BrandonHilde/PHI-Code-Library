@@ -82,6 +82,9 @@ struct.FntTrueType
 	ptr<u8> on_path;        # a bit for each glyph: a composite being loaded
 	int ret_pp1;            # what the glyph just loaded gave: its phantom point 1's x and advance
 	int ret_adv;
+	i64 scale;              # 16.16, font units to 26.6 pixels; 0: the outline in font units
+	int pp1;                # the last glyph's phantom point 1's x, and its advance, in font units
+	int advance;
 
 
 	# ---------------------------------------------------------------- the face
@@ -435,11 +438,14 @@ struct.FntTrueType
 
 	# ---------------------------------------------------------------- outlines
 
-	# glyph g's outline, into o: throws why it can't be loaded
-	[Glyph: u32 g: 0; ptr<FntOutline> o: 0;]
+	# glyph g's outline, into o, in font units, or (with a scale, 16.16) scaled as FreeType scales it:
+	# each simple glyph's points as they're loaded, then composites' transforms and scaled offsets, then
+	# the shift. Throws why it can't be loaded.
+	[Glyph: u32 g: 0; ptr<FntOutline> o: 0; i64 with_scale: 0;]
 		if g >= glyph_count
 			throw 'no such glyph';
 		;;
+		scale is with_scale;
 		o.points is 0;
 		o.contours is 0;
 		depth is 0;
@@ -472,8 +478,14 @@ struct.FntTrueType
 			f.pending is true;
 			call Enter: src f.index o;
 		;;
-		if ret_pp1 is not 0
-			call Shift: o ret_pp1;
+		pp1 is ret_pp1;
+		advance is ret_adv;
+		i64 shift: ret_pp1;
+		if scale is not 0
+			shift is (MulFix: ret_pp1 scale);
+		;;
+		if shift is not 0
+			call Shift: o (W32: shift);
 		;;
 		o.advance is ret_adv;
 	[end]
@@ -672,6 +684,10 @@ struct.FntTrueType
 				dx is (W32: (MulFix: dx (Length: f.xx f.xy)));
 				dy is (W32: (MulFix: dy (Length: f.yy f.yx)));
 			;;
+			if scale is not 0
+				dx is (W32: (MulFix: dx scale));
+				dy is (W32: (MulFix: dy scale));
+			;;
 		;;
 		if dx is not 0 or dy is not 0
 			while u32 i: base; i < n; i++;
@@ -773,7 +789,7 @@ struct.FntTrueType
 				q++ 2;
 			;;
 			x is x + delta;
-			o.x:(base + i) is x;
+			o.x:(base + i) is (Scaled: x);
 		;;
 		int y: 0;
 		while u32 i: 0; i < n_points; i++;
@@ -797,7 +813,7 @@ struct.FntTrueType
 				q++ 2;
 			;;
 			y is y + delta;
-			o.y:(base + i) is y;
+			o.y:(base + i) is (Scaled: y);
 			o.on:(base + i) is (f & 1) as u8;
 		;;
 		o.points is base + n_points;
@@ -909,6 +925,13 @@ struct.FntTrueType
 			return (r + (1 << (shift - 1))) >> shift;
 		;;
 	[end: (r << (0 - shift)) & 0xFFFFFFFF]
+
+	# a coordinate in font units, scaled if there's a scale
+	[Scaled: int v: 0; : int]
+		if scale is 0
+			return v;
+		;;
+	[end: (W32: (MulFix: v scale))]
 
 	# a coordinate kept to 32 bits
 	[W32: i64 v: 0; : int]

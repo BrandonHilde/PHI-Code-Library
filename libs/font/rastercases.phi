@@ -1,0 +1,173 @@
+# fontlib's glyph bitmaps against the cases in tests/raster/cases.bin (every day, for test_raster) or
+# release.bin (for release_raster), made by tools/font/make_raster_tests.py, whose rules give FreeType's
+# bitmaps exactly. A case is a font at a size: its size's line must be the rules', and so must one CRC-32
+# over every glyph's advance, bitmap box and pixels (or that it can't be loaded, or is too big).
+# This is test code, which fontlib.phi doesn't use, so it's no part of the library.
+use fontlib;
+use data.crc32;
+
+phi.FntTestRaster:Library
+{
+	u8 bytes[24];
+
+	[Run: str cases_path;]
+		int size: (OS.FileSize: cases_path);
+		if size < 0
+			log 'cannot read ' cases_path '\n';
+			exit 1;
+		;;
+		ptr<u8> file: new u8[size as u32 + 1];
+		if file is 0 or (OS.ReadFile: cases_path file size) is not size
+			log 'cannot read ' cases_path '\n';
+			exit 1;
+		;;
+		CoreReader r;
+		call r.Start: file size as u32;
+		u32 count: (r.U32LE);
+		u32 right: 0;
+		u32 read: 0;
+		u32 glyphs: 0;
+		while u32 i: 0; i < count; i++;
+			u32 name_len: (r.U8);
+			ptr<u8> name_at: (r.Bytes: name_len);
+			u32 ppem: (r.U32LE);
+			u32 kind: (r.U8);
+			ptr<u8> data: 0;
+			u32 length: 0;
+			ptr<u8> loaded: 0;
+			if kind is 0
+				u32 path_len: (r.U8);
+				ptr<u8> path_at: (r.Bytes: path_len);
+				str path: '';
+				while u32 k: 0; k < path_len; k++;
+					path++ path_at:k as chr;
+				;;
+				int fsize: (OS.FileSize: path);
+				if fsize < 0
+					log 'cannot read ' path '\n';
+					exit 1;
+				;;
+				loaded is new u8[fsize as u32 + 1];
+				call OS.ReadFile: path loaded fsize;
+				data is loaded;
+				length is fsize as u32;
+			;;
+			else
+				length is (r.U32LE);
+				data is (r.Bytes: length);
+			;;
+			bln want_ok: ((r.U8) is 1);
+			int want[6];
+			str want_why: '';
+			if want_ok
+				while u32 k: 0; k < 6; k++;
+					want:k is (r.I32LE);
+				;;
+			;;
+			else
+				u32 why_len: (r.U8);
+				ptr<u8> why_at: (r.Bytes: why_len);
+				while u32 k: 0; k < why_len; k++;
+					want_why++ why_at:k as chr;
+				;;
+			;;
+			if r.failed
+				log cases_path ' is cut short, or damaged\n';
+				exit 1;
+			;;
+			str name: '';
+			while u32 k: 0; k < name_len; k++;
+				name++ name_at:k as chr;
+			;;
+
+			str wrong: '';
+			ptr<FntFace> face: (Fnt.Load: data length);
+			if face is 0
+				if want_ok
+					wrong is 'the rules read it, but fontlib says: ' Fnt.error;
+				;;
+				elif Fnt.error is not want_why
+					wrong is 'refused for another reason: ' Fnt.error;
+				;;
+			;;
+			elif not want_ok
+				wrong is 'the rules refuse it, but fontlib reads it';
+			;;
+			else
+				ptr<FntSize> sz: (Fnt.AtSize: face ppem);
+				if sz is 0
+					wrong is 'no size: ' Fnt.error;
+				;;
+				else
+					int got[6];
+					got:0 is sz.ascender;
+					got:1 is sz.descender;
+					got:2 is sz.height;
+					got:3 is sz.max_advance;
+					got:4 is face.glyph_count as int;
+					got:5 is (Crc: sz) as int;
+					glyphs++ face.glyph_count;
+					str parts: 'ascender' 'descender' 'height' 'widest advance' 'glyphs' 'bitmaps\' CRC';
+					while u32 k: 0; k < 6; k++;
+						if got:k is not want:k and wrong.len is 0
+							wrong is parts:k ' is ' got:k ', where the rules have ' want:k;
+						;;
+					;;
+					call Fnt.FreeSize: sz;
+				;;
+				call Fnt.Free: face;
+			;;
+			if wrong.len > 0
+				log 'WRONG ' name ' at ' ppem ': ' wrong '\n';
+			;;
+			else
+				right++;
+				if want_ok
+					read++;
+				;;
+			;;
+			if loaded is not 0
+				free loaded;
+			;;
+		;;
+		if r.pos is not size as u32
+			log cases_path ' is damaged\n';
+			exit 1;
+		;;
+		log 'fonts at sizes: ' right ' of ' count ' as the rules say, which are FreeType\'s (' read ' read, ' right - read ' refused), ' glyphs ' glyphs\n';
+		log 'done\n';
+		exit 0;
+	[end]
+
+	# the CRC-32 of every glyph's part, as make_raster_tests.py makes it
+	[Crc: ptr<FntSize> sz: 0; : u32]
+		u32 crc: 0;
+		while u32 g: 0; g < sz.face.glyph_count; g++;
+			ptr<FntBitmap> b: (Fnt.Bitmap: sz g);
+			if b is 0
+				if Fnt.error has 'glyph bitmap of'
+					crc is (Word: crc 0xFFFFFFFE);
+				;;
+				else
+					crc is (Word: crc 0xFFFFFFFF);
+				;;
+				continue;
+			;;
+			crc is (Word: crc b.advance as u32);
+			crc is (Word: crc b.left as u32);
+			crc is (Word: crc b.top as u32);
+			crc is (Word: crc b.width);
+			crc is (Word: crc b.height);
+			if b.pixels is not 0
+				crc is (Crc32.Add: crc b.pixels (b.width * b.height));
+			;;
+		;;
+	[end: crc]
+
+	[Word: u32 crc: 0; u32 v: 0; : u32]
+		bytes:0 is (v & 255) as u8;
+		bytes:1 is ((v >> 8) & 255) as u8;
+		bytes:2 is ((v >> 16) & 255) as u8;
+		bytes:3 is (v >> 24) as u8;
+	[end: (Crc32.Add: crc bytes 4)]
+}

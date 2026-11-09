@@ -1,0 +1,457 @@
+# Glyph bitmaps: an outline, scaled to a size, made into 8-bit coverage, as FreeType's smooth rasterizer
+# (ftgrays.c) makes it, unhinted. The rules are tools/font/raster_reference.py's, which give FreeType's
+# bitmaps exactly, and this follows them step for step:
+#
+#   - The bitmap is the outline's control box rounded out to whole pixels.
+#   - The outline is read as FT_Outline_Decompose reads it, into lines and quadratic curves.
+#   - Lines are walked cell by cell (a cell is a pixel, in 256ths), adding each one's cover and area;
+#     a curve is split into 2^n lines by forward differences in 32.32 fixed point, n the fewest that
+#     bring it within a quarter of a pixel.
+#   - Each row is swept from the left, adding up its cover; a pixel's coverage is
+#     (cover * 512 - area) >> 9, by the non-zero winding rule.
+#
+# The cells are kept as FreeType keeps them: a list of those the outline crosses, linked in each row in
+# order, so that the memory is the outline's length, not its area.
+
+use corelib;
+use fontlib.face;
+
+# A glyph's bitmap: width by height bytes of coverage, 0 to 255, a row at a time from the top; its left
+# is left pixels right of the origin, and its top, top pixels above the baseline
+struct.FntBitmap
+{
+	int left;
+	int top;
+	u32 width;
+	u32 height;
+	int advance;            # in 64ths of a pixel
+	ptr<u8> pixels;
+}
+
+struct.FntCell
+{
+	int x;
+	int cover;
+	i64 area;
+	int next;               # the next cell in the row, by x; -1 none
+}
+
+struct.FntRaster
+{
+	u32 w;
+	u32 h;
+	ptr<FntCell> cells;
+	u32 count;
+	u32 room;
+	ptr<int> rows;          # each row's first cell; -1 none
+	u32 row_room;
+
+	# the cell being added to, and the pen, in 256ths of a pixel
+	int ex;
+	int ey;
+	i64 area;
+	int cover;
+	i64 x;
+	i64 y;
+
+	# ready for a bitmap of w by h
+	[Start: u32 width: 0; u32 height: 0;]
+		w is width;
+		h is height;
+		count is 0;
+		if height > row_room
+			if rows is not 0
+				free rows;
+			;;
+			rows is new int[height];
+			if rows is 0
+				row_room is 0;
+				throw 'out of memory';
+			;;
+			row_room is height;
+		;;
+		while u32 k: 0; k < height; k++;
+			rows:k is -1;
+		;;
+		ex is 0;
+		ey is 0;
+		area is 0;
+		cover is 0;
+		x is 0;
+		y is 0;
+	[end]
+
+	# the cell being added to, put in the list (if it's in the bitmap, and not empty)
+	[Record]
+		if area is 0 and cover is 0
+			return;
+		;;
+		if ey < 0 or ey >= h as int or ex >= w as int
+			return;
+		;;
+		int prev: -1;
+		int k: rows:ey;
+		while k >= 0 and cells:k.x < ex
+			prev is k;
+			k is cells:k.next;
+		;;
+		if k >= 0 and cells:k.x is ex
+			cells:k.area is cells:k.area + area;
+			cells:k.cover is cells:k.cover + cover;
+			return;
+		;;
+		if count >= room
+			call More;
+		;;
+		int c: count as int;
+		count++;
+		cells:c.x is ex;
+		cells:c.area is area;
+		cells:c.cover is cover;
+		cells:c.next is k;
+		if prev < 0
+			rows:ey is c;
+		;;
+		else
+			cells:prev.next is c;
+		;;
+	[end]
+
+	[More]
+		u32 grown_room: room * 2;
+		if grown_room < 256
+			grown_room is 256;
+		;;
+		ptr<FntCell> grown: new FntCell[grown_room];
+		if grown is 0
+			throw 'out of memory';
+		;;
+		while u32 k: 0; k < count; k++;
+			grown:k is cells:k;
+		;;
+		if cells is not 0
+			free cells;
+		;;
+		cells is grown;
+		room is grown_room;
+	[end]
+
+	[SetCell: int cx: 0; int cy: 0;]
+		if cx < 0
+			cx is -1;
+		;;
+		if cx is ex and cy is ey
+			return;
+		;;
+		call Record;
+		ex is cx;
+		ey is cy;
+		area is 0;
+		cover is 0;
+	[end]
+
+	# the pen to (tx, ty), in 64ths of a pixel
+	[MoveTo: i64 tx: 0; i64 ty: 0;]
+		call Record;
+		area is 0;
+		cover is 0;
+		x is tx << 2;
+		y is ty << 2;
+		int cx: (x >> 8) as int;
+		if cx < 0
+			cx is -1;
+		;;
+		ex is cx;
+		ey is (y >> 8) as int;
+	[end]
+
+	[LineTo: i64 tx: 0; i64 ty: 0;]
+		call Line: (tx << 2) (ty << 2);
+	[end]
+
+	# a line from the pen to (to_x, to_y), in 256ths, walked cell by cell, as gray_render_line does
+	[Line: i64 to_x: 0; i64 to_y: 0;]
+		int ex1: (x >> 8) as int;
+		int ex2: (to_x >> 8) as int;
+		int ey1: (y >> 8) as int;
+		int ey2: (to_y >> 8) as int;
+		int hh: h as int;
+		if (ey1 >= hh and ey2 >= hh) or (ey1 < 0 and ey2 < 0)
+			x is to_x;
+			y is to_y;
+			return;
+		;;
+		i64 fx1: x & 255;
+		i64 fy1: y & 255;
+		i64 dx: to_x - x;
+		i64 dy: to_y - y;
+		if ex1 is ex2 and ey1 is ey2
+			# inside one cell
+		;;
+		elif dy is 0
+			call SetCell: ex2 ey2;
+			x is to_x;
+			y is to_y;
+			return;
+		;;
+		elif dx is 0
+			if dy > 0
+				while true
+					cover is cover + (256 - fy1) as int;
+					area is area + (256 - fy1) * fx1 * 2;
+					fy1 is 0;
+					ey1++;
+					call SetCell: ex1 ey1;
+					if ey1 is ey2
+						break;
+					;;
+				;;
+			;;
+			else
+				while true
+					cover is cover - fy1 as int;
+					area is area - fy1 * fx1 * 2;
+					fy1 is 256;
+					ey1--;
+					call SetCell: ex1 ey1;
+					if ey1 is ey2
+						break;
+					;;
+				;;
+			;;
+		;;
+		else
+			i64 prod: dx * fy1 - dy * fx1;
+			u64 dx_r: 0;
+			u64 dy_r: 0;
+			if ex1 is not ex2
+				dx_r is 0xFFFFFFFF / (Abs: dx) as u64;
+			;;
+			if ey1 is not ey2
+				dy_r is 0xFFFFFFFF / (Abs: dy) as u64;
+			;;
+			while true
+				i64 fx2: 0;
+				i64 fy2: 0;
+				if prod - dx * 256 > 0 and prod <= 0
+					# out through the left
+					fx2 is 0;
+					fy2 is (UDiv: (0 - prod) dx_r);
+					prod is prod - dy * 256;
+					cover is cover + (fy2 - fy1) as int;
+					area is area + (fy2 - fy1) * (fx1 + fx2);
+					fx1 is 256;
+					fy1 is fy2;
+					ex1--;
+				;;
+				elif prod - dx * 256 + dy * 256 > 0 and prod - dx * 256 <= 0
+					# up
+					prod is prod - dx * 256;
+					fx2 is (UDiv: (0 - prod) dy_r);
+					fy2 is 256;
+					cover is cover + (fy2 - fy1) as int;
+					area is area + (fy2 - fy1) * (fx1 + fx2);
+					fx1 is fx2;
+					fy1 is 0;
+					ey1++;
+				;;
+				elif prod + dy * 256 >= 0 and prod - dx * 256 + dy * 256 <= 0
+					# right
+					prod is prod + dy * 256;
+					fx2 is 256;
+					fy2 is (UDiv: prod dx_r);
+					cover is cover + (fy2 - fy1) as int;
+					area is area + (fy2 - fy1) * (fx1 + fx2);
+					fx1 is 0;
+					fy1 is fy2;
+					ex1++;
+				;;
+				else
+					# down
+					fy2 is 0;
+					fx2 is (UDiv: prod dy_r);
+					prod is prod + dx * 256;
+					cover is cover + (fy2 - fy1) as int;
+					area is area + (fy2 - fy1) * (fx1 + fx2);
+					fx1 is fx2;
+					fy1 is 256;
+					ey1--;
+				;;
+				call SetCell: ex1 ey1;
+				if ex1 is ex2 and ey1 is ey2
+					break;
+				;;
+			;;
+		;;
+		i64 fx2: to_x & 255;
+		i64 fy2: to_y & 255;
+		cover is cover + (fy2 - fy1) as int;
+		area is area + (fy2 - fy1) * (fx1 + fx2);
+		x is to_x;
+		y is to_y;
+	[end]
+
+	# a / b, as ftgrays divides on 64-bit systems: a times b's reciprocal, 0xFFFFFFFF / b, over 2^32
+	[UDiv: i64 a: 0; u64 r: 0; : i64]
+	[end: (((a as u64) * r) >> 32) as i64]
+
+	[Abs: i64 v: 0; : i64]
+		if v < 0
+			return 0 - v;
+		;;
+	[end: v]
+
+	# a quadratic curve from the pen, through (cx, cy), to (tx, ty), in 64ths, as gray_render_conic
+	# splits it
+	[ConicTo: i64 cx: 0; i64 cy: 0; i64 tx: 0; i64 ty: 0;]
+		i64 p0x: x;
+		i64 p0y: y;
+		i64 p1x: cx << 2;
+		i64 p1y: cy << 2;
+		i64 p2x: tx << 2;
+		i64 p2y: ty << 2;
+		i64 hh: h;
+		if ((p0y >> 8) >= hh and (p1y >> 8) >= hh and (p2y >> 8) >= hh) or ((p0y >> 8) < 0 and (p1y >> 8) < 0 and (p2y >> 8) < 0)
+			x is p2x;
+			y is p2y;
+			return;
+		;;
+		i64 bx: p1x - p0x;
+		i64 by: p1y - p0y;
+		i64 ax: p2x - p1x - bx;
+		i64 ay: p2y - p1y - by;
+		i64 d: (Abs: ax);
+		if (Abs: ay) > d
+			d is (Abs: ay);
+		;;
+		if d <= 64
+			call Line: p2x p2y;
+			return;
+		;;
+		int shift: 0;
+		while true
+			d is d >> 2;
+			shift++;
+			if d <= 64
+				break;
+			;;
+		;;
+		i64 rx: ax << (33 - 2 * shift);
+		i64 ry: ay << (33 - 2 * shift);
+		i64 qx: (bx << (33 - shift)) + (ax << (32 - 2 * shift));
+		i64 qy: (by << (33 - shift)) + (ay << (32 - 2 * shift));
+		i64 px: p0x << 32;
+		i64 py: p0y << 32;
+		u32 steps: 1 << shift;
+		while u32 k: 0; k < steps; k++;
+			px is px + qx;
+			py is py + qy;
+			qx is qx + rx;
+			qy is qy + ry;
+			call Line: (px >> 32) (py >> 32);
+		;;
+	[end]
+
+	# the rows swept into the bitmap's pixels (zeroed already), top row first
+	[Sweep: u8 dst[];]
+		call Record;
+		area is 0;
+		cover is 0;
+		while u32 ry: 0; ry < h; ry++;
+			u32 row: (h - 1 - ry) * w;
+			int k: rows:ry;
+			int cx: 0;
+			i64 acc: 0;
+			while k >= 0
+				int cell_x: cells:k.x;
+				if acc is not 0 and cell_x > cx
+					u8 v: (Coverage: acc) as u8;
+					while int i: cx; i < cell_x; i++;
+						dst:(row + i as u32) is v;
+					;;
+				;;
+				acc is acc + (cells:k.cover as i64) * 512;
+				i64 a: acc - cells:k.area;
+				if a is not 0 and cell_x >= 0
+					dst:(row + cell_x as u32) is (Coverage: a) as u8;
+				;;
+				cx is cell_x + 1;
+				k is cells:k.next;
+			;;
+			if acc is not 0
+				u8 v: (Coverage: acc) as u8;
+				while int i: cx; i < w as int; i++;
+					dst:(row + i as u32) is v;
+				;;
+			;;
+		;;
+	[end]
+
+	# coverage from an area, by the non-zero winding rule
+	[Coverage: i64 a: 0; : u32]
+		i64 c: a >> 9;
+		if c < 0
+			c is -1 - c;
+		;;
+		if c > 255
+			return 255;
+		;;
+	[end: c as u32]
+
+	# one contour of points first to last, as FT_Outline_Decompose gives it, shifted by (dx, dy)
+	[Contour: ptr<FntOutline> o: 0; u32 first: 0; u32 last: 0; i64 dx: 0; i64 dy: 0;]
+		i64 sx: (o.x:first as i64) + dx;
+		i64 sy: (o.y:first as i64) + dy;
+		int i: first as int;
+		int limit: last as int;
+		if o.on:first is 0
+			if o.on:last is not 0
+				sx is (o.x:last as i64) + dx;
+				sy is (o.y:last as i64) + dy;
+				limit--;
+			;;
+			else
+				sx is (Half: sx + (o.x:last as i64) + dx);
+				sy is (Half: sy + (o.y:last as i64) + dy);
+			;;
+			i--;
+		;;
+		call MoveTo: sx sy;
+		while i < limit
+			i++;
+			i64 px: (o.x:(i as u32) as i64) + dx;
+			i64 py: (o.y:(i as u32) as i64) + dy;
+			if o.on:(i as u32) is not 0
+				call LineTo: px py;
+				continue;
+			;;
+			i64 ctl_x: px;
+			i64 ctl_y: py;
+			while true
+				if i < limit
+					i++;
+					i64 qx: (o.x:(i as u32) as i64) + dx;
+					i64 qy: (o.y:(i as u32) as i64) + dy;
+					if o.on:(i as u32) is not 0
+						call ConicTo: ctl_x ctl_y qx qy;
+						break;
+					;;
+					call ConicTo: ctl_x ctl_y (Half: ctl_x + qx) (Half: ctl_y + qy);
+					ctl_x is qx;
+					ctl_y is qy;
+					continue;
+				;;
+				call ConicTo: ctl_x ctl_y sx sy;
+				return;
+			;;
+		;;
+		call LineTo: sx sy;
+	[end]
+
+	# half, rounded toward zero, as C divides
+	[Half: i64 v: 0; : i64]
+		if v < 0
+			return 0 - ((0 - v) / 2);
+		;;
+	[end: v / 2]
+}

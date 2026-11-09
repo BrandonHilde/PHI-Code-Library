@@ -41,6 +41,22 @@ struct.FntOutline
 	u32 contour_room;
 }
 
+# A font at a size, in pixels per em: its line in 64ths of a pixel (rounded to whole pixels as FreeType
+# rounds them), and its glyphs' bitmaps, made the first time each is asked for and kept
+struct.FntSize
+{
+	ptr<FntFace> face;
+	u32 ppem;
+	i64 scale;              # 16.16: font units to 64ths of a pixel
+	int ascender;           # rounded up to a whole pixel
+	int descender;          # rounded down
+	int height;             # rounded
+	int max_advance;        # rounded
+	ptr<ptr<FntBitmap>> cache;      # each glyph's bitmap, once it's made
+	ptr<FntOutline> outline;
+	ptr<FntRaster> raster;
+}
+
 phi.Fnt:Library
 {
 	str error: [383];   # why the last call failed
@@ -48,6 +64,9 @@ phi.Fnt:Library
 	# FreeType's most points and contours in one outline (FT_OUTLINE_POINTS_MAX and CONTOURS_MAX)
 	const u32 MOST_POINTS: 32767;
 	const u32 MOST_CONTOURS: 32767;
+
+	# the most pixels a glyph's bitmap may have: a damaged font's glyph can't ask for gigabytes
+	const u32 MOST_BITMAP_PIXELS: 1024 * 1024;
 
 	# a TrueType font; 0 if it can't be read, with the reason in error. data must stay as it is until
 	# Free.
@@ -127,6 +146,161 @@ phi.Fnt:Library
 			return false;
 		;;
 	[end: true]
+
+	# A font at a size, in pixels per em (1 to 16,384); 0 if there isn't the memory, with the reason in
+	# error. The face must stay until FreeSize.
+	[AtSize: ptr<FntFace> face: 0; u32 ppem: 0; : ptr<FntSize>]
+		error is '';
+		if face is 0 or ppem is 0 or ppem > 16384
+			error is 'no font, or a size that isn\'t 1 to 16384 pixels';
+			return 0;
+		;;
+		ptr<FntSize> size: new FntSize;
+		if size is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		size.face is face;
+		size.ppem is ppem;
+		size.scale is (DivFix: (ppem as i64) * 64 face.units_per_em);
+		i64 asc: (face.tt.MulFix: face.ascender size.scale);
+		i64 desc: (face.tt.MulFix: face.descender size.scale);
+		i64 height: (face.tt.MulFix: face.height size.scale);
+		i64 adv: (face.tt.MulFix: face.max_advance size.scale);
+		size.ascender is ((asc + 63) & ~63) as int;
+		size.descender is (desc & ~63) as int;
+		size.height is ((height + 32) & ~63) as int;
+		size.max_advance is ((adv + 32) & ~63) as int;
+		size.cache is new ptr<FntBitmap>[face.glyph_count + 1];
+		size.outline is new FntOutline;
+		size.raster is new FntRaster;
+		if size.cache is 0 or size.outline is 0 or size.raster is 0
+			call FreeSize: size;
+			error is 'out of memory';
+			return 0;
+		;;
+	[end: size]
+
+	# FT_DivFix: a * 65536 / b, rounded
+	[DivFix: i64 a: 0; int b: 0; : i64]
+		i64 d: b;
+		if d <= 0
+			return 0;
+		;;
+	[end: ((a << 16) + (d >> 1)) / d]
+
+	# gives back a size's memory and its glyphs' bitmaps (0 is allowed, and does nothing)
+	[FreeSize: ptr<FntSize> size: 0;]
+		if size is 0 return;
+		if size.cache is not 0
+			while u32 g: 0; g < size.face.glyph_count; g++;
+				call FreeBitmap: size.cache:g;
+			;;
+			free size.cache;
+		;;
+		if size.outline is not 0
+			call Release: size.outline;
+			free size.outline;
+		;;
+		if size.raster is not 0
+			if size.raster.cells is not 0
+				free size.raster.cells;
+			;;
+			if size.raster.rows is not 0
+				free size.raster.rows;
+			;;
+			free size.raster;
+		;;
+		free size;
+	[end]
+
+	[FreeBitmap: ptr<FntBitmap> bitmap: 0;]
+		if bitmap is 0 return;
+		if bitmap.pixels is not 0
+			free bitmap.pixels;
+		;;
+		free bitmap;
+	[end]
+
+	# A glyph's bitmap at a size, as FreeType makes it (unhinted): the size's own, kept for next time, so
+	# not to be freed; 0 if it can't be made, with the reason in error
+	[Bitmap: ptr<FntSize> size: 0; u32 glyph: 0; : ptr<FntBitmap>]
+		error is '';
+		if size is 0 or glyph >= size.face.glyph_count
+			error is 'no such glyph';
+			return 0;
+		;;
+		if size.cache:glyph is not 0
+			return size.cache:glyph;
+		;;
+		ptr<FntBitmap> bitmap: new FntBitmap;
+		if bitmap is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		if call Make: size glyph bitmap throws err
+			call Failed: err.kind err.text err.message;
+			call FreeBitmap: bitmap;
+			return 0;
+		;;
+		size.cache:glyph is bitmap;
+	[end: bitmap]
+
+	[Make: ptr<FntSize> size: 0; u32 glyph: 0; ptr<FntBitmap> bitmap: 0;]
+		ptr<FntTrueType> tt: size.face.tt;
+		ptr<FntOutline> o: size.outline;
+		call tt.Glyph: glyph o size.scale;
+		bitmap.advance is ((tt.MulFix: tt.pp1 + tt.advance size.scale) - (tt.MulFix: tt.pp1 size.scale)) as int;
+		if o.points is 0
+			return;
+		;;
+		i64 min_x: o.x:0;
+		i64 max_x: o.x:0;
+		i64 min_y: o.y:0;
+		i64 max_y: o.y:0;
+		while u32 i: 1; i < o.points; i++;
+			if o.x:i < min_x
+				min_x is o.x:i;
+			;;
+			if o.x:i > max_x
+				max_x is o.x:i;
+			;;
+			if o.y:i < min_y
+				min_y is o.y:i;
+			;;
+			if o.y:i > max_y
+				max_y is o.y:i;
+			;;
+		;;
+		i64 left: min_x >> 6;
+		i64 bottom: min_y >> 6;
+		i64 right: (max_x + 63) >> 6;
+		i64 top: (max_y + 63) >> 6;
+		i64 w: right - left;
+		i64 h: top - bottom;
+		if w * h > MOST_BITMAP_PIXELS as i64
+			throw 'a glyph bitmap of ' w ' by ' h ' pixels, more than ' MOST_BITMAP_PIXELS;
+		;;
+		bitmap.left is left as int;
+		bitmap.top is top as int;
+		bitmap.width is w as u32;
+		bitmap.height is h as u32;
+		if w * h is 0
+			return;
+		;;
+		bitmap.pixels is new u8[(w * h) as u32];
+		if bitmap.pixels is 0
+			throw 'out of memory';
+		;;
+		ptr<FntRaster> r: size.raster;
+		call r.Start: w as u32 h as u32;
+		u32 first: 0;
+		while u32 k: 0; k < o.contours; k++;
+			call r.Contour: o first o.ends:k (0 - left * 64) (0 - bottom * 64);
+			first is o.ends:k + 1;
+		;;
+		call r.Sweep: (bitmap.pixels as u8[(w * h) as u32]);
+	[end]
 
 	# an outline to load glyphs into, again and again; 0 if there isn't the memory
 	[NewOutline: : ptr<FntOutline>]

@@ -1,0 +1,11 @@
+# fontlib's glyph bitmaps against all the release cases, in tests/raster/release.bin: Liberation Sans at
+# five sizes, the made fonts at three, and 400 fuzzed, for when the library is near release.
+# rastercases.phi says how they're checked.
+use fontlib;
+use rastercases;
+
+phi.ReleaseRaster:Program
+{
+	call FontLib.Start;
+	call FntTestRaster.Run: 'tests/raster/release.bin';
+}

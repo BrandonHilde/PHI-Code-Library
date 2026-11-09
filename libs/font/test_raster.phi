@@ -1,0 +1,11 @@
+# fontlib's glyph bitmaps against the everyday cases, in tests/raster/cases.bin: Liberation Sans at two
+# sizes, each font made by tools/font/make_font_tests.py at 12 pixels, and a few fuzzed. rastercases.phi
+# says how they're checked.
+use fontlib;
+use rastercases;
+
+phi.TestRaster:Program
+{
+	call FontLib.Start;
+	call FntTestRaster.Run: 'tests/raster/cases.bin';
+}

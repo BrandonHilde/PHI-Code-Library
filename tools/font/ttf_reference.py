@@ -318,10 +318,14 @@ class Face:
 
     # ------------------------------------------------------------ glyphs
 
-    def glyph(self, g):
-        """(points [(x, y)], on-curve flags, contour ends, advance), or a str: why it can't be loaded"""
+    def glyph(self, g, scale=0):
+        """(points [(x, y)], on-curve flags, contour ends, advance), or a str: why it can't be loaded.
+        With a scale (16.16, font units to 26.6 pixels), the points are scaled as FreeType scales them:
+        each simple glyph's as it's loaded, then composites' transforms and (scaled) offsets, then the
+        shift; the advance stays in font units, and pp1 (in font units) is kept in self.pp1."""
         if g >= self.num_glyphs:
             return 'no such glyph'
+        self.scale = scale
         self.loading = []
         self.points = []
         self.flags = []
@@ -330,8 +334,10 @@ class Face:
             pp1, adv = self.load(g, 0)
         except Refused as e:
             return str(e)
-        if pp1:
-            self.points = [(w32(x - pp1), y) for x, y in self.points]
+        self.pp1 = pp1
+        shift = mul_fix(pp1, scale) if scale else pp1
+        if shift:
+            self.points = [(w32(x - shift), y) for x, y in self.points]
         return self.points, self.flags, self.ends, adv
 
     def load(self, g, depth):
@@ -433,6 +439,9 @@ class Face:
                 if have_scale and flags & 0x800:     # SCALED_COMPONENT_OFFSET
                     dx = w32(mul_fix(dx, vector_length(xx, xy)))
                     dy = w32(mul_fix(dy, vector_length(yy, yx)))
+                if self.scale:
+                    dx = w32(mul_fix(dx, self.scale))
+                    dy = w32(mul_fix(dy, self.scale))
             if dx or dy:
                 for i in range(base, len(self.points)):
                     x, y = self.points[i]
@@ -516,7 +525,10 @@ class Face:
             else:
                 delta = 0
             y += delta
-            self.points.append((xs[i], y))
+            if self.scale:
+                self.points.append((w32(mul_fix(xs[i], self.scale)), w32(mul_fix(y, self.scale))))
+            else:
+                self.points.append((xs[i], y))
             self.flags.append(f & 1)
         self.ends.extend(e + base for e in ends)
 

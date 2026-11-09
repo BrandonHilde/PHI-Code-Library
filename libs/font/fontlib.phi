@@ -1,5 +1,5 @@
 # fontlib: fonts in, glyphs out. It reads TrueType fonts: the face, each glyph's outline and metrics, in
-# font units, and which glyph a character is.
+# font units, and which glyph a character is; and it makes glyphs' bitmaps at a size, as FreeType does.
 #
 #   phi build fontlib.phi --library     # fontlib.philib, with corelib.philib beside it
 #
@@ -9,6 +9,7 @@
 use corelib;
 use fontlib.face;
 use fontlib.truetype;
+use fontlib.raster;
 
 phi.FontLib:Library
 {

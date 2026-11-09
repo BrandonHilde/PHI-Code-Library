@@ -376,7 +376,7 @@ call Fnt.Free: face;
 | Milestone | Scope | Checked against |
 |---|---|---|
 | 4.1 TrueType reading ✓ | Table directory, `head`, `hhea`, `hmtx`, `maxp`, `cmap`, `loca`, `glyf`, composite glyphs | FreeType's numbers (through `freetype-py`), for outlines and metrics |
-| 4.2 Rasterizer | Anti-aliased coverage in fixed-point, with a glyph cache | FreeType's bitmaps, within a tolerance |
+| 4.2 Rasterizer ✓ | Anti-aliased coverage in fixed-point, with a glyph cache | FreeType's bitmaps, within a tolerance |
 | 4.3 Simple text | UTF-8, advances, line metrics, measuring and drawing a run, fallback across faces | HarfBuzz advances, and reference bitmaps |
 | 4.4 Kerning | `kern`, and pair adjustment in `GPOS` | FreeType/HarfBuzz advances |
 | 4.5 OpenType CFF | `.otf` outlines | FreeType |
@@ -404,6 +404,13 @@ read for what it does with damaged tables. Checked against freetype-py and uharf
 everyday cases and the 5,388 release cases, as 32 and 64-bit programs, and comes back from about 1.2
 million fuzzed fonts without a crash. Not done: CFF (4.5), collections, and HarfBuzz's Arabic symbol
 pages.
+
+**4.2, done 2026-11-10,** in [libs/font](libs/font): glyph bitmaps at a size (`Fnt.AtSize`,
+`Fnt.Bitmap`), each size keeping its glyphs' bitmaps as they're made. Better than the tolerance planned:
+the rules (`tools/font/raster_reference.py`) give FreeType's unhinted bitmaps exactly, pixel for pixel,
+with the same box and advance, by following ftgrays.c's integer arithmetic, and fontlib gives the rules'
+on every case, as 32 and 64-bit programs. Not done: FreeType's oversampling of glyphs marked as
+overlapping.
 
 **Done when:** milestones 4.1 to 4.4 pass, a test draws Unicode text beyond code page 437 that matches its
 reference, and every parser has been fuzzed.
