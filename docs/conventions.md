@@ -101,7 +101,24 @@ So there are two tiers:
 We still want a few of each required test, but thousands of them covering the same issues is a waste for
 early development builds. Nothing has been released yet, so the release tier waits. A new feature gets everyday tests. Its edge cases,
 fuzzing and stress go in the release tier, or wait until release is near. Don't run the release tier as part
-of everyday work.
+of everyday work, and don't make or run release sets for new code until release is near either.
+
+**Nothing runs over 3 minutes during development:** no test run, no case generator, no check. A run that
+would take longer is split into separate quicker ones, or made smaller. `build.ps1` runs one library at a
+time (`.\build.ps1 font -Test`), and `-Only` runs the test programs whose names start with given prefixes,
+for a library whose everyday tests together take longer:
+
+| Library | Everyday run | Time (2026-11-10) |
+|---|---|---|
+| corelib | `.\build.ps1 core -Test` | about 5 s |
+| imagelib | `.\build.ps1 image -Test` | about 30 s |
+| fontlib | `.\build.ps1 font -Test` | about 15 s |
+| weblib | `.\build.ps1 web -Test -Only test_css` | about 90 s |
+| | `.\build.ps1 web -Test -Only test_html,test_page,test_core,test_weblib` | about 100 s |
+| | `.\build.ps1 web -Test -Only test_js` | about 90 s |
+
+(Each weblib group builds weblib first, which is most of its time.) A prefix no program has fails the run,
+rather than passing with nothing tested.
 
 Each library's tests are of two kinds:
 

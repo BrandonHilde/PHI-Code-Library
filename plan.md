@@ -141,12 +141,14 @@ hostile input, code that can go anywhere, the two kinds of test, what counts as 
 
 Nothing here has been released: it's all in development. During development we will use a light weight
 minimum necessary tests to move forward quickly. Then when preparing for release we will do the full suite
-of tests. But until then we will be efficient with our time. `build.ps1 -Test` runs the everyday tests, and
+of tests. But until then we will be efficient with our time. Nothing runs over 3 minutes during development
+(the owner, 2026-11-10): weblib's everyday tests run in three groups, with `build.ps1`'s `-Only`, as [the
+conventions](docs/conventions.md#tests) list. `build.ps1 -Test` runs the everyday tests, and
 `-Release` adds the full suite ([the conventions](docs/conventions.md#tests)). imagelib's tests were split
 so on 2026-11-08 (about 1,000 decodes every day, where there had been 23,600, and a few of every kind:
 cut, fuzzed, a short crash fuzz), and corelib's and weblib's on 2026-11-09. `build.ps1 image -Test`
-(corelib and imagelib) takes about 20 seconds; `build.ps1 web -Test` about 3 minutes, nearly all of
-it building weblib's 15 test programs, whose cases are already cheap to run. Tests go through
+(corelib and imagelib) takes about 30 seconds, and fontlib about 15; weblib's three groups about 90 to
+100 seconds each, most of it building weblib's test programs, whose cases are already cheap to run. Tests go through
 `build.ps1`, which sets `NASMENV=-O1`: without it, NASM takes about 2 minutes to assemble each
 weblib test, rather than 1 second.
 

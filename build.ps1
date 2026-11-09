@@ -3,6 +3,10 @@
 #   .\build.ps1             every library
 #   .\build.ps1 image       one library, and what it depends on
 #   .\build.ps1 -Test       and run the tests: the everyday ones, test_*.phi
+#   .\build.ps1 web -Test -Only test_css,test_page
+#                           only the test programs whose names start with those: a library whose
+#                           tests take over 3 minutes is run in groups, each well under (see
+#                           docs/conventions.md)
 #   .\build.ps1 -Test -Release
 #                           and the release ones too, release_*.phi: the edge cases, fuzzing and
 #                           stress that wait until a library is near release
@@ -25,7 +29,10 @@ param(
 
 	[switch]$Release,
 
-	[int]$Timeout = 60
+	[int]$Timeout = 60,
+	# only the test programs whose names start with this (test_css, say), so that a library with many
+	# runs in groups, each well under 3 minutes
+	[string[]]$Only = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -172,7 +179,23 @@ function Add-Run {
 	Write-Host "== $LibraryName, $Kind tests"
 	Push-Location $Folder
 	try {
-		$run = Invoke-Phi @('test', '.', '-f', $Prefix, '--timeout', "$Timeout")
+		$filters = @($Prefix)
+		if ($Only.Count -gt 0) {
+			# (a list from another shell arrives as one string: test_html,test_page)
+			$filters = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ -ne '' } |
+				ForEach-Object { if ($_.StartsWith($Prefix)) { $_ } else { $Prefix + $_ } })
+		}
+		$code = 0
+		$ran = 0
+		foreach ($filter in $filters) {
+			# a prefix none of this folder's programs has is left out
+			$programs = @(Get-ChildItem . -Filter "$filter*.phi").Count
+			if ($programs -eq 0) { continue }
+			$ran += $programs
+			$one = Invoke-Phi @('test', '.', '-f', $filter, '--timeout', "$Timeout")
+			if ($one.Code -ne 0) { $code = $one.Code }
+		}
+		$run = [pscustomobject]@{ Code = $code; Ran = $ran }
 	}
 	finally {
 		Pop-Location
@@ -180,7 +203,7 @@ function Add-Run {
 	$results.Add([pscustomobject]@{
 			Library = $LibraryName
 			Kind    = $Kind
-			Result  = if ($run.Code -eq 0) { 'pass' } else { 'FAIL' }
+			Result  = if ($run.Ran -eq 0) { 'none' } elseif ($run.Code -eq 0) { 'pass' } else { 'FAIL' }
 		})
 }
 
@@ -214,6 +237,11 @@ if ($results.Count -eq 0) {
 	Write-Host 'No tests were run.'
 	exit 0
 }
+if (@($results | Where-Object { $_.Result -ne 'none' }).Count -eq 0) {
+	Write-Host "FAILED: no test program's name starts with $($Only -join ', ')." -ForegroundColor Red
+	exit 1
+}
+$results = @($results | Where-Object { $_.Result -ne 'none' })
 $failed = @($results | Where-Object { $_.Result -eq 'FAIL' })
 if ($failed.Count -gt 0) {
 	Write-Host "FAILED: $($failed.Count) of $($results.Count) test runs." -ForegroundColor Red
