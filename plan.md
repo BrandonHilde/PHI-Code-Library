@@ -378,7 +378,7 @@ call Fnt.Free: face;
 | 4.1 TrueType reading ✓ | Table directory, `head`, `hhea`, `hmtx`, `maxp`, `cmap`, `loca`, `glyf`, composite glyphs | FreeType's numbers (through `freetype-py`), for outlines and metrics |
 | 4.2 Rasterizer ✓ | Anti-aliased coverage in fixed-point, with a glyph cache | FreeType's bitmaps, within a tolerance |
 | 4.3 Simple text ✓ | UTF-8, advances, line metrics, measuring and drawing a run, fallback across faces | HarfBuzz advances, and reference bitmaps |
-| 4.4 Kerning | `kern`, and pair adjustment in `GPOS` | FreeType/HarfBuzz advances |
+| 4.4 Kerning ✓ | `kern`, and pair adjustment in `GPOS` | FreeType/HarfBuzz advances |
 | 4.5 OpenType CFF | `.otf` outlines | FreeType |
 | 4.6 Web fonts | WOFF 1 (uses inflate) | Sample fonts, compared with the same font unpacked |
 | Later | Ligatures (`GSUB`), WOFF2 (needs Brotli), variable fonts, color fonts, TrueType hinting | |
@@ -417,6 +417,15 @@ WHATWG decodes it), a stack of up to 8 fonts tried in turn for each character, H
 each size's line. The rules (`tools/font/text_reference.py`) give HarfBuzz's glyphs and advances with its
 shaping turned off, and fontlib gives the rules' width, pen and canvas on every case, including text
 beyond code page 437, as 32 and 64-bit programs.
+
+**4.4, done 2026-11-10,** in [libs/font](libs/font): kerning in `Fnt.Measure` and `Fnt.Draw`, HarfBuzz's
+with only its `kern` feature on: GPOS pair adjustment (formats 1 and 2, extension lookups, lookup flags by
+GDEF's classes, attachment types and filtering sets, the script with HarfBuzz's fallbacks), or else the
+legacy `kern` table. The rules (`tools/font/kern_reference.py`) give HarfBuzz's glyphs, advances and
+offsets on every case with one font, and fontlib gives the rules' on all 43 text cases, as 32 and 64-bit
+programs. **Phase 4 is done, as its "done when" says:** 4.1 to 4.4 pass, text beyond code page 437 is
+drawn as its reference, and every parser (the directory, every table read, outlines, bitmaps, and kerning)
+is fuzzed. 4.5 (CFF) and 4.6 (WOFF) are next.
 
 **Done when:** milestones 4.1 to 4.4 pass, a test draws Unicode text beyond code page 437 that matches its
 reference, and every parser has been fuzzed.

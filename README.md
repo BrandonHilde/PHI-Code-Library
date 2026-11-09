@@ -10,7 +10,7 @@ the program, so there's nothing extra to ship.
 |---|---|---|
 | `weblib` | HTML, CSS and JavaScript: bytes in; DOM, computed styles and running scripts out | Moved here, in [libs/web](libs/web) |
 | `imagelib` | Image files in, pixels out | Reads BMP, PNG, JPEG (baseline and progressive) and GIF (animations too), and scales, in [libs/image](libs/image) |
-| `fontlib` | Font files in; metrics and smooth glyph bitmaps out | Reads TrueType fonts (faces, outlines, metrics, characters) makes FreeType's glyph bitmaps, and measures and draws text, in [libs/font](libs/font); kerning is next |
+| `fontlib` | Font files in; metrics and smooth glyph bitmaps out | Reads TrueType fonts (faces, outlines, metrics, characters) makes FreeType's glyph bitmaps, and measures, kerns and draws text, in [libs/font](libs/font); CFF fonts are next |
 | `corelib` | Checked byte reading and inflate, shared by `imagelib` and `fontlib` | Built and tested, in [libs/core](libs/core) |
 
 [plan.md](plan.md) has the roadmap. None has had its first release yet.

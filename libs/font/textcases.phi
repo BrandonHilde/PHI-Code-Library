@@ -69,6 +69,8 @@ phi.FntTestText:Library
 			int x: (r.I32LE);
 			int y: (r.I32LE);
 			u32 color: (r.U32LE);
+			stack.script is (r.U32BE);
+			stack.no_kerning is ((r.U8) is 0);
 			u32 text_len: (r.U32LE);
 			ptr<u8> text: (r.Bytes: text_len);
 			int want_width: (r.I32LE);
@@ -121,7 +123,7 @@ phi.FntTestText:Library
 			log cases_path ' is damaged\n';
 			exit 1;
 		;;
-		log 'runs of text: ' right ' of ' count ' measured and drawn as the rules say, whose glyphs and advances are HarfBuzz\'s\n';
+		log 'runs of text: ' right ' of ' count ' measured and drawn as the rules say, whose glyphs, advances and kerning are HarfBuzz\'s\n';
 		log 'done\n';
 		exit 0;
 	[end]

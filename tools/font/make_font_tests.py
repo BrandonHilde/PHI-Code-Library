@@ -271,6 +271,57 @@ def set_tag(data, old, new):
     raise KeyError(old)
 
 
+def kerned_font(fea, legacy=None, gdef=None):
+    """a font of A, B, C, V, W, a mark and a space, with OpenType features (feaLib), or a legacy kern
+    table of {(left, right): value}"""
+    from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
+    from fontTools.ttLib import TTFont, newTable
+    from fontTools.ttLib.tables._k_e_r_n import KernTable_format_0
+    import io
+    names = ['.notdef', 'A', 'B', 'C', 'V', 'W', 'acute', 'space']
+    glyphs = {n: square(20, 0, 300 + 30 * k, 600) for k, n in enumerate(names)}
+    glyphs['acute'] = square(100, 650, 200, 750)
+    metrics = {n: (500 + 20 * k, 20) for k, n in enumerate(names)}
+    metrics['acute'] = (0, 100)
+    cmap = {0x41: 'A', 0x42: 'B', 0x43: 'C', 0x56: 'V', 0x57: 'W', 0x301: 'acute', 0x20: 'space'}
+    data = build(glyphs, metrics, cmap)
+    font = TTFont(io.BytesIO(data))
+    if fea:
+        addOpenTypeFeaturesFromString(font, fea)
+    if legacy:
+        kern = newTable('kern')
+        kern.version = 0
+        st = KernTable_format_0()
+        st.version, st.coverage, st.format = 0, 1, 0
+        st.kernTable = dict(legacy)
+        kern.kernTables = [st]
+        font['kern'] = kern
+    b = io.BytesIO()
+    font.save(b)
+    return b.getvalue()
+
+
+GDEF = 'table GDEF { GlyphClassDef [A B C V W space], , [acute], ; } GDEF;\n'
+KERN_FONTS = {
+    'pairs': GDEF + '''languagesystem DFLT dflt; languagesystem latn dflt;
+feature kern { lookupflag IgnoreMarks; pos A V -80; pos A W -60; pos B <10 0 -40 0> V <5 0 20 0>; pos V A -70; } kern;''',
+    'classes': GDEF + '''languagesystem latn dflt; @L = [A B C]; @R = [V W];
+feature kern { pos @L @R -55; pos V @L -30; } kern;''',
+    'extension-and-two-lookups': '''languagesystem latn dflt;
+lookup one useExtension { pos A V -100; } one;
+lookup two { pos A V 30; pos V W -15; } two;
+feature kern { lookup one; lookup two; } kern;''',
+    'marks-not-skipped': GDEF + '''languagesystem latn dflt; feature kern { pos A V -80; } kern;''',
+    'mark-attachment-type': GDEF + '''languagesystem latn dflt; @M = [acute];
+feature kern { lookupflag MarkAttachmentType @M; pos A V -80; } kern;''',
+    'mark-filtering-set': GDEF + '''languagesystem latn dflt; @M = [acute];
+feature kern { lookupflag UseMarkFilteringSet @M; pos A V -80; } kern;''',
+    'grek-only': '''languagesystem grek dflt; feature kern { pos A V -80; } kern;''',
+    'dflt-only': '''languagesystem DFLT dflt; feature kern { pos A V -80; } kern;''',
+}
+
+
+
 def made_cases():
     """(name, data, rule): rule is 'read' (FreeType and HarfBuzz must agree with the rules on all of
     it), 'refused' (both refuse it), or 'damaged' (either)"""
@@ -403,6 +454,11 @@ def made_cases():
     add('overlap-compound', build({'.notdef': square(0, 0, 10, 10), 'b': curvy(10, 20, 100),
                                    'A': [comp('b', flags=0x400), comp('b', x=60, y=40)]},
                                   {'.notdef': (500, 0), 'b': (500, 10), 'A': (600, 10)}, {0x41: 'A'}))
+
+    # kerning tables, which the text tests check against HarfBuzz: here, the face and characters
+    add('kern-gpos-pairs', kerned_font(KERN_FONTS['pairs']))
+    add('kern-gpos-classes', kerned_font(KERN_FONTS['classes']))
+    add('kern-legacy', kerned_font(None, {('A', 'V'): -80, ('B', 'V'): -45, ('V', 'A'): -61}))
 
     # FreeType's limit of 32,767 points: two components of 16,380 are in, two of 16,400 aren't
     def many(n, per):

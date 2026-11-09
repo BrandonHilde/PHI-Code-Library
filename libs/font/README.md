@@ -3,8 +3,8 @@
 Fonts in; metrics, outlines and smooth glyph bitmaps out. So far it reads TrueType fonts: the face, each
 glyph's outline and metrics, in font units, and which glyph a character is; it makes glyphs' bitmaps at
 a size, exactly as FreeType makes them; and it measures and draws runs of UTF-8 text in a list of fonts,
-with HarfBuzz's glyphs and advances ([plan.md](../../plan.md#phase-4-font-library), milestones 4.1 to
-4.3). It uses [corelib](../core), so a program
+with HarfBuzz's glyphs, advances and kerning ([plan.md](../../plan.md#phase-4-font-library), milestones
+4.1 to 4.4). It uses [corelib](../core), so a program
 using it has both `fontlib.philib` and `corelib.philib` beside it.
 
 ```phi
@@ -43,7 +43,7 @@ call Fnt.Free: face;
 ## API
 
 These names are the API. Everything else the library declares (`FntTrueType`, `FntFrame`,
-`FntMacRoman`, `FntRaster`, `FntCell`, `FntText`, `FntSize`'s `scale`, `mult`, `cache`, `outline` and
+`FntMacRoman`, `FntRaster`, `FntCell`, `FntText`, `FntKern`, `FntSize`'s `scale`, `mult`, `cache`, `outline` and
 `raster`, and `Fnt`'s `Grow`, `Release`, `ReleasePoints`, `Done`, `Failed`, `DivFix`, `Make`, `FreeBitmap`,
 `Blit` and `BlitRows`) is how it works, and may change.
 
@@ -66,7 +66,7 @@ These names are the API. Everything else the library declares (`FntTrueType`, `F
 | `FntBitmap` | A struct: `width` by `height` bytes of coverage (0 to 255) at `pixels`, a row at a time from the top (`pixels` is 0 when there are none); `left` (pixels right of the pen), `top` (pixels above the baseline), and `advance` (64ths of a pixel) |
 | `Fnt.FreeSize: size` | Gives back a size's memory and its bitmaps (0 does nothing) |
 | `Fnt.MOST_BITMAP_PIXELS` | 1,048,576: the most pixels a glyph's bitmap may have, so that a damaged font's glyph can't ask for gigabytes |
-| `FntStack` | A struct: `sizes` (up to 8 `ptr<FntSize>`) and `count`: fonts tried in turn for each character, the first being the main one |
+| `FntStack` | A struct: `sizes` (up to 8 `ptr<FntSize>`) and `count`: fonts tried in turn for each character, the first being the main one; `script`, the OpenType script tag kerning is for (0, as it starts, means `latn`); and `no_kerning` |
 | `Fnt.Measure: stack text length` → | How wide `length` bytes of UTF-8 are, in 64ths of a pixel |
 | `Fnt.Draw: stack text length canvas width height x y color` → | Draws the text on `canvas` (`width` by `height` pixels of `0xAARRGGBB`, a row at a time from the top), the pen starting `x` 64ths of a pixel from the left on the baseline `y` pixels from the top; gives where the pen ends. Each glyph's coverage, times `color`'s alpha, blends `color` over the canvas, whose alpha is kept |
 | `Fnt.error` | Why the last call failed |
@@ -127,10 +127,20 @@ above:
   first font's `.notdef`.
 - **Advances** are HarfBuzz's at the size (the `hmtx` advance times `(ppem * 64 << 16) / units_per_em`,
   rounded, over 65536), added up in 64ths of a pixel.
-- **Each glyph** goes at the pen rounded to a whole pixel, and blends as imagelib's `Img.BlendRow` blends.
+- **Kerning,** unless `no_kerning`: HarfBuzz's with only its `kern` feature on, in each run of glyphs
+  from one font (not across fallback). If GPOS has a `kern` feature anywhere: the stack's script (or else
+  `DFLT`, `dflt`, `latn`), its default language system, and its `kern` lookups in the order of their
+  indexes; pair adjustment, formats 1 and 2 (and through extension lookups); glyphs skipped as each
+  lookup's flags say, by GDEF's classes, attachment types and mark filtering sets; `XAdvance` to a glyph's
+  advance and `XPlacement` to its offset, scaled as advances are. Otherwise the legacy `kern` table: its
+  horizontal format 0 subtables, each pair's value split between the two glyphs as HarfBuzz splits it.
+  Device tables are left out, as HarfBuzz leaves them out when no ppem is set.
+- **Each glyph** goes at the pen plus its offset, rounded to a whole pixel, and blends as imagelib's
+  `Img.BlendRow` blends.
 
-**Not done yet:** kerning (4.4), and shaping: ligatures, marks, and the scripts that need it, which are
-left out on purpose.
+**Not done:** shaping (ligatures, marks, and the scripts that need it, which are left out on purpose); a
+language system other than the default; and a damaged GPOS, GDEF or `kern` table is read as far as it can
+be, where HarfBuzz may set the whole table aside.
 
 ## How it's checked
 
@@ -173,4 +183,5 @@ text in a stack of fonts on a canvas; its verdict its width, the pen after it, a
 
 | Cases (2026-11-10, as 32 and 64-bit Linux programs) | Result |
 |---|---|
-| ASCII, characters beyond code page 437, Greek and Cyrillic, missing glyphs, malformed UTF-8 and nothing, each at 12, 19 and 33 pixels on white, noise and transparent canvases; a half-transparent color; text off each edge; three stacks with fallback | 26 of 26 measured and drawn as the rules say; the 23 with one font have HarfBuzz's glyphs and advances |
+| ASCII, characters beyond code page 437, Greek and Cyrillic, missing glyphs, malformed UTF-8 and nothing, each at 12, 19 and 33 pixels on white, noise and transparent canvases; a half-transparent color; text off each edge; three stacks with fallback | All measured and drawn as the rules say; those with one font have HarfBuzz's glyphs and advances |
+| Kerning: Liberation Sans for Latin, Cyrillic and Hebrew and turned off; fonts made with feaLib for pairs, values on both glyphs, classes, extension lookups and two lookups, marks skipped by class, attachment type and filtering set, a script that falls back, and the legacy `kern` table, with and without GPOS; not across fallback | All 43 cases as the rules say; the 39 with one font have HarfBuzz's glyphs, advances and offsets, kerning on |

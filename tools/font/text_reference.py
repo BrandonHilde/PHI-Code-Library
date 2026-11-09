@@ -6,8 +6,10 @@ libs/font/fontlib/text.phi follows.
   - Each character is the glyph of the first font in the list that has one for it (by HarfBuzz's
     lookup); if none has, the first font's glyph 0 (.notdef).
   - A glyph's advance is HarfBuzz's at the size: hmtx's advance times mult, plus 32768, over 65536,
-    mult being (ppem * 64 << 16) / units per em. They add up, in 64ths of a pixel, with nothing
-    between them: no kerning yet (4.4), and no shaping (ligatures, marks).
+    mult being (ppem * 64 << 16) / units per em. They add up, in 64ths of a pixel.
+  - Kerning (kern_reference), unless it's turned off: in each run of glyphs from one font, for the
+    script asked for ('latn' if none is), adding to glyphs' advances and offsets. No other shaping
+    (ligatures, marks).
   - Drawing: each glyph's bitmap (raster_reference) is put with its origin at the pen, rounded to a
     whole pixel ((x + 32) >> 6), its left `left` pixels right of that and its top `top` pixels above
     the baseline; each pixel's coverage times the color's alpha ((c * a + 127) / 255) blends the
@@ -16,6 +18,7 @@ libs/font/fontlib/text.phi follows.
 """
 import ttf_reference as T
 import raster_reference as R
+import kern_reference as K
 
 
 def decode(data):
@@ -32,6 +35,13 @@ class Font:
         self.scale = R.scale_of(ppem, self.face.units_per_em)
         self.mult = (ppem * 64 << 16) // self.face.units_per_em
         self.bitmaps = {}
+        self.data = data
+        self.kerns = {}
+
+    def kern(self, script):
+        if script not in self.kerns:
+            self.kerns[script] = K.Kern(self.data, script)
+        return self.kerns[script]
 
     def advance(self, g):
         adv, _ = self.face.metrics(g)
@@ -47,34 +57,46 @@ class Font:
         return self.bitmaps[g]
 
 
-def glyphs(fonts, text):
-    """[(font index, glyph, advance)] for the text"""
+def glyphs(fonts, text, script='latn', kerning=True):
+    """[(font index, glyph, advance, offset)] for the text, in 64ths of a pixel"""
     out = []
     for u in decode(text):
         for k, f in enumerate(fonts):
             g = f.cmap.glyph(u)
             if g and g < f.face.num_glyphs:
-                out.append((k, g, f.advance(g)))
+                out.append([k, g, f.advance(g), 0])
                 break
         else:
-            out.append((0, 0, fonts[0].advance(0)))
-    return out
+            out.append([0, 0, fonts[0].advance(0), 0])
+    if kerning:
+        i = 0
+        while i < len(out):
+            j = i
+            while j < len(out) and out[j][0] == out[i][0]:
+                j += 1
+            f = fonts[out[i][0]]
+            adj = f.kern(script).apply([gl[1] for gl in out[i:j]], f.mult)
+            for n, (a, o) in enumerate(adj):
+                out[i + n][2] += a
+                out[i + n][3] += o
+            i = j
+    return [tuple(gl) for gl in out]
 
 
-def measure(fonts, text):
-    return sum(a for _, _, a in glyphs(fonts, text))
+def measure(fonts, text, script='latn', kerning=True):
+    return sum(a for _, _, a, _ in glyphs(fonts, text, script, kerning))
 
 
-def draw(fonts, text, canvas, width, height, x, y, color):
+def draw(fonts, text, canvas, width, height, x, y, color, script='latn', kerning=True):
     """draws text on canvas (a list of width * height 0xAARRGGBB) with its pen starting at x (in 64ths
     of a pixel) on the baseline y (in pixels); gives the pen's x after it"""
     ca = color >> 24
     pen = x
-    for k, g, adv in glyphs(fonts, text):
+    for k, g, adv, off in glyphs(fonts, text, script, kerning):
         bm = fonts[k].bitmap(g)
         if bm is not None:
             left, top, w, h, pixels = bm
-            ox = ((pen + 32) >> 6) + left
+            ox = ((pen + off + 32) >> 6) + left
             oy = y - top
             for row in range(h):
                 cy = oy + row

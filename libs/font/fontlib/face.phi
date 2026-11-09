@@ -111,6 +111,7 @@ phi.Fnt:Library
 	# gives back a font's memory (0 is allowed, and does nothing); not its bytes, which are the caller's
 	[Free: ptr<FntFace> face: 0;]
 		if face is 0 return;
+		call FntKern.Forget: face.tt;
 		call Done: face.tt;
 		free face;
 	[end]
@@ -346,15 +347,17 @@ phi.Fnt:Library
 	# How wide text is (length bytes of UTF-8) in the stack's fonts, in 64ths of a pixel: each character's
 	# glyph from the first font that has one, its advance as HarfBuzz scales it
 	[Measure: ptr<FntStack> stack: 0; ptr<u8> text: 0; u32 length: 0; : int]
+		error is '';
 		if stack is 0 or stack.count is 0 or (text is 0 and length > 0)
 			return 0;
 		;;
-		FntText.pos is 0;
+		if call FntText.Layout: stack (text as u8[length]) throws err
+			call Failed: err.kind err.text err.message;
+			return 0;
+		;;
 		int width: 0;
-		while (FntText.Decode: (text as u8[length]))
-			u32 which: 0;
-			u32 g: (FntText.Pick: stack FntText.code addr which);
-			width is width + (FntText.Advance: stack.sizes:which g);
+		while u32 k: 0; k < FntText.count; k++;
+			width is width + FntText.adv:k;
 		;;
 	[end: width]
 
@@ -364,21 +367,24 @@ phi.Fnt:Library
 	# the canvas (its alpha kept). Gives where the pen ends, in 64ths of a pixel. What's off the canvas
 	# isn't drawn, and a glyph that can't be made is left out (but its advance isn't).
 	[Draw: ptr<FntStack> stack: 0; ptr<u8> text: 0; u32 length: 0; ptr<u32> canvas: 0; u32 width: 0; u32 height: 0; int x: 0; int y: 0; u32 color: 0; : int]
+		error is '';
 		if stack is 0 or stack.count is 0 or canvas is 0 or (text is 0 and length > 0)
 			return x;
 		;;
-		FntText.pos is 0;
-		int pen: x;
-		while (FntText.Decode: (text as u8[length]))
-			u32 which: 0;
-			u32 g: (FntText.Pick: stack FntText.code addr which);
-			ptr<FntSize> size: stack.sizes:which;
-			ptr<FntBitmap> b: (Bitmap: size g);
-			if b is not 0 and b.pixels is not 0
-				call Blit: (canvas as u32[width * height]) width height b (((pen + 32) >> 6) + b.left) (y - b.top) color;
-			;;
-			pen is pen + (FntText.Advance: size g);
+		if call FntText.Layout: stack (text as u8[length]) throws err
+			call Failed: err.kind err.text err.message;
+			return x;
 		;;
+		int pen: x;
+		while u32 k: 0; k < FntText.count; k++;
+			ptr<FntSize> size: stack.sizes:(FntText.which:k);
+			ptr<FntBitmap> b: (Bitmap: size FntText.glyph:k);
+			if b is not 0 and b.pixels is not 0
+				call Blit: (canvas as u32[width * height]) width height b (((pen + FntText.off:k + 32) >> 6) + b.left) (y - b.top) color;
+			;;
+			pen is pen + FntText.adv:k;
+		;;
+		error is '';
 	[end: pen]
 
 	[Blit: u32 canvas[]; u32 width: 0; u32 height: 0; ptr<FntBitmap> b: 0; int ox: 0; int oy: 0; u32 color: 0;]

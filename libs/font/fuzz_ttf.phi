@@ -4,7 +4,7 @@
 # first 200 bytes of several is tried; and numbers that cause trouble are put in every 16 and 32-bit
 # field of their first 400 bytes (the table directory, and the tables at the start). Every font that
 # loads has every glyph's outline loaded (up to 3,000), a range of characters looked up, and bitmaps
-# made at 12 pixels (up to 300). Each must
+# made at 12 pixels (up to 300), and a string measured with kerning. Each must
 # come back, as a face, outlines within FreeType's limits and glyphs that are the font's, or a reason:
 # a crash or a hang fails the test. (Whether fontlib is right about each is test_ttf's job.)
 # This is test code, which fontlib.phi doesn't use, so it's no part of the library.
@@ -201,9 +201,14 @@ phi.FntFuzzTtf:Library
 			call Fnt.GlyphOf: face u;
 			u++ 1 + u / 64;
 		;;
-		# and bitmaps at 12 pixels, each within its box
+		# and bitmaps at 12 pixels, each within its box; and a string measured, kerned
 		ptr<FntSize> sz: (Fnt.AtSize: face 12);
 		if sz is not 0
+			FntStack stack;
+			stack.sizes:0 is sz;
+			stack.count is 1;
+			str sample: 'AVATAR To Wa ABV VA BVA \xCE\x95\xCE\xBB\xCE\xBB\xCE\xB7\xCE\xBD\xCE\xB9\xCE\xBA\xCE\xAC';
+			call Fnt.Measure: addr stack sample sample.len;
 			u32 most: face.glyph_count;
 			if most > 300
 				most is 300;

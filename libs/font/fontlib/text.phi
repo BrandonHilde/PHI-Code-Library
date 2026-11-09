@@ -5,8 +5,8 @@
 #     it's a valid start, is one U+FFFD.
 #   - Each character is the glyph of the first font in the list that has one for it; if none has, the
 #     first font's .notdef.
-#   - Advances are HarfBuzz's at the size, added up in 64ths of a pixel, with nothing between them
-#     (kerning is 4.4's).
+#   - Advances are HarfBuzz's at the size, added up in 64ths of a pixel; then kerning (kern.phi), in
+#     each run of glyphs from one font, for the stack's script, unless it's turned off.
 #   - Each glyph's bitmap goes at the pen rounded to a whole pixel, and its coverage, times the color's
 #     alpha, blends the color over the canvas as imagelib's BlendRow does, the canvas's alpha kept.
 
@@ -18,6 +18,8 @@ struct.FntStack
 {
 	ptr<FntSize> sizes[8];
 	u32 count;
+	u32 script;             # the OpenType script tag kerning is for; 0: 'latn'
+	bln no_kerning;         # true: no kerning
 }
 
 phi.FntText:Library
@@ -25,6 +27,83 @@ phi.FntText:Library
 	# where Decode left off: the next byte, and the character it found
 	u32 pos;
 	u32 code;
+
+	# what Layout made: each glyph's font (in the stack), glyph, advance and offset (64ths of a pixel)
+	ptr<u32> which;
+	ptr<u32> glyph;
+	ptr<int> adv;
+	ptr<int> off;
+	u32 count;
+	u32 room;
+
+	# text laid out: each character's glyph, advance and offset, kerned in runs of one font; throws if
+	# there isn't the memory
+	[Layout: ptr<FntStack> stack: 0; u8 text[];]
+		count is 0;
+		pos is 0;
+		while (Decode: text)
+			if count >= room
+				call Grow;
+			;;
+			u32 k: 0;
+			u32 g: (Pick: stack code addr k);
+			which:count is k;
+			glyph:count is g;
+			adv:count is (Advance: stack.sizes:k g);
+			off:count is 0;
+			count++;
+		;;
+		if stack.no_kerning
+			return;
+		;;
+		u32 script: stack.script;
+		if script is 0
+			script is 0x6C61746E;
+		;;
+		u32 i: 0;
+		while i < count
+			u32 j: i;
+			while j < count and which:j is which:i
+				j++;
+			;;
+			ptr<FntSize> size: stack.sizes:(which:i);
+			call FntKern.Setup: size.face.tt script;
+			u32 n: j - i;
+			call FntKern.Apply: ((glyph + i * 4) as u32[n]) ((adv + i * 4) as int[n]) ((off + i * 4) as int[n]) n size.mult;
+			i is j;
+		;;
+	[end]
+
+	[Grow]
+		u32 grown_room: room * 2;
+		if grown_room < 64
+			grown_room is 64;
+		;;
+		ptr<u32> w: new u32[grown_room];
+		ptr<u32> g: new u32[grown_room];
+		ptr<int> a: new int[grown_room];
+		ptr<int> o: new int[grown_room];
+		if w is 0 or g is 0 or a is 0 or o is 0
+			throw 'out of memory';
+		;;
+		while u32 k: 0; k < count; k++;
+			w:k is which:k;
+			g:k is glyph:k;
+			a:k is adv:k;
+			o:k is off:k;
+		;;
+		if which is not 0
+			free which;
+			free glyph;
+			free adv;
+			free off;
+		;;
+		which is w;
+		glyph is g;
+		adv is a;
+		off is o;
+		room is grown_room;
+	[end]
 
 	# The next character of text from byte pos, as the WHATWG decoder finds it, into code (and pos moved
 	# past it); false at the end

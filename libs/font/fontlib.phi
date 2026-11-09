@@ -11,6 +11,7 @@ use fontlib.face;
 use fontlib.truetype;
 use fontlib.raster;
 use fontlib.text;
+use fontlib.kern;
 
 phi.FontLib:Library
 {

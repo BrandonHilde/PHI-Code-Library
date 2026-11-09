@@ -10,7 +10,8 @@ The format (little-endian):
       u8 name length, name, u8 font count, then for each font: u8 kind (0: a path, from libs/font, u8
       length then the path; 1: bytes, u32 length then the bytes), u32 ppem;
       u32 canvas width, height, u8 background (0 white, 1 noise, 2 transparent black), i32 x (64ths of
-      a pixel), i32 y (pixels), u32 color, u32 text length, the text (UTF-8, perhaps malformed);
+      a pixel), i32 y (pixels), u32 color, u32 script (an OpenType tag), u8 kerning (1 on),
+      u32 text length, the text (UTF-8, perhaps malformed);
       then what fontlib must give: i32 its width (Measure), i32 the pen after Draw, u32 the CRC-32 of
       the canvas after it (each pixel as 4 bytes, little-endian)
 """
@@ -37,7 +38,7 @@ def background(kind, w, h):
     return [0xFF000000 | ((i * 0x9E3779B1 & 0xFFFFFFFF) >> 8) for i in range(w * h)]
 
 
-def harfbuzz(data, ppem, text):
+def harfbuzz(data, ppem, text, script, kerning):
     import uharfbuzz as hb
     if not text:
         return []
@@ -45,10 +46,12 @@ def harfbuzz(data, ppem, text):
     font.scale = (ppem * 64, ppem * 64)
     buf = hb.Buffer()
     buf.add_str(text.decode('utf-8', errors='replace'))
-    buf.guess_segment_properties()
     buf.direction = 'ltr'
-    hb.shape(font, buf, SHAPING_OFF)
-    return [(i.codepoint, p.x_advance) for i, p in zip(buf.glyph_infos, buf.glyph_positions)]
+    buf.script = script[0].upper() + script[1:]
+    features = dict(SHAPING_OFF)
+    features['kern'] = kerning
+    hb.shape(font, buf, features)
+    return [(i.codepoint, p.x_advance, p.x_offset) for i, p in zip(buf.glyph_infos, buf.glyph_positions)]
 
 
 def cases():
@@ -69,6 +72,22 @@ def cases():
     for name, text in texts.items():
         for ppem, bg in ((12, 0), (19, 1), (33, 2)):
             out.append(('%s-%d' % (name, ppem), [(lib, ppem)], 220, 48, bg, 3 * 64 + 17, 36, 0xFF203040, text))
+    kerning = 'AVATAR To Wa LT Yo P. F, "A" Tr Ty AWAY WAVE; Vo'.encode()
+    out.append(('liberation-kerned-latn', [(lib, 16)], 420, 30, 0, 64, 22, 0xFF000000, kerning))
+    out.append(('liberation-not-kerned', [(lib, 16)], 420, 30, 0, 64, 22, 0xFF000000, kerning, 'latn', False))
+    out.append(('liberation-kerned-cyrl', [(lib, 16)], 420, 30, 0, 64, 22, 0xFF000000, 'ГА ТА AVA'.encode(), 'cyrl'))
+    out.append(('liberation-kerned-hebr', [(lib, 16)], 420, 30, 0, 64, 22, 0xFF000000, kerning, 'hebr'))
+    for kname, fea in M.KERN_FONTS.items():
+        font = (1, None, M.kerned_font(fea))
+        for script in (('latn', 'cyrl') if kname in ('grek-only', 'dflt-only') else ('latn',)):
+            out.append(('kern-%s-%s' % (kname, script), [(font, 20)], 300, 30, 0, 64, 22, 0xFF000000,
+                        'AV AW BV VA A\u0301V AWV CW'.encode(), script))
+    legacy = (1, None, M.kerned_font(None, {('A', 'V'): -80, ('B', 'V'): -45, ('V', 'A'): -61}))
+    out.append(('kern-legacy-table', [(legacy, 20)], 300, 30, 0, 64, 22, 0xFF000000, 'AV BV VA AVA'.encode()))
+    both = (1, None, M.kerned_font(M.KERN_FONTS['pairs'], {('A', 'V'): 300}))
+    out.append(('kern-gpos-before-legacy', [(both, 20)], 300, 30, 0, 64, 22, 0xFF000000, 'AV VA'.encode()))
+    out.append(('kern-not-across-fallback', [(squares, 20), (legacy, 20)], 300, 30, 0, 64, 22, 0xFF000000,
+                'AV aV'.encode()))
     out.append(('half-transparent-color', [(lib, 16)], 200, 30, 1, 0, 22, 0x80C02010, texts['beyond-437']))
     out.append(('off-the-left', [(lib, 24)], 80, 40, 0, -50 * 64, 30, 0xFF000000, texts['ascii']))
     out.append(('off-the-right', [(lib, 24)], 80, 40, 0, 40 * 64, 30, 0xFF000000, texts['ascii']))
@@ -90,17 +109,21 @@ def main():
     all_cases = cases()
     blob += struct.pack('<I', len(all_cases))
     checked = 0
-    for name, fonts, w, h, bg, x, y, color, text in all_cases:
+    for case in all_cases:
+        name, fonts, w, h, bg, x, y, color, text = case[:9]
+        script = case[9] if len(case) > 9 else 'latn'
+        kerning = case[10] if len(case) > 10 else True
         loaded = [X.Font(data, ppem) for (kind, path, data), ppem in fonts]
         if len(fonts) == 1:
-            mine = [(g, a) for _, g, a in X.glyphs(loaded, text)]
-            theirs = harfbuzz(fonts[0][0][2], fonts[0][1], text)
+            mine = [(g, a, o) for _, g, a, o in X.glyphs(loaded, text, script, kerning)]
+            theirs = harfbuzz(fonts[0][0][2], fonts[0][1], text, script, kerning)
             if mine != theirs:
-                sys.exit('%s: the glyphs and advances %s differ from HarfBuzz\'s %s' % (name, mine[:6], theirs[:6]))
+                k = next(i for i in range(min(len(mine), len(theirs)) + 1) if i >= len(mine) or i >= len(theirs) or mine[i] != theirs[i])
+                sys.exit('%s: the glyphs, advances and offsets %s differ from HarfBuzz\'s %s' % (name, mine[k - 1:k + 2], theirs[k - 1:k + 2]))
             checked += 1
-        width = X.measure(loaded, text)
+        width = X.measure(loaded, text, script, kerning)
         canvas = background(bg, w, h)
-        pen = X.draw(loaded, text, canvas, w, h, x, y, color)
+        pen = X.draw(loaded, text, canvas, w, h, x, y, color, script, kerning)
         crc = zlib.crc32(struct.pack('<%dI' % len(canvas), *canvas))
         nb = name.encode()
         blob += struct.pack('<B', len(nb)) + nb + struct.pack('<B', len(fonts))
@@ -111,14 +134,15 @@ def main():
             else:
                 blob += struct.pack('<BI', 1, len(data)) + data
             blob += struct.pack('<I', ppem)
-        blob += struct.pack('<IIBiiII', w, h, bg, x, y, color, len(text)) + text
+        blob += struct.pack('<IIBiiI', w, h, bg, x, y, color) + script.encode().ljust(4)
+        blob += struct.pack('<BI', 1 if kerning else 0, len(text)) + text
         blob += struct.pack('<iiI', width, pen, crc)
         lines.append('%-36s width %6d, pen %6d' % (name, width, pen))
     with open(os.path.join(OUT, 'cases.bin'), 'wb') as f:
         f.write(blob)
     with open(os.path.join(OUT, 'cases.txt'), 'w', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
-    print('cases.bin: %d cases, %d bytes; %d with one font the same as HarfBuzz' % (len(all_cases), len(blob), checked))
+    print('cases.bin: %d cases, %d bytes; %d with one font the same as HarfBuzz, glyph for glyph' % (len(all_cases), len(blob), checked))
 
 
 if __name__ == '__main__':

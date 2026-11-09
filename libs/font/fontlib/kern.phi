@@ -1,0 +1,657 @@
+# Kerning, as HarfBuzz applies it with only its kern feature on. The rules are
+# tools/font/kern_reference.py's, and this follows them step for step:
+#
+#   - GPOS, if it has a kern feature anywhere: the script asked for (or else DFLT, dflt, latn), its
+#     default language system, and its kern features' lookups in the order of their indexes; pair
+#     adjustment (type 2, or 9 wrapping it), formats 1 and 2, each lookup's subtables tried in turn;
+#     glyphs skipped as the lookup's flags say, by GDEF's classes, attachment types and filtering sets;
+#     XAdvance to a glyph's advance and XPlacement to its offset, each scaled as advances are.
+#   - Otherwise the kern table: its format 0 subtables that are horizontal and not cross-stream, each
+#     pair's value split between the two glyphs, marks skipped.
+#
+# Every read is checked against its table's bounds (anything outside reads as 0), with 64-bit offsets.
+
+use corelib;
+use fontlib.face;
+
+phi.FntKern:Library
+{
+	ptr<u8> data;
+	u32 length;
+	# the table being read, and GPOS's, GDEF's and kern's
+	u64 lo;
+	u64 hi;
+	u64 gpos_lo;
+	u64 gpos_hi;
+	u64 gdef_lo;
+	u64 gdef_hi;
+	bln have_gdef;
+	u64 glyph_classes;
+	u64 mark_classes;
+	u64 mark_sets;
+	bln use_gpos;
+	bln use_kern;
+	u64 kern_lo;
+	u64 kern_hi;
+	# the kern lookups chosen: where each starts, its flag and mark filtering set
+	ptr<u64> lookups;
+	ptr<u32> flags;
+	ptr<u32> sets;
+	u32 lookup_count;
+	u32 lookup_room;
+	# the kern features' lookup indexes, before they're sorted
+	ptr<u32> wanted;
+	u32 wanted_count;
+	u32 wanted_room;
+	# the font and script set up last
+	ptr<FntTrueType> last_tt;
+	u32 last_script;
+	# what Pair found
+	int a1;
+	int o1;
+	int a2;
+	int o2;
+	bln second;
+
+	# the font's kerning for a script (an OpenType tag), ready for Apply
+	[Setup: ptr<FntTrueType> tt: 0; u32 script: 0;]
+		if tt is last_tt and script is last_script
+			return;
+		;;
+		data is tt.data;
+		length is tt.length;
+		call SetupIn: (tt.data as u8[tt.length]) tt script;
+		last_tt is tt;
+		last_script is script;
+	[end]
+
+	# forgets the font set up last, as it's being freed
+	[Forget: ptr<FntTrueType> tt: 0;]
+		if tt is last_tt
+			last_tt is 0;
+		;;
+	[end]
+
+	[SetupIn: u8 src[]; ptr<FntTrueType> tt: 0; u32 script: 0;]
+		use_gpos is false;
+		use_kern is false;
+		lookup_count is 0;
+		have_gdef is false;
+		u32 stop: 0;
+		u32 start: (tt.HbTable: src 0x47444546 addr stop);
+		if stop is not 0
+			have_gdef is true;
+			gdef_lo is start;
+			gdef_hi is stop;
+			call Gdef: start;
+		;;
+		start is (tt.HbTable: src 0x47504F53 addr stop);
+		if stop is not 0
+			gpos_lo is start;
+			gpos_hi is stop;
+			lo is gpos_lo;
+			hi is gpos_hi;
+			if (HasKern: start)
+				use_gpos is true;
+				call Lookups: start script;
+				return;
+			;;
+		;;
+		start is (tt.HbTable: src 0x6B65726E addr stop);
+		if stop is not 0
+			use_kern is true;
+			kern_lo is start;
+			kern_hi is stop;
+		;;
+	[end]
+
+	[Gdef: u64 s: 0;]
+		lo is gdef_lo;
+		hi is gdef_hi;
+		u32 version: (U32: s);
+		glyph_classes is 0;
+		mark_classes is 0;
+		mark_sets is 0;
+		if (U16: s + 4) is not 0
+			glyph_classes is s + (U16: s + 4);
+		;;
+		if (U16: s + 10) is not 0
+			mark_classes is s + (U16: s + 10);
+		;;
+		if version >= 0x00010002 and (U16: s + 12) is not 0
+			mark_sets is s + (U16: s + 12);
+		;;
+	[end]
+
+	[HasKern: u64 s: 0; : bln]
+		u64 fl: s + (U16: s + 6);
+		u32 n: (U16: fl);
+		while u32 k: 0; k < n; k++;
+			if (U32: fl + 2 + 6 * (k as u64)) is 0x6B65726E
+				return true;
+			;;
+		;;
+	[end: false]
+
+	# the kern features' lookups for the script (or DFLT, dflt, latn), by index
+	[Lookups: u64 s: 0; u32 script: 0;]
+		u64 sl: s + (U16: s + 4);
+		u64 fl: s + (U16: s + 6);
+		u64 ll: s + (U16: s + 8);
+		u32 n: (U16: sl);
+		u64 chosen: 0;
+		bln found: false;
+		u32 wants: 0 0x44464C54 0x64666C74 0x6C61746E;
+		while u32 w: 0; w < 4 and not found; w++;
+			u32 want: wants:w;
+			if w is 0
+				want is script;
+			;;
+			while u32 k: 0; k < n; k++;
+				if (U32: sl + 2 + 6 * (k as u64)) is want
+					chosen is sl + (U16: sl + 6 + 6 * (k as u64));
+					found is true;
+					break;
+				;;
+			;;
+		;;
+		if not found
+			return;
+		;;
+		u32 dl: (U16: chosen);
+		if dl is 0
+			return;
+		;;
+		u64 ls: chosen + dl;
+		u32 nfeat: (U16: fl);
+		u32 nl: (U16: ll);
+		wanted_count is 0;
+		u32 req: (U16: ls + 2);
+		u32 count: (U16: ls + 4);
+		if req is not 0xFFFF
+			call Feature: fl nfeat req;
+		;;
+		while u32 k: 0; k < count; k++;
+			call Feature: fl nfeat (U16: ls + 6 + 2 * (k as u64));
+		;;
+		# the lookups, in the order of their indexes, each once, with subtables of pair adjustment
+		call Sort;
+		while u32 w: 0; w < wanted_count; w++;
+			u32 i: wanted:w;
+			if (w > 0 and wanted:(w - 1) is i) or i >= nl
+				continue;
+			;;
+			u64 lp: ll + (U16: ll + 2 + 2 * (i as u64));
+			u32 nsub: (U16: lp + 4);
+			bln any: false;
+			while u32 k: 0; k < nsub and not any; k++;
+				any is ((Sub: lp k) is not 0);
+			;;
+			if not any
+				continue;
+			;;
+			call Room;
+			lookups:lookup_count is lp;
+			flags:lookup_count is (U16: lp + 2);
+			sets:lookup_count is 0;
+			if (flags:lookup_count & 0x10) is not 0
+				sets:lookup_count is (U16: lp + 6 + 2 * (nsub as u64));
+			;;
+			lookup_count++;
+		;;
+	[end]
+
+	[Feature: u64 fl: 0; u32 nfeat: 0; u32 f: 0;]
+		if f >= nfeat
+			return;
+		;;
+		if (U32: fl + 2 + 6 * (f as u64)) is not 0x6B65726E
+			return;
+		;;
+		u64 fp: fl + (U16: fl + 6 + 6 * (f as u64));
+		u32 n: (U16: fp + 2);
+		while u32 k: 0; k < n; k++;
+			call Want: (U16: fp + 4 + 2 * (k as u64));
+		;;
+	[end]
+
+	[Want: u32 i: 0;]
+		if wanted_count >= wanted_room
+			u32 room: wanted_room * 2;
+			if room < 16
+				room is 16;
+			;;
+			ptr<u32> grown: new u32[room];
+			if grown is 0
+				return;
+			;;
+			while u32 k: 0; k < wanted_count; k++;
+				grown:k is wanted:k;
+			;;
+			if wanted is not 0
+				free wanted;
+			;;
+			wanted is grown;
+			wanted_room is room;
+		;;
+		wanted:wanted_count is i;
+		wanted_count++;
+	[end]
+
+	# the wanted lookups in order (insertion: there are few)
+	[Sort]
+		while u32 i: 1; i < wanted_count; i++;
+			u32 v: wanted:i;
+			u32 j: i;
+			while j > 0 and wanted:(j - 1) > v
+				wanted:j is wanted:(j - 1);
+				j--;
+			;;
+			wanted:j is v;
+		;;
+	[end]
+
+	[Room]
+		if lookup_count < lookup_room
+			return;
+		;;
+		u32 room: lookup_room * 2;
+		if room < 16
+			room is 16;
+		;;
+		ptr<u64> l: new u64[room];
+		ptr<u32> f: new u32[room];
+		ptr<u32> m: new u32[room];
+		while u32 k: 0; k < lookup_count; k++;
+			l:k is lookups:k;
+			f:k is flags:k;
+			m:k is sets:k;
+		;;
+		if lookups is not 0
+			free lookups;
+			free flags;
+			free sets;
+		;;
+		lookups is l;
+		flags is f;
+		sets is m;
+		lookup_room is room;
+	[end]
+
+	# a lookup's k-th subtable, if it's pair adjustment (through an extension), or 0
+	[Sub: u64 lp: 0; u32 k: 0; : u64]
+		u32 ltype: (U16: lp);
+		u64 sp: lp + (U16: lp + 6 + 2 * (k as u64));
+		if ltype is 9
+			ltype is (U16: sp + 2);
+			sp is sp + (U32: sp + 4);
+		;;
+		if ltype is 2
+			return sp;
+		;;
+	[end: 0]
+
+	# Kerning for n glyphs of one font, added to their advances and offsets (64ths of a pixel); mult is
+	# the size's HarfBuzz multiplier
+	[Apply: u32 glyphs[]; int adv[]; int off[]; u32 n: 0; i64 mult: 0;]
+		if use_gpos
+			while u32 l: 0; l < lookup_count; l++;
+				call Lookup: glyphs adv off n mult l;
+			;;
+		;;
+		elif use_kern
+			call Legacy: glyphs adv off n mult;
+		;;
+	[end]
+
+	[Lookup: u32 glyphs[]; int adv[]; int off[]; u32 n: 0; i64 mult: 0; u32 l: 0;]
+		u64 lp: lookups:l;
+		u32 flag: flags:l;
+		u32 set: sets:l;
+		u32 nsub: (U16: lp + 4);
+		u32 i: 0;
+		while i < n
+			if (Skipped: glyphs:i flag set)
+				i++;
+				continue;
+			;;
+			u32 j: i + 1;
+			while j < n and (Skipped: glyphs:j flag set)
+				j++;
+			;;
+			if j >= n
+				i++;
+				continue;
+			;;
+			bln done: false;
+			while u32 k: 0; k < nsub and not done; k++;
+				u64 sp: (Sub: lp k);
+				if sp is not 0
+					done is (Pair: sp glyphs:i glyphs:j);
+				;;
+			;;
+			if not done
+				i++;
+				continue;
+			;;
+			adv:i is adv:i + (Scaled: a1 mult);
+			off:i is off:i + (Scaled: o1 mult);
+			adv:j is adv:j + (Scaled: a2 mult);
+			off:j is off:j + (Scaled: o2 mult);
+			if second
+				i is j + 1;
+			;;
+			else
+				i is j;
+			;;
+		;;
+	[end]
+
+	[Scaled: int v: 0; i64 mult: 0; : int]
+	[end: (((v as i64) * mult + 32768) >> 16) as int]
+
+	# whether subtable sp has a pair for (g1, g2); its values into a1, o1, a2, o2 and second
+	[Pair: u64 sp: 0; u32 g1: 0; u32 g2: 0; : bln]
+		u32 fmt: (U16: sp);
+		int cov: (Coverage: (sp + (U16: sp + 2)) g1);
+		if cov < 0
+			return false;
+		;;
+		u32 vf1: (U16: sp + 4);
+		u32 vf2: (U16: sp + 6);
+		u64 len1: 2 * (Bits: vf1 & 0xFF);
+		u64 len2: 2 * (Bits: vf2 & 0xFF);
+		second is len2 > 0;
+		if fmt is 1
+			if cov as u32 >= (U16: sp + 8)
+				return false;
+			;;
+			u64 ps: sp + (U16: sp + 10 + 2 * (cov as u64));
+			u32 count: (U16: ps);
+			u64 rec: 2 + len1 + len2;
+			int lo_i: 0;
+			int hi_i: count as int - 1;
+			while lo_i <= hi_i
+				int mid: ((lo_i as u32 + hi_i as u32) / 2) as int;
+				u64 q: ps + 2 + rec * (mid as u64);
+				u32 s2: (U16: q);
+				if g2 < s2
+					hi_i is mid - 1;
+				;;
+				elif g2 > s2
+					lo_i is mid + 1;
+				;;
+				else
+					call Value: (q + 2) vf1 true;
+					call Value: (q + 2 + len1) vf2 false;
+					return true;
+				;;
+			;;
+			return false;
+		;;
+		if fmt is 2
+			u32 c1: (ClassOf: (sp + (U16: sp + 8)) g1);
+			u32 c2: (ClassOf: (sp + (U16: sp + 10)) g2);
+			u32 n1: (U16: sp + 12);
+			u32 n2: (U16: sp + 14);
+			if c1 >= n1 or c2 >= n2
+				return false;
+			;;
+			u64 q: sp + 16 + ((c1 as u64) * (n2 as u64) + (c2 as u64)) * (len1 + len2);
+			call Value: q vf1 true;
+			call Value: (q + len1) vf2 false;
+			return true;
+		;;
+	[end: false]
+
+	# a value record's XAdvance and XPlacement, into a1 and o1 (first) or a2 and o2
+	[Value: u64 p: 0; u32 fmt: 0; bln first: false;]
+		int a: 0;
+		int o: 0;
+		u64 q: p;
+		if (fmt & 1) is not 0
+			o is (I16: q);
+			q++ 2;
+		;;
+		if (fmt & 2) is not 0
+			q++ 2;
+		;;
+		if (fmt & 4) is not 0
+			a is (I16: q);
+		;;
+		if first
+			a1 is a;
+			o1 is o;
+		;;
+		else
+			a2 is a;
+			o2 is o;
+		;;
+	[end]
+
+	[Bits: u32 v: 0; : u64]
+		u64 n: 0;
+		while v is not 0
+			n++ (v & 1);
+			v is v >> 1;
+		;;
+	[end: n]
+
+	# whether a lookup with flag (and mark filtering set) skips glyph g, by GDEF
+	[Skipped: u32 g: 0; u32 flag: 0; u32 set: 0; : bln]
+		if not have_gdef
+			return false;
+		;;
+		u64 save_lo: lo;
+		u64 save_hi: hi;
+		lo is gdef_lo;
+		hi is gdef_hi;
+		bln skip: (Skips: g flag set);
+		lo is save_lo;
+		hi is save_hi;
+	[end: skip]
+
+	[Skips: u32 g: 0; u32 flag: 0; u32 set: 0; : bln]
+		u32 c: 0;
+		if glyph_classes is not 0
+			c is (ClassOf: glyph_classes g);
+		;;
+		if c is 1 and (flag & 2) is not 0
+			return true;
+		;;
+		if c is 2 and (flag & 4) is not 0
+			return true;
+		;;
+		if c is 3
+			if (flag & 8) is not 0
+				return true;
+			;;
+			if (flag & 0x10) is not 0
+				u64 p: mark_sets;
+				if p is 0 or set >= (U16: p + 2)
+					return true;
+				;;
+				u64 cov: p + (U32: p + 4 + 4 * (set as u64));
+				return (Coverage: cov g) < 0;
+			;;
+			if (flag & 0xFF00) is not 0
+				return (ClassOf: mark_classes g) is not flag >> 8;
+			;;
+		;;
+	[end: false]
+
+	# glyph g's index in the coverage table at p, or -1
+	[Coverage: u64 p: 0; u32 g: 0; : int]
+		u32 fmt: (U16: p);
+		u32 n: (U16: p + 2);
+		int lo_i: 0;
+		int hi_i: n as int - 1;
+		if fmt is 1
+			while lo_i <= hi_i
+				int mid: ((lo_i as u32 + hi_i as u32) / 2) as int;
+				u32 v: (U16: p + 4 + 2 * (mid as u64));
+				if g < v
+					hi_i is mid - 1;
+				;;
+				elif g > v
+					lo_i is mid + 1;
+				;;
+				else
+					return mid;
+				;;
+			;;
+			return -1;
+		;;
+		if fmt is 2
+			while lo_i <= hi_i
+				int mid: ((lo_i as u32 + hi_i as u32) / 2) as int;
+				u64 q: p + 4 + 6 * (mid as u64);
+				u32 first: (U16: q);
+				u32 last: (U16: q + 2);
+				if g < first
+					hi_i is mid - 1;
+				;;
+				elif g > last
+					lo_i is mid + 1;
+				;;
+				else
+					return ((U16: q + 4) + g - first) as int;
+				;;
+			;;
+		;;
+	[end: -1]
+
+	# glyph g's class in the class definition at p (0 if it has none)
+	[ClassOf: u64 p: 0; u32 g: 0; : u32]
+		if p is 0
+			return 0;
+		;;
+		u32 fmt: (U16: p);
+		if fmt is 1
+			u32 first: (U16: p + 2);
+			u32 n: (U16: p + 4);
+			if g >= first and g - first < n
+				return (U16: p + 6 + 2 * ((g - first) as u64));
+			;;
+			return 0;
+		;;
+		if fmt is 2
+			u32 n: (U16: p + 2);
+			int lo_i: 0;
+			int hi_i: n as int - 1;
+			while lo_i <= hi_i
+				int mid: ((lo_i as u32 + hi_i as u32) / 2) as int;
+				u64 q: p + 4 + 6 * (mid as u64);
+				u32 first: (U16: q);
+				u32 last: (U16: q + 2);
+				if g < first
+					hi_i is mid - 1;
+				;;
+				elif g > last
+					lo_i is mid + 1;
+				;;
+				else
+					return (U16: q + 4);
+				;;
+			;;
+		;;
+	[end: 0]
+
+	# the kern table's format 0 subtables that are horizontal and not cross-stream
+	[Legacy: u32 glyphs[]; int adv[]; int off[]; u32 n: 0; i64 mult: 0;]
+		lo is kern_lo;
+		hi is kern_hi;
+		u64 s: kern_lo;
+		if (U16: s) is not 0
+			return;
+		;;
+		u64 p: s + 4;
+		u32 tables: (U16: s + 2);
+		while u32 t: 0; t < tables; t++;
+			u32 len: (U16: p + 2);
+			u32 cov: (U16: p + 4);
+			if (cov >> 8) is 0 and (cov & 1) is not 0 and (cov & 4) is 0
+				u64 pairs: (U16: p + 6);
+				u64 room: 0;
+				if kern_hi > p + 14
+					room is (kern_hi - (p + 14)) / 6;
+				;;
+				if pairs > room
+					pairs is room;
+				;;
+				call LegacyPairs: glyphs adv off n mult p pairs;
+			;;
+			if len < 6
+				break;
+			;;
+			p++ len;
+		;;
+	[end]
+
+	[LegacyPairs: u32 glyphs[]; int adv[]; int off[]; u32 n: 0; i64 mult: 0; u64 p: 0; u64 pairs: 0;]
+		u32 i: 0;
+		while i < n
+			if (Skipped: glyphs:i 8 0)
+				i++;
+				continue;
+			;;
+			u32 j: i + 1;
+			while j < n and (Skipped: glyphs:j 8 0)
+				j++;
+			;;
+			if j >= n
+				break;
+			;;
+			u32 key: (glyphs:i << 16) | glyphs:j;
+			i64 lo_i: 0;
+			i64 hi_i: (pairs as i64) - 1;
+			int v: 0;
+			while lo_i <= hi_i
+				i64 mid: (lo_i + hi_i) / 2;
+				u64 q: p + 14 + 6 * (mid as u64);
+				u32 k: (U32: q);
+				if key < k
+					hi_i is mid - 1;
+				;;
+				elif key > k
+					lo_i is mid + 1;
+				;;
+				else
+					v is (I16: q + 4);
+					break;
+				;;
+			;;
+			if v is not 0
+				int scaled: (Scaled: v mult);
+				int k1: scaled >> 1;
+				adv:i is adv:i + k1;
+				adv:j is adv:j + (scaled - k1);
+				off:j is off:j + (scaled - k1);
+			;;
+			i is j;
+		;;
+	[end]
+
+	# ---------------------------------------------------------------- reading, within [lo, hi)
+
+	[U16: u64 p: 0; : u32]
+		if p < lo or p + 2 > hi
+			return 0;
+		;;
+		u32 q: p as u32;
+	[end: ((data:q as u32) << 8) | data:(q + 1)]
+
+	[I16: u64 p: 0; : int]
+		int v: (U16: p) as int;
+		if v >= 0x8000
+			return v - 0x10000;
+		;;
+	[end: v]
+
+	[U32: u64 p: 0; : u32]
+		if p < lo or p + 4 > hi
+			return 0;
+		;;
+		u32 q: p as u32;
+	[end: ((data:q as u32) << 24) | ((data:(q + 1) as u32) << 16) | ((data:(q + 2) as u32) << 8) | data:(q + 3)]
+}
