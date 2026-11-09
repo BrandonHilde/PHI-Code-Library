@@ -318,12 +318,11 @@ def read(d, max_pixels):
         body = d[pos + 2:pos + length]
         pos += length
 
-        if m in (0xC0, 0xC1):
+        if m in (0xC0, 0xC1, 0xC2):
             if frame is not None:
                 raise Refused('more than one frame header')
             frame = read_frame(body, max_pixels)
-        elif m == 0xC2:
-            raise Refused('progressive JPEG, which isn\'t supported yet')
+            frame.progressive = m == 0xC2
         elif m == 0xC3:
             raise Refused('lossless JPEG, which isn\'t supported')
         elif m in (0xC5, 0xC6, 0xC7, 0xDE, 0xDF):
@@ -343,7 +342,7 @@ def read(d, max_pixels):
                 raise Refused('image data before the frame header')
             pos = read_scan(d, pos, body, frame, qt, dc_tables, ac_tables, restart)
             scans += 1
-            if scans == 1 and body[0] == len(frame.comps):
+            if scans == 1 and body[0] == len(frame.comps) and not frame.progressive:
                 break                          # the image is done, as libjpeg's one pass makes it
         elif m == 0xE0:
             if len(body) >= 14 and body[:5] == b'JFIF\x00':
@@ -369,13 +368,38 @@ def read(d, max_pixels):
         else:
             ids = [c.id for c in frame.comps]
             rgb = ids == [82, 71, 66]
+    global last_smoothed
+    last_smoothed = frame.progressive and smoothing_ok(frame)
     for c in frame.comps:
         samples(c)
     return frame.width, frame.height, output(frame, rgb)
 
 
+def smoothing_ok(frame):
+    """libjpeg-turbo's smoothing_ok: whether it would smooth a progressive image's blocks (every
+    component has its table and some DC, the table's first 10 values aren't 0, and one of the first 9
+    AC coefficients of some component hasn't all come)"""
+    useful = False
+    for c in frame.comps:
+        if c.q is None:
+            return False
+        if any(c.q[ZIGZAG[k]] == 0 for k in range(10)):
+            return False
+        if c.coef_bits[0] < 0:
+            return False
+        if any(c.coef_bits[k] != 0 for k in range(1, 10)):
+            useful = True
+    return useful
+
+
 class Frame:
-    pass
+    progressive = False
+
+
+# Whether libjpeg would smooth the last image decode() made (a progressive one whose low AC
+# coefficients haven't all come: see smoothing_ok), which this doesn't do. The tests don't compare
+# such an image's pixels with libjpeg's.
+last_smoothed = False
 
 
 def read_frame(body, max_pixels):
@@ -428,6 +452,7 @@ def read_frame(body, max_pixels):
             c.rows = (c.height + 7) // 8 * 8
         c.coefs = [0] * (c.stride * c.rows)                     # 64 to a block, block by block
         c.q = None                                              # its table, from its first scan
+        c.coef_bits = [-1] * 10       # libjpeg's: the Al of the last scan of each of the first 10
     return f
 
 
@@ -511,16 +536,37 @@ def read_scan(d, pos, body, frame, qt, dc_tables, ac_tables, restart):
             if c.tq > 3 or qt[c.tq] is None:
                 raise Refused('a component whose quantization table isn\'t defined')
             c.q = qt[c.tq]
+    ss, se, ah, al = body[1 + 2 * count], body[2 + 2 * count], body[3 + 2 * count] >> 4, body[3 + 2 * count] & 15
+    if frame.progressive:
+        # libjpeg's start_pass_phuff_decoder: a DC scan is coefficient 0 alone, an AC scan a band of
+        # one component, a refinement one bit more, and Al at most 13
+        bad = se != 0 if ss == 0 else (ss > se or se > 63 or count != 1)
+        if ah and al != ah - 1:
+            bad = True
+        if al > 13:
+            bad = True
+        if bad:
+            raise Refused('a progressive scan whose band or bits JPEG doesn\'t allow')
+        for c in comps:
+            for k in range(ss, min(se, 9) + 1):
+                c.coef_bits[k] = al
     for c in comps:
-        for tables, tid, dc in ((dc_tables, c.td, True), (ac_tables, c.ta, False)):
+        kinds = ((dc_tables, c.td, True), (ac_tables, c.ta, False))
+        if frame.progressive:
+            # a DC scan needs its DC table (but a refinement none); an AC scan its AC table
+            kinds = ((kinds[0],) if ah == 0 else ()) if ss == 0 else (kinds[1],)
+        for tables, tid, dc in kinds:
             if tid > 3:
                 raise Refused('a scan using a Huffman table that isn\'t defined')
             if tables[tid] is None:
-                if tid > 1:
+                # the standard tables stand in for 0 and 1, but not in a progressive file: libjpeg's
+                # progressive decoder doesn't load them
+                if tid > 1 or frame.progressive:
                     raise Refused('a scan using a Huffman table that isn\'t defined')
                 tables[tid] = Huff(STD_DC_COUNTS[tid], STD_DC_VALUES) if dc else Huff(STD_AC_COUNTS[tid], STD_AC_VALUES[tid])
             tables[tid].build(dc)
-        c.dc, c.ac = dc_tables[c.td], ac_tables[c.ta]
+        c.dc = dc_tables[c.td] if c.td <= 3 else None
+        c.ac = ac_tables[c.ta] if c.ta <= 3 else None
 
     if count == 1:
         c = comps[0]
@@ -536,6 +582,7 @@ def read_scan(d, pos, body, frame, qt, dc_tables, ac_tables, restart):
     held = False                 # whether the marker is being held, after a resync
     short = False                # libjpeg's insufficient_data
     preds = [0] * count
+    eobrun = 0                   # a progressive AC scan's blocks left in an end-of-band run
     next_rst = 0
     to_go = restart
     for mcu in range(total):
@@ -571,10 +618,12 @@ def read_scan(d, pos, body, frame, qt, dc_tables, ac_tables, restart):
             next_rst = (next_rst + 1) & 7
             bits = Bits(data)
             preds = [0] * count
+            eobrun = 0
             to_go = restart
             if not held:
                 short = False
-        if not short:
+        # (a DC refinement goes on when the data has run out: zeros change nothing)
+        if not short or (frame.progressive and ss == 0 and ah):
             mx, my = mcu % across, mcu // across
             for ci, c in enumerate(comps):
                 if count == 1:
@@ -582,7 +631,16 @@ def read_scan(d, pos, body, frame, qt, dc_tables, ac_tables, restart):
                 else:
                     blocks = [(mx * c.h + bx, my * c.v + by) for by in range(c.v) for bx in range(c.h)]
                 for bx, by in blocks:
-                    preds[ci] = block(bits, c, preds[ci], bx, by)
+                    if not frame.progressive:
+                        preds[ci] = block(bits, c, preds[ci], bx, by)
+                    elif ss == 0 and ah == 0:
+                        preds[ci] = dc_first(bits, c, preds[ci], bx, by, al)
+                    elif ss == 0:
+                        dc_refine(bits, c, bx, by, al)
+                    elif ah == 0:
+                        eobrun = ac_first(bits, c, bx, by, ss, se, al, eobrun)
+                    else:
+                        eobrun = ac_refine(bits, c, bx, by, ss, se, al, eobrun)
             short = bits.short
         if restart:
             to_go -= 1
@@ -640,6 +698,97 @@ def block(bits, c, pred, bx, by):
         coefs[base + ZIGZAG[min(k, 63)]] = extend(bits.bits(s), s)
         k += 1
     return pred
+
+
+# ---------------------------------------------------------------- progressive scans (libjpeg's jdphuff.c)
+
+def dc_first(bits, c, pred, bx, by, al):
+    """a DC scan's first pass over a block: the DC difference, its value shifted left by al"""
+    s = bits.decode(c.dc)
+    diff = extend(bits.bits(s), s) if s else 0
+    if not -(1 << 31) <= pred + diff < 1 << 31:
+        raise Refused('a DC coefficient too big to hold')
+    pred += diff
+    c.coefs[(by * (c.stride // 8) + bx) * 64] = i16(i32(pred << al))
+    return pred
+
+
+def dc_refine(bits, c, bx, by, al):
+    """one more bit of a block's DC value"""
+    if bits.bit():
+        at = (by * (c.stride // 8) + bx) * 64
+        c.coefs[at] = i16(c.coefs[at] | (1 << al))
+
+
+def ac_first(bits, c, bx, by, ss, se, al, eobrun):
+    """an AC scan's first pass over a block, coefficients ss to se; the end-of-band run after it"""
+    if eobrun > 0:
+        return eobrun - 1                     # a block of zeros in the band
+    base = (by * (c.stride // 8) + bx) * 64
+    k = ss
+    while k <= se:
+        rs = bits.decode(c.ac)
+        r, s = rs >> 4, rs & 15
+        if s:
+            k += r
+            c.coefs[base + ZIGZAG[min(k, 63)]] = i16(extend(bits.bits(s), s) << al)
+        elif r == 15:
+            k += 15
+        else:
+            run = 1 << r
+            if r:
+                run += bits.bits(r)
+            return run - 1
+        k += 1
+    return 0
+
+
+def ac_refine(bits, c, bx, by, ss, se, al, eobrun):
+    """an AC scan's refinement of a block: a bit more of each coefficient that's already nonzero,
+    and new ones of 1 or -1 (shifted left by al); the end-of-band run after it"""
+    p1, m1 = 1 << al, -1 << al
+    coefs = c.coefs
+    base = (by * (c.stride // 8) + bx) * 64
+
+    def correct(at):
+        if bits.bit() and (coefs[at] & p1) == 0:
+            coefs[at] = i16(coefs[at] + (p1 if coefs[at] >= 0 else m1))
+
+    k = ss
+    if eobrun == 0:
+        while k <= se:
+            rs = bits.decode(c.ac)
+            r, s = rs >> 4, rs & 15
+            if s:
+                s = p1 if bits.bit() else m1     # (a size other than 1 is wrong: libjpeg only warns)
+            elif r != 15:
+                eobrun = 1 << r
+                if r:
+                    eobrun += bits.bits(r)
+                break
+            # past the coefficients already nonzero, correcting each, and r of those still zero
+            while True:
+                at = base + ZIGZAG[k]
+                if coefs[at] != 0:
+                    correct(at)
+                else:
+                    r -= 1
+                    if r < 0:
+                        break
+                k += 1
+                if k > se:
+                    break
+            if s:
+                coefs[base + ZIGZAG[min(k, 63)]] = i16(s)
+            k += 1
+    if eobrun > 0:
+        while k <= se:
+            at = base + ZIGZAG[k]
+            if coefs[at] != 0:
+                correct(at)
+            k += 1
+        eobrun -= 1
+    return eobrun
 
 
 def samples(c):

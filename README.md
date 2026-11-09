@@ -9,7 +9,7 @@ the program, so there's nothing extra to ship.
 | Library | What it does | Status |
 |---|---|---|
 | `weblib` | HTML, CSS and JavaScript: bytes in; DOM, computed styles and running scripts out | Moved here, in [libs/web](libs/web) |
-| `imagelib` | Image files in, pixels out | Reads BMP, PNG and baseline JPEG, in [libs/image](libs/image); progressive JPEG and GIF are next |
+| `imagelib` | Image files in, pixels out | Reads BMP, PNG and JPEG (baseline and progressive), in [libs/image](libs/image); GIF is next |
 | `fontlib` | Font files in; metrics and smooth glyph bitmaps out | Planned |
 | `corelib` | Checked byte reading and inflate, shared by `imagelib` and `fontlib` | Built and tested, in [libs/core](libs/core) |
 

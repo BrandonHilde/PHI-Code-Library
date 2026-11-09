@@ -1,8 +1,8 @@
 # imagelib
 
 Image files in, pixels out. Whatever the file, the pixels are 32-bit `0xAARRGGBB` with straight (not
-premultiplied) alpha, a row at a time from the top. It reads BMP, PNG and baseline JPEG so far; progressive
-JPEG and GIF are next
+premultiplied) alpha, a row at a time from the top. It reads BMP, PNG and JPEG (baseline and progressive) so
+far; GIF is next
 ([plan.md](../../plan.md#phase-3-image-library)). It uses [corelib](../core), so a program using it
 has `corelib.philib` beside `imagelib.philib`.
 
@@ -146,9 +146,17 @@ a component in no scan comes out gray, and one in two has the second's coefficie
 that takes 2 bytes a sample more while it's read. EXIF orientation isn't applied, and color profiles are
 ignored.
 
+**Progressive JPEG** (SOF2) is read as libjpeg's `jdphuff.c` reads it: DC scans first and refined, AC bands
+of one component first (with their end-of-band runs) and refined, each scan's band and bits checked as
+libjpeg checks them, every coefficient kept until the end of the file, and the same recovery from damage. A
+progressive file has no standard Huffman tables to fall back on, as in libjpeg. **Not done yet:** when a
+progressive file's scans stop before its low AC coefficients have all come (a file cut short, say), libjpeg
+smooths each block from its neighbors' DC values, and imagelib shows the blocks as they are. Such a file's
+pixels aren't compared with libjpeg's; every other is.
+
 **Refused** is only what libjpeg refuses: headers and tables that are wrong, and a file with no image in it.
-**Not done** (refused, saying so): progressive JPEG, which is next, lossless, hierarchical and arithmetic
-coding, 12-bit samples, and four components (CMYK).
+**Not done** (refused, saying so): lossless, hierarchical and arithmetic coding, 12-bit samples, and four
+components (CMYK).
 
 ## How it's checked
 

@@ -276,7 +276,7 @@ call Img.Free: image;
 | 3.1 BMP ✓ | Every header size, bit depths 1 to 32, bit fields, RLE8 and RLE4; the simplest format, to settle the API | BMP Suite's reference images, and Pillow |
 | 3.2 PNG ✓ | All color types and depths, interlacing, gamma ignored at first | PngSuite: valid images match, broken ones fail cleanly |
 | 3.3 JPEG baseline ✓ | Huffman, integer IDCT, chroma subsampling | Pillow/libjpeg within a small per-pixel tolerance, since decoders legally differ |
-| 3.4 JPEG progressive | Common on the web | The same |
+| 3.4 JPEG progressive ✓ | Common on the web | The same |
 | 3.5 GIF | LZW, transparency, and animation frames with their timing | Pillow |
 | 3.6 Scaling | Nearest and bilinear, working by rows | Pillow, within a tolerance |
 | Later | WebP, then encoders (PNG first), SVG (shares fontlib's rasterizer), AVIF only if needed | |
@@ -323,6 +323,14 @@ comes back from 477,807 fuzzed files without a crash. As the owner asked, it isn
 a damaged or cut-short file shows what libjpeg shows. A 2048 by 2048 photo takes 162 ms at 4:2:0
 (Pillow, with libjpeg-turbo's SIMD: 22 ms). Not done: progressive (3.4), CMYK, 12-bit, arithmetic
 coding, EXIF orientation.
+
+**3.4, done 2026-11-09,** in [libs/image](libs/image), tested the light way: progressive files written
+by libjpeg-turbo (Pillow's standard progression, at several sizes and subsamplings, gray, with restart
+markers, and ImageMagick's at 4:1:1), one made case for each kind of bad progression, and a few cut and
+fuzzed. The rules follow libjpeg's `jdphuff.c` step for step, and libjpeg gives the same pixels on every
+progressive file it reads, exactly; refused where it refuses. Not done: libjpeg's block smoothing of a
+progressive image whose low AC coefficients haven't all come (a file cut short), which the tests count
+and don't compare.
 
 **Done when:** milestones 3.1 to 3.6 pass, PngSuite's results are in the README, every decoder has been
 fuzzed, and a pixel bomb is refused before it allocates.

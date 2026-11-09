@@ -69,6 +69,12 @@ struct.ImgJpeg
 	u32 strides[3];         # and its plane's, padded to whole blocks (or MCUs)
 	u32 plane_rows[3];
 	bln one_pass;           # the first scan has every component: blocks go straight to samples
+	bln progressive;        # SOF2: every scan adds to the coefficients, which are made samples at the end
+	u32 scan_ss;            # the scan's band, Ss to Se, and its bits, Ah and Al
+	u32 scan_se;
+	u32 scan_ah;
+	u32 scan_al;
+	u32 eobrun;             # a progressive AC scan's blocks left in an end-of-band run
 	bln latched[3];         # whether it's had a scan, and so its quantization table
 	int comp_quant[192];    # that table, as libjpeg keeps it: 16 bits, signed
 
@@ -163,14 +169,12 @@ struct.ImgJpeg
 			u32 body_len: size - 2;
 			pos++ size;
 
-			if m is 0xC0 or m is 0xC1
+			if m is 0xC0 or m is 0xC1 or m is 0xC2
 				if have_frame
 					throw 'more than one frame header';
 				;;
 				call Frame: r body body_len limit;
-			;;
-			elif m is 0xC2
-				throw 'progressive JPEG, which isn't supported yet';
+				progressive is (m is 0xC2);
 			;;
 			elif m is 0xC3
 				throw 'lossless JPEG, which isn't supported';
@@ -200,11 +204,11 @@ struct.ImgJpeg
 				;;
 				u32 in_scan: padded:body;
 				if scans is 0
-					call Buffers: (in_scan is count);
+					call Buffers: (in_scan is count and not progressive);
 				;;
 				pos is (Scan: r (padded as u8[plen]) pos body body_len);
 				scans++;
-				if scans is 1 and in_scan is count
+				if scans is 1 and in_scan is count and not progressive
 					break;          # the image is done, as libjpeg's one pass makes it
 				;;
 			;;
@@ -595,6 +599,11 @@ struct.ImgJpeg
 			scan_dc:k is t >> 4;
 			scan_ac:k is t & 15;
 		;;
+		scan_ss is (r.U8);
+		scan_se is (r.U8);
+		u32 approx: (r.U8);
+		scan_ah is approx >> 4;
+		scan_al is approx & 15;
 		if scan_count > 1
 			u32 blocks: 0;
 			while u32 k: 0; k < scan_count; k++;
@@ -616,11 +625,37 @@ struct.ImgJpeg
 				latched:c is true;
 			;;
 		;;
+		if progressive
+			# libjpeg's start_pass_phuff_decoder: a DC scan is coefficient 0 alone, an AC scan a
+			# band of one component, a refinement one bit more, and Al at most 13
+			bln bad: false;
+			if scan_ss is 0
+				bad is (scan_se is not 0);
+			;;
+			else
+				bad is (scan_ss > scan_se or scan_se > 63 or scan_count is not 1);
+			;;
+			if scan_ah is not 0 and scan_al + 1 is not scan_ah
+				bad is true;
+			;;
+			if scan_al > 13
+				bad is true;
+			;;
+			if bad
+				throw 'a progressive scan whose band or bits JPEG doesn't allow';
+			;;
+		;;
 		while u32 k: 0; k < scan_count; k++;
-			call Table: scan_dc:k true;
-			call Table: scan_ac:k false;
+			# a progressive DC scan needs its DC table (a refinement none); an AC scan its AC table
+			if not progressive or (scan_ss is 0 and scan_ah is 0)
+				call Table: scan_dc:k true;
+			;;
+			if not progressive or scan_ss is not 0
+				call Table: scan_ac:k false;
+			;;
 			scan_ac:k is 4 + scan_ac:k;
 		;;
+		eobrun is 0;
 
 		u32 across: mcux;
 		u32 total: mcux * mcuy;
@@ -688,23 +723,25 @@ struct.ImgJpeg
 				while u32 k: 0; k < scan_count; k++;
 					preds:k is 0;
 				;;
+				eobrun is 0;
 				to_go is restart;
 				if not held
 					short is false;
 				;;
 			;;
-			if not short
+			# (a DC refinement goes on when the data has run out: zeros change nothing)
+			if not short or (progressive and scan_ss is 0 and scan_ah is not 0)
 				u32 mx: mcu % across;
 				u32 my: mcu / across;
 				while u32 si: 0; si < scan_count; si++;
 					u32 c: scan_comps:si;
 					if scan_count is 1
-						call Block: si mx my;
+						call Unit: si mx my;
 					;;
 					else
 						while u32 by: 0; by < vs:c; by++;
 							while u32 bx: 0; bx < hs:c; bx++;
-								call Block: si (mx * hs:c + bx) (my * vs:c + by);
+								call Unit: si (mx * hs:c + bx) (my * vs:c + by);
 							;;
 						;;
 					;;
@@ -735,7 +772,9 @@ struct.ImgJpeg
 			slot is 4 + t;
 		;;
 		if not huff_defined:slot
-			if t > 1
+			# the standard tables stand in for 0 and 1, but not in a progressive file: libjpeg's
+			# progressive decoder doesn't load them
+			if t > 1 or progressive
 				throw 'a scan using a Huffman table that isn't defined';
 			;;
 			u32 total: 0;
@@ -862,6 +901,178 @@ struct.ImgJpeg
 		;;
 	[end]
 
+	# one block of the scan's component si: a sequential one, or a progressive scan's part of it
+	[Unit: u32 si: 0; u32 bx: 0; u32 by: 0;]
+		if not progressive
+			call Block: si bx by;
+			return;
+		;;
+		u32 c: scan_comps:si;
+		ptr<u16> buf: coef0;
+		if c is 1
+			buf is coef1;
+		;;
+		elif c is 2
+			buf is coef2;
+		;;
+		u32 base: (by * (strides:c / 8) + bx) * 64;
+		u32 size: strides:c * plane_rows:c;
+		if scan_ss is 0 and scan_ah is 0
+			call DcFirst: (buf as u16[size]) si base;
+		;;
+		elif scan_ss is 0
+			call DcRefine: (buf as u16[size]) base;
+		;;
+		elif scan_ah is 0
+			call AcFirst: (buf as u16[size]) si base;
+		;;
+		else
+			call AcRefine: (buf as u16[size]) si base;
+		;;
+	[end]
+
+	# ---- progressive scans, as libjpeg's jdphuff.c decodes them
+
+	# a DC scan's first pass over a block: the DC difference, its value shifted left by Al
+	[DcFirst: u16 coefs[]; u32 si: 0; u32 base: 0;]
+		u32 s: (Decode: scan_dc:si);
+		int diff: 0;
+		if s > 0
+			diff is (Extend: (Take: s) s);
+		;;
+		int pred: preds:si;
+		if (diff > 0 and pred > 0x7FFFFFFF - diff) or (diff < 0 and pred < (-2147483647 - 1) - diff)
+			throw 'a DC coefficient too big to hold';
+		;;
+		preds:si is pred + diff;
+		coefs:base is ((preds:si << scan_al) & 0xFFFF) as u16;
+	[end]
+
+	# one more bit of a block's DC value
+	[DcRefine: u16 coefs[]; u32 base: 0;]
+		if (Take: 1) is 1
+			coefs:base is (coefs:base | (1 << scan_al)) as u16;
+		;;
+	[end]
+
+	# an AC scan's first pass over a block, coefficients Ss to Se; and the end-of-band run after it
+	[AcFirst: u16 coefs[]; u32 si: 0; u32 base: 0;]
+		if eobrun > 0
+			eobrun--;               # a block of zeros in the band
+			return;
+		;;
+		u32 ac: scan_ac:si;
+		u32 k: scan_ss;
+		while k <= scan_se
+			u32 rs: (Decode: ac);
+			u32 run: rs >> 4;
+			u32 s: rs & 15;
+			if s is not 0
+				k++ run;
+				u32 at_k: k;
+				if at_k > 63
+					at_k is 63;
+				;;
+				int v: (Extend: (Take: s) s);
+				coefs:(base + ImgJpegTables.zigzag:at_k) is ((v << scan_al) & 0xFFFF) as u16;
+			;;
+			elif run is 15
+				k++ 15;
+			;;
+			else
+				u32 eob: 1 << run;
+				if run is not 0
+					eob++ (Take: run);
+				;;
+				eobrun is eob - 1;
+				return;
+			;;
+			k++;
+		;;
+	[end]
+
+	# an AC scan's refinement of a block: a bit more of each coefficient that's already nonzero, and
+	# new ones of 1 or -1 (shifted left by Al); and the end-of-band run after it
+	[AcRefine: u16 coefs[]; u32 si: 0; u32 base: 0;]
+		int p1: (1 << scan_al) as int;
+		int m1: 0 - p1;
+		u32 ac: scan_ac:si;
+		u32 k: scan_ss;
+		if eobrun is 0
+			while k <= scan_se
+				u32 rs: (Decode: ac);
+				int run: (rs >> 4) as int;
+				u32 size: rs & 15;
+				int s: 0;
+				if size is not 0
+					# (a size other than 1 is wrong: libjpeg only warns)
+					s is m1;
+					if (Take: 1) is 1
+						s is p1;
+					;;
+				;;
+				elif run is not 15
+					eobrun is 1 << run;
+					if run is not 0
+						eobrun++ (Take: run as u32);
+					;;
+					break;
+				;;
+				# past the coefficients already nonzero, correcting each, and run of those still zero
+				while true
+					u32 where: base + ImgJpegTables.zigzag:k;
+					if coefs:where is not 0
+						call Correct: coefs where p1 m1;
+					;;
+					else
+						run--;
+						if run < 0
+							break;
+						;;
+					;;
+					k++;
+					if k > scan_se
+						break;
+					;;
+				;;
+				if s is not 0
+					u32 at_k: k;
+					if at_k > 63
+						at_k is 63;
+					;;
+					coefs:(base + ImgJpegTables.zigzag:at_k) is (s & 0xFFFF) as u16;
+				;;
+				k++;
+			;;
+		;;
+		if eobrun > 0
+			while k <= scan_se
+				u32 where: base + ImgJpegTables.zigzag:k;
+				if coefs:where is not 0
+					call Correct: coefs where p1 m1;
+				;;
+				k++;
+			;;
+			eobrun--;
+		;;
+	[end]
+
+	# a correction bit for a coefficient that's already nonzero: 1 makes it a bit bigger, once
+	[Correct: u16 coefs[]; u32 where: 0; int p1: 0; int m1: 0;]
+		if (Take: 1) is 1
+			int c: ((coefs:where as int) ^ 0x8000) - 0x8000;
+			if (c & p1) is 0
+				if c >= 0
+					c is c + p1;
+				;;
+				else
+					c is c + m1;
+				;;
+				coefs:where is (c & 0xFFFF) as u16;
+			;;
+		;;
+	[end]
+
 	# the next n bits, as many of them as are there and then zeros (CoreBits' Bits gives 0 for all
 	# of them once one is missing)
 	[Take: u32 n: 0; : u32]
@@ -877,7 +1088,7 @@ struct.ImgJpeg
 	[end: v as int]
 
 	# The next value in Huffman table t. A code is found in one look when it's 9 bits or fewer,
-	# and otherwise a length at a time. Bits from past the end of the data are zeros. A code that
+	# and otherwise a length where a time. Bits from past the end of the data are zeros. A code that
 	# isn't in the table takes 17 bits and is 0, as in libjpeg.
 	[Decode: u32 t: 0; : u32]
 		u32 entry: fast:(t * 512 + (bits.Peek: 9));
@@ -919,7 +1130,7 @@ struct.ImgJpeg
 	[end]
 
 	# libjpeg's integer IDCT ("islow"), as its C code works it out: coef, with the component's table
-	# at q in comp_quant, into the 8 by 8 samples at start in plane, whose rows are stride apart. In
+	# where q in comp_quant, into the 8 by 8 samples where start in plane, whose rows are stride apart. In
 	# 32 bits when no dequantized coefficient is past 1,173, which can't overflow, and otherwise in
 	# 64 bits, as libjpeg's JLONG, with the work array cut to 32 bits as its int is.
 	[Idct: u8 plane[]; u32 stride: 0; u32 start: 0; u32 q: 0;]
@@ -1105,7 +1316,7 @@ struct.ImgJpeg
 		if v < 896 return 0;
 	[end: v - 896]
 
-	# the components upsampled to full size and made pixels, a row at a time
+	# the components upsampled to full size and made pixels, a row where a time
 	[Output: bln rgb: false;]
 		image is (Img.New: width height);
 		rows is new u8[width * 3];
@@ -1162,9 +1373,9 @@ struct.ImgJpeg
 		if v > 255 return 255;
 	[end: v as u32]
 
-	# Component k's row y at full size, into dst from start: libjpeg's fancy upsampling (the triangle
-	# filter, with the edges repeated) at half width, half height or both, and otherwise each
-	# sample repeated (as also for a component 2 samples across or fewer, at half width).
+	# Component k's row y where full size, into dst from start: libjpeg's fancy upsampling (the triangle
+	# filter, with the edges repeated) where half width, half height or both, and otherwise each
+	# sample repeated (as also for a component 2 samples across or fewer, where half width).
 	[Upsample: u32 k: 0; u32 y: 0; u8 p[]; u8 dst[]; u32 start: 0;]
 		u32 hf: hmax / hs:k;
 		u32 vf: vmax / vs:k;

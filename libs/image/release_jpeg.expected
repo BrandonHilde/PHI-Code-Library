@@ -1,4 +1,4 @@
-libjpeg: 124 of 124 as the rules say (121 read, 3 refused):
+libjpeg: 134 of 134 as the rules say (132 read, 2 refused):
   pil-1x1-444-q10: 1 by 1
   pil-1x1-444-q75: 1 by 1
   pil-1x1-444-q95: 1 by 1
@@ -118,12 +118,22 @@ libjpeg: 124 of 124 as the rules say (121 read, 3 refused):
   pil-q100-444: 37 by 53
   pil-q1-420: 37 by 53
   pil-exif-and-comment: 37 by 53
-  pil-progressive: progressive JPEG, which isn't supported yet
+  pil-progressive: 37 by 53
+  pil-progressive-1x1-444: 1 by 1
+  pil-progressive-1x1-420: 1 by 1
+  pil-progressive-17x9-444: 17 by 9
+  pil-progressive-17x9-420: 17 by 9
+  pil-progressive-64x48-444: 64 by 48
+  pil-progressive-64x48-420: 64 by 48
+  pil-progressive-gray: 37 by 53
+  pil-progressive-restart: 37 by 53
+  pil-progressive-q100: 37 by 53
+  im-progressive-411: 33 by 31
   pil-cmyk: four components (CMYK), which isn't supported
   im-arithmetic: arithmetic coding, which isn't supported
   pil-100x75-q90: 100 by 75
   im-100x75-q60-420: 100 by 75
-made: 261 of 261 as the rules say (212 read, 49 refused), refused:
+made: 268 of 268 as the rules say (213 read, 55 refused), refused:
   bad-empty: not a JPEG file
   bad-not-jpeg: not a JPEG file
   bad-soi-only: no image data
@@ -132,7 +142,7 @@ made: 261 of 261 as the rules say (212 read, 49 refused), refused:
   bad-segment-past-end: no image data
   bad-jpg-marker: marker FFC8, which JPEG doesn't use here
   bad-jpgn-marker: marker FFF0, which JPEG doesn't use here
-  bad-progressive: progressive JPEG, which isn't supported yet
+  bad-progressive: a progressive scan whose band or bits JPEG doesn't allow
   bad-lossless: lossless JPEG, which isn't supported
   bad-hierarchical: hierarchical JPEG, which isn't supported
   bad-arithmetic: arithmetic coding, which isn't supported
@@ -170,9 +180,15 @@ made: 261 of 261 as the rules say (212 read, 49 refused), refused:
   bad-sos-component-twice: a component twice in one scan
   bad-sos-table-undefined: a scan using a Huffman table that isn't defined
   bad-sos-before-sof: image data before the frame header
+  bad-progressive-dc-band: a progressive scan whose band or bits JPEG doesn't allow
+  bad-progressive-ss-past-se: a progressive scan whose band or bits JPEG doesn't allow
+  bad-progressive-se-past-63: a progressive scan whose band or bits JPEG doesn't allow
+  bad-progressive-refine-not-one-bit: a progressive scan whose band or bits JPEG doesn't allow
+  bad-progressive-al-14: a progressive scan whose band or bits JPEG doesn't allow
+  bad-progressive-ac-of-three: a progressive scan whose band or bits JPEG doesn't allow
   bad-quant-table-undefined: a component whose quantization table isn't defined
   limit-over: 10 by 10 is more than the limit of 99 pixels
   limit-default-over: 65535 by 65535 is more than the limit of 16777216 pixels
-cut: 3050 of 3050 as the rules say (894 read, 2156 refused)
-fuzz: 4000 of 4000 as the rules say (2229 read, 1771 refused)
+cut: 3424 of 3424 as the rules say (1026 read, 2398 refused)
+fuzz: 4000 of 4000 as the rules say (2186 read, 1814 refused)
 done

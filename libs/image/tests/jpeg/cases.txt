@@ -55,11 +55,21 @@ libjpeg pil-rgb                                     3662 bytes  ok, 37 by 53
 libjpeg pil-q100-444                                7030 bytes  ok, 37 by 53
 libjpeg pil-q1-420                                   689 bytes  ok, 37 by 53
 libjpeg pil-exif-and-comment                        1339 bytes  ok, 37 by 53
-libjpeg pil-progressive                             1196 bytes  refused: progressive JPEG, which isn't supported yet
+libjpeg pil-progressive                             1196 bytes  ok, 37 by 53
+libjpeg pil-progressive-1x1-444                      518 bytes  ok, 1 by 1
+libjpeg pil-progressive-1x1-420                      521 bytes  ok, 1 by 1
+libjpeg pil-progressive-17x9-444                     688 bytes  ok, 17 by 9
+libjpeg pil-progressive-17x9-420                     633 bytes  ok, 17 by 9
+libjpeg pil-progressive-64x48-444                   1902 bytes  ok, 64 by 48
+libjpeg pil-progressive-64x48-420                   1357 bytes  ok, 64 by 48
+libjpeg pil-progressive-gray                         894 bytes  ok, 37 by 53
+libjpeg pil-progressive-restart                     1439 bytes  ok, 37 by 53
+libjpeg pil-progressive-q100                        5708 bytes  ok, 37 by 53
+libjpeg im-progressive-411                          1300 bytes  ok, 33 by 31
 libjpeg pil-cmyk                                    2457 bytes  refused: four components (CMYK), which isn't supported
-libjpeg im-arithmetic                                522 bytes  refused: arithmetic coding, which isn't supported
-libjpeg pil-100x75-q90                              4947 bytes  ok, 100 by 75
-libjpeg im-100x75-q60-420                           1794 bytes  ok, 100 by 75
+libjpeg im-arithmetic                                517 bytes  refused: arithmetic coding, which isn't supported
+libjpeg pil-100x75-q90                              4966 bytes  ok, 100 by 75
+libjpeg im-100x75-q60-420                           1773 bytes  ok, 100 by 75
 made  444-1x1                                      268 bytes  ok, 1 by 1
 made  444-17x13                                    603 bytes  ok, 17 by 13
 made  444-33x31                                   1447 bytes  ok, 33 by 31
@@ -182,7 +192,7 @@ made  bad-segment-past-end                           9 bytes  refused: no image 
 made  bad-dnl                                      414 bytes  ok, 13 by 11
 made  bad-jpg-marker                               412 bytes  refused: marker FFC8, which JPEG doesn't use here
 made  bad-jpgn-marker                              415 bytes  refused: marker FFF0, which JPEG doesn't use here
-made  bad-progressive                              402 bytes  refused: progressive JPEG, which isn't supported yet
+made  bad-progressive                              402 bytes  refused: a progressive scan whose band or bits JPEG doesn't allow
 made  bad-lossless                                 402 bytes  refused: lossless JPEG, which isn't supported
 made  bad-hierarchical                             402 bytes  refused: hierarchical JPEG, which isn't supported
 made  bad-arithmetic                               402 bytes  refused: arithmetic coding, which isn't supported
@@ -225,6 +235,13 @@ made  bad-sos-ss                                   402 bytes  ok, 13 by 11
 made  bad-sos-se                                   402 bytes  ok, 13 by 11
 made  bad-sos-approximation                        402 bytes  ok, 13 by 11
 made  bad-sos-before-sof                           441 bytes  refused: image data before the frame header
+made  bad-progressive-dc-band                      519 bytes  refused: a progressive scan whose band or bits JPEG doesn't allow
+made  bad-progressive-ss-past-se                   519 bytes  refused: a progressive scan whose band or bits JPEG doesn't allow
+made  bad-progressive-se-past-63                   519 bytes  refused: a progressive scan whose band or bits JPEG doesn't allow
+made  bad-progressive-refine-not-one-bit           519 bytes  refused: a progressive scan whose band or bits JPEG doesn't allow
+made  bad-progressive-al-14                        519 bytes  refused: a progressive scan whose band or bits JPEG doesn't allow
+made  bad-progressive-ac-of-three                  519 bytes  refused: a progressive scan whose band or bits JPEG doesn't allow
+made  progressive-scans-left-out                   295 bytes  ok, 16 by 16
 made  bad-component-left-out                       394 bytes  ok, 13 by 11
 made  bad-component-in-two-scans                   503 bytes  ok, 13 by 11
 made  bad-quant-table-undefined                    388 bytes  refused: a component whose quantization table isn't defined
@@ -245,40 +262,39 @@ made  limit-default-over                           396 bytes  refused: 65535 by 
 made  bomb-claims-big                              388 bytes  ok, 4096 by 4096
 cut   pil-17x9-420-q75                            1 ok,    6 refused
 cut   scans-each-420                              3 ok,    4 refused
-fuzz  low-luma-1x1                                0 ok,    1 refused
-fuzz  scans-each-420                              0 ok,    1 refused
-fuzz  scans-backwards-444                         2 ok,    0 refused
-fuzz  quality-50                                  1 ok,    1 refused
-fuzz  mixed-33x31                                 0 ok,    1 refused
-fuzz  marker-app1                                 1 ok,    0 refused
-fuzz  14-1x1                                      1 ok,    0 refused
-fuzz  scans-each-mixed                            1 ok,    0 refused
+cut   pil-progressive                             2 ok,    5 refused
+fuzz  14-1x1                                      0 ok,    1 refused
+fuzz  gray-16x8-1x1                               0 ok,    1 refused
+fuzz  gray-7x9-4x1                                0 ok,    2 refused
+fuzz  restart-3-420                               2 ok,    0 refused
+fuzz  311-33x31                                   0 ok,    1 refused
+fuzz  no-markers-ids-rgb                          0 ok,    1 refused
+fuzz  410-1x1                                     1 ok,    0 refused
+fuzz  scans-each-444                              1 ok,    0 refused
 fuzz  pil-1x1-422-q95                             0 ok,    1 refused
 fuzz  pil-17x9-420-q95                            0 ok,    1 refused
-fuzz  sof1                                        0 ok,    1 refused
-fuzz  im-1x1-4x1                                  1 ok,    0 refused
-fuzz  gray-1x1-4x1                                0 ok,    1 refused
-fuzz  422-17x13                                   1 ok,    0 refused
+fuzz  bad-restart-missing                         0 ok,    1 refused
+fuzz  pil-progressive-17x9-420                    1 ok,    0 refused
 fuzz  im-17x9-1x1-2x2-2x2                         0 ok,    1 refused
 fuzz  pil-1x1-444-q10                             1 ok,    0 refused
-fuzz  bad-garbage-between                         1 ok,    0 refused
-fuzz  crossed-17x13                               1 ok,    0 refused
-fuzz  gray-7x9-1x1                                0 ok,    1 refused
-fuzz  low-luma-33x31                              1 ok,    0 refused
-fuzz  bad-dnl                                     0 ok,    1 refused
-fuzz  adobe-0                                     1 ok,    0 refused
-fuzz  adobe-1                                     1 ok,    0 refused
-fuzz  bad-no-dht                                  1 ok,    0 refused
-fuzz  all-21-17x13                                1 ok,    0 refused
-fuzz  scans-each-444                              1 ok,    0 refused
-fuzz  pil-17x9-420-q75                            1 ok,    0 refused
-fuzz  440-17x13                                   0 ok,    1 refused
-fuzz  gray-16x8-1x1                               1 ok,    0 refused
-fuzz  gray-7x9-4x1                                1 ok,    1 refused
-fuzz  444-1x1                                     1 ok,    0 refused
-fuzz  im-33x31-4x1                                0 ok,    1 refused
-fuzz  gray-7x9-2x2                                1 ok,    0 refused
-fuzz  pil-33x31-optimized                         0 ok,    1 refused
+fuzz  marker-app1                                 1 ok,    0 refused
+fuzz  321-17x13                                   1 ok,    0 refused
+fuzz  bad-restart-extra                           2 ok,    0 refused
+fuzz  pil-1x1-422-q75                             0 ok,    1 refused
+fuzz  14-33x31                                    1 ok,    0 refused
 fuzz  marker-fill-bytes                           0 ok,    1 refused
-fuzz  im-17x9-4x2                                 0 ok,    1 refused
-fuzz  jfif-and-adobe-0                            1 ok,    0 refused
+fuzz  tables-shared                               1 ok,    1 refused
+fuzz  411-17x13                                   1 ok,    0 refused
+fuzz  tables-redefined-between-scans              0 ok,    1 refused
+fuzz  mixed-1x1                                   1 ok,    0 refused
+fuzz  im-17x9-4x2                                 1 ok,    0 refused
+fuzz  gray-7x9-1x1                                1 ok,    0 refused
+fuzz  pil-17x9-420-q75                            1 ok,    0 refused
+fuzz  pil-progressive-restart                     1 ok,    0 refused
+fuzz  low-luma-33x31                              1 ok,    0 refused
+fuzz  low-luma-17x13                              1 ok,    1 refused
+fuzz  pil-progressive                             1 ok,    0 refused
+fuzz  im-33x31-4x1                                0 ok,    1 refused
+fuzz  low-luma-1x1                                1 ok,    0 refused
+fuzz  pil-33x31-optimized                         0 ok,    1 refused
+fuzz  adobe-2                                     1 ok,    0 refused

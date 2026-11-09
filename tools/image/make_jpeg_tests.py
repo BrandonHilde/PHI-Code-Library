@@ -42,6 +42,7 @@ os.environ['JSIMD_FORCENONE'] = '1'
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import jpeg_reference  # noqa: E402
 from jpeg_reference import decode, MAX_PIXELS, ZIGZAG  # noqa: E402
 from cases import Cases as CaseFile, as_rgba, run_magick  # noqa: E402
 
@@ -494,7 +495,15 @@ def libjpeg_cases():
     pil('pil-q100-444', a, quality=100, subsampling=0)
     pil('pil-q1-420', a, quality=1, subsampling=2)
     pil('pil-exif-and-comment', a, exif=b'Exif\x00\x00MM\x00\x2a\x00\x00\x00\x08\x00\x00', comment=b'hello')
-    pil('pil-progressive', a, 'unsupported', progressive=True)
+    # progressive: libjpeg's own progression (DC first and refined, AC bands first and refined)
+    pil('pil-progressive', a, progressive=True)
+    for w, h in ((1, 1), (17, 9), (64, 48)):
+        for sub, sname in ((0, '444'), (2, '420')):
+            pil('pil-progressive-%dx%d-%s' % (w, h, sname), picture(w, h), progressive=True, subsampling=sub)
+    pil('pil-progressive-gray', a[:, :, 0], progressive=True)
+    pil('pil-progressive-restart', a, progressive=True, restart_marker_blocks=2)
+    pil('pil-progressive-q100', a, progressive=True, quality=100, subsampling=0)
+    im('im-progressive-411', picture(33, 31), '-interlace', 'JPEG', '-sampling-factor', '4x1')
     pil('pil-cmyk', a, 'unsupported', cmyk=True)
     im('im-arithmetic', picture(16, 16), '-define', 'jpeg:arithmetic-coding=true')
     cases[-1] = cases[-1][:3] + ('unsupported',)
@@ -675,6 +684,33 @@ def made_cases():
     add('bad-sos-se', scan(sos[:-3] + b'\x00\x05\x00'))
     add('bad-sos-approximation', scan(sos[:-3] + b'\x00\x3f\x01'))
     add('bad-sos-before-sof', b'\xff\xd8' + base['scans'][0][1] + base['sof'] + good[2:])
+    # wrong: a progressive scan's band or bits, each scan header of libjpeg's own progression
+    # changed one way
+    import numpy as np
+    from PIL import Image
+    b = io.BytesIO()
+    Image.fromarray(np.full((16, 16, 3), 100, np.uint8)).save(b, 'JPEG', progressive=True)
+    prog = b.getvalue()
+    soses = [i for i in range(len(prog) - 1) if prog[i] == 0xFF and prog[i + 1] == 0xDA]
+
+    def progression(k, ss=None, se=None, a=None):
+        at = soses[k]
+        n = prog[at + 4]
+        tail = at + 5 + 2 * n
+        out = bytearray(prog)
+        for i, v in ((tail, ss), (tail + 1, se), (tail + 2, a)):
+            if v is not None:
+                out[i] = v
+        return bytes(out)
+    first_ac = next(k for k in range(len(soses)) if prog[soses[k] + 5 + 2 * prog[soses[k] + 4]] > 0)
+    add('bad-progressive-dc-band', progression(0, se=5))
+    add('bad-progressive-ss-past-se', progression(first_ac, ss=10, se=5))
+    add('bad-progressive-se-past-63', progression(first_ac, se=64))
+    add('bad-progressive-refine-not-one-bit', progression(first_ac, a=0x20))
+    add('bad-progressive-al-14', progression(0, a=0x0E))
+    add('bad-progressive-ac-of-three', progression(0, ss=1, se=5))
+    add('progressive-scans-left-out', prog[:soses[2]] + b'\xff\xd9')
+
     sep = jpeg(13, 11, comps_of('420'), 306, scans=[[0], [1], [2]], parts=True)
     add('bad-component-left-out', join(dict(sep, scans=sep['scans'][:2])))
     add('bad-component-in-two-scans', join(dict(sep, scans=sep['scans'] + [sep['scans'][0]])))
@@ -746,6 +782,10 @@ def check(cases):
            'refuses where the rules read': []}
     for name, data, max_pixels, rule in cases:
         ok, result = decode(data, max_pixels or MAX_PIXELS)
+        if ok and jpeg_reference.last_smoothed:
+            counts['libjpeg smooths it, which isn\'t done, so not compared'] = \
+                counts.get('libjpeg smooths it, which isn\'t done, so not compared', 0) + 1
+            continue
         if ok and result[0] * result[1] > BIGGEST_CHECKED and rule == 'auto':
             counts['more than a million pixels, so not compared'] = counts.get('more than a million pixels, so not compared', 0) + 1
             continue
@@ -852,7 +892,7 @@ def main():
             index[name] = cases.add(group, 1, name, data, max_pixels)
     # cut short: every length near the start, and then every 7th, and near the end
     for name in (('pil-17x9-420-q75', 'pil-33x31-444-q95', 'pil-restart-every-3-blocks', 'pil-8x8-gray',
-                 '420-17x13', 'scans-each-420', 'restart-3-scans', 'dqt-16-bit', 'tables-redefined-between-scans') if RELEASE else ('pil-17x9-420-q75', 'scans-each-420')):
+                 '420-17x13', 'scans-each-420', 'restart-3-scans', 'dqt-16-bit', 'tables-redefined-between-scans', 'pil-progressive') if RELEASE else ('pil-17x9-420-q75', 'scans-each-420', 'pil-progressive')):
         source = index[name]
         data = cases.list[source][5]
         for at in cut_lengths(len(data), lambda at: 1 if at < 200 or len(data) - at <= 40 else 7):
