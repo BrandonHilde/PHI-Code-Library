@@ -1,0 +1,48 @@
+good: 160 of 160 inflate as zlib does, byte for byte
+bad: 43 of 43 refused:
+  zeros-limit-one-short: it inflates to more than the limit of 69999 bytes
+  bomb-40mb: it inflates to more than the limit of 1048576 bytes
+  block-type-3: block type 3, which DEFLATE doesn't have
+  stored-bad-check: a stored block's length doesn't match its check
+  stored-cut-short: the data ends inside a stored block
+  fixed-length-code-286: length code 286, which DEFLATE doesn't have
+  fixed-length-code-287: length code 287, which DEFLATE doesn't have
+  fixed-distance-code-30: distance code 30, which DEFLATE doesn't have
+  fixed-distance-code-31: distance code 31, which DEFLATE doesn't have
+  distance-before-start: a match from 2 back, before the start of the output
+  match-first: a match from 1 back, before the start of the output
+  no-end-of-block: the data ends before its last block
+  no-final-block: the data ends before its last block
+  empty-input: the data ends before its last block
+  litlen-oversubscribed: a Huffman code with more codes than there's room for
+  litlen-incomplete: an incomplete Huffman code
+  distance-oversubscribed: a Huffman code with more codes than there's room for
+  distance-incomplete: an incomplete Huffman code
+  missing-end-of-block: a block with no code for its end
+  code-lengths-incomplete: an incomplete Huffman code
+  code-lengths-oversubscribed: a Huffman code with more codes than there's room for
+  repeat-with-nothing-before: a code length repeated with nothing before it
+  repeat-past-the-end: a code length repeated past the end of the lengths
+  too-many-length-codes: a block with more length or distance codes than DEFLATE has
+  too-many-distance-codes: a block with more length or distance codes than DEFLATE has
+  zlib-bad-header-check: the zlib header's check doesn't add up
+  zlib-method-7: compression method 7, where zlib has only 8 (DEFLATE)
+  zlib-window-too-big: a window of more than 32 KB in the zlib header
+  zlib-preset-dictionary: a preset dictionary, which isn't supported
+  zlib-bad-adler: the Adler-32 check doesn't match the data
+  zlib-no-adler: the data ends before the Adler-32 check at its end
+  zlib-one-byte: too short for a zlib header
+  gzip-bad-magic: not gzip data: it doesn't start with 1F 8B
+  gzip-method-7: compression method 7, where gzip has only 8 (DEFLATE)
+  gzip-reserved-flag: gzip flags that are reserved
+  gzip-bad-crc: the gzip CRC doesn't match the data
+  gzip-bad-size: the size at the end of the gzip data doesn't match it
+  gzip-no-trailer: the data ends before the CRC and size at the end of gzip data
+  gzip-name-unended: the data ends in the gzip header
+  gzip-extra-too-long: the data ends in the gzip header
+  gzip-bad-header-crc: the gzip header's CRC doesn't match it
+  gzip-header-only: the data ends before its last block
+  gzip-second-member-broken: the data ends before the CRC and size at the end of gzip data
+fuzz: 600 of 600 agree with zlib (230 good, 370 bad)
+cuts: 3513 of 3513 refused
+done

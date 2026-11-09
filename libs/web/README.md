@@ -58,11 +58,16 @@ A program with `weblib.philib` beside it says `use weblib;` and needs none of th
 From the repo's root:
 
 ```
-.\build.ps1 web -Test -Timeout 600                  # the 19 test programs, and the compiled test in tests/use
+.\build.ps1 web -Test                               # the everyday tests: 15 programs, and the compiled test in tests/use
+.\build.ps1 web -Test -Release -Timeout 600         # and the release ones too: release_css_perf, release_html_perf,
+                                                    # release_js_bench and release_js_limits (speed and the edges)
 python tools/web/fetch_test262.py                   # test262, once (it isn't in git)
 python tools/web/js_test262.py language --depth 2   # after building test_js262 (its docstring says how)
 ```
 
+As [the conventions](../../docs/conventions.md#tests) say, during development the tests are light, and the
+full suite waits for release: the four that check speed and the edges of the stack and heap run only with
+`-Release` (2026-11-09; the everyday run takes about 3 minutes, nearly all of it building the programs).
 All 19 test programs pass as `windows` and `windows64` programs (2026-11-06). As Linux programs
 (2026-11-07, their first run), all pass on `linux` and `linux64`, once PHI gave 32-bit Linux
 programs the same 128 MB default heap limit as the other systems (see

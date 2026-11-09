@@ -44,5 +44,5 @@ bad: 43 of 43 refused:
   gzip-header-only: the data ends before its last block
   gzip-second-member-broken: the data ends before the CRC and size at the end of gzip data
 fuzz: 600 of 600 agree with zlib (230 good, 370 bad)
-cuts: 3513 of 3513 refused
+cuts: 42 of 42 refused
 done

@@ -1,0 +1,131 @@
+# corelib's ZlibUpTo against zlib, for test_inflate_upto (a few cases a stream, every day) and
+# release_inflate_upto (the full set, for release).
+# corelib's ZlibUpTo against zlib. tests/inflate/upto.bin (made by tools/core/make_inflate_tests.py)
+# holds, for good zlib streams from cases.bin cut at many lengths, and whole with limits below, at
+# and past their size, and for the bad and fuzzed ones, what zlib gives of each as far as it goes:
+# the bytes (by length and CRC-32), whether there was more past the limit, or that the stream is
+# damaged before the limit. ZlibUpTo must give the same on every one.
+# This is test code, which corelib.phi doesn't use, so it's no part of the library.
+use corelib;
+use data.crc32;
+
+phi.CoreTestUpTo:Library
+{
+
+	# the cases in upto_path
+	[Run: str upto_path;]
+
+		# where each case's stream is in cases.bin
+		u32 cases_size: 0;
+		ptr<u8> cases_bytes: (Load: 'tests/inflate/cases.bin' addr cases_size);
+		CoreReader r;
+		call r.Start: cases_bytes cases_size;
+		u32 count: (r.U32LE);
+		if count > 4096
+			log 'cases.bin is damaged\n';
+			exit 1;
+		;;
+		ptr<u32> stream_at: new u32[count];
+		ptr<u32> stream_len: new u32[count];
+		while u32 i: 0; i < count; i++;
+			call r.Skip: 2;
+			call r.Skip: (r.U8);
+			call r.Skip: 4;
+			stream_len:i is (r.U32LE);
+			stream_at:i is r.pos;
+			call r.Skip: stream_len:i;
+			call r.Skip: 17;
+		;;
+		if r.failed
+			log 'cases.bin is cut short\n';
+			exit 1;
+		;;
+
+		u32 upto_size: 0;
+		ptr<u8> upto_bytes: (Load: upto_path addr upto_size);
+		CoreReader u;
+		call u.Start: upto_bytes upto_size;
+		u32 n: (u.U32LE);
+		u32 right: 0;
+		u32 whole: 0;
+		u32 short: 0;
+		u32 more: 0;
+		u32 damaged: 0;
+		while u32 k: 0; k < n; k++;
+			u32 which: (u.U32LE);
+			u32 cut: (u.U32LE);
+			u32 limit: (u.U32LE);
+			bln want_ok: ((u.U8) is 1);
+			u32 want_len: (u.U32LE);
+			u32 want_crc: (u.U32LE);
+			bln want_more: ((u.U8) is 1);
+			if u.failed or which >= count or cut > stream_len:which
+				log upto_path ' is damaged\n';
+				exit 1;
+			;;
+			u32 got_len: 0;
+			ptr<u8> got: (CoreInflate.ZlibUpTo: (cases_bytes + stream_at:which) cut limit addr got_len);
+			str wrong: '';
+			if want_ok and got is 0
+				wrong is 'zlib gives ' want_len ' bytes, but corelib says: ' CoreInflate.error;
+			;;
+			elif not want_ok and got is not 0
+				wrong is 'zlib finds it damaged, but corelib gives ' got_len ' bytes';
+			;;
+			elif want_ok
+				if got_len is not want_len or (Crc32.Of: got got_len) is not want_crc
+					wrong is 'corelib gives ' got_len ' bytes, where zlib gives ' want_len;
+				;;
+				elif CoreInflate.more is not want_more
+					wrong is 'corelib says more is ' CoreInflate.more ', where zlib says ' want_more;
+				;;
+			;;
+			if wrong.len > 0
+				log 'WRONG case ' which ' to ' cut ' limit ' limit ': ' wrong '\n';
+			;;
+			else
+				right++;
+				if not want_ok
+					damaged++;
+				;;
+				elif want_more
+					more++;
+				;;
+				elif want_len is limit
+					whole++;
+				;;
+				else
+					short++;
+				;;
+			;;
+			if got is not 0
+				free got;
+			;;
+		;;
+		if u.failed or u.pos is not upto_size
+			log upto_path ' is damaged\n';
+			exit 1;
+		;;
+		log right ' of ' n ' as zlib says: ' whole ' up to the limit exactly, ' more ' with more past it, ' short ' shorter (the data ends first), ' damaged ' damaged\n';
+		log 'done\n';
+		exit 0;
+	[end]
+
+	[Load: str path; ptr<u32> size_out: 0; : ptr<u8>]
+		int size: (OS.FileSize: path);
+		if size < 0
+			log 'cannot read ' path '\n';
+			exit 1;
+		;;
+		ptr<u8> buffer: new u8[size as u32 + 1];
+		if buffer is 0
+			log 'out of memory reading ' path '\n';
+			exit 1;
+		;;
+		if (OS.ReadFile: path buffer size) is not size
+			log 'short read of ' path '\n';
+			exit 1;
+		;;
+		size_out:0 is size as u32;
+	[end: buffer]
+}

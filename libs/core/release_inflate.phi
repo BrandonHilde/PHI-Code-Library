@@ -1,0 +1,9 @@
+# corelib's inflate against zlib, for release: every case, and good streams cut at every length near their ends. inflatecases.phi does it.
+use corelib;
+use inflatecases;
+
+phi.ReleaseInflate:Program
+{
+	call CoreLib.Start;
+	call CoreTestInflate.Run: true;
+}

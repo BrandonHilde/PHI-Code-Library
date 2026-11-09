@@ -1,9 +1,9 @@
 # 2000 rules on a 5000-element document. It prints what's checkable; run with the word `time` after
-# -- to see how long each step took (`phi run test_css_perf.phi --target windows64 -- time`).
+# -- to see how long each step took (`phi run release_css_perf.phi --target windows64 -- time`).
 use weblib;
 use css.css;
 
-phi.TestCssPerf:Program
+phi.ReleaseCssPerf:Program
 {
 	call Weblib.Start: 900000;
 	call Css.Start;

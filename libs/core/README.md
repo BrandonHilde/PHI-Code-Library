@@ -63,14 +63,16 @@ From the repo's root:
 
 ```
 pwsh ./build.ps1 core -Test                       # (or .\build.ps1 core -Test on Windows)
-python3 -I tools/core/make_inflate_tests.py       # remakes tests/inflate/ (it's committed)
+python3 -I tools/core/make_inflate_tests.py       # remakes tests/inflate/ (it's committed);
+                                                  # --release, upto-release.bin too
+pwsh ./build.ps1 core -Test -Release              # the release tests too
 ```
 
 | Test | What it proves |
 |---|---|
 | `test_reader` | `CoreReader`, `CoreBits` and `CoreAdler`, on values worked out by hand and with Python |
-| `test_inflate` | Inflate against zlib, on the cases in [tests/inflate](tests/inflate) (listed in `cases.txt`), and every good stream cut short |
-| `test_inflate_upto` | `ZlibUpTo` against zlib, on the cases in `upto.bin`: every good zlib stream cut at many lengths, and whole with limits below, at and past its size, and the bad and fuzzed zlib streams. Each must give what zlib gives of it as far as it goes, by length and CRC-32, and say whether there's more past the limit, or be damaged where zlib finds it damaged |
+| `test_inflate`, `release_inflate` | Inflate against zlib, on the cases in [tests/inflate](tests/inflate) (listed in `cases.txt`), and six good streams cut short: every day at a few lengths each, and for release at every length near their ends and every 13th between (`inflatecases.phi` does both) |
+| `test_inflate_upto`, `release_inflate_upto` | `ZlibUpTo` against zlib, on the cases in `upto.bin` every day (each good zlib stream cut at 2 lengths, and whole with 3 limits; and the bad zlib streams) and `upto-release.bin` for release (cut at many lengths, and 6 limits). Each must give what zlib gives of it as far as it goes, by length and CRC-32, and say whether there's more past the limit, or be damaged where zlib finds it damaged (`uptocases.phi` does both) |
 | `release_inflate_fuzz` (release tier) | 100,000 random changes to good streams, every value of each of the first 48 bytes of one stream in each format, and noise. All of them must come back, with a result or a failure |
 | `tests/use/test_corelib` | The compiled `corelib.philib`, on its own |
 

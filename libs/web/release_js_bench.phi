@@ -1,12 +1,12 @@
 # Benchmarks, with `now()` for timing. phi test only checks it runs, on tiny sizes: the numbers mean nothing
 # in an .expected file.
 #
-#   test_js_bench           a smoke test
-#   test_js_bench run       the real sizes: prints how fast each is
+#   release_js_bench           a smoke test
+#   release_js_bench run       the real sizes: prints how fast each is
 
 use js.js;
 
-phi.TestJsBench:Program
+phi.ReleaseJsBench:Program
 {
 	call Js.Start: 900000;
 	ptr<JsRuntime> rt: (Js.New);

@@ -3,12 +3,12 @@
 # times, which is how to see the growth; the expected output only has what doesn't vary. (If a shape
 # went quadratic this test would run out of phi test's time.)
 #
-#   phi test . -f test_html_perf --target windows64
-#   phi run test_html_perf.phi --target windows64 -- -v
+#   phi test . -f release_html_perf --target windows64
+#   phi run release_html_perf.phi --target windows64 -- -v
 use weblib;
 use html.parser;
 
-phi.TestHtmlPerf:Program
+phi.ReleaseHtmlPerf:Program
 {
 	bln verbose: false;
 	WlBuf input;

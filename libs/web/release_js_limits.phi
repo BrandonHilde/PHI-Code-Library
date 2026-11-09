@@ -1,14 +1,14 @@
 # What happens at the edges, at both stack budgets: recursion in JS, source nested too deep, data
 # deeper than any stack in the collector and in ropes.
 #
-#   test_js_limits          as phi test runs it
-#   test_js_limits depth    how deeply each form of source can nest, at 48 KB and at 900 KB
+#   release_js_limits          as phi test runs it
+#   release_js_limits depth    how deeply each form of source can nest, at 48 KB and at 900 KB
 #
 # takes up to 300 seconds
 
 use js.js;
 
-phi.TestJsLimits:Program
+phi.ReleaseJsLimits:Program
 {
 	call Js.Start: 48000;
 	ptr<u8> arg: (OS.Arguments);

@@ -1,0 +1,9 @@
+# corelib's ZlibUpTo against zlib, for release: the full set. uptocases.phi does it.
+use corelib;
+use uptocases;
+
+phi.ReleaseInflateUpTo:Program
+{
+	call CoreLib.Start;
+	call CoreTestUpTo.Run: 'tests/inflate/upto-release.bin';
+}

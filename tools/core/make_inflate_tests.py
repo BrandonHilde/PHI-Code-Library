@@ -8,8 +8,9 @@ Writes libs/core/tests/inflate/:
     sources.bin    the uncompressed data the good streams were made from
     cases.bin      every case: its stream, and what zlib says it inflates to (or that it's bad)
     cases.txt      the same cases, readable: one a line
-    upto.bin       cases for ZlibUpTo: good zlib streams cut at many lengths, and with limits below
-                   their size, and what zlib gives of each, as far as it goes
+    upto.bin       cases for ZlibUpTo, every day: good zlib streams cut at a few lengths, and with
+                   limits below and at their size, and what zlib gives of each, as far as it goes
+    upto-release.bin  the same at many lengths and limits, for release (with --release)
 
 Three groups of cases:
 
@@ -385,6 +386,10 @@ def gzip_member(data, name=None, comment=None, extra=None, header_crc=False, bad
 # ---------------------------------------------------------------- the cases
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--release', action='store_true', help='make upto-release.bin too')
+    release = ap.parse_args().release
     rng = random.Random(20261107)
     sources = make_sources(rng)
     names = list(sources)
@@ -534,31 +539,39 @@ def main():
 
     # ZlibUpTo: every good zlib stream cut at lengths through it, and whole with limits below,
     # at and past its size; and the fuzz and bad zlib streams with a limit past their size
-    upto = []
-    for i, (group, fmt, name, limit, data, source) in enumerate(cases):
-        if fmt != ZLIB:
+    for filename, full in (('upto.bin', False), ('upto-release.bin', True)):
+        if full and not release:
             continue
-        size = len(zlib_verdict(data, fmt)[1]) if group == GOOD else 0
-        if group == GOOD:
-            cuts = sorted(set([0, 1, 2, 3, len(data) - 4, len(data) - 1] + [len(data) * k // 17 for k in range(1, 17)]))
-            for cut in cuts:
-                if 0 <= cut < len(data):
-                    upto.append((i, cut, max(size, 1)))
-            for most in sorted(set([1, 2, size // 3, size - 1, size, size + 1])):
-                if most > 0:
-                    upto.append((i, len(data), most))
-        else:
-            upto.append((i, len(data), 1 << 20))
-    with open(os.path.join(OUT, 'upto.bin'), 'wb') as f:
-        f.write(struct.pack('<I', len(upto)))
-        for i, cut, most in upto:
-            v = upto_verdict(cases[i][4][:cut], most)
-            if v is None:
-                f.write(struct.pack('<IIIBIIB', i, cut, most, 0, 0, 0, 0))
+        upto = []
+        for i, (group, fmt, name, limit, data, source) in enumerate(cases):
+            if fmt != ZLIB:
+                continue
+            size = len(zlib_verdict(data, fmt)[1]) if group == GOOD else 0
+            if group == GOOD:
+                if full:
+                    cuts = [0, 1, 2, 3, len(data) - 4, len(data) - 1] + [len(data) * k // 17 for k in range(1, 17)]
+                    limits = [1, 2, size // 3, size - 1, size, size + 1]
+                else:
+                    cuts = [len(data) // 2, len(data) - 1]
+                    limits = [size // 3, size, size + 1]
+                for cut in sorted(set(cuts)):
+                    if 0 <= cut < len(data):
+                        upto.append((i, cut, max(size, 1)))
+                for most in sorted(set(limits)):
+                    if most > 0:
+                        upto.append((i, len(data), most))
             else:
-                out, more = v
-                f.write(struct.pack('<IIIBIIB', i, cut, most, 1, len(out), zlib.crc32(out), 1 if more else 0))
-    print('upto.bin: %d cases' % len(upto))
+                upto.append((i, len(data), 1 << 20))
+        with open(os.path.join(OUT, filename), 'wb') as f:
+            f.write(struct.pack('<I', len(upto)))
+            for i, cut, most in upto:
+                v = upto_verdict(cases[i][4][:cut], most)
+                if v is None:
+                    f.write(struct.pack('<IIIBIIB', i, cut, most, 0, 0, 0, 0))
+                else:
+                    out, more = v
+                    f.write(struct.pack('<IIIBIIB', i, cut, most, 1, len(out), zlib.crc32(out), 1 if more else 0))
+        print('%s: %d cases' % (filename, len(upto)))
 
     fuzz_ok = sum(1 for c in cases if c[0] == FUZZ and zlib_verdict(c[4], c[1])[0])
     print('%d sources, %d cases (%d good, %d bad, %d fuzz, of which zlib accepts %d), in %s' % (
