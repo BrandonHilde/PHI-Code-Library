@@ -77,7 +77,7 @@ def magick(data):
     # libjpeg-turbo's C code, not its SIMD: the two give the same pixels for every block of a good
     # file, but the SIMD IDCT saturates where the C one wraps, so they differ on the garbage
     # blocks of a damaged one, and the C code is the reference the SIMD is tested against
-    r = run_magick(['jpg:-', '-depth', '8', '-format', '%w %h\n', '-write', 'info:-', 'rgb:-'], data,
+    r = run_magick(['jpg:-', '-auto-orient', '-depth', '8', '-format', '%w %h\n', '-write', 'info:-', 'rgb:-'], data,
                    env=dict(os.environ, JSIMD_FORCENONE='1'))
     if r is None:
         return None, 'gave up'
@@ -126,6 +126,14 @@ def qtable(base, quality, most=255):
 
 def segment(marker, body):
     return bytes([0xFF, marker]) + struct.pack('>H', len(body) + 2) + body
+
+
+def exif_tiff(o, big=False, kind=3, count=1):
+    """a TIFF block with one IFD of one entry: orientation o (as EXIF holds it)"""
+    e = '>' if big else '<'
+    head = (b'MM\x00*' if big else b'II*\x00') + struct.pack(e + 'I', 8)
+    value = struct.pack(e + 'HH', o, 0) if kind == 3 else struct.pack(e + 'I', o)
+    return head + struct.pack(e + 'H', 1) + struct.pack(e + 'HHI', 0x0112, kind, count) + value + bytes(4)
 
 
 JFIF = segment(0xE0, b'JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00')
@@ -429,6 +437,7 @@ def join(p):
 #                 warning or not), and give up when they refuse it
 #   unsupported   a kind of JPEG imagelib doesn't read (yet), which libjpeg reads
 #   limit         refused for imagelib's pixel limit, which libjpeg doesn't have
+#   chrome        EXIF that Chrome, whose reading the rules follow, and ImageMagick read differently
 
 SAMPLINGS = {
     '444': ((1, 1), (1, 1), (1, 1)),
@@ -574,6 +583,22 @@ def made_cases():
     add('jfif-and-adobe-0', jpeg(9, 9, comps_of('444'), sample=rgbish, app=JFIF + adobe(0)))
     add('adobe-short', jpeg(9, 9, ((82, 1, 1), (71, 1, 1), (66, 1, 1)), sample=rgbish, app=segment(0xEE, b'Adobe\x00')))
     add('jfif-short-ids-rgb', jpeg(9, 9, ((82, 1, 1), (71, 1, 1), (66, 1, 1)), sample=rgbish, app=segment(0xE0, b'JFIF\x00')))
+
+    # EXIF orientation, turning a 9 by 5 image: each value, in both byte orders, and ones that don't count
+    turn = lambda ci, x, y: (x * 28 + y * 3 + ci * 60) % 256  # noqa: E731
+    for o in range(1, 9):
+        add('exif-%d' % o, jpeg(9, 5, comps_of('444'), sample=turn, app=JFIF + segment(0xE1, b'Exif\x00\x00' + exif_tiff(o))))
+    add('exif-6-big-endian', jpeg(9, 5, comps_of('444'), sample=turn, app=segment(0xE1, b'Exif\x00\x00' + exif_tiff(6, True))))
+    add('exif-9', jpeg(9, 5, comps_of('444'), sample=turn, app=segment(0xE1, b'Exif\x00\x00' + exif_tiff(9))))
+    # (where Chrome, whose reading the rules follow, and ImageMagick differ: a LONG, the next APP1
+    # after a bad TIFF header, and an APP1 after the first scan)
+    add('exif-long', jpeg(9, 5, comps_of('444'), sample=turn, app=segment(0xE1, b'Exif\x00\x00' + exif_tiff(6, kind=4))),
+        'chrome')
+    add('exif-bad-header-then-good', jpeg(9, 5, comps_of('444'), sample=turn,
+        app=segment(0xE1, b'Exif\x00\x00XX*\x00') + segment(0xE1, b'Exif\x00\x00' + exif_tiff(8))), 'chrome')
+    p = jpeg(9, 5, comps_of('444'), sample=turn, parts=True)
+    p['after'] = segment(0xE1, b'Exif\x00\x00' + exif_tiff(6))
+    add('exif-after-the-scan', join(p), 'chrome')
 
     # markers that are skipped, and fill bytes
     base = jpeg(13, 11, comps_of('420'), 300, parts=True)
@@ -791,7 +816,14 @@ def check(cases):
             continue
         m, warned = magick(data)
         why = None
-        if rule == 'unsupported':
+        if rule == 'chrome':
+            if not ok:
+                why = 'the rules refuse it: %s' % result
+            else:
+                counts['EXIF read as Chrome reads it, where ImageMagick differs'] = \
+                    counts.get('EXIF read as Chrome reads it, where ImageMagick differs', 0) + 1
+                continue
+        elif rule == 'unsupported':
             if ok:
                 why = 'the rules read it'
             elif m is None:

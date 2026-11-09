@@ -37,13 +37,24 @@ how it works, and may change.
 | `Img.Free: image` | Gives back an image's memory (0 does nothing) |
 | `Img.BlendRow: dest src count` | Draws `count` pixels of `src` over `dest`, which is taken as opaque: each color becomes `(src * alpha + dest * (255 - alpha)) / 255`, rounded, and `dest`'s top byte stays as it was |
 | `Img.max_pixels` | The most pixels an image may have. 0, as it starts, means `Img.DEFAULT_MAX_PIXELS` (16,777,216: 4096 by 4096, 64 MB of pixels) |
+| `Img.orientation` | The last image's EXIF orientation, 1 to 8 (1 when it has none, and for BMP) |
+| `Img.ignore_orientation` | False, as it starts: images are turned to their orientation. True leaves the pixels as stored |
 
 **A bad file** gives 0 and a reason, never a crash or a hang. **Sizes are checked first:** a file that
 says it's bigger than `max_pixels` is refused before any memory is taken for it, so a small file can't
 claim gigabytes, and one whose pixels would run past its end is refused before they're read. A PNG's
 image data is inflated with its exact size as the limit, so it can't inflate to more.
 
-**One thread at a time:** `Img.error` and `Img.max_pixels` are shared.
+**EXIF orientation** (a JPEG's APP1 `Exif` segment before its first scan, or a PNG's `eXIf` chunk) is
+applied by default, as browsers do, so a photo taken with the camera turned comes out upright. It's read
+as Chrome reads it: the first block whose TIFF header is `II*\0` or `MM\0*`, and tag 0x0112 in its first
+IFD, of type SHORT and count 1, from 1 to 8; anything else is 1. It's applied as Pillow's
+`ImageOps.exif_transpose` applies it: 2 mirrored, 3 turned a half, 4 flipped, 5 transposed, 6 turned a
+quarter clockwise, 7 transversed, 8 turned a quarter counter-clockwise; 5 to 8 swap the width and height.
+Flips are done where the pixels are; a turn takes a second copy of them for a moment. The tests check every
+orientation, in both byte orders, against ImageMagick's `-auto-orient` and Pillow's `exif_transpose`.
+
+**One thread at a time:** `Img.error`, `Img.max_pixels` and the orientation settings are shared.
 
 ## BMP
 
@@ -143,8 +154,8 @@ Coefficients are kept in 16 bits, as libjpeg keeps them. A file whose first scan
 one pass, each block straight to samples, and is done when that scan is (libjpeg finds what comes after too
 late to change its pixels). Any other keeps every component's coefficients until the end, as libjpeg does, so
 a component in no scan comes out gray, and one in two has the second's coefficients written over the first's;
-that takes 2 bytes a sample more while it's read. EXIF orientation isn't applied, and color profiles are
-ignored.
+that takes 2 bytes a sample more while it's read. EXIF orientation is applied (see the API); color
+profiles are ignored.
 
 **Progressive JPEG** (SOF2) is read as libjpeg's `jdphuff.c` reads it: DC scans first and refined, AC bands
 of one component first (with their end-of-band runs) and refined, each scan's band and bits checked as

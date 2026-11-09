@@ -33,6 +33,8 @@ doesn't match it, headers that are wrong, and a file with no IDAT. Not done: APN
 default image is read).
 """
 import array
+
+from exif import orientation, orient
 import zlib
 
 MAX_PIXELS = 16 * 1024 * 1024          # imagelib's default for Img.max_pixels
@@ -82,6 +84,7 @@ def read(d, max_pixels):
     width = height = depth = color = interlace = 0
     have_header = False
     palette = None
+    exif = None           # the orientation from the first eXIf chunk with a TIFF header Chrome takes
     trns = None           # palette alphas, or the 16-bit gray value, or the (r, g, b) one
     idat = []
     idat_state = 0        # 0: none yet, 1: in them, 2: past them
@@ -166,6 +169,9 @@ def read(d, max_pixels):
             elif color == 2:
                 if length == 6:
                     trns = (body[0] << 8 | body[1], body[2] << 8 | body[3], body[4] << 8 | body[5])
+        elif name == 'eXIf':
+            if exif is None:
+                exif = orientation(body)
         elif name == 'IDAT':
             if color == 3 and palette is None:
                 raise Refused('a palette image with no PLTE chunk before its image data')
@@ -181,7 +187,7 @@ def read(d, max_pixels):
             raise Refused('a critical chunk imagelib doesn\'t know, ' + name)
 
     raw = inflate(b''.join(idat), expected)
-    return width, height, pixels(raw, width, height, depth, color, interlace, palette, trns)
+    return orient(width, height, pixels(raw, width, height, depth, color, interlace, palette, trns), exif or 1)
 
 
 def inflate(data, expected):

@@ -36,6 +36,8 @@ phi.Img:Library
 
 	str error: [383];   # why the last call failed
 	u32 max_pixels;     # the most pixels an image may have; 0 means DEFAULT_MAX_PIXELS
+	u32 orientation;    # the last image's EXIF orientation, 1 to 8 (1: as stored, or none)
+	bln ignore_orientation;     # true: leave the pixels as stored, whatever the orientation says
 
 	# which format the bytes are in, from their first few: Img.BMP, Img.PNG, Img.JPEG, or Img.UNKNOWN
 	[Format: ptr<u8> data: 0; u32 length: 0; : int]
@@ -69,6 +71,7 @@ phi.Img:Library
 	# a BMP file; 0 if it can't be read, with the reason in error
 	[DecodeBmp: ptr<u8> data: 0; u32 length: 0; : ptr<ImgImage>]
 		error is '';
+		orientation is 1;
 		if data is 0 and length > 0
 			error is 'no data was given';
 			return 0;
@@ -100,6 +103,7 @@ phi.Img:Library
 	# a PNG file; 0 if it can't be read, with the reason in error
 	[DecodePng: ptr<u8> data: 0; u32 length: 0; : ptr<ImgImage>]
 		error is '';
+		orientation is 1;
 		if data is 0 and length > 0
 			error is 'no data was given';
 			return 0;
@@ -125,12 +129,14 @@ phi.Img:Library
 			return 0;
 		;;
 		ptr<ImgImage> image: d.image;
+		u32 turn: d.exif;
 		call DonePng: d;
-	[end: image]
+	[end: (Turned: image turn)]
 
 	# a JPEG file; 0 if it can't be read, with the reason in error
 	[DecodeJpeg: ptr<u8> data: 0; u32 length: 0; : ptr<ImgImage>]
 		error is '';
+		orientation is 1;
 		if data is 0 and length > 0
 			error is 'no data was given';
 			return 0;
@@ -156,8 +162,149 @@ phi.Img:Library
 			return 0;
 		;;
 		ptr<ImgImage> image: d.image;
+		u32 turn: d.exif;
 		call DoneJpeg: d;
+	[end: (Turned: image turn)]
+
+	# A decoded image turned to its EXIF orientation (0: none), unless ignore_orientation; and
+	# orientation set. 0 if there isn't the memory to turn it, with the reason in error.
+	[Turned: ptr<ImgImage> image: 0; u32 turn: 0; : ptr<ImgImage>]
+		if turn is 0
+			turn is 1;
+		;;
+		orientation is turn;
+		if turn is 1 or ignore_orientation
+			return image;
+		;;
+		if not (Orient: image turn)
+			error is 'out of memory to turn the image to its orientation';
+			call Free: image;
+			return 0;
+		;;
 	[end: image]
+
+	# The orientation in a TIFF block (EXIF's own): 1 to 8; 0 when the block isn't a TIFF header
+	# Chrome takes. It reads it as Chrome does: the header must be II*\0 or MM\0*, and the
+	# orientation is tag 0x0112 in the first IFD, of type SHORT and count 1, from 1 to 8; anything
+	# else is 1.
+	[ExifOrientation: u8 tiff[]; : u32]
+		u32 n: tiff.len as u32;
+		if n < 8
+			return 0;
+		;;
+		bln big: false;
+		if tiff:0 is 'I' and tiff:1 is 'I' and tiff:2 is 0x2A and tiff:3 is 0
+			big is false;
+		;;
+		elif tiff:0 is 'M' and tiff:1 is 'M' and tiff:2 is 0 and tiff:3 is 0x2A
+			big is true;
+		;;
+		else
+			return 0;
+		;;
+		u32 ifd: (Tiff32: tiff 4 big);
+		if ifd > n - 2
+			return 1;
+		;;
+		u32 count: (Tiff16: tiff ifd big);
+		while u32 k: 0; k < count; k++;
+			u32 entry: ifd + 2 + 12 * k;
+			if entry > n - 12
+				return 1;
+			;;
+			if (Tiff16: tiff entry big) is 0x0112
+				if (Tiff16: tiff (entry + 2) big) is 3 and (Tiff32: tiff (entry + 4) big) is 1
+					u32 v: (Tiff16: tiff (entry + 8) big);
+					if v >= 1 and v <= 8
+						return v;
+					;;
+				;;
+				return 1;
+			;;
+		;;
+	[end: 1]
+
+	[Tiff16: u8 tiff[]; u32 where: 0; bln big: false; : u32]
+		if big
+			return ((tiff:where as u32) << 8) | tiff:(where + 1);
+		;;
+	[end: tiff:where | ((tiff:(where + 1) as u32) << 8)]
+
+	[Tiff32: u8 tiff[]; u32 where: 0; bln big: false; : u32]
+		if big
+			return ((Tiff16: tiff where big) << 16) | (Tiff16: tiff (where + 2) big);
+		;;
+	[end: (Tiff16: tiff where big) | ((Tiff16: tiff (where + 2) big) << 16)]
+
+	# An image turned to orientation o, 2 to 8, as Pillow's exif_transpose turns it: 2 mirrored,
+	# 3 turned a half, 4 flipped, 5 transposed, 6 turned a quarter clockwise, 7 transversed, 8 turned
+	# a quarter counter-clockwise. Flips and the half turn are done where the pixels are; the rest
+	# swap the width and height, into new pixels. False if there isn't the memory for them.
+	[Orient: ptr<ImgImage> image: 0; u32 o: 0; : bln]
+		u32 w: image.w as u32;
+		u32 h: image.h as u32;
+		u32 count: w * h;
+		if o <= 4
+			call Flip: (image.pixels as u32[count]) w h o;
+			return true;
+		;;
+		ptr<u32> turned: new u32[count];
+		if turned is 0
+			return false;
+		;;
+		call Turn: (image.pixels as u32[count]) (turned as u32[count]) w h o;
+		free image.pixels;
+		image.pixels is turned;
+		image.w is h as int;
+		image.h is w as int;
+	[end: true]
+
+	# 2 mirrored, 3 turned a half, 4 flipped: pixel pairs swapped where they are
+	[Flip: u32 px[]; u32 w: 0; u32 h: 0; u32 o: 0;]
+		if o is 2 or o is 3
+			while u32 y: 0; y < h; y++;
+				u32 row: y * w;
+				while u32 x: 0; x < w / 2; x++;
+					u32 t: px:(row + x);
+					px:(row + x) is px:(row + w - 1 - x);
+					px:(row + w - 1 - x) is t;
+				;;
+			;;
+		;;
+		if o is 3 or o is 4
+			while u32 y: 0; y < h / 2; y++;
+				u32 top: y * w;
+				u32 bottom: (h - 1 - y) * w;
+				while u32 x: 0; x < w; x++;
+					u32 t: px:(top + x);
+					px:(top + x) is px:(bottom + x);
+					px:(bottom + x) is t;
+				;;
+			;;
+		;;
+	[end]
+
+	# 5 transposed, 6 turned a quarter clockwise, 7 transversed, 8 turned a quarter counter-clockwise:
+	# into dst, which is h across and w down
+	[Turn: u32 px[]; u32 dst[]; u32 w: 0; u32 h: 0; u32 o: 0;]
+		while u32 y: 0; y < h; y++;
+			while u32 x: 0; x < w; x++;
+				u32 nx: y;
+				u32 ny: x;
+				if o is 6
+					nx is h - 1 - y;
+				;;
+				elif o is 7
+					nx is h - 1 - y;
+					ny is w - 1 - x;
+				;;
+				elif o is 8
+					ny is w - 1 - x;
+				;;
+				dst:(ny * h + nx) is px:(y * w + x);
+			;;
+		;;
+	[end]
 
 	# gives back an image's memory (0 is allowed, and does nothing)
 	[Free: ptr<ImgImage> image: 0;]

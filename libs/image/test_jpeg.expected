@@ -69,7 +69,7 @@ libjpeg: 70 of 70 as the rules say (68 read, 2 refused):
   im-arithmetic: arithmetic coding, which isn't supported
   pil-100x75-q90: 100 by 75
   im-100x75-q60-420: 100 by 75
-made: 190 of 190 as the rules say (135 read, 55 refused), refused:
+made: 203 of 203 as the rules say (148 read, 55 refused), refused:
   bad-empty: not a JPEG file
   bad-not-jpeg: not a JPEG file
   bad-soi-only: no image data
@@ -126,5 +126,5 @@ made: 190 of 190 as the rules say (135 read, 55 refused), refused:
   limit-over: 10 by 10 is more than the limit of 99 pixels
   limit-default-over: 65535 by 65535 is more than the limit of 16777216 pixels
 cut: 21 of 21 as the rules say (6 read, 15 refused)
-fuzz: 40 of 40 as the rules say (23 read, 17 refused)
+fuzz: 40 of 40 as the rules say (21 read, 19 refused)
 done

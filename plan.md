@@ -332,6 +332,12 @@ progressive file it reads, exactly; refused where it refuses. Not done: libjpeg'
 progressive image whose low AC coefficients haven't all come (a file cut short), which the tests count
 and don't compare.
 
+**EXIF orientation, done 2026-11-09,** for JPEG (APP1) and PNG (`eXIf`): read as Chrome reads it, applied
+as Pillow's `exif_transpose` applies it, on by default (`Img.ignore_orientation` turns it off), and
+`Img.orientation` says what it was. Every orientation, in both byte orders, matches ImageMagick's
+`-auto-orient` and Pillow; three cases where Chrome and ImageMagick differ (a LONG value, the next APP1
+after a bad TIFF header, an APP1 after the first scan) follow Chrome.
+
 **Done when:** milestones 3.1 to 3.6 pass, PngSuite's results are in the README, every decoder has been
 fuzzed, and a pixel bomb is refused before it allocates.
 

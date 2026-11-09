@@ -1,6 +1,6 @@
-files to change: 201
-changed at random: 1043 read, 766 refused, 191 over the limit
+files to change: 214
+changed at random: 1011 read, 804 refused, 185 over the limit
 every value of the first 200 bytes: 38086 read, 13114 refused, 0 over the limit
 troublesome numbers: 6122 read, 1418 refused, 3 over the limit
-noise for the image data: 1754 read, 182 refused, 9 over the limit
+noise for the image data: 1770 read, 176 refused, 8 over the limit
 done

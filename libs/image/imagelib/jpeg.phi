@@ -90,6 +90,7 @@ struct.ImgJpeg
 	u16 fast[4096];         # by table and the next 9 bits: value << 4 | length; 0: longer, or none
 	u32 restart;
 	bln jfif;
+	u32 exif;               # the orientation from the first APP1 with an EXIF header Chrome takes; 0: none
 	int adobe;              # the Adobe marker's transform; -1: none
 	u32 scans;
 	u32 seg_len;            # how many bytes are in scratch
@@ -211,6 +212,9 @@ struct.ImgJpeg
 				if scans is 1 and in_scan is count and not progressive
 					break;          # the image is done, as libjpeg's one pass makes it
 				;;
+			;;
+			elif m is 0xE1 and scans is 0 and exif is 0 and body_len >= 6 and (Starts: padded body 'Exif') and padded:(body + 4) is 0 and padded:(body + 5) is 0
+				exif is (Img.ExifOrientation: ((padded + body + 6) as u8[body_len - 6]));
 			;;
 			elif m is 0xE0
 				if body_len >= 14 and (Starts: padded body 'JFIF') and padded:(body + 4) is 0

@@ -42,6 +42,7 @@ struct.ImgPng
 	bln have_palette;
 	u32 palette_count;
 	bln have_trns;
+	u32 exif;               # the orientation from the first eXIf chunk with a TIFF header Chrome takes; 0: none
 	u32 keys[3];            # tRNS's gray, or red, green and blue, as 16-bit samples
 	u32 palette[256];       # by index, with alpha; opaque black past the end of PLTE
 
@@ -175,6 +176,11 @@ struct.ImgPng
 						keys:1 is (r.U16BE);
 						keys:2 is (r.U16BE);
 					;;
+				;;
+			;;
+			elif kind is ImgPngTables.EXIF
+				if exif is 0
+					exif is (Img.ExifOrientation: ((data + body) as u8[size]));
 				;;
 			;;
 			elif kind is ImgPngTables.IDAT
@@ -590,6 +596,7 @@ phi.ImgPngTables:Library
 	const u32 IDAT: 0x49444154;
 	const u32 IEND: 0x49454E44;
 	const u32 TRNS: 0x74524E53;
+	const u32 EXIF: 0x65584966;
 
 	u8 signature: 0x89 0x50 0x4E 0x47 0x0D 0x0A 0x1A 0x0A;
 

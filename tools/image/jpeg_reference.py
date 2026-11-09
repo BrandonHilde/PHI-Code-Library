@@ -51,6 +51,8 @@ orientation isn't applied.
 """
 import array
 
+from exif import orientation, orient
+
 MAX_PIXELS = 16 * 1024 * 1024          # imagelib's default for Img.max_pixels
 
 ZIGZAG = (0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27,
@@ -291,6 +293,7 @@ def read(d, max_pixels):
     restart = 0
     frame = None
     jfif = False
+    exif = None           # the orientation from the first APP1 with an EXIF header Chrome takes
     adobe = None
     scans = 0
     while True:
@@ -344,6 +347,8 @@ def read(d, max_pixels):
             scans += 1
             if scans == 1 and body[0] == len(frame.comps) and not frame.progressive:
                 break                          # the image is done, as libjpeg's one pass makes it
+        elif m == 0xE1 and scans == 0 and exif is None and body[:6] == b'Exif\x00\x00':
+            exif = orientation(body[6:])
         elif m == 0xE0:
             if len(body) >= 14 and body[:5] == b'JFIF\x00':
                 jfif = True
@@ -372,7 +377,7 @@ def read(d, max_pixels):
     last_smoothed = frame.progressive and smoothing_ok(frame)
     for c in frame.comps:
         samples(c)
-    return frame.width, frame.height, output(frame, rgb)
+    return orient(frame.width, frame.height, output(frame, rgb), exif or 1)
 
 
 def smoothing_ok(frame):

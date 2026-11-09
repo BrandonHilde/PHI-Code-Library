@@ -169,6 +169,19 @@ made  adobe-2                                      305 bytes  ok, 9 by 9
 made  jfif-and-adobe-0                             323 bytes  ok, 9 by 9
 made  adobe-short                                  299 bytes  ok, 9 by 9
 made  jfif-short-ids-rgb                           298 bytes  ok, 9 by 9
+made  exif-1                                       351 bytes  ok, 9 by 5
+made  exif-2                                       351 bytes  ok, 9 by 5
+made  exif-3                                       351 bytes  ok, 9 by 5
+made  exif-4                                       351 bytes  ok, 9 by 5
+made  exif-5                                       351 bytes  ok, 5 by 9
+made  exif-6                                       351 bytes  ok, 5 by 9
+made  exif-7                                       351 bytes  ok, 5 by 9
+made  exif-8                                       351 bytes  ok, 5 by 9
+made  exif-6-big-endian                            333 bytes  ok, 5 by 9
+made  exif-9                                       333 bytes  ok, 9 by 5
+made  exif-long                                    333 bytes  ok, 9 by 5
+made  exif-bad-header-then-good                    347 bytes  ok, 5 by 9
+made  exif-after-the-scan                          351 bytes  ok, 9 by 5
 made  marker-com                                   415 bytes  ok, 13 by 11
 made  marker-app1                                  432 bytes  ok, 13 by 11
 made  marker-app15                                 706 bytes  ok, 13 by 11
@@ -273,21 +286,19 @@ fuzz  410-1x1                                     1 ok,    0 refused
 fuzz  scans-each-444                              1 ok,    0 refused
 fuzz  pil-1x1-422-q95                             0 ok,    1 refused
 fuzz  pil-17x9-420-q95                            0 ok,    1 refused
-fuzz  bad-restart-missing                         0 ok,    1 refused
+fuzz  bad-sos-ss                                  0 ok,    2 refused
 fuzz  pil-progressive-17x9-420                    1 ok,    0 refused
 fuzz  im-17x9-1x1-2x2-2x2                         0 ok,    1 refused
 fuzz  pil-1x1-444-q10                             1 ok,    0 refused
-fuzz  marker-app1                                 1 ok,    0 refused
+fuzz  exif-2                                      1 ok,    0 refused
 fuzz  321-17x13                                   1 ok,    0 refused
-fuzz  bad-restart-extra                           2 ok,    0 refused
-fuzz  pil-1x1-422-q75                             0 ok,    1 refused
-fuzz  14-33x31                                    1 ok,    0 refused
-fuzz  marker-fill-bytes                           0 ok,    1 refused
-fuzz  tables-shared                               1 ok,    1 refused
-fuzz  411-17x13                                   1 ok,    0 refused
-fuzz  tables-redefined-between-scans              0 ok,    1 refused
-fuzz  mixed-1x1                                   1 ok,    0 refused
-fuzz  im-17x9-4x2                                 1 ok,    0 refused
+fuzz  bad-sos-approximation                       0 ok,    1 refused
+fuzz  bad-run-past-end                            1 ok,    0 refused
+fuzz  exif-6                                      1 ok,    0 refused
+fuzz  exif-5                                      0 ok,    1 refused
+fuzz  im-1x1-2x1-1x2-1x1                          0 ok,    1 refused
+fuzz  exif-7                                      1 ok,    0 refused
+fuzz  im-17x9-4x2                                 1 ok,    1 refused
 fuzz  gray-7x9-1x1                                1 ok,    0 refused
 fuzz  pil-17x9-420-q75                            1 ok,    0 refused
 fuzz  pil-progressive-restart                     1 ok,    0 refused
@@ -298,3 +309,5 @@ fuzz  im-33x31-4x1                                0 ok,    1 refused
 fuzz  low-luma-1x1                                1 ok,    0 refused
 fuzz  pil-33x31-optimized                         0 ok,    1 refused
 fuzz  adobe-2                                     1 ok,    0 refused
+fuzz  sof1                                        0 ok,    1 refused
+fuzz  tables-2-and-3                              1 ok,    0 refused

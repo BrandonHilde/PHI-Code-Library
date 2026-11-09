@@ -14,6 +14,12 @@ jpeg without its end: 2 by 2: FFF4C287 FF004300 FF3854DB FFC074FF
 jpeg as png: refused: not a PNG file
 png as jpeg: refused: not a JPEG file
 jpeg no data: refused: no data was given
+png orientation 6: 1 by 2: FFFF0000 FF0000FF
+orientation: 6
+png orientation 6, ignored: 2 by 1: FFFF0000 FF0000FF
+orientation: 6
+rgb24 again: 2 by 2: FFFF0000 FF00FF00 FF0000FF FFFFFFFF
+orientation: 1
 empty: refused: not an image format imagelib reads
 no data: refused: no data was given
 cut short: 2 by 2: 00000000 00000000 FF0000FF FFFFFFFF

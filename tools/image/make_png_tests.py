@@ -93,7 +93,7 @@ def magick(data):
     given -regard-warnings, so that what libpng only warns about counts as refusing, and its
     reading of a file it doesn't refuse is compared too (see magick_lenient)."""
     import numpy as np
-    r = run_magick(['-regard-warnings', 'png:-', '-endian', 'MSB', '-depth', '16',
+    r = run_magick(['-regard-warnings', 'png:-', '-auto-orient', '-endian', 'MSB', '-depth', '16',
                     '-format', '%w %h\n', '-write', 'info:-', 'rgba:-'], data)
     if r is None or r.returncode != 0:
         return None
@@ -108,7 +108,7 @@ def magick(data):
 def magick_lenient(data):
     """ImageMagick's pixels without -regard-warnings: what libpng shows after a warning"""
     import numpy as np
-    r = run_magick(['png:-', '-endian', 'MSB', '-depth', '16', '-format', '%w %h\n',
+    r = run_magick(['png:-', '-auto-orient', '-endian', 'MSB', '-depth', '16', '-format', '%w %h\n',
                     '-write', 'info:-', 'rgba:-'], data)
     if r is None or r.returncode != 0:
         return None
@@ -138,6 +138,14 @@ def pillow(data, truncated=False):
 
 
 # ---------------------------------------------------------------- writing PNG files
+
+def exif_tiff(o, big=False, kind=3, count=1):
+    """a TIFF block with one IFD of one entry: orientation o (as EXIF holds it)"""
+    e = '>' if big else '<'
+    head = (b'MM\x00*' if big else b'II*\x00') + struct.pack(e + 'I', 8)
+    value = struct.pack(e + 'HH', o, 0) if kind == 3 else struct.pack(e + 'I', o)
+    return head + struct.pack(e + 'H', 1) + struct.pack(e + 'HHI', 0x0112, kind, count) + value + bytes(4)
+
 
 def chunk(name, body=b'', crc=None):
     kind = name.encode('latin-1')
@@ -304,6 +312,11 @@ def made_cases():
                           between=chunk('tRNS', b'\x00\x03')))
     add('trns-before-plte', png(5, 5, 8, 3, 0, 29, before=chunk('tRNS', b'\x00\x00\x00')))
     add('trns-bad-crc', png(5, 5, 8, 3, 0, 30, between=chunk('tRNS', b'\x00\x00', crc=1)))
+
+    # EXIF orientation, turning a 9 by 5 image, in an eXIf chunk
+    for o in range(1, 9):
+        add('exif-%d' % o, png(9, 5, 8, 2, 0, 200 + o, before=chunk('eXIf', exif_tiff(o))))
+    add('exif-6-big-endian', png(9, 5, 8, 2, 0, 210, before=chunk('eXIf', exif_tiff(6, True))))
 
     # PLTE of each kind
     add('plte-short-index-past-end', png(8, 8, 4, 3, 0, palette=[(255, 0, 0), (0, 255, 0), (0, 0, 255)],

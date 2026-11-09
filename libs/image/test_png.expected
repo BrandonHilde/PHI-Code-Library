@@ -175,7 +175,7 @@ suite: 176 of 176 as the rules say (162 read, 14 refused):
   z03n2c08.png: 32 by 32
   z06n2c08.png: 32 by 32
   z09n2c08.png: 32 by 32
-made: 261 of 261 as the rules say (215 read, 46 refused), refused:
+made: 270 of 270 as the rules say (224 read, 46 refused), refused:
   bad-plte-missing: a palette image with no PLTE chunk before its image data
   bad-plte-empty: a PLTE chunk of 0 bytes
   bad-plte-length: a PLTE chunk of 4 bytes
