@@ -382,7 +382,7 @@ call Fnt.Free: face;
 | 4.3 Simple text ✓ | UTF-8, advances, line metrics, measuring and drawing a run, fallback across faces | HarfBuzz advances, and reference bitmaps |
 | 4.4 Kerning ✓ | `kern`, and pair adjustment in `GPOS` | FreeType/HarfBuzz advances |
 | 4.5 OpenType CFF ✓ | `.otf` outlines | FreeType |
-| 4.6 Web fonts | WOFF 1 (uses inflate) | Sample fonts, compared with the same font unpacked |
+| 4.6 Web fonts ✓ | WOFF 1 (uses inflate) | Sample fonts, compared with the same font unpacked |
 | Later | Ligatures (`GSUB`), WOFF2 (needs Brotli), variable fonts, color fonts, TrueType hinting | |
 
 **Left out on purpose:** TrueType hinting (a bytecode VM that mostly matters at low resolution, and a
@@ -435,6 +435,12 @@ glyph of Source Code Pro (committed, OFL) has FreeType's outline, and its bitmap
 have fonts made with each charstring operator. Found on the way: when `loca` gives a glyph's end before its
 start, FreeType reads it to the end of `glyf`. Not done: `seac` accents, the arithmetic operators, other
 FontMatrices, CFF2.
+
+**4.6, done 2026-11-10,** in [libs/font](libs/font): WOFF 1, unpacked with corelib's inflate into the
+font it holds, with FreeType's checks (`tools/font/woff_reference.py`). Each made font wrapped by fontTools,
+compressed or stored, gives exactly what the font itself gives, and agrees with FreeType; the damaged ones
+are refused by both. fontlib's own limit: 32 MB unpacked. **Phase 4's milestones are all done;** its
+"later" list (GSUB, WOFF2, variable fonts, color fonts, hinting) waits.
 
 **Done when:** milestones 4.1 to 4.4 pass, a test draws Unicode text beyond code page 437 that matches its
 reference, and every parser has been fuzzed.

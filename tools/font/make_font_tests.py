@@ -92,6 +92,10 @@ def freetype_glyph(face, g):
 
 def harfbuzz_glyphs(data):
     import uharfbuzz as hb
+    if data[:4] == b'wOFF':
+        # (HarfBuzz reads the font a WOFF holds, as a browser gives it once it's unpacked)
+        import woff_reference
+        data = woff_reference.unwoff(data)
     font = hb.Font(hb.Face(hb.Blob(data)))
     return [font.get_nominal_glyph(u) or 0 for u in CODE_POINTS]
 
@@ -108,7 +112,9 @@ def check(name, data, rule, counts, problems):
     ft = freetype_face(data)
     if face is None:
         if ft is not None:
-            if rule in NOTES:
+            if rule == 'limit':
+                count('refused for fontlib\'s limit, which FreeType hasn\'t')
+            elif rule in NOTES:
                 count('refused, as noted')
             else:
                 problems.append('%s: the rules refuse it (%s), but FreeType reads it' % (name, why))
@@ -401,6 +407,20 @@ def cff_cases(add):
     add('cff-bad-glyphs', cff_font(bad, {0x41: 'A', 0x42: 'B', 0x43: 'C'}, [[1, 1, 'rlineto', 'return']]))
 
 
+def woff(data, compress=True):
+    """a font wrapped as WOFF 1 by fontTools (stored tables, if not compress)"""
+    from fontTools.ttLib import TTFont
+    f = TTFont(io.BytesIO(data), recalcBBoxes=False, recalcTimestamp=False)
+    f.flavor = 'woff'
+    if not compress:
+        from fontTools.ttLib import woff2  # noqa: F401
+        from fontTools.ttLib import sfnt
+        sfnt.ZLIB_COMPRESSION_LEVEL = 0
+    b = io.BytesIO()
+    f.save(b)
+    return b.getvalue()
+
+
 def M_table(data, tag):
     return table_at(data, tag)[0]
 
@@ -545,6 +565,19 @@ def made_cases():
 
     # CFF outlines
     cff_cases(add)
+
+    # WOFF 1: fonts made here wrapped by fontTools, each the same as the font itself; and damage
+    for name in ('simple', 'composite-nested', 'cmap-format-12', 'cff', 'kern-gpos-pairs'):
+        add('woff-' + name, woff(dict((n, d) for n, d, _ in cases)[name]))
+    w = woff(simple)
+    add('woff-stored', woff(simple, compress=False))
+    add('woff-length-wrong', patch(w, 8, struct.pack('>I', len(w) + 4)), 'refused')
+    add('woff-no-tables', patch(w, 12, b'\x00\x00'), 'refused')
+    add('woff-total-not-4', patch(w, 16, struct.pack('>I', struct.unpack('>I', w[16:20])[0] + 2)), 'refused')
+    add('woff-tags-out-of-order', patch(w, 44, w[64:68]), 'refused')
+    add('woff-compressed-longer', patch(w, 44 + 8, struct.pack('>I', 0xFFFF)), 'refused')
+    add('woff-more-than-32-mb', patch(w, 16, struct.pack('>I', 33 * 1024 * 1024)), 'limit')
+    add('woff-bad-zlib', patch(w, struct.unpack('>I', w[48:52])[0] + 2, b'\xff\xff\xff\xff'), 'damaged')
 
     # FreeType's limit of 32,767 points: two components of 16,380 are in, two of 16,400 aren't
     def many(n, per):

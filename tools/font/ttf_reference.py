@@ -132,6 +132,9 @@ def vector_length(x, y):
 
 class Face:
     def __init__(self, data):
+        if data[:4] == b'wOFF':
+            import woff_reference
+            data = woff_reference.unwoff(data)
         self.data = d = data
         if len(d) < 12:
             raise Refused('not a font file')
@@ -586,6 +589,12 @@ class Cmap:
     """a font's characters, as HarfBuzz looks them up"""
 
     def __init__(self, data):
+        if data[:4] == b'wOFF':
+            import woff_reference
+            try:
+                data = woff_reference.unwoff(data)
+            except Refused:
+                data = b''
         self.d = data
         self.sub = None
         self.records = []

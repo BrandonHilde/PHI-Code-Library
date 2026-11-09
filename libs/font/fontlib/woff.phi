@@ -1,0 +1,146 @@
+# WOFF 1: a TrueType or CFF font with each table perhaps compressed by zlib, unpacked into the font it
+# holds, which is then read as any font is. The rules are tools/font/woff_reference.py's, whose checks
+# are FreeType's (sfwoff.c):
+#
+#   - The header: the signature, the length the file's own, at least one table, a directory that fits,
+#     a total size that holds its own directory and is a multiple of 4, and metadata and private data
+#     whose fields agree.
+#   - The directory: tags in ascending order; each table inside the file, no longer compressed than
+#     unpacked, and the tables together within the total size.
+#   - Each table stored as it is, or zlib data (corelib's inflate) that inflates to exactly its length.
+#   - fontlib's own limit: a font of more than 32 MB, unpacked, is refused (FreeType has none).
+#
+# The font is laid out as FreeType lays it out: its header, the directory in the WOFF's order, and the
+# tables, each at a multiple of 4.
+
+use corelib;
+use fontlib.face;
+
+phi.FntWoff:Library
+{
+	# the font a WOFF file holds, on the heap (the caller frees it), its length in size_out; throws why
+	# it can't be unpacked
+	[Unwoff: ptr<u8> d: 0; u32 n: 0; ptr<u32> size_out: 0; : ptr<u8>]
+	[end: (UnwoffIn: (d as u8[n]) d n size_out)]
+
+	[UnwoffIn: u8 src[]; ptr<u8> d: 0; u32 n: 0; ptr<u32> size_out: 0; : ptr<u8>]
+		if n < 44 or src:0 is not 'w' or src:1 is not 'O' or src:2 is not 'F' or src:3 is not 'F'
+			throw 'not a WOFF file';
+		;;
+		u32 flavor: (U32: src 4);
+		u32 length: (U32: src 8);
+		u32 count: (U16: src 12);
+		u32 total: (U32: src 16);
+		u32 meta_off: (U32: src 24);
+		u32 meta_len: (U32: src 28);
+		u32 meta_orig: (U32: src 32);
+		u32 priv_off: (U32: src 36);
+		u32 priv_len: (U32: src 40);
+		if length is not n or count is 0 or 44 + count * 20 >= length or 12 + count * 16 >= total or
+			(total & 3) is not 0 or (meta_off is 0 and (meta_len is not 0 or meta_orig is not 0)) or
+			(meta_len is not 0 and meta_orig is 0) or (priv_off is 0 and priv_len is not 0)
+			throw 'a WOFF header that doesn\'t add up';
+		;;
+		if total > Fnt.MOST_FONT_BYTES
+			throw 'a WOFF font of more than 32 MB';
+		;;
+		# the directory, checked before anything is made
+		u32 spot: 12 + count * 16;
+		u32 old_tag: 0;
+		while u32 k: 0; k < count; k++;
+			u32 p: 44 + 20 * k;
+			u32 tag: (U32: src p);
+			u32 off: (U32: src (p + 4));
+			u32 comp: (U32: src (p + 8));
+			u32 orig: (U32: src (p + 12));
+			if k > 0 and tag <= old_tag
+				throw 'a WOFF directory whose tags aren\'t in order';
+			;;
+			old_tag is tag;
+			if comp > orig or off > length or comp > length - off
+				throw 'a WOFF table past the end of the file';
+			;;
+			if orig > total - spot
+				throw 'WOFF tables bigger than the font they make';
+			;;
+			spot is spot + ((orig + 3) & 0xFFFFFFFC);
+		;;
+		ptr<u8> font: new u8[total];
+		if font is 0
+			throw 'dst of memory';
+		;;
+		call Lay: src d font total flavor count;
+		size_out:0 is total;
+	[end: font]
+
+	[Lay: u8 src[]; ptr<u8> d: 0; ptr<u8> font: 0; u32 total: 0; u32 flavor: 0; u32 count: 0;]
+		call LayIn: src d (font as u8[total]) font flavor count;
+	[end]
+
+	[LayIn: u8 src[]; ptr<u8> d: 0; u8 dst[]; ptr<u8> font: 0; u32 flavor: 0; u32 count: 0;]
+		u32 search: 1;
+		u32 selector: 0;
+		while search * 2 <= count
+			search is search * 2;
+			selector++;
+		;;
+		call Put32: dst 0 flavor;
+		call Put16: dst 4 count;
+		call Put16: dst 6 (search * 16);
+		call Put16: dst 8 selector;
+		call Put16: dst 10 (count * 16 - search * 16);
+		u32 spot: 12 + count * 16;
+		while u32 k: 0; k < count; k++;
+			u32 p: 44 + 20 * k;
+			u32 off: (U32: src (p + 4));
+			u32 comp: (U32: src (p + 8));
+			u32 orig: (U32: src (p + 12));
+			u32 e: 12 + 16 * k;
+			call Put32: dst e (U32: src p);
+			call Put32: dst (e + 4) (U32: src (p + 16));
+			call Put32: dst (e + 8) spot;
+			call Put32: dst (e + 12) orig;
+			if comp < orig
+				u32 got: 0;
+				ptr<u8> inflated: (CoreInflate.Zlib: (d + off) comp orig addr got);
+				if inflated is 0
+					free font;
+					throw 'a WOFF table whose zlib data is broken';
+				;;
+				if got is not orig
+					free inflated;
+					free font;
+					throw 'a WOFF table that inflates to the wrong length';
+				;;
+				while u32 i: 0; i < orig; i++;
+					dst:(spot + i) is inflated:i;
+				;;
+				free inflated;
+			;;
+			else
+				while u32 i: 0; i < orig; i++;
+					dst:(spot + i) is src:(off + i);
+				;;
+			;;
+			spot is spot + ((orig + 3) & 0xFFFFFFFC);
+		;;
+	[end]
+
+	[U16: u8 src[]; u32 p: 0; : u32]
+	[end: ((src:p as u32) << 8) | src:(p + 1)]
+
+	[U32: u8 src[]; u32 p: 0; : u32]
+	[end: ((src:p as u32) << 24) | ((src:(p + 1) as u32) << 16) | ((src:(p + 2) as u32) << 8) | src:(p + 3)]
+
+	[Put16: u8 dst[]; u32 p: 0; u32 v: 0;]
+		dst:p is ((v >> 8) & 255) as u8;
+		dst:(p + 1) is (v & 255) as u8;
+	[end]
+
+	[Put32: u8 dst[]; u32 p: 0; u32 v: 0;]
+		dst:p is (v >> 24) as u8;
+		dst:(p + 1) is ((v >> 16) & 255) as u8;
+		dst:(p + 2) is ((v >> 8) & 255) as u8;
+		dst:(p + 3) is (v & 255) as u8;
+	[end]
+}

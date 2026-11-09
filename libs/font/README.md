@@ -1,10 +1,10 @@
 # fontlib
 
-Fonts in; metrics, outlines and smooth glyph bitmaps out. So far it reads TrueType and OpenType CFF fonts: the face, each
+Fonts in; metrics, outlines and smooth glyph bitmaps out. It reads TrueType and OpenType CFF fonts, and either wrapped as WOFF: the face, each
 glyph's outline and metrics, in font units, and which glyph a character is; it makes glyphs' bitmaps at
 a size, exactly as FreeType makes them; and it measures and draws runs of UTF-8 text in a list of fonts,
 with HarfBuzz's glyphs, advances and kerning ([plan.md](../../plan.md#phase-4-font-library), milestones
-4.1 to 4.5). It uses [corelib](../core), so a program
+4.1 to 4.6). It uses [corelib](../core), so a program
 using it has both `fontlib.philib` and `corelib.philib` beside it.
 
 ```phi
@@ -43,7 +43,7 @@ call Fnt.Free: face;
 ## API
 
 These names are the API. Everything else the library declares (`FntTrueType`, `FntFrame`,
-`FntMacRoman`, `FntRaster`, `FntCell`, `FntText`, `FntKern`, `FntCff`, `FntIndex`, `FntSize`'s `scale`, `mult`, `cache`, `outline` and
+`FntMacRoman`, `FntRaster`, `FntCell`, `FntText`, `FntKern`, `FntCff`, `FntIndex`, `FntWoff`, `FntSize`'s `scale`, `mult`, `cache`, `outline` and
 `raster`, and `Fnt`'s `Grow`, `Release`, `ReleasePoints`, `Done`, `Failed`, `DivFix`, `Make`, `FreeBitmap`,
 `Blit` and `BlitRows`) is how it works, and may change.
 
@@ -65,6 +65,7 @@ These names are the API. Everything else the library declares (`FntTrueType`, `F
 | `Fnt.Bitmap: size glyph` → | A `ptr<FntBitmap>`, the glyph at that size, made the first time it's asked for and kept by the size (not to be freed); or 0 with the reason in `Fnt.error` |
 | `FntBitmap` | A struct: `width` by `height` bytes of coverage (0 to 255) at `pixels`, a row at a time from the top (`pixels` is 0 when there are none); `left` (pixels right of the pen), `top` (pixels above the baseline), and `advance` (64ths of a pixel) |
 | `Fnt.FreeSize: size` | Gives back a size's memory and its bitmaps (0 does nothing) |
+| `Fnt.MOST_FONT_BYTES` | 33,554,432: the most a WOFF file may unpack to, so that a small file can't claim gigabytes (the biggest CJK fonts are about 20 MB) |
 | `Fnt.MOST_BITMAP_PIXELS` | 1,048,576: the most pixels a glyph's bitmap may have, so that a damaged font's glyph can't ask for gigabytes |
 | `FntStack` | A struct: `sizes` (up to 8 `ptr<FntSize>`) and `count`: fonts tried in turn for each character, the first being the main one; `script`, the OpenType script tag kerning is for (0, as it starts, means `latn`); and `no_kerning` |
 | `Fnt.Measure: stack text length` → | How wide `length` bytes of UTF-8 are, in 64ths of a pixel |
@@ -97,6 +98,17 @@ Coordinates are kept to 32 bits, where FreeType keeps 64: only a composite neste
 depth could tell them apart. When a glyph's `loca` end comes before its start, FreeType reads it to the end
 of `glyf`, and so does fontlib. **Not done yet:** font collections, and the Arabic code pages of
 HarfBuzz's symbol fallback (a symbol font whose OS/2 names one maps nothing there).
+
+## WOFF
+
+A WOFF 1 file (`wOFF`) is unpacked into the TrueType or CFF font it holds, with corelib's inflate, and that
+font is read as any font is ([woff_reference.py](../../tools/font/woff_reference.py)). The checks are
+FreeType's: the header's length the file's own, at least one table, a directory that fits, a total size
+that holds its own directory and is a multiple of 4, metadata and private data whose fields agree; tags in
+ascending order; each table inside the file, no longer compressed than unpacked, within the total; and a
+compressed table inflating to exactly its length, its Adler-32 right. The unpacked font is laid out as
+FreeType lays it out, and is the face's own (freed with it). fontlib adds one limit FreeType hasn't: a
+font of more than 32 MB, unpacked, is refused. WOFF 2 (Brotli) isn't read.
 
 ## CFF
 
@@ -165,7 +177,7 @@ From the repo's root:
 
 ```
 pwsh ./build.ps1 font -Test                       # (or .\build.ps1 font -Test on Windows)
-python3 -P tools/font/make_font_tests.py          # remakes tests/ttf/cases.bin (it's committed): TrueType and CFF
+python3 -P tools/font/make_font_tests.py          # remakes tests/ttf/cases.bin (it's committed): TrueType, CFF, WOFF
 python3 -P tools/font/make_raster_tests.py        # remakes tests/raster/cases.bin
 python3 -P tools/font/make_text_tests.py          # remakes tests/text/cases.bin
 pwsh ./build.ps1 font -Test -Release              # and the release tests too
@@ -181,7 +193,10 @@ feature and each kind of damage), and fonts cut short and fuzzed. A case's verdi
 CRC-32s: over every glyph, and over those characters' glyphs. CFF: Source Code Pro (OFL, every glyph the
 same as FreeType's), and fonts made with fontTools from charstrings written by hand: every operator, flex
 and its kin, subroutines, hints and widths, a path before any `moveto`, and damage (a bad version, offsets
-of 5 bytes, no CFF table, a subroutine that isn't there, 49 arguments).
+of 5 bytes, no CFF table, a subroutine that isn't there, 49 arguments). WOFF: made fonts (TrueType, CFF,
+format 12, kerning) wrapped by fontTools, compressed and stored, each giving exactly what the font itself
+gives, and damage (a length that isn't the file's, no tables, a total that isn't a multiple of 4, tags out
+of order, a table longer compressed, broken zlib, more than 32 MB).
 
 | Cases (2026-11-09, as 32 and 64-bit Linux programs) | Result |
 |---|---|

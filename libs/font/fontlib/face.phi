@@ -69,6 +69,9 @@ phi.Fnt:Library
 	# the most pixels a glyph's bitmap may have: a damaged font's glyph can't ask for gigabytes
 	const u32 MOST_BITMAP_PIXELS: 1024 * 1024;
 
+	# the most a WOFF file may unpack to, so that a small file can't claim gigabytes
+	const u32 MOST_FONT_BYTES: 32 * 1024 * 1024;
+
 	# a TrueType font; 0 if it can't be read, with the reason in error. data must stay as it is until
 	# Free.
 	[Load: ptr<u8> data: 0; u32 length: 0; : ptr<FntFace>]
@@ -514,6 +517,9 @@ phi.Fnt:Library
 	[end]
 
 	[Done: ptr<FntTrueType> tt: 0;]
+		if tt.unpacked is not 0
+			free tt.unpacked;
+		;;
 		if tt.cff is not 0
 			if tt.cff.px is not 0
 				free tt.cff.px;

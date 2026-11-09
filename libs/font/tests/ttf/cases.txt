@@ -73,6 +73,19 @@ made  cff-version-2                               1076 bytes  refused: a CFF tab
 made  cff-offsets-of-5                            1076 bytes  refused: a CFF table this isn't version 1 of
 made  cff-table-missing                           1076 bytes  refused: an OpenType font with no CFF table
 made  cff-bad-glyphs                               676 bytes  ok, 4 glyphs
+made  woff-simple                                  668 bytes  ok, 4 glyphs
+made  woff-composite-nested                        696 bytes  ok, 6 glyphs
+made  woff-cmap-format-12                         1244 bytes  ok, 3 glyphs
+made  woff-cff                                     952 bytes  ok, 13 glyphs
+made  woff-kern-gpos-pairs                         900 bytes  ok, 8 glyphs
+made  woff-stored                                  776 bytes  ok, 4 glyphs
+made  woff-length-wrong                            668 bytes  refused: a WOFF header that doesn't add up
+made  woff-no-tables                               668 bytes  refused: a WOFF header that doesn't add up
+made  woff-total-not-4                             668 bytes  refused: a WOFF header that doesn't add up
+made  woff-tags-out-of-order                       668 bytes  refused: a WOFF directory whose tags aren't in order
+made  woff-compressed-longer                       668 bytes  refused: a WOFF table past the end of the file
+made  woff-more-than-32-mb                         668 bytes  refused: a WOFF font of more than 32 MB
+made  woff-bad-zlib                                668 bytes  refused: a WOFF table whose zlib data is broken
 made  points-2x16380                             42416 bytes  ok, 3 glyphs
 made  points-2x16400                             42468 bytes  ok, 3 glyphs
 cut   simple                                      2 ok,    5 refused
@@ -82,24 +95,26 @@ fuzz  composite-nested                            3 ok,    0 refused
 fuzz  cmap-format-4                               1 ok,    0 refused
 fuzz  cff-no-subroutines                          1 ok,    0 refused
 fuzz  cmap-none                                   2 ok,    0 refused
-fuzz  cff                                         1 ok,    0 refused
-fuzz  points-2x16400                              3 ok,    0 refused
-fuzz  cmap-symbol                                 2 ok,    0 refused
-fuzz  cff-bad-glyphs                              1 ok,    0 refused
-fuzz  composite-scaled-offset-2x2                 2 ok,    1 refused
-fuzz  composite-use-my-metrics                    0 ok,    2 refused
+fuzz  cff                                         2 ok,    0 refused
+fuzz  woff-composite-nested                       0 ok,    2 refused
+fuzz  woff-kern-gpos-pairs                        0 ok,    1 refused
+fuzz  overlap-compound                            2 ok,    0 refused
+fuzz  short-metrics                               1 ok,    0 refused
+fuzz  kern-gpos-pairs                             2 ok,    0 refused
+fuzz  composite-of-empty                          1 ok,    0 refused
 fuzz  composite-two                               1 ok,    0 refused
-fuzz  overlap-compound                            1 ok,    0 refused
 fuzz  composite-scale                             1 ok,    0 refused
 fuzz  overlap-compound-second                     2 ok,    0 refused
 fuzz  upem-16384                                  1 ok,    0 refused
 fuzz  cmap-format-13                              1 ok,    1 refused
 fuzz  cmap-format-0                               1 ok,    0 refused
+fuzz  composite-use-my-metrics                    0 ok,    1 refused
 fuzz  cmap-mac-roman                              1 ok,    0 refused
 fuzz  line-gap                                    1 ok,    0 refused
-fuzz  points-2x16380                              1 ok,    0 refused
+fuzz  woff-simple                                 0 ok,    1 refused
 fuzz  composite-scaled-offset                     0 ok,    1 refused
 fuzz  tag-true                                    1 ok,    0 refused
+fuzz  composite-scaled-offset-2x2                 1 ok,    0 refused
+fuzz  cmap-symbol                                 1 ok,    0 refused
 fuzz  simple                                      1 ok,    0 refused
-fuzz  kern-gpos-pairs                             1 ok,    0 refused
 fuzz  cmap-0-3                                    1 ok,    0 refused

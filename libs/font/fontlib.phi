@@ -10,6 +10,7 @@ use corelib;
 use fontlib.face;
 use fontlib.truetype;
 use fontlib.cff;
+use fontlib.woff;
 use fontlib.raster;
 use fontlib.text;
 use fontlib.kern;

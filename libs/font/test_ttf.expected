@@ -1,7 +1,7 @@
 fonts: 2 of 2 as the rules say (2 read, 0 refused):
   LiberationSans-Regular.ttf: 2620 glyphs
   SourceCodePro-Regular.otf: 1568 glyphs
-made: 73 of 73 as the rules say (60 read, 13 refused), refused:
+made: 86 of 86 as the rules say (66 read, 20 refused), refused:
   tag-otto: an OpenType font with no CFF table
   tag-ttcf: a font collection, which isn't read yet
   tag-junk: not a TrueType font
@@ -15,6 +15,13 @@ made: 73 of 73 as the rules say (60 read, 13 refused), refused:
   cff-version-2: a CFF table this isn't version 1 of
   cff-offsets-of-5: a CFF table this isn't version 1 of
   cff-table-missing: an OpenType font with no CFF table
+  woff-length-wrong: a WOFF header that doesn't add up
+  woff-no-tables: a WOFF header that doesn't add up
+  woff-total-not-4: a WOFF header that doesn't add up
+  woff-tags-out-of-order: a WOFF directory whose tags aren't in order
+  woff-compressed-longer: a WOFF table past the end of the file
+  woff-more-than-32-mb: a WOFF font of more than 32 MB
+  woff-bad-zlib: a WOFF table whose zlib data is broken
 cut: 14 of 14 as the rules say (4 read, 10 refused)
-fuzz: 40 of 40 as the rules say (34 read, 6 refused)
+fuzz: 40 of 40 as the rules say (32 read, 8 refused)
 done
