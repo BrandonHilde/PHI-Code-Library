@@ -381,6 +381,21 @@ def made_cases():
     add('glyph-contours-out-of-order', patch(simple, gp + 10, struct.pack('>HH', 9, 3)), 'damaged')
     add('glyph-instructions-too-long', patch(simple, gp + 14, struct.pack('>H', 9999)), 'damaged')
     add('glyph-flags-repeat-too-far', patch(simple, gp + 16, b'\x09\xff'), 'damaged')
+    add('glyph-contour-end-negative', patch(simple, gp + 10, struct.pack('>h', -3)), 'damaged')
+
+    # FreeType's limit of 32,767 points: two components of 16,380 are in, two of 16,400 aren't
+    def many(n, per):
+        from fontTools.pens.ttGlyphPen import TTGlyphPen
+        p = TTGlyphPen(None)
+        for k in range(n // per):
+            p.moveTo((k, 0))
+            for j in range(1, per):
+                p.lineTo((k + j, (j * 7) % 50))
+            p.closePath()
+        return p.glyph()
+    for n in (16380, 16400):
+        gs = {'.notdef': square(0, 0, 10, 10), 'big': many(n, 20), 'a': [comp('big'), comp('big', x=7)]}
+        add('points-2x%d' % n, build(gs, {'.notdef': (500, 0), 'big': (500, 0), 'a': (500, 0)}, {0x41: 'a'}))
     return cases
 
 

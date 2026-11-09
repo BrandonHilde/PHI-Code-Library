@@ -1,0 +1,239 @@
+# A font, and what works on any of them.
+#
+#   ptr<FntFace> face: (Fnt.Load: bytes length);     # the bytes must stay as they are until Fnt.Free
+#   if face is 0
+#       log 'bad font: ' Fnt.error '\n';
+#       return;
+#   ;;
+#   u32 g: (Fnt.GlyphOf: face 0x41);                  # 'A'
+#   ptr<FntOutline> o: (Fnt.NewOutline);
+#   if (Fnt.Outline: face g o) ... o.points, o.x, o.y, o.on, o.contours, o.ends, o.advance ...
+#   call Fnt.FreeOutline: o;
+#   call Fnt.Free: face;
+#
+# Everything is in font units, as the font has it (unscaled, unhinted). A font that's damaged, cut
+# short or made to cause trouble gives 0 and a reason in Fnt.error, never a crash or a hang.
+
+# A font: its numbers, in font units
+struct.FntFace
+{
+	u32 glyph_count;
+	int units_per_em;
+	int ascender;           # above the baseline
+	int descender;          # below it (negative)
+	int height;             # from one line's baseline to the next's
+	int max_advance;        # the widest advance
+	ptr<FntTrueType> tt;    # what reads it
+}
+
+# A glyph's outline: points contours of closed curves, each point on the curve or a quadratic
+# control point off it; the arrays grow as they need to, and are the outline's own
+struct.FntOutline
+{
+	u32 points;
+	u32 contours;
+	int advance;            # FreeType's: the glyph's own, or a component's if it says so
+	ptr<int> x;             # points of them
+	ptr<int> y;
+	ptr<u8> on;             # 1: on the curve; 0: a control point
+	ptr<u32> ends;          # contours of them: each contour's last point
+	u32 point_room;
+	u32 contour_room;
+}
+
+phi.Fnt:Library
+{
+	str error: [383];   # why the last call failed
+
+	# FreeType's most points and contours in one outline (FT_OUTLINE_POINTS_MAX and CONTOURS_MAX)
+	const u32 MOST_POINTS: 32767;
+	const u32 MOST_CONTOURS: 32767;
+
+	# a TrueType font; 0 if it can't be read, with the reason in error. data must stay as it is until
+	# Free.
+	[Load: ptr<u8> data: 0; u32 length: 0; : ptr<FntFace>]
+		error is '';
+		if data is 0 and length > 0
+			error is 'no data was given';
+			return 0;
+		;;
+		if length > 0x7FFFFFFF
+			error is 'more than 2 GB of data';
+			return 0;
+		;;
+		ptr<FntTrueType> tt: new FntTrueType;
+		ptr<FntFace> face: new FntFace;
+		if tt is 0 or face is 0
+			error is 'out of memory';
+			if tt is not 0
+				free tt;
+			;;
+			if face is not 0
+				free face;
+			;;
+			return 0;
+		;;
+		if call tt.Open: data length throws err
+			call Failed: err.kind err.text err.message;
+			call Done: tt;
+			free face;
+			return 0;
+		;;
+		face.tt is tt;
+		face.glyph_count is tt.glyph_count;
+		face.units_per_em is tt.units_per_em;
+		face.ascender is tt.ascender;
+		face.descender is tt.descender;
+		face.height is tt.height;
+		face.max_advance is tt.max_advance;
+	[end: face]
+
+	# gives back a font's memory (0 is allowed, and does nothing); not its bytes, which are the caller's
+	[Free: ptr<FntFace> face: 0;]
+		if face is 0 return;
+		call Done: face.tt;
+		free face;
+	[end]
+
+	# the glyph for a character (a Unicode code point), as HarfBuzz finds it; 0 if the font has none
+	[GlyphOf: ptr<FntFace> face: 0; u32 code: 0; : u32]
+		if face is 0
+			return 0;
+		;;
+	[end: (face.tt.GlyphOf: code)]
+
+	# glyph's advance and left side bearing from hmtx, in font units, as text is laid out with it
+	[Advance: ptr<FntFace> face: 0; u32 glyph: 0; : int]
+		if face is 0 or glyph >= face.glyph_count
+			return 0;
+		;;
+		int lsb: 0;
+		ptr<FntTrueType> tt: face.tt;
+	[end: (tt.Metrics: (tt.data as u8[tt.length]) glyph addr lsb)]
+
+	# A glyph's outline, into o, in font units: true, or false with the reason in error (a glyph the
+	# font can't give, which leaves o empty)
+	[Outline: ptr<FntFace> face: 0; u32 glyph: 0; ptr<FntOutline> o: 0; : bln]
+		error is '';
+		if face is 0 or o is 0
+			error is 'no font or outline was given';
+			return false;
+		;;
+		if call face.tt.Glyph: glyph o throws err
+			call Failed: err.kind err.text err.message;
+			o.points is 0;
+			o.contours is 0;
+			o.advance is 0;
+			return false;
+		;;
+	[end: true]
+
+	# an outline to load glyphs into, again and again; 0 if there isn't the memory
+	[NewOutline: : ptr<FntOutline>]
+		ptr<FntOutline> o: new FntOutline;
+	[end: o]
+
+	# gives back an outline's memory (0 is allowed, and does nothing)
+	[FreeOutline: ptr<FntOutline> o: 0;]
+		if o is 0 return;
+		call Release: o;
+		free o;
+	[end]
+
+	# room in o for points points and contours contours; throws if there isn't the memory
+	[Grow: ptr<FntOutline> o: 0; u32 points: 0; u32 contours: 0;]
+		if points > o.point_room
+			u32 room: o.point_room * 2;
+			if room < 64
+				room is 64;
+			;;
+			while room < points
+				room is room * 2;
+			;;
+			ptr<int> x: new int[room];
+			ptr<int> y: new int[room];
+			ptr<u8> on: new u8[room];
+			if x is 0 or y is 0 or on is 0
+				if x is not 0
+					free x;
+				;;
+				if y is not 0
+					free y;
+				;;
+				if on is not 0
+					free on;
+				;;
+				throw 'out of memory';
+			;;
+			while u32 i: 0; i < o.points; i++;
+				x:i is o.x:i;
+				y:i is o.y:i;
+				on:i is o.on:i;
+			;;
+			call ReleasePoints: o;
+			o.x is x;
+			o.y is y;
+			o.on is on;
+			o.point_room is room;
+		;;
+		if contours > o.contour_room
+			u32 room: o.contour_room * 2;
+			if room < 16
+				room is 16;
+			;;
+			while room < contours
+				room is room * 2;
+			;;
+			ptr<u32> ends: new u32[room];
+			if ends is 0
+				throw 'out of memory';
+			;;
+			while u32 i: 0; i < o.contours; i++;
+				ends:i is o.ends:i;
+			;;
+			if o.ends is not 0
+				free o.ends;
+			;;
+			o.ends is ends;
+			o.contour_room is room;
+		;;
+	[end]
+
+	[ReleasePoints: ptr<FntOutline> o: 0;]
+		if o.x is not 0
+			free o.x;
+		;;
+		if o.y is not 0
+			free o.y;
+		;;
+		if o.on is not 0
+			free o.on;
+		;;
+	[end]
+
+	[Release: ptr<FntOutline> o: 0;]
+		call ReleasePoints: o;
+		if o.ends is not 0
+			free o.ends;
+		;;
+	[end]
+
+	[Done: ptr<FntTrueType> tt: 0;]
+		if tt.frames is not 0
+			free tt.frames;
+		;;
+		if tt.on_path is not 0
+			free tt.on_path;
+		;;
+		free tt;
+	[end]
+
+	[Failed: ErrorKind kind; str text; str message;]
+		if kind is ErrorKind.THROWN
+			error is text;
+		;;
+		else
+			error is message;
+		;;
+	[end]
+}

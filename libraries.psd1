@@ -5,5 +5,6 @@
 		@{ Name = 'corelib'; Folder = 'libs\core'; Uses = @() }
 		@{ Name = 'weblib'; Folder = 'libs\web'; Uses = @() }
 		@{ Name = 'imagelib'; Folder = 'libs\image'; Uses = @('corelib') }
+		@{ Name = 'fontlib'; Folder = 'libs\font'; Uses = @('corelib') }
 	)
 }

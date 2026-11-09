@@ -1,0 +1,11 @@
+# fontlib against all the release TrueType cases, in tests/ttf/release.bin: the everyday ones, and good
+# fonts cut short at many lengths and fuzzed, for when the library is near release (build.ps1 -Test
+# -Release). fontcases.phi says how they're checked.
+use fontlib;
+use fontcases;
+
+phi.ReleaseTtf:Program
+{
+	call FontLib.Start;
+	call FntTestCases.Run: 'tests/ttf/release.bin';
+}

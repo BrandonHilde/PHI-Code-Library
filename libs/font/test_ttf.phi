@@ -1,0 +1,11 @@
+# fontlib against the everyday TrueType cases, in tests/ttf/cases.bin: Liberation Sans, the fonts made by
+# tools/font/make_font_tests.py (one or a few of each feature and each kind of damage), and a few cut
+# short and fuzzed. fontcases.phi says how they're checked.
+use fontlib;
+use fontcases;
+
+phi.TestTtf:Program
+{
+	call FontLib.Start;
+	call FntTestCases.Run: 'tests/ttf/cases.bin';
+}

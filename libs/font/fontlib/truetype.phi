@@ -1,0 +1,1293 @@
+# TrueType fonts: the face, each glyph's outline and metrics, and which glyph a character is.
+#
+# The rules are tools/font/ttf_reference.py's, checked against FreeType and HarfBuzz, and this follows
+# them check for check, in the same order, so that the two give the same reasons. In short:
+#
+#   - The face, the outlines and the metrics are FreeType's (unscaled, unhinted): its table directory
+#     (an entry past the end of the file is left out; hmtx is clipped to it), the tables it needs
+#     (head, hhea and hmtx, loca; no maxp is no glyphs, no glyf is no outlines), its checks on each
+#     glyph, its composites (transforms, offsets, point matching, USE_MY_METRICS, a glyph that
+#     contains itself refused), and the shift it gives an outline so that its left edge is at the
+#     left side bearing.
+#   - Which glyph a character is: HarfBuzz's, as browsers look it up: its own reading of the table
+#     directory and of cmap, its choice of subtable, and its fallbacks for symbol and Mac fonts. A
+#     subtable its sanitizer fails leaves the font with no characters.
+#
+# Every read is checked against the file's length. A glyph's outline goes into an FntOutline, which
+# grows as it needs to, up to FreeType's 32,767 points. Composites are loaded with a stack of their
+# own rather than by recursion, as they may be nested as deep as there are glyphs.
+
+use corelib;
+use fontlib.face;
+
+# One composite glyph being loaded: where its next component is, and what came of the one before
+struct.FntFrame
+{
+	u32 glyph;
+	u32 q;                  # its next component's record, in the file
+	u32 limit;              # where its data ends
+	u32 start_point;        # the outline's points before it
+	int pp1;                # its phantom point 1's x, and its advance
+	int adv;
+	bln more;               # a component after the one being loaded
+	bln pending;            # a component has been loaded, and needs placing
+	u32 flags;              # that component's
+	int a1;
+	int a2;
+	int xx;
+	int xy;
+	int yx;
+	int yy;
+	u32 base;               # the outline's points before that component
+	u32 index;              # its glyph
+}
+
+struct.FntTrueType
+{
+	ptr<u8> data;
+	u32 length;
+
+	# the tables FreeType reads: where each starts and how long it is
+	u32 head_at;
+	u32 hmtx_at;
+	u32 hmtx_len;
+	u32 glyf_at;
+	u32 glyf_len;
+	u32 loca_at;
+	bln long_loca;
+	u32 num_locations;
+	u32 long_metrics;
+	bln mac;                # FreeType's "SFNT Mac font": no hhea, so no metrics
+
+	# the face
+	u32 glyph_count;
+	int units_per_em;
+	int ascender;
+	int descender;
+	int line_gap;
+	int height;
+	int max_advance;
+
+	# HarfBuzz's cmap: the subtable chosen (format, where it starts, where cmap ends), and how
+	u32 sub_format;
+	u32 sub_at;
+	u32 sub_end;
+	bln have_sub;
+	u32 kind;               # 0 as it is; 1 symbol; 2 Mac Roman; 3 ASCII only
+
+	# loading a glyph
+	ptr<FntFrame> frames;
+	u32 frame_room;
+	u32 depth;
+	ptr<u8> on_path;        # a bit for each glyph: a composite being loaded
+	int ret_pp1;            # what the glyph just loaded gave: its phantom point 1's x and advance
+	int ret_adv;
+
+
+	# ---------------------------------------------------------------- the face
+
+	[Open: ptr<u8> d: 0; u32 n: 0;]
+		data is d;
+		length is n;
+		if n < 12
+			throw 'not a font file';
+		;;
+		call Face: (d as u8[n]);
+		call Charmap: (d as u8[n]);
+	[end]
+
+	[Face: u8 src[];]
+		u32 tag: (U32: src 0);
+		if tag is 0x4F54544F
+			throw 'CFF outlines (an OpenType .otf font), which aren\'t read yet';
+		;;
+		if tag is 0x74746366
+			throw 'a font collection, which isn\'t read yet';
+		;;
+		if tag is not 0x00010000 and tag is not 0x74727565
+			throw 'not a TrueType font';
+		;;
+		if not (AnyTable: src)
+			throw 'a font with no tables';
+		;;
+		u32 head_len: 0;
+		head_at is (Table: src 0x68656164 addr head_len);
+		if head_len is 0 or head_len < 0x36
+			throw 'a font with no head table';
+		;;
+		if head_at + 54 > length
+			throw 'the file is cut short';
+		;;
+		units_per_em is (U16: src (head_at + 18)) as int;
+		if units_per_em < 16 or units_per_em > 16384
+			throw 'units per em of ' units_per_em ', which isn\'t 16 to 16384';
+		;;
+		long_loca is ((I16: src (head_at + 50)) is not 0);
+
+		# no maxp is no glyphs, as FreeType has it
+		u32 maxp_len: 0;
+		u32 maxp_at: (Table: src 0x6D617870 addr maxp_len);
+		glyph_count is 0;
+		if maxp_len is not 0
+			if maxp_at + 6 > length
+				throw 'the file is cut short';
+			;;
+			glyph_count is (U16: src (maxp_at + 4));
+		;;
+
+		u32 hhea_len: 0;
+		u32 hhea_at: (Table: src 0x68686561 addr hhea_len);
+		mac is (hhea_len is 0 and tag is 0x74727565);
+		if mac
+			ascender is 0;
+			descender is 0;
+			line_gap is 0;
+			max_advance is 0;
+			long_metrics is 0;
+			hmtx_at is 0;
+			hmtx_len is 0;
+		;;
+		elif hhea_len is 0
+			throw 'a font with no hhea table';
+		;;
+		else
+			if hhea_at + 36 > length
+				throw 'the file is cut short';
+			;;
+			ascender is (I16: src (hhea_at + 4));
+			descender is (I16: src (hhea_at + 6));
+			line_gap is (I16: src (hhea_at + 8));
+			max_advance is (U16: src (hhea_at + 10)) as int;
+			long_metrics is (U16: src (hhea_at + 34));
+			hmtx_at is (Table: src 0x686D7478 addr hmtx_len);
+			if hmtx_len is 0
+				throw 'a font with no hmtx table';
+			;;
+		;;
+
+		# glyf and loca: no glyf is no outlines; no loca refuses the font
+		glyf_at is (Table: src 0x676C7966 addr glyf_len);
+		if glyf_len is 0
+			glyf_at is 0;
+		;;
+		u32 loca_len: 0;
+		loca_at is (Table: src 0x6C6F6361 addr loca_len);
+		if loca_len is 0
+			throw 'a font with no loca table';
+		;;
+		u32 shift: 1;
+		u32 too_big: 0x20000;
+		if long_loca
+			shift is 2;
+			too_big is 0x40000;
+		;;
+		if loca_len >= too_big
+			throw 'a loca table too big for the glyphs it can have';
+		;;
+		num_locations is loca_len >> shift;
+		if num_locations is not glyph_count + 1 and num_locations <= glyph_count
+			# FreeType: if the bytes up to the next table (or the end) can hold loca for every glyph,
+			# it's taken as that long; otherwise there are fewer glyphs
+			u32 want: (glyph_count + 1) << shift;
+			u32 dist: (Room: src loca_at);
+			if want <= dist
+				num_locations is glyph_count + 1;
+			;;
+			elif num_locations > 0
+				glyph_count is num_locations - 1;
+			;;
+			else
+				glyph_count is 0;
+			;;
+		;;
+		call Line: src;
+	[end]
+
+	# The line, as FreeType has it: OS/2's typo metrics when its USE_TYPO_METRICS bit is set; or else
+	# hhea's, or OS/2's when hhea's ascender and descender are both 0. The height is kept in 16 bits
+	# and made positive, and so is the widest advance (but for its sign).
+	[Line: u8 src[];]
+		if mac
+			height is 0;
+			return;
+		;;
+		u32 os2: (Os2: src);
+		int h: 0;
+		if os2 is not 0 and ((U16: src (os2 + 62)) & 128) is not 0
+			ascender is (I16: src (os2 + 68));
+			descender is (I16: src (os2 + 70));
+			h is ascender - descender + (I16: src (os2 + 72));
+		;;
+		else
+			h is ascender - descender + line_gap;
+			if ascender is 0 and descender is 0 and os2 is not 0
+				int ta: (I16: src (os2 + 68));
+				int td: (I16: src (os2 + 70));
+				if ta is not 0 or td is not 0
+					ascender is ta;
+					descender is td;
+					h is ta - td + (I16: src (os2 + 72));
+				;;
+				else
+					ascender is (Short: (U16: src (os2 + 74)) as int);
+					descender is 0 - (Short: (U16: src (os2 + 76)) as int);
+					h is ascender - descender;
+				;;
+			;;
+		;;
+		h is (Short: h);
+		if h < 0
+			h is (Short: 0 - h);
+		;;
+		height is h;
+		max_advance is (Short: max_advance);
+	[end]
+
+	# a number kept to 16 bits, signed
+	[Short: int v: 0; : int]
+		int w: v & 0xFFFF;
+		if w >= 0x8000
+			return w - 0x10000;
+		;;
+	[end: w]
+
+	# where OS/2 starts, if FreeType can read it (its version's fields all in the file); 0 if not
+	[Os2: u8 src[]; : u32]
+		u32 os2_len: 0;
+		u32 q: (Table: src 0x4F532F32 addr os2_len);
+		if os2_len is 0 or q + 78 > length
+			return 0;
+		;;
+		u32 need: (Os2Size: (U16: src q));
+		if q + need > length
+			return 0;
+		;;
+	[end: q]
+
+	[Os2Size: u32 version: 0; : u32]
+		u32 need: 78;
+		if version >= 1
+			need++ 8;
+		;;
+		if version >= 2
+			need++ 10;
+		;;
+		if version >= 5
+			need++ 4;
+		;;
+	[end: need]
+
+	# FreeType's table: the first entry with the tag and a length that isn't 0, among those it keeps
+	# (inside the file; hmtx clipped to it, to a multiple of 4); its length in len_out, 0 if none
+	[Table: u8 src[]; u32 tag: 0; ptr<u32> len_out: 0; : u32]
+		len_out:0 is 0;
+		u32 n: (U16: src 4);
+		while u32 k: 0; k < n; k++;
+			u32 p: 12 + 16 * k;
+			if p + 16 > length
+				break;
+			;;
+			u32 t: (U32: src p);
+			u32 off: (U32: src (p + 8));
+			u32 size: (U32: src (p + 12));
+			if off > length
+				continue;
+			;;
+			if size > length - off
+				if t is not 0x686D7478
+					continue;
+				;;
+				size is (length - off) & 0xFFFFFFFC;
+			;;
+			if t is tag and size is not 0
+				len_out:0 is size;
+				return off;
+			;;
+		;;
+	[end: 0]
+
+	# whether FreeType keeps any of the directory's entries
+	[AnyTable: u8 src[]; : bln]
+		u32 n: (U16: src 4);
+		while u32 k: 0; k < n; k++;
+			u32 p: 12 + 16 * k;
+			if p + 16 > length
+				break;
+			;;
+			u32 off: (U32: src (p + 8));
+			u32 size: (U32: src (p + 12));
+			if off > length
+				continue;
+			;;
+			if size > length - off and (U32: src p) is not 0x686D7478
+				continue;
+			;;
+			return true;
+		;;
+	[end: false]
+
+	# the bytes from loca to the next table FreeType keeps that starts after it, or to the end
+	[Room: u8 src[]; u32 from: 0; : u32]
+		u32 dist: 0;
+		bln found: false;
+		u32 n: (U16: src 4);
+		while u32 k: 0; k < n; k++;
+			u32 p: 12 + 16 * k;
+			if p + 16 > length
+				break;
+			;;
+			u32 t: (U32: src p);
+			u32 off: (U32: src (p + 8));
+			u32 size: (U32: src (p + 12));
+			if off > length
+				continue;
+			;;
+			if size > length - off and t is not 0x686D7478
+				continue;
+			;;
+			if off > from and (not found or off - from < dist)
+				dist is off - from;
+				found is true;
+			;;
+		;;
+		if not found
+			return length - from;
+		;;
+	[end: dist]
+
+	# ---------------------------------------------------------------- metrics and locations
+
+	# (advance, left side bearing) from hmtx, as FreeType reads them
+	[Metrics: u8 src[]; u32 g: 0; ptr<int> lsb_out: 0; : int]
+		lsb_out:0 is 0;
+		u32 stop: hmtx_at + hmtx_len;
+		u32 k: long_metrics;
+		if k is 0
+			return 0;
+		;;
+		if g < k
+			u32 p: hmtx_at + 4 * g;
+			if p + 4 > stop
+				return 0;
+			;;
+			lsb_out:0 is (I16: src (p + 2));
+			return (U16: src p) as int;
+		;;
+		u32 p: hmtx_at + 4 * (k - 1);
+		if p + 2 > stop
+			return 0;
+		;;
+		int adv: (U16: src p) as int;
+		u64 q: (hmtx_at as u64) + 4 * (k as u64) + 2 * ((g - k) as u64);
+		if q + 2 <= stop as u64
+			lsb_out:0 is (I16: src q as u32);
+		;;
+	[end: adv]
+
+	# where glyph g's data is in glyf, and how long it is (0: an empty glyph)
+	[Location: u8 src[]; u32 g: 0; ptr<u32> size_out: 0; : u32]
+		size_out:0 is 0;
+		if num_locations is 0 or g >= num_locations - 1
+			return 0;
+		;;
+		u32 pos1: 0;
+		u32 pos2: 0;
+		if long_loca
+			u32 p: loca_at + 4 * g;
+			if p + 4 > length
+				return 0;
+			;;
+			pos1 is (U32: src p);
+			pos2 is pos1;
+			if p + 8 <= loca_at + num_locations * 4 and p + 8 <= length
+				pos2 is (U32: src (p + 4));
+			;;
+		;;
+		else
+			u32 p: loca_at + 2 * g;
+			if p + 2 > length
+				return 0;
+			;;
+			pos1 is (U16: src p) * 2;
+			pos2 is pos1;
+			if p + 4 <= loca_at + num_locations * 2 and p + 4 <= length
+				pos2 is (U16: src (p + 2)) * 2;
+			;;
+		;;
+		if pos1 > glyf_len
+			return 0;
+		;;
+		if pos2 > glyf_len
+			if g is num_locations - 2
+				pos2 is glyf_len;
+			;;
+			else
+				return 0;
+			;;
+		;;
+		if pos2 >= pos1
+			size_out:0 is pos2 - pos1;
+		;;
+		else
+			size_out:0 is pos1 - pos2;
+		;;
+	[end: pos1]
+
+	# ---------------------------------------------------------------- outlines
+
+	# glyph g's outline, into o: throws why it can't be loaded
+	[Glyph: u32 g: 0; ptr<FntOutline> o: 0;]
+		if g >= glyph_count
+			throw 'no such glyph';
+		;;
+		o.points is 0;
+		o.contours is 0;
+		depth is 0;
+		call Load: (data as u8[length]) g o;
+	[end]
+
+	[Load: u8 src[]; u32 g: 0; ptr<FntOutline> o: 0;]
+		if on_path is 0
+			on_path is new u8[(glyph_count + 8) / 8];
+			if on_path is 0
+				throw 'out of memory';
+			;;
+		;;
+		call Enter: src g o;
+		while depth > 0
+			ptr<FntFrame> f: addr frames:(depth - 1);
+			if f.pending
+				f.pending is false;
+				call Place: f o;
+			;;
+			if not f.more
+				ret_pp1 is f.pp1;
+				ret_adv is f.adv;
+				on_path:(f.glyph / 8) is (on_path:(f.glyph / 8) & ~(1 << (f.glyph % 8))) as u8;
+				depth--;
+				continue;
+			;;
+			call Record: src f;
+			f.base is o.points;
+			f.pending is true;
+			call Enter: src f.index o;
+		;;
+		if ret_pp1 is not 0
+			call Shift: o ret_pp1;
+		;;
+		o.advance is ret_adv;
+	[end]
+
+	# Glyph g: an empty or simple glyph is loaded now, its result in ret_pp1 and ret_adv; a composite
+	# is pushed, to be loaded component by component
+	[Enter: u8 src[]; u32 g: 0; ptr<FntOutline> o: 0;]
+		int lsb: 0;
+		int adv: (Metrics: src g addr lsb);
+		u32 size: 0;
+		u32 pos: (Location: src g addr size);
+		if size is 0
+			ret_pp1 is 0 - lsb;
+			ret_adv is adv;
+			return;
+		;;
+		u32 p: glyf_at + pos;
+		if (p as u64) + (size as u64) > length as u64
+			throw 'a glyph past the end of the file';
+		;;
+		u32 limit: p + size;
+		if size < 10
+			throw 'a glyph too short for its header';
+		;;
+		int n_contours: (I16: src p);
+		int pp1: (I16: src (p + 2)) - lsb;
+		ret_pp1 is pp1;
+		ret_adv is adv;
+		if n_contours is 0
+			return;
+		;;
+		if n_contours > 0
+			call Simple: src (p + 10) limit (n_contours as u32) o;
+			return;
+		;;
+		if ((on_path:(g / 8) >> (g % 8)) & 1) is not 0
+			throw 'a composite glyph that contains itself';
+		;;
+		on_path:(g / 8) is (on_path:(g / 8) | (1 << (g % 8))) as u8;
+		call FrameRoom: (depth + 1);
+		ptr<FntFrame> f: addr frames:depth;
+		depth++;
+		f.glyph is g;
+		f.q is p + 10;
+		f.limit is limit;
+		f.start_point is o.points;
+		f.pp1 is pp1;
+		f.adv is adv;
+		f.more is true;
+		f.pending is false;
+	[end]
+
+	[FrameRoom: u32 need: 0;]
+		if need <= frame_room
+			return;
+		;;
+		u32 room: frame_room * 2;
+		if room < 16
+			room is 16;
+		;;
+		while room < need
+			room is room * 2;
+		;;
+		ptr<FntFrame> grown: new FntFrame[room];
+		if grown is 0
+			throw 'out of memory';
+		;;
+		while u32 k: 0; k < depth; k++;
+			grown:k is frames:k;
+		;;
+		if frames is not 0
+			free frames;
+		;;
+		frames is grown;
+		frame_room is room;
+	[end]
+
+	# a composite's next component record: its flags, glyph, offsets or points, and transform
+	[Record: u8 src[]; ptr<FntFrame> f: 0;]
+		u32 q: f.q;
+		u32 limit: f.limit;
+		if q + 4 > limit
+			throw 'a composite glyph cut short';
+		;;
+		u32 flags: (U16: src q);
+		u32 index: (U16: src (q + 2));
+		q++ 4;
+		if index >= glyph_count
+			throw 'a component that isn\'t a glyph';
+		;;
+		u32 count: 2;
+		if (flags & 1) is not 0
+			count++ 2;
+		;;
+		if (flags & 8) is not 0
+			count++ 2;
+		;;
+		elif (flags & 0x40) is not 0
+			count++ 4;
+		;;
+		elif (flags & 0x80) is not 0
+			count++ 8;
+		;;
+		if q + count > limit
+			throw 'a composite glyph cut short';
+		;;
+		if (flags & 2) is not 0
+			if (flags & 1) is not 0
+				f.a1 is (I16: src q);
+				f.a2 is (I16: src (q + 2));
+				q++ 4;
+			;;
+			else
+				f.a1 is (I8: src:q);
+				f.a2 is (I8: src:(q + 1));
+				q++ 2;
+			;;
+		;;
+		else
+			if (flags & 1) is not 0
+				f.a1 is (U16: src q) as int;
+				f.a2 is (U16: src (q + 2)) as int;
+				q++ 4;
+			;;
+			else
+				f.a1 is src:q as int;
+				f.a2 is src:(q + 1) as int;
+				q++ 2;
+			;;
+		;;
+		f.xx is 0x10000;
+		f.yy is 0x10000;
+		f.xy is 0;
+		f.yx is 0;
+		if (flags & 8) is not 0
+			f.xx is (I16: src q) * 4;
+			f.yy is f.xx;
+		;;
+		elif (flags & 0x40) is not 0
+			f.xx is (I16: src q) * 4;
+			f.yy is (I16: src (q + 2)) * 4;
+		;;
+		elif (flags & 0x80) is not 0
+			f.xx is (I16: src q) * 4;
+			f.yx is (I16: src (q + 2)) * 4;
+			f.xy is (I16: src (q + 4)) * 4;
+			f.yy is (I16: src (q + 6)) * 4;
+		;;
+		q++ count - 2 - ((flags & 1) * 2);
+		f.flags is flags;
+		f.index is index;
+		f.more is ((flags & 0x20) is not 0);
+		f.q is q;
+	[end]
+
+	# the component just loaded, placed: its metrics taken if it says so, its points transformed and
+	# moved by its offset, or so that one of its points is on one of the glyph's
+	[Place: ptr<FntFrame> f: 0; ptr<FntOutline> o: 0;]
+		u32 flags: f.flags;
+		if (flags & 0x200) is not 0
+			f.pp1 is ret_pp1;
+			f.adv is ret_adv;
+		;;
+		u32 base: f.base;
+		u32 n: o.points;
+		if n is base
+			return;
+		;;
+		bln have_scale: ((flags & (8 | 0x40 | 0x80)) is not 0);
+		if have_scale
+			while u32 i: base; i < n; i++;
+				i64 x: o.x:i;
+				i64 y: o.y:i;
+				o.x:i is (W32: (MulFix: x f.xx) + (MulFix: y f.xy));
+				o.y:i is (W32: (MulFix: x f.yx) + (MulFix: y f.yy));
+			;;
+		;;
+		int dx: 0;
+		int dy: 0;
+		if (flags & 2) is 0
+			u64 k: (f.a1 as u64) + (f.start_point as u64);
+			u64 l: (f.a2 as u64) + (base as u64);
+			if k >= base as u64 or l >= n as u64
+				throw 'a component matched to a point it doesn\'t have';
+			;;
+			dx is (W32: (o.x:(k as u32) as i64) - (o.x:(l as u32) as i64));
+			dy is (W32: (o.y:(k as u32) as i64) - (o.y:(l as u32) as i64));
+		;;
+		else
+			dx is f.a1;
+			dy is f.a2;
+			if dx is 0 and dy is 0
+				return;
+			;;
+			if have_scale and (flags & 0x800) is not 0
+				dx is (W32: (MulFix: dx (Length: f.xx f.xy)));
+				dy is (W32: (MulFix: dy (Length: f.yy f.yx)));
+			;;
+		;;
+		if dx is not 0 or dy is not 0
+			while u32 i: base; i < n; i++;
+				o.x:i is (W32: (o.x:i as i64) + dx);
+				o.y:i is (W32: (o.y:i as i64) + dy);
+			;;
+		;;
+	[end]
+
+	# the outline moved left by its phantom point 1's x
+	[Shift: ptr<FntOutline> o: 0; int pp1: 0;]
+		while u32 i: 0; i < o.points; i++;
+			o.x:i is (W32: (o.x:i as i64) - pp1);
+		;;
+	[end]
+
+	# a simple glyph's contours and points, from q, onto the outline
+	[Simple: u8 src[]; u32 q: 0; u32 limit: 0; u32 n_contours: 0; ptr<FntOutline> o: 0;]
+		if o.contours + n_contours > Fnt.MOST_CONTOURS
+			throw 'a glyph with too many contours';
+		;;
+		if n_contours >= 0xFFF or q + (n_contours + 1) * 2 > limit
+			throw 'a glyph cut short';
+		;;
+		# the contours' last points, as 16-bit signed numbers, each after the one before
+		int prev: (I16: src q);
+		if prev < 0
+			throw 'a glyph whose contours aren\'t in order';
+		;;
+		while u32 k: 1; k < n_contours; k++;
+			int e: (I16: src (q + 2 * k));
+			if e <= prev
+				throw 'a glyph whose contours aren\'t in order';
+			;;
+			prev is e;
+		;;
+		u32 n_points: (prev + 1) as u32;
+		# FreeType's limit, with room for its 4 phantom points
+		if o.points + n_points + 4 > Fnt.MOST_POINTS
+			throw 'a glyph with too many points';
+		;;
+		call Fnt.Grow: o (o.points + n_points) (o.contours + n_contours);
+		u32 base: o.points;
+		while u32 k: 0; k < n_contours; k++;
+			o.ends:(o.contours + k) is base + ((I16: src (q + 2 * k)) as u32);
+		;;
+		q++ 2 * n_contours;
+		u32 n_ins: (U16: src q);
+		q++ 2;
+		if limit - q < n_ins
+			throw 'a glyph whose instructions run past its end';
+		;;
+		q++ n_ins;
+
+		# the flags, into on (each point's, whole, for now)
+		u32 got: 0;
+		while got < n_points
+			if q + 1 > limit
+				throw 'a glyph cut short';
+			;;
+			u32 c: src:q;
+			q++;
+			o.on:(base + got) is c as u8;
+			got++;
+			if (c & 8) is not 0
+				if q + 1 > limit
+					throw 'a glyph cut short';
+				;;
+				u32 count: src:q;
+				q++;
+				if got + count > n_points
+					throw 'a glyph whose flags run past its points';
+				;;
+				while u32 r: 0; r < count; r++;
+					o.on:(base + got) is c as u8;
+					got++;
+				;;
+			;;
+		;;
+		int x: 0;
+		while u32 i: 0; i < n_points; i++;
+			u32 f: o.on:(base + i);
+			int delta: 0;
+			if (f & 2) is not 0
+				if q + 1 > limit
+					throw 'a glyph cut short';
+				;;
+				delta is src:q as int;
+				if (f & 0x10) is 0
+					delta is 0 - delta;
+				;;
+				q++;
+			;;
+			elif (f & 0x10) is 0
+				if q + 2 > limit
+					throw 'a glyph cut short';
+				;;
+				delta is (I16: src q);
+				q++ 2;
+			;;
+			x is x + delta;
+			o.x:(base + i) is x;
+		;;
+		int y: 0;
+		while u32 i: 0; i < n_points; i++;
+			u32 f: o.on:(base + i);
+			int delta: 0;
+			if (f & 4) is not 0
+				if q + 1 > limit
+					throw 'a glyph cut short';
+				;;
+				delta is src:q as int;
+				if (f & 0x20) is 0
+					delta is 0 - delta;
+				;;
+				q++;
+			;;
+			elif (f & 0x20) is 0
+				if q + 2 > limit
+					throw 'a glyph cut short';
+				;;
+				delta is (I16: src q);
+				q++ 2;
+			;;
+			y is y + delta;
+			o.y:(base + i) is y;
+			o.on:(base + i) is (f & 1) as u8;
+		;;
+		o.points is base + n_points;
+		o.contours is o.contours + n_contours;
+	[end]
+
+	# ---------------------------------------------------------------- FreeType's fixed point
+
+	# FT_MulFix: a * b / 65536, rounded half away from zero
+	[MulFix: i64 a: 0; i64 b: 0; : i64]
+		bln negative: false;
+		if a < 0
+			a is 0 - a;
+			negative is not negative;
+		;;
+		if b < 0
+			b is 0 - b;
+			negative is not negative;
+		;;
+		i64 c: (a * b + 0x8000) >> 16;
+		if negative
+			return 0 - c;
+		;;
+	[end: c]
+
+	# FT_Vector_Length: exact when either part is 0; otherwise its CORDIC, as FreeType does it
+	[Length: int vx: 0; int vy: 0; : i64]
+		i64 x: vx;
+		i64 y: vy;
+		if x is 0
+			if y < 0
+				return 0 - y;
+			;;
+			return y;
+		;;
+		if y is 0
+			if x < 0
+				return 0 - x;
+			;;
+			return x;
+		;;
+		i64 ax: x;
+		if ax < 0
+			ax is 0 - ax;
+		;;
+		i64 ay: y;
+		if ay < 0
+			ay is 0 - ay;
+		;;
+		u32 m: ((ax | ay) & 0xFFFFFFFF) as u32;
+		int msb: 31;
+		while msb > 0 and ((m >> msb) & 1) is 0
+			msb--;
+		;;
+		int shift: 0;
+		if msb <= 29
+			shift is 29 - msb;
+			x is x << shift;
+			y is y << shift;
+		;;
+		else
+			shift is msb - 29;
+			x is x >> shift;
+			y is y >> shift;
+			shift is 0 - shift;
+		;;
+		# into [-PI/4, PI/4]
+		if y > x
+			if y > 0 - x
+				i64 t: y;
+				y is 0 - x;
+				x is t;
+			;;
+			else
+				x is 0 - x;
+				y is 0 - y;
+			;;
+		;;
+		elif y < 0 - x
+			i64 t: 0 - y;
+			y is x;
+			x is t;
+		;;
+		i64 b: 1;
+		while int i: 1; i < 23; i++;
+			i64 xt: 0;
+			if y > 0
+				xt is x + ((y + b) >> i);
+				y is y - ((x + b) >> i);
+			;;
+			else
+				xt is x - ((y + b) >> i);
+				y is y + ((x + b) >> i);
+			;;
+			x is xt;
+			b is b << 1;
+		;;
+		bln negative: (x < 0);
+		u64 v: x as u64;
+		if negative
+			v is (0 - x) as u64;
+		;;
+		v is (v * 0xDBD95B16 + 0x100000000) >> 32;
+		i64 r: v as i64;
+		if negative
+			r is 0 - r;
+		;;
+		if shift > 0
+			return (r + (1 << (shift - 1))) >> shift;
+		;;
+	[end: (r << (0 - shift)) & 0xFFFFFFFF]
+
+	# a coordinate kept to 32 bits
+	[W32: i64 v: 0; : int]
+	[end: (v & 0xFFFFFFFF) as int]
+
+	# ---------------------------------------------------------------- HarfBuzz's cmap
+
+	# the subtable HarfBuzz chooses, and how it looks characters up in it
+	[Charmap: u8 src[];]
+		have_sub is false;
+		u32 blob_end: 0;
+		u32 start: (HbTable: src 0x636D6170 addr blob_end);
+		if blob_end is 0
+			return;
+		;;
+		if blob_end - start < 4 or (U16: src start) is not 0
+			return;
+		;;
+		u32 n: (U16: src (start + 2));
+		if start + 4 + 8 * n > blob_end
+			return;
+		;;
+		# every subtable must pass HarfBuzz's sanitizer, or there are no characters
+		while u32 k: 0; k < n; k++;
+			u32 off: (U32: src (start + 4 + 8 * k + 4));
+			if off is not 0
+				if (start as u64) + (off as u64) > blob_end as u64 or not (Sane: src (start + off) blob_end)
+					return;
+				;;
+			;;
+		;;
+		kind is 0;
+		if (Choose: src start n blob_end 3 0)
+			if (FontPage: src) is 0
+				kind is 1;
+			;;
+			return;
+		;;
+		u32 pids: 3 0 0 3 0 0 0 0;
+		u32 eids: 10 6 4 1 3 2 1 0;
+		while u32 k: 0; k < 8; k++;
+			if (Choose: src start n blob_end pids:k eids:k)
+				return;
+			;;
+		;;
+		if (Choose: src start n blob_end 1 0)
+			kind is 2;
+			return;
+		;;
+		if (Choose: src start n blob_end 1 0xFFFF)
+			kind is 3;
+		;;
+	[end]
+
+	# HarfBuzz's binary search of the records for (pid, eid), an eid of 0xFFFF matching any; true
+	# if it chose one with a subtable
+	[Choose: u8 src[]; u32 start: 0; u32 n: 0; u32 blob_end: 0; u32 pid: 0; u32 eid: 0; : bln]
+		int lo: 0;
+		int hi: n as int - 1;
+		while lo <= hi
+			int mid: ((lo as u32 + hi as u32) / 2) as int;
+			u32 rec: start + 4 + 8 * (mid as u32);
+			u32 rp: (U16: src rec);
+			u32 re: (U16: src (rec + 2));
+			int c: 0;
+			if pid < rp
+				c is -1;
+			;;
+			elif pid > rp
+				c is 1;
+			;;
+			elif eid is not 0xFFFF
+				if eid < re
+					c is -1;
+				;;
+				elif eid > re
+					c is 1;
+				;;
+			;;
+			if c < 0
+				hi is mid - 1;
+			;;
+			elif c > 0
+				lo is mid + 1;
+			;;
+			else
+				u32 off: (U32: src (rec + 4));
+				if off is 0
+					return false;
+				;;
+				sub_at is start + off;
+				sub_end is blob_end;
+				sub_format is (U16: src sub_at);
+				have_sub is true;
+				return true;
+			;;
+		;;
+	[end: false]
+
+	# whether HarfBuzz's sanitizer passes the subtable at p, in a cmap ending at stop
+	[Sane: u8 src[]; u32 p: 0; u32 stop: 0; : bln]
+		if p + 2 > stop
+			return false;
+		;;
+		u32 fmt: (U16: src p);
+		u64 room: (stop - p) as u64;
+		if fmt is 0
+			return room >= 262;
+		;;
+		if fmt is 4
+			# only its arrays must fit: its length field isn't used
+			if room < 14
+				return false;
+			;;
+			return 16 + 4 * ((U16: src (p + 6)) as u64) <= room;
+		;;
+		if fmt is 6
+			if room < 10
+				return false;
+			;;
+			return 10 + 2 * ((U16: src (p + 8)) as u64) <= room;
+		;;
+		if fmt is 12 or fmt is 13
+			if room < 16
+				return false;
+			;;
+			return 16 + 12 * ((U32: src (p + 12)) as u64) <= room;
+		;;
+		if fmt is 10
+			if room < 20
+				return false;
+			;;
+			return 20 + 2 * ((U32: src (p + 16)) as u64) <= room;
+		;;
+	[end: true]
+
+	# HarfBuzz's table: where it starts (its end in end_out, clamped to the file; 0 if it isn't
+	# there), found by a binary search, as the directory is meant to be sorted
+	[HbTable: u8 src[]; u32 tag: 0; ptr<u32> end_out: 0; : u32]
+		end_out:0 is 0;
+		u32 n: (U16: src 4);
+		if 12 + 16 * n > length
+			return 0;
+		;;
+		int lo: 0;
+		int hi: n as int - 1;
+		while lo <= hi
+			int mid: ((lo as u32 + hi as u32) / 2) as int;
+			u32 p: 12 + 16 * (mid as u32);
+			u32 t: (U32: src p);
+			if tag < t
+				hi is mid - 1;
+			;;
+			elif tag > t
+				lo is mid + 1;
+			;;
+			else
+				u32 off: (U32: src (p + 8));
+				u32 size: (U32: src (p + 12));
+				if off >= length
+					return 0;
+				;;
+				u32 stop: length;
+				if size < length - off
+					stop is off + size;
+				;;
+				end_out:0 is stop;
+				return off;
+			;;
+		;;
+	[end: 0]
+
+	# HarfBuzz's font page: OS/2 version 0's fsSelection & 0xFF00, if its OS/2 passes the sanitizer
+	[FontPage: u8 src[]; : u32]
+		u32 stop: 0;
+		u32 q: (HbTable: src 0x4F532F32 addr stop);
+		if stop is 0 or stop - q < 78
+			return 0;
+		;;
+		u32 version: (U16: src q);
+		if stop - q < (Os2Size: version)
+			return 0;
+		;;
+		if version is not 0
+			return 0;
+		;;
+	[end: (U16: src (q + 62)) & 0xFF00]
+
+	# the glyph for character u, as HarfBuzz looks it up
+	[GlyphOf: u32 u: 0; : u32]
+		if not have_sub
+			return 0;
+		;;
+	[end: (Lookup: (data as u8[length]) u)]
+
+	[Lookup: u8 src[]; u32 u: 0; : u32]
+		if kind is 3
+			if u < 0x80
+				return (Find: src u);
+			;;
+			return 0;
+		;;
+		if kind is 2
+			if u < 0x80
+				u32 g: (Find: src u);
+				if g is not 0
+					return g;
+				;;
+			;;
+			# (HarfBuzz looks the character up in its Mac Roman table as 16 bits)
+			u32 m: (FntMacRoman.Byte: u & 0xFFFF);
+			if m is 0
+				return 0;
+			;;
+			return (Find: src m);
+		;;
+		u32 g: (Find: src u);
+		if g is not 0 or kind is not 1
+			return g;
+		;;
+		if u <= 0xFF
+			return (Find: src (0xF000 + u));
+		;;
+	[end: 0]
+
+	# u in the chosen subtable, by its format
+	[Find: u8 src[]; u32 u: 0; : u32]
+		u32 p: sub_at;
+		when sub_format
+			is 0
+				if u < 256
+					return src:(p + 6 + u);
+				;;
+				return 0;
+			;;
+			is 4
+				return (Find4: src u);
+			;;
+			is 6
+				u32 first: (U16: src (p + 6));
+				u32 count: (U16: src (p + 8));
+				if u >= first and u - first < count
+					return (U16: src (p + 10 + 2 * (u - first)));
+				;;
+				return 0;
+			;;
+			is 10
+				u32 first: (U32: src (p + 12));
+				u32 count: (U32: src (p + 16));
+				if u >= first and u - first < count
+					return (U16: src (p + 20 + 2 * (u - first)));
+				;;
+				return 0;
+			;;
+			is 12
+				return (FindGroup: src u false);
+			;;
+			is 13
+				return (FindGroup: src u true);
+			;;
+		;;
+	[end: 0]
+
+	[Find4: u8 src[]; u32 u: 0; : u32]
+		u32 p: sub_at;
+		u32 seg: (U16: src (p + 6)) / 2;
+		u32 ends: p + 14;
+		u32 starts: ends + 2 * seg + 2;
+		u32 deltas: starts + 2 * seg;
+		u32 ranges: deltas + 2 * seg;
+		u32 glyphs: ranges + 2 * seg;
+		u32 values: 16 + 8 * seg;
+		u32 glyph_count_4: 0;
+		if sub_end - p > values
+			glyph_count_4 is (sub_end - p - values) / 2;
+		;;
+		int lo: 0;
+		int hi: seg as int - 1;
+		while lo <= hi
+			int mid: ((lo as u32 + hi as u32) / 2) as int;
+			u32 m: mid as u32;
+			# (HarfBuzz compares with the segment's end first)
+			if u > (U16: src (ends + 2 * m))
+				lo is mid + 1;
+			;;
+			elif u < (U16: src (starts + 2 * m))
+				hi is mid - 1;
+			;;
+			else
+				u32 ro: (U16: src (ranges + 2 * m));
+				u32 delta: (U16: src (deltas + 2 * m));
+				if ro is 0
+					return (u + delta) & 0xFFFF;
+				;;
+				u32 index: ro / 2 + (u - (U16: src (starts + 2 * m))) + m - seg;
+				if index >= glyph_count_4
+					return 0;
+				;;
+				u32 g: (U16: src (glyphs + 2 * index));
+				if g is 0
+					return 0;
+				;;
+				return (g + delta) & 0xFFFF;
+			;;
+		;;
+	[end: 0]
+
+	[FindGroup: u8 src[]; u32 u: 0; bln same: false; : u32]
+		u32 p: sub_at;
+		u32 n: (U32: src (p + 12));
+		i64 lo: 0;
+		i64 hi: (n as i64) - 1;
+		while lo <= hi
+			i64 mid: (lo + hi) / 2;
+			u32 q: p + 16 + 12 * (mid as u32);
+			u32 start: (U32: src q);
+			u32 stop: (U32: src (q + 4));
+			if u < start
+				hi is mid - 1;
+			;;
+			elif u > stop
+				lo is mid + 1;
+			;;
+			else
+				u32 g: (U32: src (q + 8));
+				if same
+					return g;
+				;;
+				if start <= stop
+					return g + (u - start);
+				;;
+				return 0;
+			;;
+		;;
+	[end: 0]
+
+	# ---------------------------------------------------------------- reading big-endian numbers
+
+	[U16: u8 src[]; u32 p: 0; : u32]
+	[end: ((src:p as u32) << 8) | src:(p + 1)]
+
+	[I16: u8 src[]; u32 p: 0; : int]
+		int v: (U16: src p) as int;
+		if v >= 0x8000
+			return v - 0x10000;
+		;;
+	[end: v]
+
+	[U32: u8 src[]; u32 p: 0; : u32]
+	[end: ((src:p as u32) << 24) | ((src:(p + 1) as u32) << 16) | ((src:(p + 2) as u32) << 8) | src:(p + 3)]
+
+	[I8: u8 v: 0; : int]
+		if v >= 0x80
+			return (v as int) - 256;
+		;;
+	[end: v as int]
+}
+
+# Unicode to Mac OS Roman's top half, for HarfBuzz's Mac Roman fallback
+phi.FntMacRoman:Library
+{
+	# the Unicode character of each of Mac OS Roman's bytes 0x80 to 0xFF
+	u32 unicode: 0x00C4 0x00C5 0x00C7 0x00C9 0x00D1 0x00D6 0x00DC 0x00E1 0x00E0 0x00E2 0x00E4 0x00E3 0x00E5
+		0x00E7 0x00E9 0x00E8 0x00EA 0x00EB 0x00ED 0x00EC 0x00EE 0x00EF 0x00F1 0x00F3 0x00F2 0x00F4 0x00F6
+		0x00F5 0x00FA 0x00F9 0x00FB 0x00FC 0x2020 0x00B0 0x00A2 0x00A3 0x00A7 0x2022 0x00B6 0x00DF 0x00AE
+		0x00A9 0x2122 0x00B4 0x00A8 0x2260 0x00C6 0x00D8 0x221E 0x00B1 0x2264 0x2265 0x00A5 0x00B5 0x2202
+		0x2211 0x220F 0x03C0 0x222B 0x00AA 0x00BA 0x03A9 0x00E6 0x00F8 0x00BF 0x00A1 0x00AC 0x221A 0x0192
+		0x2248 0x2206 0x00AB 0x00BB 0x2026 0x00A0 0x00C0 0x00C3 0x00D5 0x0152 0x0153 0x2013 0x2014 0x201C
+		0x201D 0x2018 0x2019 0x00F7 0x25CA 0x00FF 0x0178 0x2044 0x20AC 0x2039 0x203A 0xFB01 0xFB02 0x2021
+		0x00B7 0x201A 0x201E 0x2030 0x00C2 0x00CA 0x00C1 0x00CB 0x00C8 0x00CD 0x00CE 0x00CF 0x00CC 0x00D3
+		0x00D4 0xF8FF 0x00D2 0x00DA 0x00DB 0x00D9 0x0131 0x02C6 0x02DC 0x00AF 0x02D8 0x02D9 0x02DA 0x00B8
+		0x02DD 0x02DB 0x02C7;
+
+	# the Mac Roman byte for u; 0 if it has none
+	[Byte: u32 u: 0; : u32]
+		while u32 i: 0; i < 128; i++;
+			if unicode:i is u
+				return 0x80 + i;
+			;;
+		;;
+	[end: 0]
+}

@@ -1,0 +1,281 @@
+# Running the TrueType cases against fontlib, for test_ttf (the everyday cases, in tests/ttf/cases.bin)
+# and release_ttf (all of them, in release.bin). Each file is made by tools/font/make_font_tests.py
+# and holds the cases and what the rules, checked against FreeType and HarfBuzz, make of each:
+#   Liberation Sans, the fonts made by the script, and fonts cut short and with a few bytes changed
+# A font that's read must have the same face, the same CRC-32 over every glyph (its advance, points,
+# on-curve flags and contours, or that it can't be loaded) and the same CRC-32 over the glyph of each
+# code point to 0xFFFF and every 16th from there to 0x2FFFF. One that's refused must be refused for
+# the same reason. This is test code, which fontlib.phi doesn't use, so it's no part of the library.
+use fontlib;
+use data.crc32;
+use memory.mem;
+
+phi.FntTestCases:Library
+{
+	ptr<FntOutline> outline;
+	u8 bytes[16];
+
+	[Run: str cases_path;]
+		outline is (Fnt.NewOutline);
+		u32 cases_size: 0;
+		ptr<u8> cases_bytes: (Load: cases_path addr cases_size);
+		CoreReader r;
+		call r.Start: cases_bytes cases_size;
+		u32 count: (r.U32LE);
+		if count > 100000
+			log cases_path ' is damaged\n';
+			exit 1;
+		;;
+		u32 arena_size: 64 * 1024 * 1024;
+		ptr<u8> arena: new u8[arena_size];
+		ptr<u32> at_arena: new u32[count];
+		ptr<u32> lengths: new u32[count];
+		u32 arena_used: 0;
+		if arena is 0 or at_arena is 0 or lengths is 0 or outline is 0
+			log 'out of memory\n';
+			exit 1;
+		;;
+		u32 runs[4];
+		u32 right[4];
+		u32 read[4];
+		str first_lines: '';
+		str made_lines: '';
+		str group_names: 'fonts' 'made' 'cut' 'fuzz';
+
+		while u32 i: 0; i < count; i++;
+			u32 group: (r.U8);
+			u32 kind: (r.U8);
+			u32 name_len: (r.U8);
+			ptr<u8> name_at: (r.Bytes: name_len);
+			call r.Skip: 4;
+			if r.failed or group > 3 or kind > 3
+				log cases_path ' is cut short, or damaged\n';
+				exit 1;
+			;;
+			str name: '';
+			while u32 k: 0; k < name_len; k++;
+				name++ name_at:k as chr;
+			;;
+			u32 length: 0;
+			u32 start: arena_used;
+			when kind
+				is 0
+					u32 path_len: (r.U8);
+					ptr<u8> path_at: (r.Bytes: path_len);
+					str path: '';
+					while u32 k: 0; k < path_len; k++;
+						path++ path_at:k as chr;
+					;;
+					u32 file_size: 0;
+					ptr<u8> file: (Load: path addr file_size);
+					call Room: arena_used file_size arena_size;
+					call Mem.Copy: (arena + start) file file_size;
+					free file;
+					length is file_size;
+				;;
+				is 1
+					length is (r.U32LE);
+					ptr<u8> data: (r.Bytes: length);
+					if data is 0
+						log cases_path ' is cut short\n';
+						exit 1;
+					;;
+					call Room: arena_used length arena_size;
+					call Mem.Copy: (arena + start) data length;
+				;;
+				is 2
+					u32 source: (r.U32LE);
+					length is (r.U32LE);
+					if source >= i or length > lengths:source
+						log cases_path ' is damaged\n';
+						exit 1;
+					;;
+					start is at_arena:source;
+				;;
+				else
+					u32 source: (r.U32LE);
+					u32 changes: (r.U16LE);
+					if source >= i
+						log cases_path ' is damaged\n';
+						exit 1;
+					;;
+					length is lengths:source;
+					call Room: arena_used length arena_size;
+					call Mem.Copy: (arena + start) (arena + at_arena:source) length;
+					while u32 k: 0; k < changes; k++;
+						u32 change_at: (r.U32LE);
+						u32 value: (r.U8);
+						if change_at >= length
+							log cases_path ' is damaged\n';
+							exit 1;
+						;;
+						arena:(start + change_at) is value as u8;
+					;;
+				;;
+			;;
+			at_arena:i is start;
+			lengths:i is length;
+			if start is arena_used
+				arena_used++ length;
+			;;
+
+			bln want_ok: ((r.U8) is 1);
+			u32 want[8];
+			str want_why: '';
+			if want_ok
+				while u32 k: 0; k < 8; k++;
+					want:k is (r.U32LE);
+				;;
+			;;
+			else
+				u32 why_len: (r.U8);
+				ptr<u8> why_at: (r.Bytes: why_len);
+				while u32 k: 0; k < why_len; k++;
+					want_why++ why_at:k as chr;
+				;;
+			;;
+			if r.failed
+				log cases_path ' is cut short\n';
+				exit 1;
+			;;
+
+			ptr<FntFace> face: (Fnt.Load: (arena + start) length);
+			runs:group++;
+			str wrong: '';
+			if want_ok and face is 0
+				wrong is 'the rules read it, but fontlib says: ' Fnt.error;
+			;;
+			elif not want_ok and face is not 0
+				wrong is 'the rules refuse it (' want_why '), but fontlib reads it';
+			;;
+			elif want_ok
+				u32 got[8];
+				got:0 is face.glyph_count;
+				got:1 is face.units_per_em as u32;
+				got:2 is face.ascender as u32;
+				got:3 is face.descender as u32;
+				got:4 is face.height as u32;
+				got:5 is face.max_advance as u32;
+				got:6 is (GlyphCrc: face);
+				got:7 is (CmapCrc: face);
+				str parts: 'glyphs' 'units per em' 'ascender' 'descender' 'height' 'widest advance' 'glyphs\' CRC' 'characters\' CRC';
+				while u32 k: 0; k < 8; k++;
+					if got:k is not want:k and wrong.len is 0
+						wrong is parts:k ' is ' got:k ', where the rules have ' want:k;
+					;;
+				;;
+			;;
+			elif Fnt.error is not want_why
+				wrong is 'refused for another reason: ' Fnt.error ', where the rules say ' want_why;
+			;;
+			if wrong.len > 0
+				log 'WRONG ' group_names:group ' ' name ': ' wrong '\n';
+			;;
+			else
+				right:group++;
+				if face is not 0
+					read:group++;
+				;;
+				if group is 0
+					if face is not 0
+						first_lines++ '  ' name ': ' face.glyph_count ' glyphs\n';
+					;;
+					else
+						first_lines++ '  ' name ': ' Fnt.error '\n';
+					;;
+				;;
+				if group is 1 and face is 0
+					made_lines++ '  ' name ': ' Fnt.error '\n';
+				;;
+			;;
+			call Fnt.Free: face;
+		;;
+		if r.failed or r.pos is not cases_size
+			log cases_path ' is damaged\n';
+			exit 1;
+		;;
+		log 'fonts: ' right:0 ' of ' runs:0 ' as the rules say (' read:0 ' read, ' right:0 - read:0 ' refused):\n' first_lines;
+		log 'made: ' right:1 ' of ' runs:1 ' as the rules say (' read:1 ' read, ' right:1 - read:1 ' refused), refused:\n' made_lines;
+		if runs:2 > 0
+			log 'cut: ' right:2 ' of ' runs:2 ' as the rules say (' read:2 ' read, ' right:2 - read:2 ' refused)\n';
+		;;
+		if runs:3 > 0
+			log 'fuzz: ' right:3 ' of ' runs:3 ' as the rules say (' read:3 ' read, ' right:3 - read:3 ' refused)\n';
+		;;
+		call Fnt.FreeOutline: outline;
+		log 'done\n';
+		exit 0;
+	[end]
+
+	# the CRC-32 of every glyph, as make_font_tests.py makes it
+	[GlyphCrc: ptr<FntFace> face: 0; : u32]
+		u32 crc: 0;
+		while u32 g: 0; g < face.glyph_count; g++;
+			if not (Fnt.Outline: face g outline)
+				crc is (Add32: crc 0xFFFFFFFF);
+				continue;
+			;;
+			crc is (Add32: crc outline.advance as u32);
+			crc is (Add32: crc outline.points);
+			crc is (Add32: crc outline.contours);
+			while u32 k: 0; k < outline.points; k++;
+				crc is (Add32: crc outline.x:k as u32);
+				crc is (Add32: crc outline.y:k as u32);
+				bytes:0 is outline.on:k;
+				crc is (Crc32.Add: crc bytes 1);
+			;;
+			while u32 k: 0; k < outline.contours; k++;
+				bytes:0 is (outline.ends:k & 255) as u8;
+				bytes:1 is ((outline.ends:k >> 8) & 255) as u8;
+				crc is (Crc32.Add: crc bytes 2);
+			;;
+		;;
+	[end: crc]
+
+	# the CRC-32 of the glyph of each code point to 0xFFFF, and every 16th from there to 0x2FFFF
+	[CmapCrc: ptr<FntFace> face: 0; : u32]
+		u32 crc: 0;
+		u32 u: 0;
+		while u < 0x30000
+			crc is (Add32: crc (Fnt.GlyphOf: face u));
+			if u < 0x10000
+				u++;
+			;;
+			else
+				u++ 16;
+			;;
+		;;
+	[end: crc]
+
+	[Add32: u32 crc: 0; u32 v: 0; : u32]
+		bytes:0 is (v & 255) as u8;
+		bytes:1 is ((v >> 8) & 255) as u8;
+		bytes:2 is ((v >> 16) & 255) as u8;
+		bytes:3 is (v >> 24) as u8;
+	[end: (Crc32.Add: crc bytes 4)]
+
+	[Room: u32 used: 0; u32 more: 0; u32 size: 0;]
+		if more > size - used
+			log 'the cases need more than ' size ' bytes\n';
+			exit 1;
+		;;
+	[end]
+
+	[Load: str path; ptr<u32> size_out: 0; : ptr<u8>]
+		int size: (OS.FileSize: path);
+		if size < 0
+			log 'cannot read ' path '\n';
+			exit 1;
+		;;
+		ptr<u8> buffer: new u8[size as u32 + 1];
+		if buffer is 0
+			log 'out of memory reading ' path '\n';
+			exit 1;
+		;;
+		if (OS.ReadFile: path buffer size) is not size
+			log 'short read of ' path '\n';
+			exit 1;
+		;;
+		size_out:0 is size as u32;
+	[end: buffer]
+}

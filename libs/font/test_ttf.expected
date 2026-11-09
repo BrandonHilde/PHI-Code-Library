@@ -1,0 +1,16 @@
+fonts: 1 of 1 as the rules say (1 read, 0 refused):
+  LiberationSans-Regular.ttf: 2620 glyphs
+made: 61 of 61 as the rules say (51 read, 10 refused), refused:
+  tag-otto: CFF outlines (an OpenType .otf font), which aren't read yet
+  tag-ttcf: a font collection, which isn't read yet
+  tag-junk: not a TrueType font
+  too-short: not a font file
+  no-head: a font with no head table
+  no-hhea: a font with no hhea table
+  no-hmtx: a font with no hmtx table
+  no-loca: a font with no loca table
+  upem-15: units per em of 15, which isn't 16 to 16384
+  upem-16385: units per em of 16385, which isn't 16 to 16384
+cut: 14 of 14 as the rules say (4 read, 10 refused)
+fuzz: 40 of 40 as the rules say (34 read, 6 refused)
+done

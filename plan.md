@@ -375,7 +375,7 @@ call Fnt.Free: face;
 
 | Milestone | Scope | Checked against |
 |---|---|---|
-| 4.1 TrueType reading | Table directory, `head`, `hhea`, `hmtx`, `maxp`, `cmap`, `loca`, `glyf`, composite glyphs | FreeType's numbers (through `freetype-py`), for outlines and metrics |
+| 4.1 TrueType reading ✓ | Table directory, `head`, `hhea`, `hmtx`, `maxp`, `cmap`, `loca`, `glyf`, composite glyphs | FreeType's numbers (through `freetype-py`), for outlines and metrics |
 | 4.2 Rasterizer | Anti-aliased coverage in fixed-point, with a glyph cache | FreeType's bitmaps, within a tolerance |
 | 4.3 Simple text | UTF-8, advances, line metrics, measuring and drawing a run, fallback across faces | HarfBuzz advances, and reference bitmaps |
 | 4.4 Kerning | `kern`, and pair adjustment in `GPOS` | FreeType/HarfBuzz advances |
@@ -394,6 +394,16 @@ using it. Test fonts must have licenses that allow committing them, such as the 
 
 **A chance to help PHI:** PHI's own plan expects "a larger font loaded from a file" for text beyond
 ASCII, and fontlib could provide it.
+
+**4.1, done 2026-11-09,** in [libs/font](libs/font): the face, every glyph's outline and metrics, and
+which glyph a character is. The rules (`tools/font/ttf_reference.py`) are FreeType's for the face, the
+outlines and the metrics (unscaled, unhinted, composites included, and the shift of an outline to its
+left side bearing), and HarfBuzz's for characters, as browsers look them up; HarfBuzz's cmap source was
+read for what it does with damaged tables. Checked against freetype-py and uharfbuzz on Liberation Sans
+(committed, OFL), 61 fonts made with fontTools, and cut and fuzzed ones: fontlib agrees on the 116
+everyday cases and the 5,388 release cases, as 32 and 64-bit programs, and comes back from about 1.2
+million fuzzed fonts without a crash. Not done: CFF (4.5), collections, and HarfBuzz's Arabic symbol
+pages.
 
 **Done when:** milestones 4.1 to 4.4 pass, a test draws Unicode text beyond code page 437 that matches its
 reference, and every parser has been fuzzed.

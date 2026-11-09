@@ -37,6 +37,17 @@ def u32(d, p):
     return d[p] << 24 | d[p + 1] << 16 | d[p + 2] << 8 | d[p + 3]
 
 
+def w32(v):
+    """v kept to 32 bits, as fontlib keeps a coordinate"""
+    v &= 0xFFFFFFFF
+    return v - 0x100000000 if v & 0x80000000 else v
+
+
+# FreeType's most points and contours in one outline (FT_OUTLINE_POINTS_MAX, and CONTOURS_MAX)
+MOST_POINTS = 32767
+MOST_CONTOURS = 32767
+
+
 def i8(v):
     return v - 256 if v & 0x80 else v
 
@@ -320,7 +331,7 @@ class Face:
         except Refused as e:
             return str(e)
         if pp1:
-            self.points = [(x - pp1, y) for x, y in self.points]
+            self.points = [(w32(x - pp1), y) for x, y in self.points]
         return self.points, self.flags, self.ends, adv
 
     def load(self, g, depth):
@@ -408,42 +419,50 @@ class Face:
             if have_scale:
                 for i in range(base, len(self.points)):
                     x, y = self.points[i]
-                    self.points[i] = (mul_fix(x, xx) + mul_fix(y, xy), mul_fix(x, yx) + mul_fix(y, yy))
+                    self.points[i] = (w32(mul_fix(x, xx) + mul_fix(y, xy)), w32(mul_fix(x, yx) + mul_fix(y, yy)))
             if not flags & 2:
                 k, l = a1 + start_point, a2 + base
                 if k >= base or l >= len(self.points):
                     raise Refused('a component matched to a point it doesn\'t have')
-                dx = self.points[k][0] - self.points[l][0]
-                dy = self.points[k][1] - self.points[l][1]
+                dx = w32(self.points[k][0] - self.points[l][0])
+                dy = w32(self.points[k][1] - self.points[l][1])
             else:
                 dx, dy = a1, a2
                 if not dx and not dy:
                     continue
                 if have_scale and flags & 0x800:     # SCALED_COMPONENT_OFFSET
-                    dx = mul_fix(dx, vector_length(xx, xy))
-                    dy = mul_fix(dy, vector_length(yy, yx))
+                    dx = w32(mul_fix(dx, vector_length(xx, xy)))
+                    dy = w32(mul_fix(dy, vector_length(yy, yx)))
             if dx or dy:
                 for i in range(base, len(self.points)):
                     x, y = self.points[i]
-                    self.points[i] = (x + dx, y + dy)
+                    self.points[i] = (w32(x + dx), w32(y + dy))
         self.loading.pop()
         return pp1, adv
 
     def simple(self, q, limit, n_contours):
         d = self.data
+        if len(self.ends) + n_contours > MOST_CONTOURS:
+            raise Refused('a glyph with too many contours')
         if n_contours >= 0xFFF or q + (n_contours + 1) * 2 > limit:
             raise Refused('a glyph cut short')
+        # the contours' last points, as 16-bit signed numbers, each after the one before
         ends = []
-        prev = u16(d, q)
+        prev = i16(d, q)
+        if prev < 0:
+            raise Refused('a glyph whose contours aren\'t in order')
         ends.append(prev)
         for k in range(1, n_contours):
-            e = u16(d, q + 2 * k)
+            e = i16(d, q + 2 * k)
             if e <= prev:
                 raise Refused('a glyph whose contours aren\'t in order')
             ends.append(e)
             prev = e
         q += 2 * n_contours
         n_points = ends[-1] + 1
+        # FreeType's limit, with room for its 4 phantom points
+        if len(self.points) + n_points + 4 > MOST_POINTS:
+            raise Refused('a glyph with too many points')
         n_ins = u16(d, q)
         q += 2
         if limit - q < n_ins:
@@ -671,9 +690,9 @@ def sanitize_subtable(d, p, end):
             return None
         count = u32(d, p + 16)
         return (10, p, end) if p + 20 + 2 * count <= end else None
-    if fmt in (2, 8, 14):
-        return (fmt, p, end)        # passed, but not used to look characters up
-    return None
+    # every other format passes (2, 8, 14 and those GIF doesn't have), but isn't used to look
+    # characters up
+    return (fmt, p, end)
 
 
 def lookup(d, sub, u):

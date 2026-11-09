@@ -1,0 +1,9 @@
+# fontlib's TrueType reading fuzzed for crashes and hangs: the full run, for release. fuzz_ttf.phi does it.
+use fontlib;
+use fuzz_ttf;
+
+phi.ReleaseTtfFuzz:Program
+{
+	call FontLib.Start;
+	call FntFuzzTtf.Run: 100000 20 'tests/ttf/release.bin';
+}

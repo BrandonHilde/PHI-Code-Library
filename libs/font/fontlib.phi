@@ -1,0 +1,21 @@
+# fontlib: fonts in, glyphs out. It reads TrueType fonts: the face, each glyph's outline and metrics, in
+# font units, and which glyph a character is.
+#
+#   phi build fontlib.phi --library     # fontlib.philib, with corelib.philib beside it
+#
+# A program using it has both fontlib.philib and corelib.philib beside it. README.md says which names
+# are its API.
+
+use corelib;
+use fontlib.face;
+use fontlib.truetype;
+
+phi.FontLib:Library
+{
+	const int VERSION: 1;
+
+	# Call this once, before anything else in the library. It starts corelib too.
+	[Start]
+		call CoreLib.Start;
+	[end]
+}

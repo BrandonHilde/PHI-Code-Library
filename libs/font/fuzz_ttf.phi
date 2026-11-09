@@ -1,0 +1,251 @@
+# The crash fuzzer for TrueType, shared by test_ttf_fuzz (a short run, every day) and release_ttf_fuzz
+# (the full run, for release): reading damaged fonts, in bulk. Good fonts (Liberation Sans, and the
+# small ones made for test_ttf) are changed at random with a fixed seed; every value of each of the
+# first 200 bytes of several is tried; and numbers that cause trouble are put in every 16 and 32-bit
+# field of their first 400 bytes (the table directory, and the tables at the start). Every font that
+# loads has every glyph's outline loaded (up to 3,000) and a range of characters looked up. Each must
+# come back, as a face, outlines within FreeType's limits and glyphs that are the font's, or a reason:
+# a crash or a hang fails the test. (Whether fontlib is right about each is test_ttf's job.)
+# This is test code, which fontlib.phi doesn't use, so it's no part of the library.
+use fontlib;
+use memory.mem;
+
+phi.FntFuzzTtf:Library
+{
+	u32 seed: 0x2545F491;
+	u32 read: 0;
+	u32 refused: 0;
+	u32 glyphs: 0;
+	u32 bad_glyphs: 0;
+	u32 bases_count: 0;
+	ptr<u8> base_data[512];
+	u32 base_len[512];
+	ptr<FntOutline> outline;
+	const u32 WORK_SIZE: 500000;
+
+	# rounds random changes; files of every value of their first bytes, and of troublesome numbers;
+	# the starting fonts from cases_path
+	[Run: u32 rounds: 0; u32 files: 0; str cases_path;]
+		outline is (Fnt.NewOutline);
+		u32 size: 0;
+		base_data:0 is (Load: 'tests/fonts/LiberationSans-Regular.ttf' addr size);
+		base_len:0 is size;
+		bases_count is 1;
+		u32 cases_size: 0;
+		ptr<u8> cases_bytes: (Load: cases_path addr cases_size);
+		CoreReader r;
+		call r.Start: cases_bytes cases_size;
+		u32 count: (r.U32LE);
+		while u32 i: 0; i < count; i++;
+			u32 group: (r.U8);
+			u32 kind: (r.U8);
+			call r.Skip: (r.U8);
+			call r.Skip: 4;
+			ptr<u8> bytes: 0;
+			u32 length: 0;
+			when kind
+				is 0
+					call r.Skip: (r.U8);
+				;;
+				is 1
+					length is (r.U32LE);
+					bytes is (r.Bytes: length);
+				;;
+				is 2
+					call r.Skip: 8;
+				;;
+				else
+					call r.Skip: 4;
+					call r.Skip: (r.U16LE) * 5;
+				;;
+			;;
+			bln ok: ((r.U8) is 1);
+			if ok
+				call r.Skip: 32;
+			;;
+			else
+				call r.Skip: (r.U8);
+			;;
+			if group is 1 and kind is 1 and ok and length > 0 and length <= 4000 and bases_count < 512
+				base_data:bases_count is bytes;
+				base_len:bases_count is length;
+				bases_count++;
+			;;
+		;;
+		if r.failed or bases_count < 2
+			log cases_path ' is damaged\n';
+			exit 1;
+		;;
+		log 'fonts to change: ' bases_count '\n';
+		ptr<u8> work: new u8[WORK_SIZE];
+		if work is 0 or outline is 0
+			log 'out of memory\n';
+			exit 1;
+		;;
+
+		# changed at random: a few bits, a byte, a 16 or 32-bit field, cut short
+		while u32 n: 0; n < rounds; n++;
+			u32 which: (Next) % bases_count;
+			if which is 0 and n % 8 is not 0
+				which is 1 + (Next) % (bases_count - 1);   # Liberation Sans, an eighth of the time
+			;;
+			u32 len: base_len:which;
+			call Mem.Copy: work base_data:which len;
+			u32 how: (Next) % 5;
+			u32 spot: (Next) % len;
+			if (Next) % 3 is 0 and len > 400
+				spot is (Next) % 400;
+			;;
+			if how is 0
+				work:spot is (work:spot ^ (1 << ((Next) % 8))) as u8;
+			;;
+			elif how is 1
+				work:spot is ((Next) & 255) as u8;
+			;;
+			elif how is 2
+				call Field: work len spot 2;
+			;;
+			elif how is 3
+				call Field: work len spot 4;
+			;;
+			else
+				len is (Next) % len;
+			;;
+			call Try: work len;
+		;;
+		log 'changed at random: ' read ' read, ' refused ' refused, ' glyphs ' glyphs (' bad_glyphs ' that can\'t be loaded)\n';
+
+		# every value of each of the first 200 bytes
+		read is 0;
+		refused is 0;
+		while u32 s: 1; s < bases_count and s <= files; s++;
+			u32 which: 1 + ((s * 7) % (bases_count - 1));
+			u32 len: base_len:which;
+			u32 top: 200;
+			if top > len
+				top is len;
+			;;
+			while u32 at_byte: 0; at_byte < top; at_byte++;
+				while u32 v: 0; v < 256; v++;
+					call Mem.Copy: work base_data:which len;
+					work:at_byte is v as u8;
+					call Try: work len;
+				;;
+			;;
+		;;
+		log 'every value of the first 200 bytes: ' read ' read, ' refused ' refused\n';
+
+		# numbers that cause trouble in every 16 and 32-bit field of the first 400 bytes
+		read is 0;
+		refused is 0;
+		u32 troubles: 0 1 2 3 0x7F 0x80 0xFF 0x100 0x7FFF 0x8000 0xFFFF 0x10000 0x7FFFFFFF 0x80000000 0xFFFFFFFF;
+		while u32 s: 1; s < bases_count and s <= files; s++;
+			u32 which: 1 + ((s * 7) % (bases_count - 1));
+			u32 len: base_len:which;
+			while u32 at_byte: 0; at_byte + 4 <= 400 and at_byte + 4 <= len; at_byte++;
+				while u32 t: 0; t < troubles.len; t++;
+					call Mem.Copy: work base_data:which len;
+					call PutBE: work at_byte troubles:t (2 + 2 * (t % 2));
+					call Try: work len;
+				;;
+			;;
+		;;
+		log 'troublesome numbers: ' read ' read, ' refused ' refused\n';
+		free work;
+		call Fnt.FreeOutline: outline;
+		log 'done\n';
+		exit 0;
+	[end]
+
+	# a font loaded, every glyph's outline (up to 3,000), and characters looked up
+	[Try: ptr<u8> data: 0; u32 len: 0;]
+		ptr<FntFace> face: (Fnt.Load: data len);
+		if face is 0
+			if Fnt.error.len is 0
+				log 'WRONG: refused with no reason\n';
+				exit 1;
+			;;
+			refused++;
+			return;
+		;;
+		read++;
+		u32 top: face.glyph_count;
+		if top > 3000
+			top is 3000;
+		;;
+		while u32 g: 0; g < top; g++;
+			glyphs++;
+			if not (Fnt.Outline: face g outline)
+				bad_glyphs++;
+				if Fnt.error.len is 0
+					log 'WRONG: a glyph refused with no reason\n';
+					exit 1;
+				;;
+				continue;
+			;;
+			if outline.points > Fnt.MOST_POINTS or outline.contours > outline.points
+				log 'WRONG: an outline of ' outline.points ' points and ' outline.contours ' contours\n';
+				exit 1;
+			;;
+			while u32 k: 0; k < outline.contours; k++;
+				if outline.ends:k >= outline.points
+					log 'WRONG: a contour ending past the outline\'s points\n';
+					exit 1;
+				;;
+			;;
+		;;
+		u32 u: 0;
+		while u < 0x30000
+			call Fnt.GlyphOf: face u;
+			u++ 1 + u / 64;
+		;;
+		call Fnt.Free: face;
+	[end]
+
+	# a troublesome number of size bytes (2 or 4), big-endian, at a place in the data
+	[Field: ptr<u8> data: 0; u32 len: 0; u32 at_byte: 0; u32 size: 0;]
+		u32 values: 0 1 0x7FFF 0x8000 0xFFFF 0x7FFFFFFF 0x80000000 0xFFFFFFFF 0x10000 2;
+		u32 v: values:((Next) % 10);
+		if at_byte + size > len
+			return;
+		;;
+		call PutBE: data at_byte v size;
+	[end]
+
+	[PutBE: ptr<u8> data: 0; u32 at_byte: 0; u32 v: 0; u32 size: 0;]
+		if size is 2
+			data:at_byte is ((v >> 8) & 255) as u8;
+			data:(at_byte + 1) is (v & 255) as u8;
+			return;
+		;;
+		data:at_byte is (v >> 24) as u8;
+		data:(at_byte + 1) is ((v >> 16) & 255) as u8;
+		data:(at_byte + 2) is ((v >> 8) & 255) as u8;
+		data:(at_byte + 3) is (v & 255) as u8;
+	[end]
+
+	# xorshift32
+	[Next: : u32]
+		seed is seed ^ (seed << 13);
+		seed is seed ^ (seed >> 17);
+		seed is seed ^ (seed << 5);
+	[end: seed]
+
+	[Load: str path; ptr<u32> size_out: 0; : ptr<u8>]
+		int size: (OS.FileSize: path);
+		if size < 0
+			log 'cannot read ' path '\n';
+			exit 1;
+		;;
+		ptr<u8> buffer: new u8[size as u32 + 1];
+		if buffer is 0
+			log 'out of memory reading ' path '\n';
+			exit 1;
+		;;
+		if (OS.ReadFile: path buffer size) is not size
+			log 'short read of ' path '\n';
+			exit 1;
+		;;
+		size_out:0 is size as u32;
+	[end: buffer]
+}
