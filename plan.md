@@ -137,6 +137,15 @@ anyone using the library. If a later library wants `WlBuf` or `WlAtoms`, that's 
 [docs/conventions.md](docs/conventions.md) has the rules: name prefixes, bytes in and data out, handling
 hostile input, code that can go anywhere, the two kinds of test, what counts as done, and how to add a library.
 
+## Scope while in development
+
+The owner, 2026-11-10: "right now we are trying to just achieve a basic early development library. Any
+advanced features will be saved for later. We don't want to focus on pixel perfection. It's nice to have
+but that isn't what this is." So new work is the basic, working version of a feature; advanced features go
+on each phase's "later" list; outside references are checked against loosely (close, within a tolerance),
+not reverse-engineered to the last bit; and damaged input needs only to come back without a crash and with
+a reason. The exact matching already done stays, but isn't the standard for what's next.
+
 ## Testing while in development
 
 Nothing here has been released: it's all in development. During development we will use a light weight
@@ -222,8 +231,8 @@ phases after it):
       (2026-11-10: `Js.SetClockHook` and `Js.SetRandomSeed`; without them, the start of 1970 and a fixed seed)
 - [ ] List its x87 assembly, and write plain PHI versions where they're practical. **2026-11-10:** listed in
       [DESIGN.md](libs/web/docs/DESIGN.md#assembly-the-x87): two FPU control-word setters, 8 `Math`
-      functions and `**`. Plain PHI versions would be fdlibm ports (as V8 uses), which would match browsers
-      to the last bit and build anywhere, but change results in the last bit: the owner's call
+      functions and `**`. Plain PHI versions would be fdlibm ports (as V8 uses): later, as an advanced
+      feature (the owner, 2026-11-10: basics first, not pixel perfection)
 
 | Suite | Last recorded (browse README, Windows) | Linux, 2026-11-07 |
 |---|---|---|
