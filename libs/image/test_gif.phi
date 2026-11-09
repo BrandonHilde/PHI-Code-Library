@@ -1,0 +1,11 @@
+# imagelib's GIF decoder against the everyday cases, in tests/gif/cases.bin: GIFs Pillow and ImageMagick
+# write and the cases made by tools/image/make_gif_tests.py, one or a few of each feature and each kind
+# of damage. Each is read as an animation. testcases.phi says how they're checked.
+use imagelib;
+use testcases;
+
+phi.TestGif:Program
+{
+	call ImageLib.Start;
+	call ImgTestCases.Run: 'tests/gif/cases.bin' Img.GIF 'written';
+}

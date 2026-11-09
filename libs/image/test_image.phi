@@ -34,6 +34,11 @@ phi.TestImage:Program
 		221 0 0 0 26 101 88 73 102 73 73 42 0 8 0 0 0 1 0 18 1 3 0 1 0 0 0 6 0 0 0 0 0 0 0 183 72 17
 		41 0 0 0 13 73 68 65 84 120 218 99 248 207 0 4 255 1 7 0 1 255 61 125 140 73 0 0 0 0 73 69 78
 		68 174 66 96 130;
+	# 2 by 1 GIF, two frames: red then green, 250 ms; then red then white (index 2, transparent in
+	# this frame, leaves the red), 400 ms, disposed of by clearing; NETSCAPE2.0 says 3 more loops
+	u8 gif: 71 73 70 56 57 97 2 0 1 0 242 0 0 0 0 0 255 255 255 255 0 0 0 255 0 0 0 255 255 255 0 0
+		255 255 255 0 255 33 255 11 78 69 84 83 67 65 80 69 50 46 48 3 1 3 0 0 33 249 4 0 25 0 0 0 44
+		0 0 0 0 2 0 1 0 0 2 2 212 10 0 33 249 4 9 40 0 2 0 44 0 0 0 0 2 0 1 0 0 2 2 84 10 0 59;
 	# 2 by 2 JPEG, YCbCr 4:4:4 with no APP segment, made with make_jpeg_tests.py's encoder: its
 	# pixels are libjpeg-turbo's (through ImageMagick)
 	u8 jpeg: 255 216 255 219 0 67 0 3 2 2 3 2 2 3 3 3 3 4 3 3 4 5 8 5 5 4 4 5 10 7 7 6 8 12 10 12 12 11
@@ -46,8 +51,8 @@ phi.TestImage:Program
 		138 130 89 137 30 146 73 244 147 207 255 217;
 
 	log 'format: ' (Img.Format: rgb24 70) ' ' (Img.Format: png_start 8) ' ' (Img.Format: png_start 3) ' '
-		(Img.Format: rgb24 1) ' ' (Img.Format: 0 70) ' ' (Img.Format: jpeg 238) ' (BMP is ' Img.BMP ', PNG '
-		Img.PNG ', JPEG ' Img.JPEG ', unknown ' Img.UNKNOWN ')\n';
+		(Img.Format: rgb24 1) ' ' (Img.Format: 0 70) ' ' (Img.Format: jpeg 238) ' ' (Img.Format: gif 103)
+		' (BMP is ' Img.BMP ', PNG ' Img.PNG ', JPEG ' Img.JPEG ', GIF ' Img.GIF ', unknown ' Img.UNKNOWN ')\n';
 
 	call Show: 'rgb24' (Img.Decode: rgb24 70);
 	call Show: 'rgba32' (Img.Decode: rgba32 78);
@@ -71,6 +76,16 @@ phi.TestImage:Program
 	Img.ignore_orientation is false;
 	call Show: 'rgb24 again' (Img.Decode: rgb24 70);
 	log 'orientation: ' Img.orientation '\n';
+	call Show: 'gif' (Img.Decode: gif 103);
+	call Show: 'gif without its trailer' (Img.DecodeGif: gif 102);
+	call Show: 'gif header only' (Img.DecodeGif: gif 13);
+	call Show: 'png as gif' (Img.DecodeGif: png_palette 104);
+	call Animate: 'gif' gif 103;
+	call Animate: 'gif cut in its second frame' gif 98;
+	call Animate: 'png' png_palette 104;
+	call Animate: 'bad' png_start 8;
+	call Img.CloseAnimation: 0;
+	log 'next frame of nothing: ' (Img.NextFrame: 0) '\n';
 	call Show: 'empty' (Img.Decode: rgb24 0);
 	call Show: 'no data' (Img.DecodeBmp: 0 70);
 	call Show: 'cut short' (Img.DecodeBmp: rgb24 60);
@@ -100,6 +115,28 @@ phi.TestImage:Program
 	call Img.BlendRow: dest src 0;
 	log 'none blended: ' (Hex: dest:0) '\n';
 	exit 0;
+
+	# an animation, every frame of it
+	[Animate: str name; u8 data[]; u32 length: 0;]
+		ptr<ImgAnimation> a: (Img.OpenAnimation: data length);
+		if a is 0
+			log name ' animation: refused: ' Img.error '\n';
+			return;
+		;;
+		log name ' animation: ' a.w ' by ' a.h ', loops ' a.loops '\n';
+		while true
+			log '  frame ' a.index ', ' a.delay ' ms:';
+			while u32 i: 0; i < (a.w * a.h) as u32; i++;
+				log ' ' (Hex: a.frame.pixels:i);
+			;;
+			log '\n';
+			if not (Img.NextFrame: a)
+				break;
+			;;
+		;;
+		log '  end: ' Img.error '\n';
+		call Img.CloseAnimation: a;
+	[end]
 
 	[Show: str name; ptr<ImgImage> image: 0;]
 		if image is 0

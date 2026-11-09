@@ -1,0 +1,9 @@
+# imagelib's GIF decoder fuzzed for crashes and hangs: the full run, for release. fuzz_gif.phi does it.
+use imagelib;
+use fuzz_gif;
+
+phi.ReleaseGifFuzz:Program
+{
+	call ImageLib.Start;
+	call ImgFuzzGif.Run: 100000 12 20000 'tests/gif/release.bin';
+}

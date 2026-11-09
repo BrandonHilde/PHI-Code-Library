@@ -1,0 +1,37 @@
+written: 19 of 19 as the rules say (19 read, 0 refused):
+  pil-1x1: 1 by 1
+  pil-1x1-not-interlaced: 1 by 1
+  pil-7x5: 7 by 5
+  pil-7x5-not-interlaced: 7 by 5
+  pil-33x17: 33 by 17
+  pil-33x17-not-interlaced: 33 by 17
+  pil-64x48: 64 by 48
+  pil-64x48-not-interlaced: 64 by 48
+  pil-transparent: 9 by 6
+  pil-animation-disposal-0: 12 by 8
+  pil-animation-disposal-1: 12 by 8
+  pil-animation-disposal-2: 12 by 8
+  pil-animation-disposal-3: 12 by 8
+  pil-animation-optimized: 12 by 8
+  pil-animation-rgba: 12 by 8
+  im-gradient: 31 by 17
+  im-plasma: 40 by 30
+  im-animation-optimized: 20 by 16
+  im-animation-dispose-previous: 16 by 12
+made: 92 of 92 as the rules say (79 read, 13 refused), refused:
+  code-size-0: an LZW code size that isn't 2 to 11
+  code-size-1: an LZW code size that isn't 2 to 11
+  code-size-12: an LZW code size that isn't 2 to 11
+  code-size-255: an LZW code size that isn't 2 to 11
+  bad-signature: not a GIF file
+  not-a-gif: not a GIF file
+  screen-and-frame-no-size: an image of no size
+  frame-grows-past-the-limit: 3 by 3 is more than the limit of 8 pixels
+  no-image: a GIF with no image in it
+  no-image-only-extensions: a GIF with no image in it
+  header-cut-in-the-table: the file is cut short
+  limit-5-pixels: 3 by 2 is more than the limit of 5 pixels
+  screen-65535-square: 65535 by 65535 is more than the limit of 16777216 pixels
+cut: 1425 of 1425 as the rules say (734 read, 691 refused)
+fuzz: 4000 of 4000 as the rules say (2764 read, 1236 refused)
+done

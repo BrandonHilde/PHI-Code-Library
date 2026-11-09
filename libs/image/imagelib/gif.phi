@@ -1,0 +1,591 @@
+# GIF: still images and animations, every frame drawn on a canvas the size of the logical screen.
+#
+# The rules are tools/image/gif_reference.py's, checked against Pillow, ImageMagick and the GIF test
+# suite, and this follows them check for check, in the same order, so that the two give the same
+# reasons. Where those differ, the rules follow what browsers show. In short:
+#
+#   - The canvas starts transparent; the background color is ignored. It's the logical screen,
+#     grown to hold the first frame if that's past its right or bottom edge, as Chrome grows it.
+#   - Each image is a frame, drawn over what the frames before it left, clipped to the canvas. A
+#     transparent pixel leaves the canvas as it was. An index past the end of the color table (or
+#     with no table at all) is opaque black.
+#   - Disposal: 2 clears the frame's area to transparent; 3 and 4 put back what it held before the
+#     frame; the rest leave it.
+#   - LZW: the code size grows when the next free code reaches it, up to 12 bits; a full table
+#     waits for a clear. Codes after the end code, and pixels past the frame's, are ignored.
+#   - Damage shows what can be shown: a frame whose data ends early or has a code that can't be
+#     keeps what was drawn, and is the last; a file that ends between frames ends the animation
+#     there; a byte between blocks that starts none is skipped.
+#   - Refused: a header that isn't GIF87a or GIF89a, a canvas of no size or over the limit, a file
+#     with no image, and a first image whose LZW code size isn't 2 to 11 (for a later one, that ends
+#     the animation).
+#
+# Every read is checked against the file's length. The canvas is the only memory a frame needs
+# (with a copy of a frame's area for disposal 3), whatever its size or the number of frames.
+
+use corelib;
+use imagelib.image;
+
+# One GIF being read, a frame at a time. It's on the heap, as it's bigger than a method's variables
+# may be.
+struct.ImgGif
+{
+	ptr<ImgImage> image;    # the canvas, made at the first frame; for Img to free
+	ptr<u8> data;
+	u32 length;
+	u32 pos;                # where the next block starts
+	u32 w;
+	u32 h;
+	u32 limit;
+	u32 colors[256];        # the global color table, as pixels
+	u32 color_count;
+	u32 local[256];         # a frame's own table
+	ptr<u32> saved;         # for disposal 3: the area's pixels before its frame was drawn
+	u32 saved_size;         # how many saved has room for: the biggest such area so far
+	u32 frames;             # frames drawn so far
+	bln ended;              # no more frames
+	bln more;               # what Next found: true when it drew a frame
+	int loops;              # NETSCAPE2.0's loop count: 0 forever; -1 if there's none
+	u32 delay;              # the frame's delay, in milliseconds
+
+	# the last frame's disposal, and its area on the canvas
+	u32 dispose;
+	u32 dx0;
+	u32 dy0;
+	u32 dx1;
+	u32 dy1;
+
+	# the frame being drawn
+	u32 fx;
+	u32 fy;
+	u32 fw;
+	u32 fh;
+	bln interlaced;
+	u32 palette_count;      # the frame's table is in local: its own, or the global one
+	int transparent;        # -1: none
+	u64 count;              # the frame's pixels: fw * fh
+	u64 done;               # pixels given so far
+	u32 col;                # where the next one goes: its column in the frame
+	u32 row;                # and the row of the frame it's in (after interlacing)
+	u32 rows_done;          # rows given so far
+
+	# LZW: each code's string is its prefix's, then its suffix; first is its first index
+	u16 prefix[4096];
+	u16 suffix[4096];
+	u16 first[4096];
+	u16 lengths[4096];
+	u16 stack[4096];
+	u32 bp;                 # the next byte of the frame's data
+	u32 block_left;         # bytes left in the sub-block
+	u32 acc;
+	u32 nbits;
+	u32 status;             # how reading a code went: 0 a code; 1 the sub-blocks ended; 2 the file did
+
+	# the header: throws if the file isn't one that's read
+	[Open: ptr<u8> d: 0; u32 n: 0; u32 most: 0;]
+		data is d;
+		length is n;
+		limit is most;
+		loops is -1;
+		if n < 13
+			throw 'not a GIF file';
+		;;
+		call Header: (d as u8[n]);
+	[end]
+
+	[Header: u8 src[];]
+		if src:0 is not 'G' or src:1 is not 'I' or src:2 is not 'F' or src:3 is not '8' or
+			(src:4 is not '7' and src:4 is not '9') or src:5 is not 'a'
+			throw 'not a GIF file';
+		;;
+		w is src:6 | ((src:7 as u32) << 8);
+		h is src:8 | ((src:9 as u32) << 8);
+		if (w as u64) * (h as u64) > (limit as u64)
+			throw w ' by ' h ' is more than the limit of ' limit ' pixels';
+		;;
+		u32 flags: src:10;
+		pos is 13;
+		color_count is 0;
+		if (flags & 0x80) is not 0
+			u32 n: 2 << (flags & 7);
+			if pos + 3 * n > length
+				throw 'the file is cut short';
+			;;
+			call Table: src pos n colors;
+			color_count is n;
+			pos++ 3 * n;
+		;;
+	[end]
+
+	[Table: u8 src[]; u32 from: 0; u32 n: 0; u32 dst[];]
+		while u32 i: 0; i < n; i++;
+			dst:i is 0xFF000000 | ((src:(from + 3 * i) as u32) << 16) | ((src:(from + 3 * i + 1) as u32) << 8) | src:(from + 3 * i + 2);
+		;;
+	[end]
+
+	# The next frame, drawn on the canvas: more is true if there was one. Throws for what refuses
+	# the file: trouble before the first frame is drawn.
+	[Next]
+		more is false;
+		if ended
+			return;
+		;;
+		call Blocks: (data as u8[length]);
+	[end]
+
+	[Blocks: u8 src[];]
+		bln have_gce: false;
+		u32 g0: 0;
+		u32 g1: 0;
+		u32 g2: 0;
+		u32 g3: 0;
+		while true
+			if pos >= length
+				call End;
+				return;
+			;;
+			u32 b: src:pos;
+			if b is 0x21
+				if pos + 1 >= length
+					call End;
+					return;
+				;;
+				u32 label: src:(pos + 1);
+				# its sub-blocks, which count only if they all came
+				u32 p: pos + 2;
+				u32 k: 0;
+				bln found_gce: false;
+				u32 n0: 0;
+				u32 n1: 0;
+				u32 n2: 0;
+				u32 n3: 0;
+				bln looping: false;
+				bln found_loops: false;
+				int new_loops: 0;
+				while true
+					if p >= length
+						call End;
+						return;
+					;;
+					u32 size: src:p;
+					if size is 0
+						p++;
+						break;
+					;;
+					if p + 1 + size > length
+						call End;
+						return;
+					;;
+					if k is 0
+						if label is 0xF9 and size >= 4
+							found_gce is true;
+							n0 is src:(p + 1);
+							n1 is src:(p + 2);
+							n2 is src:(p + 3);
+							n3 is src:(p + 4);
+						;;
+						if label is 0xFF and size is 11 and ((Is: src (p + 1) 'NETSCAPE2.0') or (Is: src (p + 1) 'ANIMEXTS1.0'))
+							looping is true;
+						;;
+					;;
+					elif looping and not found_loops and size >= 3 and src:(p + 1) is 1
+						found_loops is true;
+						new_loops is (src:(p + 2) | ((src:(p + 3) as u32) << 8)) as int;
+					;;
+					k++;
+					p++ 1 + size;
+				;;
+				if found_gce
+					have_gce is true;
+					g0 is n0;
+					g1 is n1;
+					g2 is n2;
+					g3 is n3;
+				;;
+				if found_loops
+					loops is new_loops;
+				;;
+				pos is p;
+			;;
+			elif b is 0x2C
+				call Image: src have_gce g0 g1 g2 g3;
+				return;
+			;;
+			elif b is 0x3B
+				call End;
+				return;
+			;;
+			else
+				pos++;          # a byte that starts no block: skipped
+			;;
+		;;
+	[end]
+
+	# whether the 11 bytes at from are name's
+	[Is: u8 src[]; u32 from: 0; str name; : bln]
+		while u32 i: 0; i < 11; i++;
+			if src:(from + i) is not (name:i as u8)
+				return false;
+			;;
+		;;
+	[end: true]
+
+	[End]
+		ended is true;
+		if frames is 0
+			throw 'a GIF with no image in it';
+		;;
+	[end]
+
+	[Image: u8 src[]; bln have_gce: false; u32 g0: 0; u32 g1: 0; u32 g2: 0; u32 g3: 0;]
+		u32 p: pos;
+		if p + 10 > length
+			call End;
+			return;
+		;;
+		fx is src:(p + 1) | ((src:(p + 2) as u32) << 8);
+		fy is src:(p + 3) | ((src:(p + 4) as u32) << 8);
+		fw is src:(p + 5) | ((src:(p + 6) as u32) << 8);
+		fh is src:(p + 7) | ((src:(p + 8) as u32) << 8);
+		u32 flags: src:(p + 9);
+		p++ 10;
+		palette_count is color_count;
+		if (flags & 0x80) is not 0
+			u32 n: 2 << (flags & 7);
+			if p + 3 * n > length
+				call End;
+				return;
+			;;
+			call Table: src p n local;
+			palette_count is n;
+			p++ 3 * n;
+		;;
+		else
+			while u32 i: 0; i < color_count; i++;
+				local:i is colors:i;
+			;;
+		;;
+		if p >= length
+			call End;
+			return;
+		;;
+		u32 min_size: src:p;
+		p++;
+		if min_size < 2 or min_size > 11
+			if frames is 0
+				throw 'an LZW code size that isn't 2 to 11';
+			;;
+			ended is true;
+			return;
+		;;
+
+		if frames is 0
+			# the canvas: the screen, grown to hold the first frame
+			if fx + fw > w
+				w is fx + fw;
+			;;
+			if fy + fh > h
+				h is fy + fh;
+			;;
+			if w is 0 or h is 0
+				throw 'an image of no size';
+			;;
+			if (w as u64) * (h as u64) > (limit as u64)
+				throw w ' by ' h ' is more than the limit of ' limit ' pixels';
+			;;
+			image is (Img.New: w h);
+		;;
+
+		# the last frame's disposal, now that there's a next one
+		call Undo: (image.pixels as u32[w * h]);
+		transparent is -1;
+		u32 how: 0;
+		delay is 0;
+		if have_gce
+			how is (g0 >> 2) & 7;
+			if how is 4
+				how is 3;
+			;;
+			if (g0 & 1) is not 0
+				transparent is g3 as int;
+			;;
+			delay is (g1 | (g2 << 8)) * 10;
+		;;
+		u32 x0: (Least: fx w);
+		u32 y0: (Least: fy h);
+		u32 x1: (Least: (fx + fw) w);
+		u32 y1: (Least: (fy + fh) h);
+		if how is 3
+			u32 area: (x1 - x0) * (y1 - y0);
+			if area > saved_size
+				if saved is not 0
+					free saved;
+				;;
+				saved_size is 0;
+				saved is new u32[area];
+				if saved is 0
+					throw 'out of memory';
+				;;
+				saved_size is area;
+			;;
+			if area > 0
+				call Save: (image.pixels as u32[w * h]) (saved as u32[area]) x0 y0 x1 y1;
+			;;
+		;;
+		dispose is how;
+		dx0 is x0;
+		dy0 is y0;
+		dx1 is x1;
+		dy1 is y1;
+
+		interlaced is (flags & 0x40) is not 0;
+		count is (fw as u64) * (fh as u64);
+		done is 0;
+		col is 0;
+		rows_done is 0;
+		row is 0;
+		bln whole: (Lzw: src p min_size (image.pixels as u32[w * h]) local);
+		frames++;
+		more is true;
+		if not whole
+			ended is true;
+		;;
+	[end]
+
+	[Least: u32 a: 0; u32 b: 0; : u32]
+		if a < b
+			return a;
+		;;
+	[end: b]
+
+	# the last frame's area: cleared (disposal 2) or put back as it was (3)
+	[Undo: u32 px[];]
+		if dispose is 2
+			while u32 y: dy0; y < dy1; y++;
+				while u32 x: dx0; x < dx1; x++;
+					px:(y * w + x) is 0;
+				;;
+			;;
+		;;
+		elif dispose is 3 and (dx1 - dx0) * (dy1 - dy0) > 0
+			call Restore: px (saved as u32[saved_size]);
+		;;
+		dispose is 0;
+	[end]
+
+	[Restore: u32 px[]; u32 keep[];]
+		u32 aw: dx1 - dx0;
+		while u32 y: dy0; y < dy1; y++;
+			while u32 x: dx0; x < dx1; x++;
+				px:(y * w + x) is keep:((y - dy0) * aw + x - dx0);
+			;;
+		;;
+	[end]
+
+	[Save: u32 px[]; u32 keep[]; u32 x0: 0; u32 y0: 0; u32 x1: 0; u32 y1: 0;]
+		u32 aw: x1 - x0;
+		while u32 y: y0; y < y1; y++;
+			while u32 x: x0; x < x1; x++;
+				keep:((y - y0) * aw + x - x0) is px:(y * w + x);
+			;;
+		;;
+	[end]
+
+	# The frame's LZW data, starting at from, drawn as it comes. Whether it was whole: false when it ends early
+	# or has a code that can't be. pos is left where the sub-blocks end (if they do).
+	[Lzw: u8 src[]; u32 from: 0; u32 min_size: 0; u32 px[]; u32 pal[]; : bln]
+		u32 clear: 1 << min_size;
+		u32 eoi: clear + 1;
+		u32 size: min_size + 1;
+		u32 nxt: clear + 2;
+		while u32 i: 0; i < clear; i++;
+			suffix:i is i as u16;
+			first:i is i as u16;
+			lengths:i is 1;
+		;;
+		int prev: -1;
+		bp is from;
+		block_left is 0;
+		acc is 0;
+		nbits is 0;
+		bln whole: true;
+		while true
+			u32 code: (Code: src size);
+			if status is not 0
+				return (Ending: false);
+			;;
+			if code is clear
+				size is min_size + 1;
+				nxt is clear + 2;
+				prev is -1;
+				continue;
+			;;
+			if code is eoi
+				break;
+			;;
+			if prev < 0
+				if code >= clear
+					whole is false;
+					break;
+				;;
+				call Put: px pal code;
+				prev is code as int;
+				if nxt >= (1 << size) and size < 12
+					size++;
+				;;
+			;;
+			else
+				u32 c: code;
+				u32 p: prev as u32;
+				if code < nxt
+					c is code;
+				;;
+				elif code is nxt and nxt < 4096
+					c is p;
+				;;
+				else
+					whole is false;
+					break;
+				;;
+				# the code's string, written backwards and then given in order
+				u32 n: lengths:c;
+				u32 j: c;
+				u32 k: n;
+				while k > 0
+					k--;
+					stack:k is suffix:j;
+					j is prefix:j;
+				;;
+				while u32 q: 0; q < n; q++;
+					call Put: px pal stack:q;
+				;;
+				if code is nxt
+					call Put: px pal first:p;
+				;;
+				if nxt < 4096
+					prefix:nxt is p as u16;
+					if code < nxt
+						suffix:nxt is first:code;
+					;;
+					else
+						suffix:nxt is first:p;
+					;;
+					first:nxt is first:p;
+					lengths:nxt is lengths:p + 1;
+					nxt++;
+				;;
+				if nxt >= (1 << size) and size < 12
+					size++;
+				;;
+				prev is code as int;
+			;;
+			if done >= count
+				break;
+			;;
+		;;
+		# past the rest of the sub-blocks
+		u32 rest: bp;
+		if block_left is not 0
+			if block_left > length - rest
+				return (Ending: false);
+			;;
+			rest++ block_left;
+		;;
+		while true
+			if rest >= length
+				return (Ending: false);
+			;;
+			u32 sz: src:rest;
+			rest++;
+			if sz is 0
+				break;
+			;;
+			if sz > length - rest
+				return (Ending: false);
+			;;
+			rest++ sz;
+		;;
+		pos is rest;
+	[end: whole]
+
+	# the frame's data ended early: when it was the sub-blocks, the next block is after them
+	[Ending: bln whole: false; : bln]
+		if status is 1
+			pos is bp;
+		;;
+	[end: whole]
+
+	# the next code of size bits; status says if the data ended first
+	[Code: u8 src[]; u32 size: 0; : u32]
+		status is 0;
+		while nbits < size
+			if block_left is 0
+				if bp >= length
+					status is 2;
+					return 0;
+				;;
+				block_left is src:bp;
+				bp++;
+				if block_left is 0
+					status is 1;
+					return 0;
+				;;
+			;;
+			if bp >= length
+				status is 2;
+				return 0;
+			;;
+			acc is acc | ((src:bp as u32) << nbits);
+			nbits++ 8;
+			bp++;
+			block_left--;
+		;;
+		u32 code: acc & ((1 << size) - 1);
+		acc is acc >> size;
+		nbits is nbits - size;
+	[end: code]
+
+	# the frame's next pixel, index v: drawn if it's on the canvas and not transparent
+	[Put: u32 px[]; u32 pal[]; u32 v: 0;]
+		if done >= count
+			return;
+		;;
+		u32 y: fy + row;
+		u32 x: fx + col;
+		if y < h and x < w and (v as int) is not transparent
+			if v < palette_count
+				px:(y * w + x) is pal:v;
+			;;
+			else
+				px:(y * w + x) is 0xFF000000;
+			;;
+		;;
+		done++;
+		col++;
+		if col >= fw
+			col is 0;
+			rows_done++;
+			row is (RowOf: rows_done);
+		;;
+	[end]
+
+	# the row of the frame that its r-th row of data is: interlaced, the rows 0, 8, 16..., then
+	# 4, 12..., then 2, 6..., then 1, 3...
+	[RowOf: u32 r: 0; : u32]
+		if not interlaced
+			return r;
+		;;
+		u32 p1: (fh + 7) / 8;
+		u32 p2: (fh + 3) / 8;
+		u32 p3: (fh + 1) / 4;
+		if r < p1
+			return r * 8;
+		;;
+		if r < p1 + p2
+			return 4 + (r - p1) * 8;
+		;;
+		if r < p1 + p2 + p3
+			return 2 + (r - p1 - p2) * 4;
+		;;
+	[end: 1 + (r - p1 - p2 - p3) * 2]
+}

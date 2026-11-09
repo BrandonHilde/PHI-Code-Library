@@ -1,0 +1,205 @@
+# made by tools/image/make_gif_tests.py: what imagelib must make of each case in cases.bin
+# (the cut and fuzz cases are summed up by the case they come from, at the end)
+written pil-1x1                                       43 bytes  ok, 1 by 1
+written pil-1x1-not-interlaced                        43 bytes  ok, 1 by 1
+written pil-7x5                                      261 bytes  ok, 7 by 5
+written pil-7x5-not-interlaced                       110 bytes  ok, 7 by 5
+written pil-33x17                                    571 bytes  ok, 33 by 17
+written pil-33x17-not-interlaced                     269 bytes  ok, 33 by 17
+written pil-64x48                                   1365 bytes  ok, 64 by 48
+written pil-64x48-not-interlaced                     657 bytes  ok, 64 by 48
+written pil-transparent                               98 bytes  ok, 9 by 6
+written pil-animation-disposal-0                     823 bytes  ok, 12 by 8
+written pil-animation-disposal-1                     823 bytes  ok, 12 by 8
+written pil-animation-disposal-2                     919 bytes  ok, 12 by 8
+written pil-animation-disposal-3                     823 bytes  ok, 12 by 8
+written pil-animation-optimized                      823 bytes  ok, 12 by 8
+written pil-animation-rgba                          1197 bytes  ok, 12 by 8
+written im-gradient                                  253 bytes  ok, 31 by 17
+written im-plasma                                   1812 bytes  ok, 40 by 30
+written im-animation-optimized                       223 bytes  ok, 20 by 16
+written im-animation-dispose-previous                134 bytes  ok, 16 by 12
+made  depth1                                        48 bytes  ok, 9 by 7
+made  depth2                                        63 bytes  ok, 9 by 7
+made  depth3                                        83 bytes  ok, 9 by 7
+made  depth4                                       118 bytes  ok, 9 by 7
+made  depth5                                       173 bytes  ok, 9 by 7
+made  depth6                                       273 bytes  ok, 9 by 7
+made  depth7                                       465 bytes  ok, 9 by 7
+made  depth8                                       849 bytes  ok, 9 by 7
+made  one-pixel                                     35 bytes  ok, 1 by 1
+made  local-table                                   53 bytes  ok, 5 by 3
+made  no-global-table                               47 bytes  ok, 5 by 3
+made  no-table-at-all                               35 bytes  ok, 5 by 3
+made  index-past-the-table                          38 bytes  ok, 4 by 2
+made  interlace-h1                                  54 bytes  ok, 3 by 1
+made  interlace-h2                                  55 bytes  ok, 3 by 2
+made  interlace-h3                                  57 bytes  ok, 3 by 3
+made  interlace-h5                                  60 bytes  ok, 3 by 5
+made  interlace-h8                                  65 bytes  ok, 3 by 8
+made  interlace-h9                                  67 bytes  ok, 3 by 9
+made  interlace-h17                                 79 bytes  ok, 3 by 17
+made  random-64x48                                4985 bytes  ok, 64 by 48
+made  random-deferred-clear                       4985 bytes  ok, 64 by 48
+made  random-many-clears                          4761 bytes  ok, 64 by 48
+made  random-clear-each-pixel                      941 bytes  ok, 16 by 4
+made  runs-long-strings                            118 bytes  ok, 200 by 30
+made  no-first-clear                                61 bytes  ok, 5 by 3
+made  no-end-code                                   60 bytes  ok, 5 by 3
+made  bytes-after-the-end-code                      67 bytes  ok, 5 by 3
+made  more-pixels-than-the-frame                    60 bytes  ok, 3 by 2
+made  fewer-pixels-than-the-frame                   54 bytes  ok, 3 by 2
+made  code-size-2                                   37 bytes  ok, 4 by 2
+made  code-size-7                                   41 bytes  ok, 4 by 2
+made  code-size-11                                  45 bytes  ok, 4 by 2
+made  code-size-0                                   34 bytes  refused: an LZW code size that isn't 2 to 11
+made  code-size-1                                   34 bytes  refused: an LZW code size that isn't 2 to 11
+made  code-size-12                                  34 bytes  refused: an LZW code size that isn't 2 to 11
+made  code-size-255                                 34 bytes  refused: an LZW code size that isn't 2 to 11
+made  transparent                                   64 bytes  ok, 4 by 2
+made  transparent-past-the-table                    64 bytes  ok, 4 by 2
+made  transparent-flag-off                          64 bytes  ok, 4 by 2
+made  second-gce-wins                               72 bytes  ok, 4 by 2
+made  gce-short                                     62 bytes  ok, 4 by 2
+made  frame-inside                                  54 bytes  ok, 5 by 4
+made  frame-past-the-right-and-bottom               57 bytes  ok, 5 by 4
+made  frame-off-the-screen                          80 bytes  ok, 12 by 12
+made  frame-bigger-than-the-screen                  64 bytes  ok, 5 by 4
+made  second-frame-past-the-screen                  76 bytes  ok, 3 by 2
+made  frame-no-width                                69 bytes  ok, 3 by 2
+made  dispose-0                                    156 bytes  ok, 4 by 4
+made  dispose-1                                    156 bytes  ok, 4 by 4
+made  dispose-2                                    156 bytes  ok, 4 by 4
+made  dispose-3                                    156 bytes  ok, 4 by 4
+made  dispose-4                                    156 bytes  ok, 4 by 4
+made  dispose-5                                    156 bytes  ok, 4 by 4
+made  dispose-6                                    156 bytes  ok, 4 by 4
+made  dispose-7                                    156 bytes  ok, 4 by 4
+made  dispose-mixed                                173 bytes  ok, 4 by 4
+made  loops-0                                       85 bytes  ok, 2 by 1
+made  loops-1                                       85 bytes  ok, 2 by 1
+made  loops-7                                       85 bytes  ok, 2 by 1
+made  loops-65535                                   85 bytes  ok, 2 by 1
+made  no-loops                                      66 bytes  ok, 2 by 1
+made  animexts-loops                                77 bytes  ok, 2 by 1
+made  no-gce-frames                                 83 bytes  ok, 3 by 1
+made  gif87a-frames                                 68 bytes  ok, 3 by 1
+made  many-frames                                 1897 bytes  ok, 2 by 2
+made  comment                                       44 bytes  ok, 2 by 1
+made  plain-text                                    55 bytes  ok, 2 by 1
+made  unknown-application                           54 bytes  ok, 2 by 1
+made  unknown-extension                             41 bytes  ok, 2 by 1
+made  netscape-short                                52 bytes  ok, 2 by 1
+made  no-trailer                                    34 bytes  ok, 2 by 1
+made  junk-after-a-frame                            52 bytes  ok, 2 by 1
+made  junk-before-the-first-frame                   36 bytes  ok, 2 by 1
+made  background-index-past-the-table               35 bytes  ok, 2 by 1
+made  bad-signature                                 35 bytes  refused: not a GIF file
+made  not-a-gif                                      3 bytes  refused: not a GIF file
+made  screen-no-width                               35 bytes  ok, 1 by 1
+made  screen-no-height                              35 bytes  ok, 1 by 1
+made  screen-and-frame-no-size                      34 bytes  refused: an image of no size
+made  frame-grows-past-the-limit                    36 bytes  refused: 3 by 3 is more than the limit of 8 pixels
+made  no-image                                      20 bytes  refused: a GIF with no image in it
+made  no-image-only-extensions                      33 bytes  refused: a GIF with no image in it
+made  header-cut-in-the-table                       20 bytes  refused: the file is cut short
+made  limit-5-pixels                                35 bytes  refused: 3 by 2 is more than the limit of 5 pixels
+made  limit-6-pixels                                35 bytes  ok, 3 by 2
+made  screen-65535-square                           35 bytes  refused: 65535 by 65535 is more than the limit of 16777216 pixels
+made  bad-code-first                                53 bytes  ok, 6 by 4
+made  bad-code-later                                65 bytes  ok, 6 by 4
+made  data-ends-in-a-block                          52 bytes  ok, 6 by 4
+made  second-frame-cut                              72 bytes  ok, 4 by 2
+made  frame-header-cut                              57 bytes  ok, 4 by 2
+cut   pil-33x17                                  59 ok,  124 refused
+cut   pil-animation-disposal-2                   83 ok,  120 refused
+cut   pil-animation-optimized                    78 ok,  120 refused
+cut   im-animation-optimized                    106 ok,   56 refused
+cut   interlace-h17                              31 ok,   47 refused
+cut   random-64x48                              284 ok,  158 refused
+cut   dispose-mixed                              93 ok,   66 refused
+fuzz  more-pixels-than-the-frame                 44 ok,   13 refused
+fuzz  transparent                                38 ok,   11 refused
+fuzz  code-size-2                                33 ok,   24 refused
+fuzz  dispose-3                                  36 ok,   20 refused
+fuzz  pil-animation-disposal-3                   38 ok,    9 refused
+fuzz  depth4                                     35 ok,   10 refused
+fuzz  dispose-1                                  37 ok,    5 refused
+fuzz  loops-0                                    39 ok,   24 refused
+fuzz  screen-no-width                            27 ok,   13 refused
+fuzz  plain-text                                 27 ok,   15 refused
+fuzz  depth6                                     32 ok,    7 refused
+fuzz  no-loops                                   29 ok,   19 refused
+fuzz  pil-animation-optimized                    46 ok,   12 refused
+fuzz  frame-past-the-right-and-bottom            37 ok,   11 refused
+fuzz  runs-long-strings                          37 ok,   12 refused
+fuzz  im-animation-optimized                     28 ok,   11 refused
+fuzz  pil-animation-disposal-0                   52 ok,    5 refused
+fuzz  comment                                    17 ok,   24 refused
+fuzz  code-size-7                                32 ok,   22 refused
+fuzz  pil-33x17-not-interlaced                   32 ok,    9 refused
+fuzz  dispose-6                                  36 ok,   17 refused
+fuzz  code-size-11                               35 ok,   18 refused
+fuzz  frame-inside                               31 ok,   15 refused
+fuzz  no-end-code                                29 ok,   13 refused
+fuzz  second-gce-wins                            46 ok,   12 refused
+fuzz  pil-1x1-not-interlaced                     20 ok,   16 refused
+fuzz  depth1                                     32 ok,   22 refused
+fuzz  im-gradient                                40 ok,   12 refused
+fuzz  interlace-h2                               35 ok,   21 refused
+fuzz  transparent-past-the-table                 30 ok,   16 refused
+fuzz  depth3                                     38 ok,   17 refused
+fuzz  junk-after-a-frame                         27 ok,    8 refused
+fuzz  dispose-mixed                              44 ok,    3 refused
+fuzz  loops-65535                                37 ok,   13 refused
+fuzz  pil-64x48                                  32 ok,   10 refused
+fuzz  background-index-past-the-table            22 ok,   23 refused
+fuzz  unknown-application                        23 ok,   20 refused
+fuzz  pil-64x48-not-interlaced                   31 ok,   10 refused
+fuzz  gce-short                                  40 ok,   10 refused
+fuzz  pil-animation-disposal-1                   46 ok,    7 refused
+fuzz  interlace-h1                               33 ok,   18 refused
+fuzz  transparent-flag-off                       35 ok,   21 refused
+fuzz  dispose-0                                  35 ok,   13 refused
+fuzz  interlace-h9                               33 ok,   10 refused
+fuzz  no-global-table                            31 ok,   15 refused
+fuzz  animexts-loops                             34 ok,   18 refused
+fuzz  frame-off-the-screen                       35 ok,    9 refused
+fuzz  limit-6-pixels                             22 ok,   27 refused
+fuzz  pil-1x1                                    29 ok,   20 refused
+fuzz  dispose-5                                  33 ok,   16 refused
+fuzz  no-trailer                                 26 ok,   21 refused
+fuzz  depth5                                     31 ok,   15 refused
+fuzz  frame-bigger-than-the-screen               42 ok,   13 refused
+fuzz  second-frame-past-the-screen               25 ok,   19 refused
+fuzz  interlace-h8                               38 ok,   17 refused
+fuzz  depth2                                     35 ok,   18 refused
+fuzz  loops-7                                    21 ok,   16 refused
+fuzz  pil-7x5-not-interlaced                     23 ok,   15 refused
+fuzz  no-gce-frames                              35 ok,   13 refused
+fuzz  depth7                                     41 ok,   10 refused
+fuzz  dispose-2                                  36 ok,   12 refused
+fuzz  interlace-h17                              23 ok,    9 refused
+fuzz  unknown-extension                          26 ok,   25 refused
+fuzz  screen-no-height                           22 ok,   18 refused
+fuzz  pil-animation-disposal-2                   33 ok,    7 refused
+fuzz  gif87a-frames                              41 ok,   15 refused
+fuzz  index-past-the-table                       34 ok,   23 refused
+fuzz  im-plasma                                  34 ok,   14 refused
+fuzz  pil-7x5                                    39 ok,    8 refused
+fuzz  interlace-h3                               26 ok,   11 refused
+fuzz  pil-33x17                                  47 ok,    8 refused
+fuzz  bytes-after-the-end-code                   31 ok,   15 refused
+fuzz  local-table                                24 ok,   12 refused
+fuzz  loops-1                                    24 ok,   16 refused
+fuzz  dispose-4                                  35 ok,   11 refused
+fuzz  junk-before-the-first-frame                17 ok,   25 refused
+fuzz  interlace-h5                               37 ok,   16 refused
+fuzz  one-pixel                                  21 ok,   14 refused
+fuzz  netscape-short                             25 ok,   16 refused
+fuzz  no-first-clear                             28 ok,   14 refused
+fuzz  pil-animation-rgba                         42 ok,    8 refused
+fuzz  dispose-7                                  34 ok,    9 refused
+fuzz  pil-transparent                            26 ok,   13 refused
+fuzz  no-table-at-all                            24 ok,   24 refused
+fuzz  im-animation-dispose-previous              28 ok,   10 refused

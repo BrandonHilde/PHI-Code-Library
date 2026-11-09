@@ -1,5 +1,5 @@
 version: 1
-format: 1 2 0 0 0 3 (BMP is 1, PNG 2, JPEG 3, unknown 0)
+format: 1 2 0 0 0 3 4 (BMP is 1, PNG 2, JPEG 3, GIF 4, unknown 0)
 rgb24: 2 by 2: FFFF0000 FF00FF00 FF0000FF FFFFFFFF
 rgba32: 2 by 1: 80FF0000 00123456
 png palette: 2 by 2: FFFF0000 8000FF00 FF0000FF FF000000
@@ -20,6 +20,23 @@ png orientation 6, ignored: 2 by 1: FFFF0000 FF0000FF
 orientation: 6
 rgb24 again: 2 by 2: FFFF0000 FF00FF00 FF0000FF FFFFFFFF
 orientation: 1
+gif: 2 by 1: FFFF0000 FF00FF00
+gif without its trailer: 2 by 1: FFFF0000 FF00FF00
+gif header only: refused: the file is cut short
+png as gif: refused: not a GIF file
+gif animation: 2 by 1, loops 3
+  frame 0, 250 ms: FFFF0000 FF00FF00
+  frame 1, 400 ms: FFFF0000 FFFFFFFF
+  end:
+gif cut in its second frame animation: 2 by 1, loops 3
+  frame 0, 250 ms: FFFF0000 FF00FF00
+  frame 1, 400 ms: FFFF0000 FF00FF00
+  end:
+png animation: 2 by 2, loops -1
+  frame 0, 0 ms: FFFF0000 8000FF00 FF0000FF FF000000
+  end:
+bad animation: refused: the file is cut short
+next frame of nothing: 0
 empty: refused: not an image format imagelib reads
 no data: refused: no data was given
 cut short: 2 by 2: 00000000 00000000 FF0000FF FFFFFFFF

@@ -13,9 +13,10 @@ Read by the tests, never built into a program.
 
 | `tests/png/pngsuite/` | PngSuite 2017jul19's image files, with its `PngSuite.README` and `PngSuite.LICENSE` | Willem van Schaik, <http://www.schaik.com/pngsuite/> | Its own: "Permission to use, copy, modify and distribute these images for any purpose and without fee is hereby granted." (`PngSuite.LICENSE`, beside them) |
 
-The rest of `tests/bmp/` and `tests/png/`, and all of `tests/jpeg/` (`cases.bin`, `cases.txt`), is made by
-`tools/image/make_bmp_tests.py`, `make_png_tests.py` and `make_jpeg_tests.py`, from the suites' files and
-files they write themselves. Some of the JPEG files are written by libjpeg-turbo, through Pillow and
+The rest of `tests/bmp/` and `tests/png/`, and all of `tests/jpeg/` and `tests/gif/` (`cases.bin`,
+`cases.txt`, `release.bin`, `release.txt`), is made by `tools/image/make_bmp_tests.py`, `make_png_tests.py`,
+`make_jpeg_tests.py` and `make_gif_tests.py`, from the suites' files and files they write themselves. Some of
+the GIF files are written by Pillow and ImageMagick, from images made by the script. Some of the JPEG files are written by libjpeg-turbo, through Pillow and
 ImageMagick, from images made by the script; the files are the script's output, and nothing of
 libjpeg-turbo's is in them but its encoding.
 
@@ -23,7 +24,10 @@ libjpeg-turbo's is in them but its encoding.
 
 - **BMP Suite's reference images** (its `html/*.png`), which `make_bmp_tests.py --bmpsuite DIR` compares
   against, from a copy of the suite that isn't committed.
-- **Pillow**, which `make_bmp_tests.py` and `make_png_tests.py` compare against.
+- **Pillow**, which `make_bmp_tests.py`, `make_png_tests.py` and `make_gif_tests.py` compare against.
+- **The GIF test suite** (`test-suite` in <https://github.com/robert-ancell/pygif>, CC-BY-SA 4.0), which
+  `make_gif_tests.py --gifsuite DIR` compares against, from a copy that isn't committed. Nothing of it is
+  here.
 - **ImageMagick** (`magick`, which reads PNG with libpng and JPEG with libjpeg-turbo), which
   `make_png_tests.py` and `make_jpeg_tests.py` compare against. Nothing of libpng's or libjpeg-turbo's is
   in imagelib, and nothing was copied from either: the JPEG decoder follows libjpeg-turbo's arithmetic (its

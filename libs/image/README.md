@@ -1,8 +1,8 @@
 # imagelib
 
 Image files in, pixels out. Whatever the file, the pixels are 32-bit `0xAARRGGBB` with straight (not
-premultiplied) alpha, a row at a time from the top. It reads BMP, PNG and JPEG (baseline and progressive) so
-far; GIF is next
+premultiplied) alpha, a row at a time from the top. It reads BMP, PNG, JPEG (baseline and progressive) and GIF,
+animations too, so far; scaling is next
 ([plan.md](../../plan.md#phase-3-image-library)). It uses [corelib](../core), so a program using it
 has `corelib.philib` beside `imagelib.philib`.
 
@@ -22,8 +22,9 @@ call Img.Free: image;
 ## API
 
 These names are the API. Everything else the library declares (`ImgBmp`, `ImgBmpTables`, `ImgPng`,
-`ImgPngTables`, `ImgJpeg`, `ImgJpegTables`, and `Img`'s `New`, `Limit`, `Done`, `DonePng` and `DoneJpeg`) is
-how it works, and may change.
+`ImgPngTables`, `ImgJpeg`, `ImgJpegTables`, `ImgGif`, `ImgAnimation`'s `gif`, and `Img`'s `New`, `Limit`,
+`Done`, `DonePng`, `DoneJpeg`, `OpenGif`, `DoneGif`, `Failed`, `Turned`, `Orient`, `Flip`, `Turn`,
+`ExifOrientation`, `Tiff16` and `Tiff32`) is how it works, and may change.
 
 | Name | What it is |
 |---|---|
@@ -33,7 +34,13 @@ how it works, and may change.
 | `Img.DecodeBmp: data length` → | The same, for a BMP file |
 | `Img.DecodePng: data length` → | The same, for a PNG file |
 | `Img.DecodeJpeg: data length` → | The same, for a JPEG file |
-| `Img.Format: data length` → | Which format the bytes are in, from their first few: `Img.BMP`, `Img.PNG`, `Img.JPEG`, or `Img.UNKNOWN` |
+| `Img.DecodeGif: data length` → | The same, for a GIF file: its first frame |
+| `ImgAnimation` | A struct: `w`, `h` (`int`, the frames' size), `loops` (`int`: how many more times to show it after the first; 0 forever; -1 when the file doesn't say, so once), `frame` (a `ptr<ImgImage>`, the frame now, which the animation owns and draws each frame over), `delay` (`u32`, how long the file says to show the frame, in ms) and `index` (`u32`, which frame it is, from 0) |
+| `Img.OpenAnimation: data length` → | A `ptr<ImgAnimation>` with its first frame drawn, or 0 with the reason in `Img.error`. Any format opens: a still image is an animation of one frame. `data` must stay as it is until `CloseAnimation` |
+| `Img.OpenGifAnimation: data length` → | The same, as a GIF whatever its first bytes say |
+| `Img.NextFrame: animation` → | Draws the next frame into `animation.frame`: true, or false when there are no more (`Img.error` says why if damage ends it, and is `''` at its end) |
+| `Img.CloseAnimation: animation` | Gives back an animation's memory, its frame too (0 does nothing) |
+| `Img.Format: data length` → | Which format the bytes are in, from their first few: `Img.BMP`, `Img.PNG`, `Img.JPEG`, `Img.GIF`, or `Img.UNKNOWN` |
 | `Img.Free: image` | Gives back an image's memory (0 does nothing) |
 | `Img.BlendRow: dest src count` | Draws `count` pixels of `src` over `dest`, which is taken as opaque: each color becomes `(src * alpha + dest * (255 - alpha)) / 255`, rounded, and `dest`'s top byte stays as it was |
 | `Img.max_pixels` | The most pixels an image may have. 0, as it starts, means `Img.DEFAULT_MAX_PIXELS` (16,777,216: 4096 by 4096, 64 MB of pixels) |
@@ -169,6 +176,39 @@ pixels aren't compared with libjpeg's; every other is.
 **Not done** (refused, saying so): lossless, hierarchical and arithmetic coding, 12-bit samples, and four
 components (CMYK).
 
+## GIF
+
+GIF87a and GIF89a, still and animated: every frame is drawn on a canvas the size of the logical screen, as
+browsers draw it, and `Img.DecodeGif` (and `Img.Decode`) give the first. `Img.OpenAnimation` gives them
+all, one at a time, with each frame's delay and the loop count: the canvas is the only memory it needs (and,
+for disposal 3, a copy of the frame's area), however many frames there are.
+
+What a GIF shows is the browsers' to say, and where Pillow and ImageMagick differ from them, the rules follow
+the browsers (each such difference is listed in `make_gif_tests.py`, with its reason):
+
+- **The canvas starts transparent,** and the background color is ignored, as browsers ignore it. Pillow and
+  ImageMagick fill the first frame's uncovered area with it.
+- **The canvas is the logical screen, grown to hold the first frame** if that's past its right or bottom
+  edge, as Chrome grows it (and Pillow, which grows it for later frames too). Later frames are clipped to it.
+- **A transparent pixel leaves the canvas as it was.** An index past the end of the color table, or with no
+  table at all, is opaque black (Pillow gives a frame with no table a gray one; ImageMagick refuses it).
+- **Disposal,** before the next frame is drawn: 2 clears the frame's area to transparent; 3 puts back what it
+  held before the frame, and so does 4, as browsers read it; 0, 1 and 5 to 7 leave it. Disposing of the first
+  frame with 3 clears it (Pillow keeps it).
+- **Each image is a frame,** with the delay its graphic control extension gives, in milliseconds as the file
+  has it (browsers show 10 ms or less as 100 ms, which is for the program showing it to do). The loop count
+  is NETSCAPE2.0's or ANIMEXTS1.0's.
+- **LZW** as the spec has it: the code size grows when the next free code reaches it, up to 12 bits, and a
+  full table waits for a clear. Codes after the end code, and pixels past the frame's, are ignored. LZW code
+  sizes of 2 to 11 are read (GIF's are 2 to 8; Pillow and ImageMagick read up to 11).
+- **Damage shows what can be shown:** a frame whose data ends early, or has a code that can't be, keeps what
+  was drawn of it, and is the last; a file that ends between frames ends the animation there; a byte between
+  blocks that starts none is skipped, as GIF87a says and Pillow and ImageMagick do.
+
+**Refused:** a header that isn't GIF87a or GIF89a, a canvas of no width or height or over the limit, a file
+with no image in it, and a first image whose LZW code size isn't 2 to 11 (for a later frame, that ends the
+animation). Plain text extensions, comments and other application extensions are skipped.
+
 ## How it's checked
 
 From the repo's root:
@@ -178,6 +218,7 @@ pwsh ./build.ps1 image -Test                         # (or .\build.ps1 image -Te
 python3 -P tools/image/make_bmp_tests.py --bmpsuite DIR    # remakes tests/bmp/cases.bin (it's committed)
 python3 -P tools/image/make_png_tests.py                   # remakes tests/png/cases.bin
 python3 -P tools/image/make_jpeg_tests.py                  # remakes tests/jpeg/cases.bin
+python3 -P tools/image/make_gif_tests.py [--gifsuite DIR]  # remakes tests/gif/cases.bin
 pwsh ./build.ps1 image -Test -Release                      # and the release tests too
 python3 -P tools/image/make_png_tests.py --release         # (and the others): remakes release.bin
 ```
@@ -331,6 +372,31 @@ unfiltering and making the pixels:
 Pillow 11.1, with its own copy of libjpeg-turbo, gives the same pixels on every good file both read. It
 refuses 2 that libjpeg reads (a JFIF or Adobe segment too short to be one, which Pillow's own reading of the
 markers trips on), and stops short on damaged files where its source manager suspends rather than giving EOI.
+
+### GIF: the rules, against outside evidence (2026-11-09)
+
+`make_gif_tests.py` checks [gif_reference.py](../../tools/image/gif_reference.py) against Pillow 11.1 and
+ImageMagick 7.1 (each frame, coalesced) on every case it writes, and, with `--gifsuite DIR`, against the
+frames of the GIF test suite (`test-suite` in <https://github.com/robert-ancell/pygif>, which isn't kept
+here: it's CC-BY-SA). Every pixel the rules draw must be theirs; where the rules leave a pixel transparent,
+theirs may be the background color. It stops at any other difference that isn't listed with its reason.
+
+| Against | Result |
+|---|---|
+| The GIF test suite's frames | 63 of 75 the same; 12 differ as listed: the suite makes one frame of several images with no delay between them, where browsers show each; it clips a first frame that's past the screen, where Chrome grows the screen; it shows an empty screen for a file with no image, or an image with no data, which Pillow and ImageMagick refuse too |
+| Pillow, on the 19 files Pillow and ImageMagick write and the 92 made here | The same, but for its background fill, wherever it reads them and isn't listed |
+| ImageMagick, on the same | The same, but for its background fill, wherever it reads them and isn't listed |
+| The 1,425 cut short and 4,000 fuzzed (the release cases) | Wherever Pillow or ImageMagick read one whole, the rules draw what they draw, but for the differences above |
+
+### GIF: imagelib, against the rules (2026-11-09, as 32 and 64-bit Linux programs)
+
+| Cases | Result |
+|---|---|
+| Written by Pillow and ImageMagick | 19 of 19 as the rules say, every frame |
+| Made here | 92 of 92: 79 read, 13 refused |
+| Good files cut short | 1,425 of 1,425: 734 read, 691 refused |
+| Files with a few bytes changed | 4,000 of 4,000: 2,764 read, 1,236 refused |
+| Fuzzing, every frame (up to 200) of: 100,000 random changes, 186,368 values of the first 64 bytes, 11,816 troublesome numbers, 20,000 files made from noise, with a limit of 2048 by 2048 | No crash or hang, and every frame within the limit |
 
 ### JPEG: imagelib, against the rules (2026-11-08, as 32 and 64-bit Linux programs)
 

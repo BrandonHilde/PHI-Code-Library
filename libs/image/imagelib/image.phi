@@ -21,12 +21,37 @@ struct.ImgImage
 	ptr<u32> pixels;    # w * h of them, on the heap
 }
 
+# An animation, a frame at a time: from Img.OpenAnimation, which draws the first frame, and then
+# Img.NextFrame for each of the rest. frame is the animation's own, drawn over for each frame, and
+# freed with it by Img.CloseAnimation. The file's bytes must stay as they are until then.
+#
+#   ptr<ImgAnimation> a: (Img.OpenAnimation: bytes length);
+#   if a is 0 ... Img.error says why ...
+#   while true
+#       ... show a.frame for a.delay milliseconds ...
+#       if not (Img.NextFrame: a) break;
+#   ;;
+#   call Img.CloseAnimation: a;
+#
+# Any format opens as one: a still image is an animation of one frame.
+struct.ImgAnimation
+{
+	int w;                  # the frames' size
+	int h;
+	int loops;              # how many more times to show it after the first: 0 forever; -1 if the file doesn't say (show it once)
+	ptr<ImgImage> frame;    # the frame now
+	u32 delay;              # how long the file says to show it, in milliseconds (browsers show 10 or less as 100)
+	u32 index;              # which frame it is, from 0
+	ptr<ImgGif> gif;        # what's reading it; 0 for a still image
+}
+
 phi.Img:Library
 {
 	const int UNKNOWN: 0;
 	const int BMP: 1;
 	const int PNG: 2;
 	const int JPEG: 3;
+	const int GIF: 4;
 
 	# the limit when Img.max_pixels is 0: 4096 by 4096, 64 MB of pixels
 	const u32 DEFAULT_MAX_PIXELS: 16 * 1024 * 1024;
@@ -39,7 +64,8 @@ phi.Img:Library
 	u32 orientation;    # the last image's EXIF orientation, 1 to 8 (1: as stored, or none)
 	bln ignore_orientation;     # true: leave the pixels as stored, whatever the orientation says
 
-	# which format the bytes are in, from their first few: Img.BMP, Img.PNG, Img.JPEG, or Img.UNKNOWN
+	# which format the bytes are in, from their first few: Img.BMP, Img.PNG, Img.JPEG, Img.GIF, or
+	# Img.UNKNOWN
 	[Format: ptr<u8> data: 0; u32 length: 0; : int]
 		if data is not 0 and length >= 2 and data:0 is 'B' and data:1 is 'M'
 			return BMP;
@@ -49,6 +75,9 @@ phi.Img:Library
 		;;
 		if data is not 0 and length >= 2 and data:0 is 0xFF and data:1 is 0xD8
 			return JPEG;
+		;;
+		if data is not 0 and length >= 4 and data:0 is 'G' and data:1 is 'I' and data:2 is 'F' and data:3 is '8'
+			return GIF;
 		;;
 	[end: UNKNOWN]
 
@@ -63,6 +92,9 @@ phi.Img:Library
 			;;
 			is JPEG
 				return (DecodeJpeg: data length);
+			;;
+			is GIF
+				return (DecodeGif: data length);
 			;;
 		;;
 		error is 'not an image format imagelib reads';
@@ -165,6 +197,140 @@ phi.Img:Library
 		u32 turn: d.exif;
 		call DoneJpeg: d;
 	[end: (Turned: image turn)]
+
+	# a GIF file's first frame (Img.OpenAnimation gives the rest); 0 if it can't be read, with the reason in error
+	[DecodeGif: ptr<u8> data: 0; u32 length: 0; : ptr<ImgImage>]
+		ptr<ImgGif> d: (OpenGif: data length);
+		if d is 0
+			return 0;
+		;;
+		ptr<ImgImage> image: d.image;
+		d.image is 0;
+		call DoneGif: d;
+	[end: image]
+
+	# a GIF read as far as its first frame; 0 if it can't be, with the reason in error
+	[OpenGif: ptr<u8> data: 0; u32 length: 0; : ptr<ImgGif>]
+		error is '';
+		orientation is 1;
+		if data is 0 and length > 0
+			error is 'no data was given';
+			return 0;
+		;;
+		if length > 0x7FFFFFFF
+			error is 'more than 2 GB of data';
+			return 0;
+		;;
+		ptr<ImgGif> d: new ImgGif;
+		if d is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		if call d.Open: data length (Limit) throws err
+			call Failed: err.kind err.text err.message;
+			call DoneGif: d;
+			return 0;
+		;;
+		if call d.Next throws err
+			call Failed: err.kind err.text err.message;
+			call DoneGif: d;
+			return 0;
+		;;
+	[end: d]
+
+	[Failed: ErrorKind kind; str text; str message;]
+		if kind is ErrorKind.THROWN
+			error is text;
+		;;
+		else
+			error is message;
+		;;
+	[end]
+
+	# a GIF decoder's memory, the canvas too (unless it's been handed on), given back
+	[DoneGif: ptr<ImgGif> d: 0;]
+		call Free: d.image;
+		if d.saved is not 0
+			free d.saved;
+		;;
+		free d;
+	[end]
+
+	# An animation, with its first frame drawn; 0 if it can't be read, with the reason in error. Any
+	# format opens: a still image is an animation of one frame. data must stay as it is until
+	# CloseAnimation.
+	[OpenAnimation: ptr<u8> data: 0; u32 length: 0; : ptr<ImgAnimation>]
+		if (Format: data length) is GIF
+			return (OpenGifAnimation: data length);
+		;;
+		ptr<ImgAnimation> a: new ImgAnimation;
+		if a is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		a.frame is (Decode: data length);
+		if a.frame is 0
+			free a;
+			return 0;
+		;;
+		a.loops is -1;
+		a.w is a.frame.w;
+		a.h is a.frame.h;
+	[end: a]
+
+	# a GIF file as an animation, whatever its first bytes say; 0 if it can't be read, with the
+	# reason in error
+	[OpenGifAnimation: ptr<u8> data: 0; u32 length: 0; : ptr<ImgAnimation>]
+		ptr<ImgAnimation> a: new ImgAnimation;
+		if a is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		ptr<ImgGif> d: (OpenGif: data length);
+		if d is 0
+			free a;
+			return 0;
+		;;
+		a.gif is d;
+		a.frame is d.image;
+		a.loops is d.loops;
+		a.delay is d.delay;
+		a.w is a.frame.w;
+		a.h is a.frame.h;
+	[end: a]
+
+	# The animation's next frame, drawn in a.frame: true, or false when there are no more (with the
+	# reason in error, if it's damage that ends it, or '' at its end)
+	[NextFrame: ptr<ImgAnimation> a: 0; : bln]
+		error is '';
+		if a is 0 or a.gif is 0
+			return false;
+		;;
+		ptr<ImgGif> d: a.gif;
+		if call d.Next throws err
+			call Failed: err.kind err.text err.message;
+			d.ended is true;
+			return false;
+		;;
+		a.loops is d.loops;
+		if not d.more
+			return false;
+		;;
+		a.delay is d.delay;
+		a.index++;
+	[end: true]
+
+	# gives back an animation's memory, its frame too (0 is allowed, and does nothing)
+	[CloseAnimation: ptr<ImgAnimation> a: 0;]
+		if a is 0 return;
+		if a.gif is not 0
+			call DoneGif: a.gif;
+		;;
+		else
+			call Free: a.frame;
+		;;
+		free a;
+	[end]
 
 	# A decoded image turned to its EXIF orientation (0: none), unless ignore_orientation; and
 	# orientation set. 0 if there isn't the memory to turn it, with the reason in error.

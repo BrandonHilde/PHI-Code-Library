@@ -13,8 +13,15 @@ use memory.mem;
 
 phi.ImgTestCases:Library
 {
-	# the cases in cases_path, decoded as format (Img.BMP, Img.PNG or Img.JPEG), with first as the name
-	# of their first group; it logs what it found, and ends the program
+	# what Check found of a case: whether it was read, its size, and the CRC-32 of its pixels (for a
+	# GIF, of every frame's, then each frame's delay, then the loop count)
+	bln got;
+	u32 got_w;
+	u32 got_h;
+	u32 got_crc;
+
+	# the cases in cases_path, decoded as format (Img.BMP, Img.PNG, Img.JPEG or Img.GIF), with first as
+	# the name of their first group; it logs what it found, and ends the program
 	[Run: str cases_path; int format: 0; str first;]
 		u32 cases_size: 0;
 		ptr<u8> cases_bytes: (Load: cases_path addr cases_size);
@@ -146,20 +153,20 @@ phi.ImgTestCases:Library
 			;;
 
 			Img.max_pixels is most;
-			ptr<ImgImage> image: (Decode: format (arena + start) length);
+			call Check: format (arena + start) length;
 			runs:group++;
 			str wrong: '';
-			if want_ok and image is 0
+			if want_ok and not got
 				wrong is 'the rules read it, but imagelib says: ' Img.error;
 			;;
-			elif want_ok is false and image is not 0
-				wrong is 'the rules refuse it (' want_why '), but imagelib reads it, ' image.w ' by ' image.h;
+			elif want_ok is false and got
+				wrong is 'the rules refuse it (' want_why '), but imagelib reads it, ' got_w ' by ' got_h;
 			;;
 			elif want_ok
-				if image.w as u32 is not want_w or image.h as u32 is not want_h
-					wrong is image.w ' by ' image.h ', where the rules give ' want_w ' by ' want_h;
+				if got_w is not want_w or got_h is not want_h
+					wrong is got_w ' by ' got_h ', where the rules give ' want_w ' by ' want_h;
 				;;
-				elif (PixelCrc: image) is not want_crc
+				elif got_crc is not want_crc
 					wrong is 'its pixels differ from the rules\'';
 				;;
 			;;
@@ -171,22 +178,21 @@ phi.ImgTestCases:Library
 			;;
 			else
 				right:group++;
-				if image is not 0
+				if got
 					read:group++;
 				;;
 				if group is 0
-					if image is not 0
-						suite_lines++ '  ' name ': ' image.w ' by ' image.h '\n';
+					if got
+						suite_lines++ '  ' name ': ' got_w ' by ' got_h '\n';
 					;;
 					else
 						suite_lines++ '  ' name ': ' Img.error '\n';
 					;;
 				;;
-				if group is 1 and image is 0
+				if group is 1 and not got
 					made_lines++ '  ' name ': ' Img.error '\n';
 				;;
 			;;
-			call Img.Free: image;
 		;;
 		if r.failed or r.pos is not cases_size
 			log cases_path ' is damaged\n';
@@ -206,7 +212,56 @@ phi.ImgTestCases:Library
 		exit 0;
 	[end]
 
-	# a case decoded as format
+	# a case decoded as format, into got, got_w, got_h and got_crc; a GIF as an animation, up to 64
+	# frames
+	[Check: int format: 0; ptr<u8> data: 0; u32 length: 0;]
+		got is false;
+		if format is Img.GIF
+			ptr<ImgAnimation> a: (Img.OpenGifAnimation: data length);
+			if a is 0
+				return;
+			;;
+			u32 crc: 0;
+			u32 delays[64];
+			u32 n: 0;
+			while true
+				crc is (PixelCrc: a.frame crc);
+				delays:n is a.delay;
+				n++;
+				if n >= 64 or not (Img.NextFrame: a)
+					break;
+				;;
+			;;
+			u8 word[4];
+			while u32 k: 0; k <= n; k++;
+				u32 v: a.loops as u32;
+				if k < n
+					v is delays:k;
+				;;
+				word:0 is (v & 255) as u8;
+				word:1 is ((v >> 8) & 255) as u8;
+				word:2 is ((v >> 16) & 255) as u8;
+				word:3 is (v >> 24) as u8;
+				crc is (Crc32.Add: crc word 4);
+			;;
+			got is true;
+			got_w is a.w as u32;
+			got_h is a.h as u32;
+			got_crc is crc;
+			call Img.CloseAnimation: a;
+			return;
+		;;
+		ptr<ImgImage> image: (Decode: format data length);
+		if image is 0
+			return;
+		;;
+		got is true;
+		got_w is image.w as u32;
+		got_h is image.h as u32;
+		got_crc is (PixelCrc: image 0);
+		call Img.Free: image;
+	[end]
+
 	[Decode: int format: 0; ptr<u8> data: 0; u32 length: 0; : ptr<ImgImage>]
 		when format
 			is Img.BMP
@@ -233,16 +288,15 @@ phi.ImgTestCases:Library
 		;;
 	[end: 'fuzz']
 
-	# the CRC-32 of an image's pixels, each as the bytes B G R A, top row first: 4,096 pixels at a
+	# the CRC-32 of an image's pixels, each as the bytes B G R A, top row first, going on from crc: 4,096 pixels at a
 	# time, so that an image millions of pixels across needs no more memory than a small one
-	[PixelCrc: ptr<ImgImage> image: 0; : u32]
+	[PixelCrc: ptr<ImgImage> image: 0; u32 crc: 0; : u32]
 		u32 total: (image.w * image.h) as u32;
 		ptr<u8> row: new u8[4 * 4096];
 		if row is 0
 			log 'out of memory\n';
 			exit 1;
 		;;
-		u32 crc: 0;
 		u32 done: 0;
 		while done < total
 			u32 part: total - done;

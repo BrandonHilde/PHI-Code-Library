@@ -1,0 +1,354 @@
+# The crash fuzzer for GIF, shared by test_gif_fuzz (a short run, every day) and release_gif_fuzz (the
+# full run, for release): reading damaged GIF files, in bulk, as animations, every frame of them (up
+# to 200). Good files are changed at random with a fixed seed; every value of each of the first 64
+# bytes of several is tried; numbers that cause trouble are put in every 16-bit field of the first
+# 100 bytes; and files are made here from noise: frames of any size and place, color tables of any
+# size, LZW code sizes right and wrong, and random LZW data. Every one must come back, as frames
+# within the limit or a reason: a crash or a hang fails the test. (Whether imagelib is right about
+# each is test_gif's job: its fuzz cases are checked against the rules.)
+# This is test code, which imagelib.phi doesn't use, so it's no part of the library.
+use imagelib;
+use memory.mem;
+
+phi.ImgFuzzGif:Library
+{
+	u32 seed: 0x2545F491;
+	u32 read: 0;
+	u32 refused: 0;
+	u32 too_big: 0;
+	u32 frames: 0;
+	u32 bases_count: 0;
+	ptr<u8> base_data[512];
+	u32 base_len[512];
+	const u32 WORK_SIZE: 70000;
+	const u32 MOST_FRAMES: 200;
+
+	# rounds random changes; files of every value of their first bytes, and of troublesome numbers;
+	# noise rounds; the starting files from cases_path
+	[Run: u32 rounds: 0; u32 files: 0; u32 noise_runs: 0; str cases_path;]
+		# a limit of 2048 by 2048, so that no file is refused for memory: a 32-bit program's heap stops
+		# short of the default limit's 64 MB canvas, and the 32 and 64-bit runs must agree
+		const u32 MOST: 2048 * 2048;
+		Img.max_pixels is MOST;
+		# the starting points: the good small files made for test_gif
+		u32 cases_size: 0;
+		ptr<u8> cases_bytes: (Load: cases_path addr cases_size);
+		CoreReader r;
+		call r.Start: cases_bytes cases_size;
+		u32 count: (r.U32LE);
+		while u32 i: 0; i < count; i++;
+			u32 group: (r.U8);
+			u32 kind: (r.U8);
+			call r.Skip: (r.U8);
+			u32 most: (r.U32LE);
+			ptr<u8> bytes: 0;
+			u32 length: 0;
+			when kind
+				is 0
+					call r.Skip: (r.U8);
+				;;
+				is 1
+					length is (r.U32LE);
+					bytes is (r.Bytes: length);
+				;;
+				is 2
+					call r.Skip: 8;
+				;;
+				else
+					call r.Skip: 4;
+					call r.Skip: (r.U16LE) * 5;
+				;;
+			;;
+			bln ok: ((r.U8) is 1);
+			if ok
+				call r.Skip: 12;
+			;;
+			else
+				call r.Skip: (r.U8);
+			;;
+			if group <= 1 and kind is 1 and ok and most is 0 and length > 0 and length <= 4000 and bases_count < 512
+				base_data:bases_count is bytes;
+				base_len:bases_count is length;
+				bases_count++;
+			;;
+		;;
+		if r.failed or bases_count is 0
+			log cases_path ' is damaged\n';
+			exit 1;
+		;;
+		log 'files to change: ' bases_count '\n';
+
+		ptr<u8> work: new u8[WORK_SIZE];
+
+		# changed at random: a few bits, a byte, a 16-bit field, cut short, a byte put in or taken out
+		while u32 n: 0; n < rounds; n++;
+			u32 which: (Next) % bases_count;
+			u32 len: base_len:which;
+			call Mem.Copy: work base_data:which len;
+			u32 how: (Next) % 6;
+			if how is 0
+				u32 flips: 1 + (Next) % 3;
+				while u32 f: 0; f < flips; f++;
+					u32 at_byte: (Next) % len;
+					work:at_byte is (work:at_byte ^ (1 << ((Next) % 8))) as u8;
+				;;
+			;;
+			elif how is 1
+				work:((Next) % len) is ((Next) & 255) as u8;
+			;;
+			elif how is 2
+				call Field: work len ((Next) % 60);
+			;;
+			elif how is 3
+				len is (Next) % len;
+			;;
+			elif how is 4
+				u32 at_byte: (Next) % len;
+				call Mem.Move: (work + at_byte + 1) (work + at_byte) (len - at_byte);
+				work:at_byte is ((Next) & 255) as u8;
+				len++;
+			;;
+			else
+				u32 at_byte: (Next) % len;
+				call Mem.Move: (work + at_byte) (work + at_byte + 1) (len - at_byte - 1);
+				len--;
+			;;
+			# a quarter of them with a limit they may well reach
+			Img.max_pixels is MOST;
+			if (n & 3) is 1
+				Img.max_pixels is 500;
+			;;
+			call Try: work len;
+		;;
+		Img.max_pixels is MOST;
+		log 'changed at random: ' read ' read, ' refused ' refused, ' too_big ' over the limit\n';
+
+		# every value of each of the first 64 bytes: the header, the color table, and what follows
+		read is 0;
+		refused is 0;
+		too_big is 0;
+		while u32 s: 0; s < bases_count and s < files; s++;
+			u32 which: (s * 7) % bases_count;
+			u32 len: base_len:which;
+			u32 top: 64;
+			if top > len
+				top is len;
+			;;
+			while u32 at_byte: 0; at_byte < top; at_byte++;
+				while u32 v: 0; v < 256; v++;
+					call Mem.Copy: work base_data:which len;
+					work:at_byte is v as u8;
+					call Try: work len;
+				;;
+			;;
+		;;
+		log 'every value of the first 64 bytes: ' read ' read, ' refused ' refused, ' too_big ' over the limit\n';
+
+		# numbers that cause trouble in every 16-bit field of the first 100 bytes
+		read is 0;
+		refused is 0;
+		too_big is 0;
+		u32 troubles: 0 1 2 3 7 8 0xFF 0x100 0x7FFF 0x8000 0xFFFE 0xFFFF 4095 4096;
+		while u32 s: 0; s < bases_count and s < files; s++;
+			u32 which: (s * 7) % bases_count;
+			u32 len: base_len:which;
+			while u32 at_byte: 6; at_byte + 2 <= 100 and at_byte + 2 <= len; at_byte++;
+				while u32 t: 0; t < troubles.len; t++;
+					call Mem.Copy: work base_data:which len;
+					work:at_byte is (troubles:t & 255) as u8;
+					work:(at_byte + 1) is (troubles:t >> 8) as u8;
+					call Try: work len;
+				;;
+			;;
+		;;
+		log 'troublesome numbers: ' read ' read, ' refused ' refused, ' too_big ' over the limit\n';
+
+		# made from noise: a screen and frames of any size and place, color tables of any size, LZW
+		# code sizes right and wrong, graphic control extensions of every disposal, and random data
+		read is 0;
+		refused is 0;
+		too_big is 0;
+		while u32 n: 0; n < noise_runs; n++;
+			u32 len: 0;
+			u8 head: 71 73 70 56 57 97;
+			while u32 k: 0; k < 6; k++;
+				work:k is head:k;
+			;;
+			len is 6;
+			u32 sw: 1 + (Next) % 60;
+			u32 sh: 1 + (Next) % 60;
+			len is (Le16: work len sw);
+			len is (Le16: work len sh);
+			u32 depth: (Next) % 8;
+			bln global: (Next) % 4 is not 0;
+			u32 flags: depth;
+			if global
+				flags++ 0x80;
+			;;
+			call Put: work len flags;
+			call Put: work (len + 1) ((Next) % 256);
+			call Put: work (len + 2) 0;
+			len++ 3;
+			if global
+				len is (Noise: work len (3 * (2 << depth)));
+			;;
+			u32 frame_count: 1 + (Next) % 6;
+			while u32 f: 0; f < frame_count and len < WORK_SIZE - 9000; f++;
+				if (Next) % 2 is 0
+					call Put: work len 0x21;
+					call Put: work (len + 1) 0xF9;
+					call Put: work (len + 2) 4;
+					call Put: work (len + 3) ((Next) % 256);
+					call Put: work (len + 4) ((Next) % 256);
+					call Put: work (len + 5) 0;
+					call Put: work (len + 6) ((Next) % 256);
+					call Put: work (len + 7) 0;
+					len++ 8;
+				;;
+				call Put: work len 0x2C;
+				len++;
+				u32 fx: (Next) % sw;
+				u32 fy: (Next) % sh;
+				u32 fw: 1 + (Next) % sw;
+				u32 fh: 1 + (Next) % sh;
+				if (Next) % 16 is 0
+					fx is (Next) % 70000;
+					fw is (Next) % 70000;
+				;;
+				len is (Le16: work len fx);
+				len is (Le16: work len fy);
+				len is (Le16: work len fw);
+				len is (Le16: work len fh);
+				u32 local_depth: (Next) % 8;
+				u32 fflags: ((Next) % 2) * 0x40;
+				bln local: (Next) % 3 is 0;
+				if local
+					fflags++ 0x80 + local_depth;
+				;;
+				call Put: work len fflags;
+				len++;
+				if local
+					len is (Noise: work len (3 * (2 << local_depth)));
+				;;
+				u32 code_size: 2 + (Next) % 7;
+				if (Next) % 16 is 0
+					code_size is (Next) % 14;
+				;;
+				call Put: work len code_size;
+				len++;
+				u32 data_size: (Next) % 4000;
+				while data_size > 0
+					u32 part: data_size;
+					if part > 255
+						part is 255;
+					;;
+					call Put: work len part;
+					len is (Noise: work (len + 1) part);
+					data_size-- part;
+				;;
+				call Put: work len 0;
+				len++;
+			;;
+			call Put: work len 0x3B;
+			len++;
+			if (Next) % 4 is 0
+				Img.max_pixels is 100 + (Next) % 1000;
+			;;
+			call Try: work len;
+			Img.max_pixels is MOST;
+		;;
+		log 'made from noise: ' read ' read, ' refused ' refused, ' too_big ' over the limit\n';
+		free work;
+		log 'done\n';
+		exit 0;
+	[end]
+
+	# a file read as an animation, every frame of it (up to MOST_FRAMES): each must be within the limit
+	[Try: ptr<u8> data: 0; u32 len: 0;]
+		ptr<ImgAnimation> a: (Img.OpenAnimation: data len);
+		if a is 0
+			if Img.error.len is 0
+				log 'WRONG: refused with no reason\n';
+				exit 1;
+			;;
+			if Img.error has 'limit'
+				too_big++;
+			;;
+			else
+				refused++;
+			;;
+			return;
+		;;
+		u32 most: Img.max_pixels;
+		if most is 0
+			most is Img.DEFAULT_MAX_PIXELS;
+		;;
+		u32 shown: 0;
+		while true
+			ptr<ImgImage> image: a.frame;
+			if image.w <= 0 or image.h <= 0 or image.pixels is 0 or (image.w as u64) * (image.h as u64) > most or
+				image.w is not a.w or image.h is not a.h
+				log 'WRONG: a frame of ' image.w ' by ' image.h ', past the limit, empty, or not the animation\'s size\n';
+				exit 1;
+			;;
+			shown++;
+			if shown >= MOST_FRAMES or not (Img.NextFrame: a)
+				break;
+			;;
+		;;
+		frames++ shown;
+		read++;
+		call Img.CloseAnimation: a;
+	[end]
+
+	# a troublesome 16-bit number in a field
+	[Field: ptr<u8> data: 0; u32 len: 0; u32 at_byte: 0;]
+		u32 values: 0 1 0x7FFF 0x8000 0xFFFF 0x100 0xFF 4095 4096 2;
+		if at_byte + 2 > len return;
+		u32 v: values:((Next) % 10);
+		data:at_byte is (v & 255) as u8;
+		data:(at_byte + 1) is (v >> 8) as u8;
+	[end]
+
+	[Put: ptr<u8> data: 0; u32 at_byte: 0; u32 v: 0;]
+		data:at_byte is (v & 255) as u8;
+	[end]
+
+	# a u16, little-endian, on the end; where the data ends after it
+	[Le16: ptr<u8> data: 0; u32 at_byte: 0; u32 v: 0; : u32]
+		data:at_byte is (v & 255) as u8;
+		data:(at_byte + 1) is ((v >> 8) & 255) as u8;
+	[end: at_byte + 2]
+
+	# size random bytes on the end; where the data ends after them
+	[Noise: ptr<u8> data: 0; u32 at_byte: 0; u32 size: 0; : u32]
+		while u32 k: 0; k < size; k++;
+			data:(at_byte + k) is ((Next) & 255) as u8;
+		;;
+	[end: at_byte + size]
+
+	# xorshift32
+	[Next: : u32]
+		seed is seed ^ (seed << 13);
+		seed is seed ^ (seed >> 17);
+		seed is seed ^ (seed << 5);
+	[end: seed]
+
+	[Load: str path; ptr<u32> size_out: 0; : ptr<u8>]
+		int size: (OS.FileSize: path);
+		if size < 0
+			log 'cannot read ' path '\n';
+			exit 1;
+		;;
+		ptr<u8> buffer: new u8[size as u32 + 1];
+		if buffer is 0
+			log 'out of memory reading ' path '\n';
+			exit 1;
+		;;
+		if (OS.ReadFile: path buffer size) is not size
+			log 'short read of ' path '\n';
+			exit 1;
+		;;
+		size_out:0 is size as u32;
+	[end: buffer]
+}

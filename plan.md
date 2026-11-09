@@ -277,7 +277,7 @@ call Img.Free: image;
 | 3.2 PNG ✓ | All color types and depths, interlacing, gamma ignored at first | PngSuite: valid images match, broken ones fail cleanly |
 | 3.3 JPEG baseline ✓ | Huffman, integer IDCT, chroma subsampling | Pillow/libjpeg within a small per-pixel tolerance, since decoders legally differ |
 | 3.4 JPEG progressive ✓ | Common on the web | The same |
-| 3.5 GIF | LZW, transparency, and animation frames with their timing | Pillow |
+| 3.5 GIF ✓ | LZW, transparency, and animation frames with their timing | Pillow |
 | 3.6 Scaling | Nearest and bilinear, working by rows | Pillow, within a tolerance |
 | Later | WebP, then encoders (PNG first), SVG (shares fontlib's rasterizer), AVIF only if needed | |
 
@@ -337,6 +337,15 @@ as Pillow's `exif_transpose` applies it, on by default (`Img.ignore_orientation`
 `Img.orientation` says what it was. Every orientation, in both byte orders, matches ImageMagick's
 `-auto-orient` and Pillow; three cases where Chrome and ImageMagick differ (a LONG value, the next APP1
 after a bad TIFF header, an APP1 after the first scan) follow Chrome.
+
+**3.5, done 2026-11-09,** in [libs/image](libs/image): GIF, still and animated, through
+`Img.OpenAnimation` and `Img.NextFrame` (which open any format, a still image as one frame). The rules
+(`tools/image/gif_reference.py`) follow the browsers where Pillow and ImageMagick differ from them: a
+transparent canvas, the background color ignored, the screen grown for a first frame past its edge as
+Chrome grows it, disposal 4 read as 3. Checked against Pillow, ImageMagick and the GIF test suite (63 of
+75 files the same; the rest differ as listed), with every pixel the rules draw matching theirs. imagelib
+agrees with the rules on all 161 everyday cases and the 5,536 release cases, as 32 and 64-bit programs, and
+comes back from about 318,000 fuzzed files, every frame, without a crash.
 
 **Done when:** milestones 3.1 to 3.6 pass, PngSuite's results are in the README, every decoder has been
 fuzzed, and a pixel bomb is refused before it allocates.
