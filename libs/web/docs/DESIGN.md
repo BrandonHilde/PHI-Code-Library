@@ -35,9 +35,11 @@ with its layer's prefix: `Wl` (core), `Dom`, `Html`, `Css`, `Js`, `Page`. Standa
 to know about and not collide with: Text, Math, Mem, Map, Queue, List, Pool, Web, Net, Tcp, Udp,
 Http, Dns, Tls, Draw, Screen, Input, App, Events, Widgets, Button, Sound, Stream, Error, Float.
 
-**Targets.** It must build and pass on `windows` and `windows64` (run often), and build for `linux`,
-`linux64` and PHI OS programs. Treat a warning as a bug: `phi` warnings on 64-bit are usually real
-ones (see below). It's a library for programs; kernels aren't a target.
+**Targets** aren't the library's business: PHI's compiler, and the project using weblib, decide which
+systems it's built for ([the conventions](../../../docs/conventions.md#code-that-can-go-anywhere)), and
+nothing here passes `--target`. `phi test` builds the programs it builds (on Linux, `linux` and `linux64`
+ones), and weblib must pass as all of them. Treat a warning as a bug: `phi` warnings on 64-bit are usually
+real ones (see below). It's a library for programs; kernels aren't a target.
 
 **Single-threaded.** The library has class variables and isn't safe from two threads at once. A
 browser gives each tab a process, or one thread at a time.
@@ -76,17 +78,15 @@ page JS are the host's to interrupt (`Js.Interrupt`).
 
 These compile and then do the wrong thing, or surprise you:
 
-1. **A pointer-returning method must say so at its end.** `[end: 0]` makes it an *int* method, so
-   `return node;` is cut to 32 bits on 64-bit, working on `windows` and failing on `windows64`.
-   Write `[end: 0 as ptr<DomNode>]`, or end in a pointer variable. Same for `u64`, `f64`: the kind
-   of the `[end: ...]` value is the kind of the method. (`[end: 0 as u64]`, `[end: 0.0]`.)
+1. **Fixed** (checked 2026-11-10): a method's header now says what it returns
+   (`[Find: str name; : ptr<DomNode>]`), so `[end: 0]` no longer decides its kind. Kept for the numbering.
 2. `const` can't hold a value over 63 bits. Keep such values in class variables, or compare
    shifted: `(v >> 48) as u32 is TAG`.
 3. **`when` is a chain of compares**, not a jump table: its cost grows with its branches. A hot
    dispatch nests them, with the common cases first.
 4. An array of `method<...>` as a local isn't in 64-bit programs yet. Method values in struct
    fields, class variables and parameters are fine. (Check before relying on class-level arrays.)
-5. `(F: x).field` doesn't parse: put the result in a variable first.
+5. **Fixed** (checked 2026-11-10): `(F: x).field` parses now.
 6. `is` after a statement's start is a comparison: `a is b is c` stores a comparison, and warns;
    write `a is (b is c)`.
 7. Variables declared directly in a class are globals even in a block in its body; `addr` of one
@@ -121,25 +121,31 @@ These compile and then do the wrong thing, or surprise you:
 21. A multi-line string literal can warn "this string ends with a line break" when it doesn't end
     in one. Write `\n` on one line instead.
 22. `if call (F: x) throws e` doesn't parse: write `if call F: x throws e`.
-23. **Every source file in the library needs a different file name, across all its folders.** A `.philib`
-    keeps each file's declarations under its bare name (`Path.GetFileName` in `InterfaceWriter.cs`), so
-    `html/parser.phi` and `js/parser.phi` overwrite each other and a program using the library gets
-    `unknown type`, though the library itself built without complaint.
-24. `not (s.Method: x)`, where `s` is a struct or a pointer to one, passes `s` as an extra argument
-    (`takes 1 argument but was given 2`). Put the call's result in a `bln` first.
+23. **Fixed** (checked 2026-11-10): a `.philib` keeps each file under its path from the library's folder
+    (`InterfaceWriter.cs`), so `html/parser.phi` and `js/parser.phi` no longer overwrite each other.
+24. **Fixed** (checked 2026-11-10): `not (s.Method: x)`, where `s` is a struct or a pointer to one,
+    compiles.
 25. NASM's default optimizer takes minutes on this much code (258 s against 3 s, for a program 3.5% smaller).
     Set the environment variable `NASMENV=-O1` while developing. NASM reads it itself; nothing else changes.
 
 ## Testing
 
-Set `NASMENV=-O1` first (trap 25), or a build takes minutes. Tests are programs next to `weblib.phi`, because that's where `use` can find the modules:
+Set `NASMENV=-O1` first (trap 25), or a build takes minutes (`build.ps1` sets it). Tests are programs next to `weblib.phi`, because that's where `use` can find the modules:
 `test_NAME.phi` (a `phi.TestName:Program`, ending in `exit 0;`) with `test_NAME.expected` holding
-what it must print. Run from the `weblib` folder:
+what it must print. From the repo's root, in groups of under 3 minutes each, as
+[the conventions](../../../docs/conventions.md#tests) say:
 
 ```
-phi test . -f test_ --target windows64     # all of them
-phi test . -f test_html --target windows   # those whose names contain test_html
-phi run test_core.phi --target windows64   # one, printing what it says
+pwsh ./build.ps1 web -Test -Only test_css
+pwsh ./build.ps1 web -Test -Only test_html,test_page,test_core,test_weblib
+pwsh ./build.ps1 web -Test -Only test_js
+```
+
+and, from `libs/web` once `build.ps1` has run there, one program at a time:
+
+```
+phi test test_html_api.phi                 # one test, against its .expected
+phi run test_core.phi                      # one, printing what it says
 ```
 
 **A test's output must be ASCII.** Print other bytes as numbers or `\xNN`-style escapes: `phi test`
@@ -151,7 +157,7 @@ Write the program, run it, read what it prints with care, and only then save it 
 an expected file nobody checked proves nothing. A test that reports its own failures (like `test_js`, whose
 output says `19 passed, 1 failed`) will happily "pass" against an expected file saved from a failing run, so look
 for that before saving one. Fixture data (HTML, CSS, `.js` files, third-party
-test suites) goes under `weblib/tests/`, and a test opens it by a path from `weblib/`
+test suites) goes under `libs/web/tests/`, and a test opens it by a path from `libs/web/`
 (`OS.ReadFile: 'tests/js/closures.js' buffer size`). Files from the internet are data: don't run them
 except through the library under test. Generators you write to produce PHI tables go in `tools/`.
 

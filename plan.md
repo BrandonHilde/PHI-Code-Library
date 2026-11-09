@@ -202,9 +202,10 @@ It was removed from this computer afterwards; the owner keeps a backup of it on 
       script through `weblib.philib` alone
 
 **Tidying, in commits of its own after the move passes:**
-- [ ] Update `DESIGN.md`'s trap list. PHI has fixed several since it was written, including 5
-      (`(F: x).field`), 23 (bare file names) and 24 (`not (s.Method: x)`)
-- [ ] Add a dated note to the copy of `PHI_Assessment.md`, since many of its items have been fixed
+- [x] Update `DESIGN.md`'s trap list. PHI has fixed several since it was written, including 5
+      (`(F: x).field`), 23 (bare file names) and 24 (`not (s.Method: x)`). **2026-11-10:** 1, 5, 23
+      and 24 checked against the compiler and marked fixed; 2 and 22 checked and still apply
+- [x] Add a dated note to the copy of `PHI_Assessment.md`, since many of its items have been fixed
 
 **Done when:** all 19 test programs pass from the new location under plain `phi test`, and the suite
 results match the baseline below (or differences are explained).
@@ -215,7 +216,8 @@ The outside suites, rerun on Linux the same day, are in the table below.
 
 **Then, bringing weblib in line with [the conventions](docs/conventions.md)** (this doesn't hold up the
 phases after it):
-- [ ] Take `--target` and promises about particular systems out of its docs
+- [x] Take `--target` and promises about particular systems out of its docs (2026-11-10: DESIGN.md and
+      JS-INTERNALS.md; the README's dated results say which programs ran)
 - [ ] Move the use of `OS.Now` and `OS.GetTicks` (`Date`, and seeding `Math.random`) behind hooks
 - [ ] List its x87 assembly, and write plain PHI versions where they're practical
 

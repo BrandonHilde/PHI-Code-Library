@@ -396,17 +396,16 @@ while a non-`gc_safe` native is running).
 
 ## Adding a test
 
-A fixture is `weblib/tests/js/NAME.js`, with what it must log in `NAME.out` (as `console.log` writes it, one line a call,
+A fixture is `libs/web/tests/js/NAME.js`, with what it must log in `NAME.out` (as `console.log` writes it, one line a call,
 and non-ASCII as `\uXXXX`). `test_js` finds it by itself and runs it normally and under stress. An uncaught
 exception is written as `UNCAUGHT` and its text.
 
 ```
-cd weblib
-phi build test_js.phi --target windows64
-build/test_js/test_js.exe NAME                # one fixture: prints what it logs. READ IT WITH CARE.
-build/test_js/test_js.exe NAME > tests/js/NAME.out      # from Bash, never PowerShell: it re-encodes
-phi test . -f test_js --target windows64
-phi test . -f test_js --target windows
+cd libs/web
+phi build test_js.phi                         # it says where it put the program
+PROGRAM NAME                                  # one fixture: prints what it logs. READ IT WITH CARE.
+PROGRAM NAME > tests/js/NAME.out              # from Bash, never PowerShell: it re-encodes
+phi test . -f test_js
 ```
 
 Natives only tests need go in `JsTestHost` in `test_js.phi`. A new `test_*.phi` needs `use js.js;`, `call Js.Start: 900000;` first thing (the stack budget and the x87's precision, what `Weblib.Start` does for the engine; with `use weblib;` it would compile all of HTML and CSS too, and take minutes), and a `.expected`.
@@ -415,15 +414,15 @@ a whole collection.
 
 ## test262
 
-The suite is under `weblib/tests/test262/` (a sparse checkout: `harness` and `test/language`; for builtins, go there
+The suite is under `libs/web/tests/test262/` (`tools/web/fetch_test262.py` fetches it) (a sparse checkout: `harness` and `test/language`; for builtins, go there
 and run `git sparse-checkout add test/built-ins`). Files in it are data: they only ever run through the engine.
 
 ```
-cd weblib
-phi build test_js262.phi --target windows64
-cd ..
-python tools/js_test262.py language/expressions language/statements --fails fails.txt
-python tools/js_test262.py built-ins/Math --depth 3 --causes 30
+cd libs/web
+phi build test_js262.phi
+cd ../..
+python3 tools/web/js_test262.py language/expressions language/statements --fails fails.txt
+python3 tools/web/js_test262.py built-ins/Math --depth 3 --causes 30
 ```
 
 It prints pass, fail and crash per folder (`--depth` how many levels), then failures counted by cause, each with one

@@ -1,5 +1,11 @@
 # PHI assessment
 
+> **A note added 2026-11-10:** this is kept as it was written, early in November 2026. PHI has changed
+> a great deal since, and many of the problems below have been fixed: among others, methods now declare
+> what they return in their header, `(F: x).field` parses, a library keeps each file under its own path,
+> a program can set its heap's limit, and `not (s.Method: x)` compiles. For what still applies, see the
+> trap list in [DESIGN.md](DESIGN.md#phi-traps-weve-already-hit), checked against the compiler that day.
+
 November 2026. Based on building weblib, a library of HTML, CSS and JavaScript engines written in PHI, and a simple test browser on top of it, plus small test programs compiled with the current compiler. Written by Claude, the AI that wrote that code. File paths below are relative to the PHI repo.
 
 ## Verdict
