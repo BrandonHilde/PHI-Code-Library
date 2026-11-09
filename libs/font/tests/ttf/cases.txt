@@ -1,0 +1,86 @@
+# made by tools/font/make_font_tests.py: what fontlib must make of each case in cases.bin
+# (the cut and fuzz cases are summed up by the case they come from, at the end)
+fonts LiberationSans-Regular.ttf                410712 bytes  ok, 2620 glyphs
+made  simple                                       704 bytes  ok, 4 glyphs
+made  upem-16                                      704 bytes  ok, 4 glyphs
+made  upem-16384                                   704 bytes  ok, 4 glyphs
+made  short-loca                                   704 bytes  ok, 4 glyphs
+made  long-loca                                    704 bytes  ok, 4 glyphs
+made  line-gap                                     704 bytes  ok, 4 glyphs
+made  os2-typo-metrics                             704 bytes  ok, 4 glyphs
+made  os2-win-metrics                              704 bytes  ok, 4 glyphs
+made  short-metrics                                700 bytes  ok, 4 glyphs
+made  lsb-not-xmin                                 636 bytes  ok, 2 glyphs
+made  header-xmin-not-points                       636 bytes  ok, 2 glyphs
+made  composite-offset                             708 bytes  ok, 4 glyphs
+made  composite-offset-words                       712 bytes  ok, 4 glyphs
+made  composite-two                                716 bytes  ok, 4 glyphs
+made  composite-scale                              712 bytes  ok, 4 glyphs
+made  composite-xy-scale                           712 bytes  ok, 4 glyphs
+made  composite-2x2                                716 bytes  ok, 4 glyphs
+made  composite-scaled-offset                      712 bytes  ok, 4 glyphs
+made  composite-scaled-offset-2x2                  716 bytes  ok, 4 glyphs
+made  composite-scaled-offset-2x2-b                716 bytes  ok, 4 glyphs
+made  composite-point-matching                     716 bytes  ok, 4 glyphs
+made  composite-use-my-metrics                     708 bytes  ok, 4 glyphs
+made  composite-of-empty                           716 bytes  ok, 4 glyphs
+made  composite-nested                             756 bytes  ok, 6 glyphs
+made  composite-contains-itself                    756 bytes  ok, 6 glyphs
+made  composite-of-a-glyph-past-the-end            756 bytes  ok, 6 glyphs
+made  cmap-format-0                                884 bytes  ok, 3 glyphs
+made  cmap-format-4                               1772 bytes  ok, 3 glyphs
+made  cmap-format-6                                664 bytes  ok, 3 glyphs
+made  cmap-format-12                              3744 bytes  ok, 3 glyphs
+made  cmap-format-13                               648 bytes  ok, 3 glyphs
+made  cmap-3-10-before-3-1                         700 bytes  ok, 3 glyphs
+made  cmap-0-4-before-3-1                          700 bytes  ok, 3 glyphs
+made  cmap-3-1-before-0-3                          692 bytes  ok, 3 glyphs
+made  cmap-0-3                                    1772 bytes  ok, 3 glyphs
+made  cmap-symbol                                  668 bytes  ok, 3 glyphs
+made  cmap-mac-roman                               884 bytes  ok, 3 glyphs
+made  cmap-none                                    612 bytes  ok, 3 glyphs
+made  tag-otto                                     704 bytes  refused: CFF outlines (an OpenType .otf font), which aren't read yet
+made  tag-ttcf                                     704 bytes  refused: a font collection, which isn't read yet
+made  tag-junk                                     704 bytes  refused: not a TrueType font
+made  tag-true                                     704 bytes  ok, 4 glyphs
+made  too-short                                     11 bytes  refused: not a font file
+made  no-head                                      704 bytes  refused: a font with no head table
+made  no-hhea                                      704 bytes  refused: a font with no hhea table
+made  no-maxp                                      704 bytes  ok, 0 glyphs
+made  no-hmtx                                      704 bytes  refused: a font with no hmtx table
+made  no-loca                                      704 bytes  refused: a font with no loca table
+made  no-glyf                                      704 bytes  ok, 4 glyphs
+made  no-cmap                                      704 bytes  ok, 4 glyphs
+made  upem-15                                      704 bytes  refused: units per em of 15, which isn't 16 to 16384
+made  upem-16385                                   704 bytes  refused: units per em of 16385, which isn't 16 to 16384
+made  maxp-more-glyphs                             704 bytes  ok, 4 glyphs
+made  maxp-fewer-glyphs                            704 bytes  ok, 2 glyphs
+made  maxp-no-glyphs                               704 bytes  ok, 0 glyphs
+made  glyph-contours-out-of-order                  704 bytes  ok, 4 glyphs
+made  glyph-instructions-too-long                  704 bytes  ok, 4 glyphs
+made  glyph-flags-repeat-too-far                   704 bytes  ok, 4 glyphs
+cut   simple                                      2 ok,    5 refused
+cut   composite-nested                            2 ok,    5 refused
+fuzz  composite-offset                            5 ok,    1 refused
+fuzz  composite-nested                            1 ok,    0 refused
+fuzz  cmap-format-4                               2 ok,    0 refused
+fuzz  composite-2x2                               1 ok,    0 refused
+fuzz  composite-of-empty                          1 ok,    0 refused
+fuzz  composite-xy-scale                          2 ok,    0 refused
+fuzz  cmap-0-3                                    1 ok,    0 refused
+fuzz  os2-win-metrics                             0 ok,    1 refused
+fuzz  composite-offset-words                      3 ok,    0 refused
+fuzz  cmap-format-12                              3 ok,    0 refused
+fuzz  composite-two                               3 ok,    0 refused
+fuzz  cmap-symbol                                 2 ok,    0 refused
+fuzz  cmap-0-4-before-3-1                         1 ok,    0 refused
+fuzz  upem-16384                                  1 ok,    1 refused
+fuzz  lsb-not-xmin                                2 ok,    0 refused
+fuzz  cmap-3-1-before-0-3                         1 ok,    0 refused
+fuzz  cmap-format-13                              1 ok,    0 refused
+fuzz  short-metrics                               1 ok,    0 refused
+fuzz  cmap-none                                   1 ok,    0 refused
+fuzz  composite-use-my-metrics                    0 ok,    1 refused
+fuzz  cmap-mac-roman                              1 ok,    0 refused
+fuzz  line-gap                                    1 ok,    0 refused
+fuzz  composite-scaled-offset-2x2                 2 ok,    0 refused
