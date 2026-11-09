@@ -555,6 +555,20 @@ def check_made(cases):
     return counts, problems
 
 
+def cut_lengths(size, step):
+    """the lengths a good file of size bytes is cut at: in the release cases, every one near its start
+    and its end and every few between (step says how far to the next); in the everyday ones, a few,
+    from inside the first header to just before the end"""
+    if RELEASE:
+        out = []
+        at = 0
+        while at < size:
+            out.append(at)
+            at += step(at)
+        return out
+    return sorted(set(at for at in (8, 20, 40, size // 4, size // 2, size * 3 // 4, size - 1) if 0 < at < size))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--bmpsuite', help='the unpacked bmpsuite-2.8, to copy and check against')
@@ -585,27 +599,20 @@ def main():
         index[name] = cases.add(SUITE_GROUP, 0, name, data, payload='tests/bmp/bmpsuite/' + name)
     for name, data, max_pixels, _ in made:
         index[name] = cases.add(MADE, 1, name, data, max_pixels)
-    if not RELEASE:
-        size = cases.write()
-        print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
-        return
-
     # cut short: every length near the start, and then every 29th, and near the end
-    for name in ('g/pal8.bmp', 'g/pal4rle.bmp', 'g/pal8rle.bmp', 'g/rgb16-565.bmp', 'q/rgba32h56.bmp',
+    for name in (('g/pal8.bmp', 'g/pal4rle.bmp', 'g/pal8rle.bmp', 'g/rgb16-565.bmp', 'q/rgba32h56.bmp',
                  'g/pal8os2.bmp', 'depth1-w9', 'depth4-w5-topdown', 'fields-8888-header124',
-                 'rle8-delta', 'rle4-absolute-odd', 'last-row-unpadded'):
+                 'rle8-delta', 'rle4-absolute-odd', 'last-row-unpadded') if RELEASE else ('g/pal8.bmp', 'g/pal4rle.bmp')):
         source = index[name]
         data = cases.list[source][5]
-        at = 0
-        while at < len(data):
+        for at in cut_lengths(len(data), lambda at: 1 if at < 160 or len(data) - at <= 40 else 29):
             cases.add(CUT, 2, '%s-to-%d' % (name, at), data[:at], 0, (source, at))
-            at += 1 if at < 160 or len(data) - at <= 40 else 29
 
     # fuzz: small files with a few bytes changed, mostly in the headers
     r = random.Random(20261108)
     small = [name for name, data, _, rule in made if len(data) < 400 and not name.startswith('bad-')
              and not name.startswith('bomb-') and not name.startswith('limit-')]
-    for k in range(4000):
+    for k in range(4000 if RELEASE else 40):
         name = r.choice(small)
         source = index[name]
         data = bytearray(cases.list[source][5])
@@ -632,8 +639,8 @@ def main():
         shown += 1
     print('cut short and read: %d, each showing the image it was cut from' % shown)
 
-    size = cases.write('release')
-    print('release.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
+    size = cases.write('release' if RELEASE else 'cases')
+    print('%s.bin: %d cases, %d bytes:' % ('release' if RELEASE else 'cases', len(cases.list), size), cases.summary())
 
 
 if __name__ == '__main__':

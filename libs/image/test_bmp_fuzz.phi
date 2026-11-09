@@ -1,0 +1,9 @@
+# imagelib's BMP decoder fuzzed for crashes and hangs: a short run, every day. fuzz_bmp.phi does it.
+use imagelib;
+use fuzz_bmp;
+
+phi.TestBmpFuzz:Program
+{
+	call ImageLib.Start;
+	call ImgFuzzBmp.Run: 2000 1 40 'tests/bmp/cases.bin';
+}

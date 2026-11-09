@@ -136,4 +136,6 @@ made: 236 of 236 as the rules say (189 read, 47 refused), refused:
   bomb-tall-top-down: 3 by 2147483647 is more than the limit of 16777216 pixels
   bomb-os2: 65535 by 65535 is more than the limit of 16777216 pixels
   limit-one-over: 10 by 10 is more than the limit of 99 pixels
+cut: 14 of 14 as the rules say (8 read, 6 refused)
+fuzz: 40 of 40 as the rules say (20 read, 20 refused)
 done

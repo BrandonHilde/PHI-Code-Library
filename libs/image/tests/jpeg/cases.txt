@@ -243,3 +243,42 @@ made  limit-at                                     386 bytes  ok, 10 by 10
 made  limit-over                                   381 bytes  refused: 10 by 10 is more than the limit of 99 pixels
 made  limit-default-over                           396 bytes  refused: 65535 by 65535 is more than the limit of 16777216 pixels
 made  bomb-claims-big                              388 bytes  ok, 4096 by 4096
+cut   pil-17x9-420-q75                            1 ok,    6 refused
+cut   scans-each-420                              3 ok,    4 refused
+fuzz  low-luma-1x1                                0 ok,    1 refused
+fuzz  scans-each-420                              0 ok,    1 refused
+fuzz  scans-backwards-444                         2 ok,    0 refused
+fuzz  quality-50                                  1 ok,    1 refused
+fuzz  mixed-33x31                                 0 ok,    1 refused
+fuzz  marker-app1                                 1 ok,    0 refused
+fuzz  14-1x1                                      1 ok,    0 refused
+fuzz  scans-each-mixed                            1 ok,    0 refused
+fuzz  pil-1x1-422-q95                             0 ok,    1 refused
+fuzz  pil-17x9-420-q95                            0 ok,    1 refused
+fuzz  sof1                                        0 ok,    1 refused
+fuzz  im-1x1-4x1                                  1 ok,    0 refused
+fuzz  gray-1x1-4x1                                0 ok,    1 refused
+fuzz  422-17x13                                   1 ok,    0 refused
+fuzz  im-17x9-1x1-2x2-2x2                         0 ok,    1 refused
+fuzz  pil-1x1-444-q10                             1 ok,    0 refused
+fuzz  bad-garbage-between                         1 ok,    0 refused
+fuzz  crossed-17x13                               1 ok,    0 refused
+fuzz  gray-7x9-1x1                                0 ok,    1 refused
+fuzz  low-luma-33x31                              1 ok,    0 refused
+fuzz  bad-dnl                                     0 ok,    1 refused
+fuzz  adobe-0                                     1 ok,    0 refused
+fuzz  adobe-1                                     1 ok,    0 refused
+fuzz  bad-no-dht                                  1 ok,    0 refused
+fuzz  all-21-17x13                                1 ok,    0 refused
+fuzz  scans-each-444                              1 ok,    0 refused
+fuzz  pil-17x9-420-q75                            1 ok,    0 refused
+fuzz  440-17x13                                   0 ok,    1 refused
+fuzz  gray-16x8-1x1                               1 ok,    0 refused
+fuzz  gray-7x9-4x1                                1 ok,    1 refused
+fuzz  444-1x1                                     1 ok,    0 refused
+fuzz  im-33x31-4x1                                0 ok,    1 refused
+fuzz  gray-7x9-2x2                                1 ok,    0 refused
+fuzz  pil-33x31-optimized                         0 ok,    1 refused
+fuzz  marker-fill-bytes                           0 ok,    1 refused
+fuzz  im-17x9-4x2                                 0 ok,    1 refused
+fuzz  jfif-and-adobe-0                            1 ok,    0 refused

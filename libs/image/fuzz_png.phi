@@ -1,0 +1,440 @@
+# The crash fuzzer for PNG, shared by test_png_fuzz (a short run, every day) and release_png_fuzz
+# (the full run, for release). What it does, as its own comment had it:
+# Reading damaged PNG files, in bulk: good files changed at random with a fixed seed, every value of
+# each of the first 64 bytes of several, numbers that cause trouble put in chunk fields, and files
+# made here from noise: random pixel data, in stored blocks so that it inflates, with chunk fields
+# that are right and wrong. Most changes have their chunks' CRCs mended after them, so that they get
+# past the CRC to what they change. Every one must come back, as an image within the limit or a
+# reason: a crash or a hang fails the test. (Whether imagelib is right about each is test_png's job:
+# its fuzz cases are checked against the rules.)
+# This is test code, which imagelib.phi doesn't use, so it's no part of the library.
+use imagelib;
+use memory.mem;
+use data.crc32;
+
+phi.ImgFuzzPng:Library
+{
+	u32 seed: 0x2545F491;
+	u32 read: 0;
+	u32 refused: 0;
+	u32 too_big: 0;
+	u32 bases_count: 0;
+	ptr<u8> base_data[512];
+	u32 base_len[512];
+	const u32 WORK_SIZE: 70000;
+	# rounds random changes; files of every value of their header bytes, and of troublesome
+	# numbers; noise rounds (or, for BMP, the longest noise); the starting files from cases_path
+	[Run: u32 rounds: 0; u32 files: 0; u32 noise: 0; str cases_path;]
+
+		# the starting points: PngSuite files of each kind, and the good small files made for test_png
+		str suite: 'basn0g01.png' 'basn0g02.png' 'basn0g04.png' 'basn0g08.png' 'basn0g16.png'
+			'basn2c08.png' 'basn2c16.png' 'basn3p01.png' 'basn3p02.png' 'basn3p04.png' 'basn3p08.png'
+			'basn4a08.png' 'basn4a16.png' 'basn6a08.png' 'basn6a16.png' 'basi0g01.png' 'basi2c16.png'
+			'basi3p04.png' 'basi6a08.png' 'tbrn2c08.png' 'tbbn0g04.png' 'tbwn3p08.png' 'oi4n2c16.png'
+			'oi9n0g16.png' 'z00n2c08.png' 's01i3p01.png' 's09n3p02.png' 'f04n2c08.png' 'ctzn0g04.png';
+		while u32 s: 0; s < suite.len; s++;
+			u32 size: 0;
+			str path: ('tests/png/pngsuite/' suite:s);
+			base_data:bases_count is (Load: path addr size);
+			base_len:bases_count is size;
+			call Fits: path size;
+			bases_count++;
+		;;
+		u32 cases_size: 0;
+		ptr<u8> cases_bytes: (Load: cases_path addr cases_size);
+		CoreReader r;
+		call r.Start: cases_bytes cases_size;
+		u32 count: (r.U32LE);
+		while u32 i: 0; i < count; i++;
+			u32 group: (r.U8);
+			u32 kind: (r.U8);
+			call r.Skip: (r.U8);
+			u32 most: (r.U32LE);
+			ptr<u8> bytes: 0;
+			u32 length: 0;
+			when kind
+				is 0
+					call r.Skip: (r.U8);
+				;;
+				is 1
+					length is (r.U32LE);
+					bytes is (r.Bytes: length);
+				;;
+				is 2
+					call r.Skip: 8;
+				;;
+				else
+					call r.Skip: 4;
+					call r.Skip: (r.U16LE) * 5;
+				;;
+			;;
+			bln ok: ((r.U8) is 1);
+			if ok
+				call r.Skip: 12;
+			;;
+			else
+				call r.Skip: (r.U8);
+			;;
+			if group is 1 and kind is 1 and ok and most is 0 and length > 0 and length <= 2000 and bases_count < 512
+				base_data:bases_count is bytes;
+				base_len:bases_count is length;
+				bases_count++;
+			;;
+		;;
+		if r.failed
+			log cases_path ' is damaged\n';
+			exit 1;
+		;;
+		log 'files to change: ' bases_count '\n';
+
+		ptr<u8> work: new u8[WORK_SIZE];
+
+		# changed at random: a few bits, a byte, a chunk field, cut short, a byte put in or taken out;
+		# three in four then have their CRCs mended
+		while u32 n: 0; n < rounds; n++;
+			u32 which: (Next) % bases_count;
+			u32 len: base_len:which;
+			call Mem.Copy: work base_data:which len;
+			u32 how: (Next) % 6;
+			if how is 0
+				u32 flips: 1 + (Next) % 3;
+				while u32 f: 0; f < flips; f++;
+					u32 at_byte: (Next) % len;
+					work:at_byte is (work:at_byte ^ (1 << ((Next) % 8))) as u8;
+				;;
+			;;
+			elif how is 1
+				work:((Next) % len) is ((Next) & 255) as u8;
+			;;
+			elif how is 2
+				call Field: work len ((Next) % 80);
+			;;
+			elif how is 3
+				len is (Next) % len;
+			;;
+			elif how is 4
+				u32 at_byte: (Next) % len;
+				call Mem.Move: (work + at_byte + 1) (work + at_byte) (len - at_byte);
+				work:at_byte is ((Next) & 255) as u8;
+				len++;
+			;;
+			else
+				u32 at_byte: (Next) % len;
+				call Mem.Move: (work + at_byte) (work + at_byte + 1) (len - at_byte - 1);
+				len--;
+			;;
+			if (n & 3) is not 0
+				call Mend: work len;
+			;;
+			# a quarter of them with a limit they may well reach
+			Img.max_pixels is 0;
+			if (n & 3) is 1
+				Img.max_pixels is 500;
+			;;
+			call Try: work len;
+		;;
+		Img.max_pixels is 0;
+		log 'changed at random: ' read ' read, ' refused ' refused, ' too_big ' over the limit\n';
+
+		# every value of each of the first 64 bytes (the signature, IHDR, and what follows it), with
+		# the CRCs mended
+		read is 0;
+		refused is 0;
+		too_big is 0;
+		str starts: 'basn0g01.png' 'basn2c16.png' 'basn3p04.png' 'basn4a08.png' 'basi6a16.png'
+			'tbrn2c08.png' 'tbbn0g04.png' 'oi9n0g16.png';
+		while u32 s: 0; s < starts.len and s < files; s++;
+			str path: ('tests/png/pngsuite/' starts:s);
+			u32 len: 0;
+			ptr<u8> base: (Load: path addr len);
+			call Fits: path len;
+			u32 top: 64;
+			if top > len
+				top is len;
+			;;
+			while u32 at_byte: 0; at_byte < top; at_byte++;
+				while u32 v: 0; v < 256; v++;
+					call Mem.Copy: work base len;
+					work:at_byte is v as u8;
+					call Mend: work len;
+					call Try: work len;
+				;;
+			;;
+			free base;
+		;;
+		log 'every value of the first 64 bytes: ' read ' read, ' refused ' refused, ' too_big ' over the limit\n';
+
+		# numbers that cause trouble in every 32-bit field of the first 100 bytes, with the CRCs mended
+		read is 0;
+		refused is 0;
+		too_big is 0;
+		u32 troubles: 0 1 2 3 4 7 8 0x7F 0x80 0xFF 0x100 0xFFFF 0x10000 0x7FFFFFFF 0x80000000 0x80000001
+			0xFFFFFFFE 0xFFFFFFFF 13 4096 4097;
+		while u32 s: 0; s < starts.len and s < files; s++;
+			str path: ('tests/png/pngsuite/' starts:s);
+			u32 len: 0;
+			ptr<u8> base: (Load: path addr len);
+			while u32 at_byte: 8; at_byte + 4 <= 100 and at_byte + 4 <= len; at_byte++;
+				while u32 t: 0; t < troubles.len; t++;
+					call Mem.Copy: work base len;
+					call PutBE: work at_byte troubles:t;
+					call Mend: work len;
+					call Try: work len;
+				;;
+			;;
+			free base;
+		;;
+		log 'troublesome numbers: ' read ' read, ' refused ' refused, ' too_big ' over the limit\n';
+
+		# made from noise: an IHDR of any color type and depth (most of them ones PNG has), a palette
+		# and tRNS of any length, and random image data of about the right size, filter types and all,
+		# in stored blocks with the right Adler-32, so that the noise reaches the filters and the pixels
+		read is 0;
+		refused is 0;
+		too_big is 0;
+		u8 colors: 0 0 0 0 0 2 2 3 3 3 3 4 4 6 6 1 5 7;
+		u8 depths: 1 2 4 8 16 8 16 1 2 4 8 8 16 8 16 8 8 8;
+		ptr<u8> raw: new u8[WORK_SIZE];
+		while u32 n: 0; n < noise; n++;
+			u32 pick: (Next) % 18;
+			u32 color: colors:pick;
+			u32 depth: depths:pick;
+			if (Next) % 16 is 0
+				depth is (Next) % 20;
+			;;
+			u32 w: 1 + (Next) % 40;
+			u32 h: 1 + (Next) % 40;
+			u32 interlace: (Next) % 2;
+			u32 channels: 1;
+			if color is 2
+				channels is 3;
+			;;
+			elif color is 4
+				channels is 2;
+			;;
+			elif color is 6
+				channels is 4;
+			;;
+			# the image data's size, as if it weren't interlaced, give or take a little
+			u32 size: h * (1 + (w * depth * channels + 7) / 8);
+			if interlace is 1
+				size++ size / 2;
+			;;
+			u32 change: (Next) % 8;
+			if change is 0
+				size++ (Next) % 9;
+			;;
+			elif change is 1 and size > 8
+				size-- (Next) % 9;
+			;;
+			if size > 40000
+				size is 40000;
+			;;
+			u32 filters: 5;
+			if (Next) % 8 is 0
+				filters is 256;
+			;;
+			while u32 k: 0; k < size; k++;
+				raw:k is ((Next) & 255) as u8;
+				if (Next) % 16 is 0
+					raw:k is ((Next) % filters) as u8;
+				;;
+			;;
+			# the filter types at the start of each row, where they'd be if it weren't interlaced
+			u32 row: 1 + (w * depth * channels + 7) / 8;
+			while u32 k: 0; k < size; k++ row;
+				raw:k is ((Next) % filters) as u8;
+			;;
+
+			call PutBE: work 0 0x89504E47;
+			call PutBE: work 4 0x0D0A1A0A;
+			u32 len: 8;
+			u8 header[13];
+			call PutBE: header 0 w;
+			call PutBE: header 4 h;
+			header:8 is depth as u8;
+			header:9 is color as u8;
+			header:10 is 0;
+			header:11 is 0;
+			header:12 is interlace as u8;
+			if (Next) % 32 is 0
+				header:(10 + (Next) % 3) is ((Next) & 255) as u8;
+			;;
+			len is (Chunk: work len 'IHDR' header 13);
+			if color is 3 or (Next) % 8 is 0
+				u32 entries: 1 + (Next) % 256;
+				if (Next) % 16 is 0
+					entries is (Next) % 300;
+				;;
+				u8 plte[900];
+				while u32 k: 0; k < entries * 3; k++;
+					plte:k is ((Next) & 255) as u8;
+				;;
+				len is (Chunk: work len 'PLTE' plte (entries * 3));
+			;;
+			if (Next) % 3 is 0
+				u8 trns[300];
+				u32 n_trns: (Next) % 300;
+				if color is 0
+					n_trns is 2;
+				;;
+				elif color is 2
+					n_trns is 6;
+				;;
+				if (Next) % 8 is 0
+					n_trns is (Next) % 10;
+				;;
+				while u32 k: 0; k < n_trns; k++;
+					trns:k is ((Next) & 255) as u8;
+				;;
+				if color is 0 and depth < 16 and n_trns is 2
+					trns:0 is 0;
+					trns:1 is ((Next) & 255) as u8;
+				;;
+				len is (Chunk: work len 'tRNS' trns n_trns);
+			;;
+			# zlib: a header, stored blocks of up to 65,535 bytes, and the Adler-32
+			u32 at_z: len + 8;
+			u32 z: at_z;
+			work:z is 0x78;
+			work:(z + 1) is 0x01;
+			z++ 2;
+			u32 done: 0;
+			bln first: true;
+			while first or done < size
+				first is false;
+				u32 part: size - done;
+				if part > 65535
+					part is 65535;
+				;;
+				work:z is 0;
+				if done + part is size
+					work:z is 1;
+				;;
+				work:(z + 1) is (part & 255) as u8;
+				work:(z + 2) is (part >> 8) as u8;
+				work:(z + 3) is ((part ^ 0xFFFF) & 255) as u8;
+				work:(z + 4) is ((part ^ 0xFFFF) >> 8) as u8;
+				call Mem.Copy: (work + z + 5) (raw + done) part;
+				z++ 5 + part;
+				done++ part;
+			;;
+			call PutBE: work z (CoreAdler.Of: raw size);
+			z++ 4;
+			u32 zlen: z - at_z;
+			call PutBE: work len zlen;
+			call PutBE: work (len + 4) 0x49444154;
+			call PutBE: work z (Crc32.Of: (work + len + 4) (zlen + 4));
+			len is z + 4;
+			len is (Chunk: work len 'IEND' work 0);
+			if (Next) % 4 is 0
+				Img.max_pixels is 100 + (Next) % 1000;
+			;;
+			call Try: work len;
+			Img.max_pixels is 0;
+		;;
+		log 'made from noise: ' read ' read, ' refused ' refused, ' too_big ' over the limit\n';
+		free raw;
+		free work;
+		log 'done\n';
+		exit 0;
+	[end]
+
+	[Try: ptr<u8> data: 0; u32 len: 0;]
+		ptr<ImgImage> image: (Img.Decode: data len);
+		if image is not 0
+			u32 most: Img.max_pixels;
+			if most is 0
+				most is Img.DEFAULT_MAX_PIXELS;
+			;;
+			if image.w <= 0 or image.h <= 0 or image.pixels is 0 or (image.w as u64) * (image.h as u64) > most
+				log 'WRONG: an image of ' image.w ' by ' image.h ', past the limit or empty\n';
+				exit 1;
+			;;
+			read++;
+			call Img.Free: image;
+			return;
+		;;
+		if Img.error.len is 0
+			log 'WRONG: refused with no reason\n';
+			exit 1;
+		;;
+		if Img.error has 'limit'
+			too_big++;
+		;;
+		else
+			refused++;
+		;;
+	[end]
+
+	# every whole chunk's CRC put right, so that a change gets past it
+	[Mend: ptr<u8> data: 0; u32 len: 0;]
+		u32 at_byte: 8;
+		while at_byte + 12 <= len
+			u32 size: ((data:at_byte as u32) << 24) | ((data:(at_byte + 1) as u32) << 16) | ((data:(at_byte + 2) as u32) << 8) | data:(at_byte + 3);
+			if size > len - at_byte - 12 return;
+			call PutBE: data (at_byte + 8 + size) (Crc32.Of: (data + at_byte + 4) (size + 4));
+			at_byte++ 12 + size;
+		;;
+	[end]
+
+	# a troublesome number in a chunk field
+	[Field: ptr<u8> data: 0; u32 len: 0; u32 at_byte: 0;]
+		u32 values: 0 1 0x7FFFFFFF 0x80000000 0xFFFFFFFF 0x10000 0xFFFF 13 4096 0x7FFF;
+		if at_byte + 4 > len return;
+		call PutBE: data at_byte values:((Next) % 10);
+	[end]
+
+	# a chunk on the end of the data; where the data ends after it
+	[Chunk: ptr<u8> data: 0; u32 len: 0; str name; ptr<u8> body: 0; u32 size: 0; : u32]
+		call PutBE: data len size;
+		while u32 k: 0; k < 4; k++;
+			data:(len + 4 + k) is name:k as u8;
+		;;
+		if size > 0
+			call Mem.Copy: (data + len + 8) body size;
+		;;
+		call PutBE: data (len + 8 + size) (Crc32.Of: (data + len + 4) (size + 4));
+	[end: len + 12 + size]
+
+	# a u32 at a place in the data, big-endian
+	[PutBE: ptr<u8> data: 0; u32 at_byte: 0; u32 v: 0;]
+		data:at_byte is (v >> 24) as u8;
+		data:(at_byte + 1) is ((v >> 16) & 255) as u8;
+		data:(at_byte + 2) is ((v >> 8) & 255) as u8;
+		data:(at_byte + 3) is (v & 255) as u8;
+	[end]
+
+	# the work space has room for each file, and one more byte
+	[Fits: str path; u32 size: 0;]
+		if size >= WORK_SIZE
+			log path ' is bigger than the work space\n';
+			exit 1;
+		;;
+	[end]
+
+	# xorshift32
+	[Next: : u32]
+		seed is seed ^ (seed << 13);
+		seed is seed ^ (seed >> 17);
+		seed is seed ^ (seed << 5);
+	[end: seed]
+
+	[Load: str path; ptr<u32> size_out: 0; : ptr<u8>]
+		int size: (OS.FileSize: path);
+		if size < 0
+			log 'cannot read ' path '\n';
+			exit 1;
+		;;
+		ptr<u8> buffer: new u8[size as u32 + 1];
+		if buffer is 0
+			log 'out of memory reading ' path '\n';
+			exit 1;
+		;;
+		if (OS.ReadFile: path buffer size) is not size
+			log 'short read of ' path '\n';
+			exit 1;
+		;;
+		size_out:0 is size as u32;
+	[end: buffer]
+}

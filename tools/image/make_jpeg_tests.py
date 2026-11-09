@@ -818,6 +818,20 @@ def small_image(data):
     return ok and result[0] * result[1] <= 65536
 
 
+def cut_lengths(size, step):
+    """the lengths a good file of size bytes is cut at: in the release cases, every one near its start
+    and its end and every few between (step says how far to the next); in the everyday ones, a few,
+    from inside the first header to just before the end"""
+    if RELEASE:
+        out = []
+        at = 0
+        while at < size:
+            out.append(at)
+            at += step(at)
+        return out
+    return sorted(set(at for at in (8, 20, 40, size // 4, size // 2, size * 3 // 4, size - 1) if 0 < at < size))
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()
@@ -836,29 +850,19 @@ def main():
     for group, (label, made) in zip((LIBJPEG, MADE), groups):
         for name, data, max_pixels, _ in made:
             index[name] = cases.add(group, 1, name, data, max_pixels)
-    if not RELEASE:
-        if problems:
-            print('\n'.join(problems))
-            sys.exit('the rules and libjpeg disagree, %d times' % len(problems))
-        size = cases.write()
-        print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
-        return
-
     # cut short: every length near the start, and then every 7th, and near the end
-    for name in ('pil-17x9-420-q75', 'pil-33x31-444-q95', 'pil-restart-every-3-blocks', 'pil-8x8-gray',
-                 '420-17x13', 'scans-each-420', 'restart-3-scans', 'dqt-16-bit', 'tables-redefined-between-scans'):
+    for name in (('pil-17x9-420-q75', 'pil-33x31-444-q95', 'pil-restart-every-3-blocks', 'pil-8x8-gray',
+                 '420-17x13', 'scans-each-420', 'restart-3-scans', 'dqt-16-bit', 'tables-redefined-between-scans') if RELEASE else ('pil-17x9-420-q75', 'scans-each-420')):
         source = index[name]
         data = cases.list[source][5]
-        at = 0
-        while at < len(data):
+        for at in cut_lengths(len(data), lambda at: 1 if at < 200 or len(data) - at <= 40 else 7):
             cases.add(CUT, 2, '%s-to-%d' % (name, at), data[:at], 0, (source, at))
-            at += 1 if at < 200 or len(data) - at <= 40 else 7
 
     # fuzz: a few bytes changed, in the headers more often than not
     r = random.Random(20261108)
     small = [name for label, made in groups for name, data, _, rule in made
              if len(data) < 1500 and rule == 'auto' and small_image(data)]
-    for k in range(4000):
+    for k in range(4000 if RELEASE else 40):
         name = r.choice(small)
         source = index[name]
         data = bytearray(cases.list[source][5])
@@ -877,8 +881,8 @@ def main():
         print('\n'.join(problems[:200]))
         sys.exit('the rules and libjpeg disagree, %d times' % len(problems))
 
-    size = cases.write('release')
-    print('release.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
+    size = cases.write('release' if RELEASE else 'cases')
+    print('%s.bin: %d cases, %d bytes:' % ('release' if RELEASE else 'cases', len(cases.list), size), cases.summary())
 
 
 if __name__ == '__main__':

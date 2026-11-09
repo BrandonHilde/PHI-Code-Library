@@ -437,3 +437,43 @@ made  limit-over                                   178 bytes  refused: 10 by 10 
 made  limit-default-over                            65 bytes  refused: 4097 by 4096 is more than the limit of 16777216 pixels
 made  bomb-claims-big                               74 bytes  ok, 4096 by 4096
 made  bomb-too-much                              20450 bytes  ok, 1 by 1
+cut   basn0g01.png                                3 ok,    4 refused
+cut   basi2c08.png                                4 ok,    3 refused
+fuzz  idat-stored                                 0 ok,    1 refused
+fuzz  basn3p04.png                                0 ok,    1 refused
+fuzz  basn3p01.png                                0 ok,    1 refused
+fuzz  oi2n2c16.png                                1 ok,    1 refused
+fuzz  basn3p02.png                                0 ok,    1 refused
+fuzz  trns-twice                                  0 ok,    1 refused
+fuzz  limit-at                                    0 ok,    1 refused
+fuzz  g04n2c08.png                                0 ok,    1 refused
+fuzz  filter2-c2-d8                               0 ok,    1 refused
+fuzz  c4-d8-n-5x9                                 0 ok,    1 refused
+fuzz  ct0n0g04.png                                0 ok,    1 refused
+fuzz  filter0-c2-d16                              0 ok,    1 refused
+fuzz  c3-d2-n-5x9                                 1 ok,    0 refused
+fuzz  c0-d1-n-5x9                                 0 ok,    1 refused
+fuzz  c0-d8-i-8x8                                 0 ok,    1 refused
+fuzz  c0-d8-i-17x9                                0 ok,    1 refused
+fuzz  bad-much-too-much                           0 ok,    1 refused
+fuzz  after-iend                                  0 ok,    1 refused
+fuzz  s02n3p01.png                                0 ok,    2 refused
+fuzz  c6-d8-n-8x8                                 0 ok,    1 refused
+fuzz  g04n3p04.png                                0 ok,    1 refused
+fuzz  g10n0g16.png                                0 ok,    1 refused
+fuzz  s34n3p04.png                                0 ok,    1 refused
+fuzz  c3-d4-n-17x9                                0 ok,    1 refused
+fuzz  bad-zlib-no-adler                           0 ok,    1 refused
+fuzz  cs3n2c16.png                                0 ok,    1 refused
+fuzz  basi0g04.png                                0 ok,    1 refused
+fuzz  c6-d16-n-8x8                                0 ok,    1 refused
+fuzz  c4-d8-i-5x9                                 0 ok,    1 refused
+fuzz  oi4n0g16.png                                0 ok,    1 refused
+fuzz  c4-d16-n-5x9                                0 ok,    1 refused
+fuzz  gradient-level9                             0 ok,    1 refused
+fuzz  trns-palette-longer-than-plte               0 ok,    1 refused
+fuzz  c0-d8-i-5x9                                 1 ok,    0 refused
+fuzz  c2-d16-n-8x8                                0 ok,    1 refused
+fuzz  c2-d8-i-8x8                                 0 ok,    1 refused
+fuzz  s39n3p04.png                                0 ok,    1 refused
+fuzz  c4-d8-i-17x9                                0 ok,    1 refused

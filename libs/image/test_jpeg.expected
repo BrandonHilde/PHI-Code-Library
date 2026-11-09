@@ -109,4 +109,6 @@ made: 183 of 183 as the rules say (134 read, 49 refused), refused:
   bad-quant-table-undefined: a component whose quantization table isn't defined
   limit-over: 10 by 10 is more than the limit of 99 pixels
   limit-default-over: 65535 by 65535 is more than the limit of 16777216 pixels
+cut: 14 of 14 as the rules say (4 read, 10 refused)
+fuzz: 40 of 40 as the rules say (23 read, 17 refused)
 done

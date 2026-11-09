@@ -1,0 +1,9 @@
+# imagelib's JPEG decoder fuzzed for crashes and hangs: a short run, every day. fuzz_jpeg.phi does it.
+use imagelib;
+use fuzz_jpeg;
+
+phi.TestJpegFuzz:Program
+{
+	call ImageLib.Start;
+	call ImgFuzzJpeg.Run: 2000 1 2000 'tests/jpeg/cases.bin';
+}

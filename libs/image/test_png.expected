@@ -222,4 +222,6 @@ made: 261 of 261 as the rules say (215 read, 46 refused), refused:
   bad-filter-type-interlaced: a row with filter type 7, which PNG doesn't have
   limit-over: 10 by 10 is more than the limit of 99 pixels
   limit-default-over: 4097 by 4096 is more than the limit of 16777216 pixels
+cut: 14 of 14 as the rules say (7 read, 7 refused)
+fuzz: 40 of 40 as the rules say (3 read, 37 refused)
 done

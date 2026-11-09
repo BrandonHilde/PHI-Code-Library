@@ -325,3 +325,43 @@ made  bomb-os2                                      36 bytes  refused: 65535 by 
 made  limit-exactly                                374 bytes  ok, 10 by 10
 made  limit-one-over                               374 bytes  refused: 10 by 10 is more than the limit of 99 pixels
 made  limit-big                                     64 bytes  ok, 5000 by 4000
+cut   g/pal8.bmp                                  4 ok,    3 refused
+cut   g/pal4rle.bmp                               4 ok,    3 refused
+fuzz  fields-one-bit-each-alphabitfields          0 ok,    1 refused
+fuzz  fields-8888-header56                        1 ok,    0 refused
+fuzz  fields-32-bit-red-header108                 2 ok,    0 refused
+fuzz  rgb16-unused-bit-set                        0 ok,    1 refused
+fuzz  fields-all-16-green-header40-alpha-ignored    0 ok,    1 refused
+fuzz  fields-1555-header40-alpha-ignored          0 ok,    1 refused
+fuzz  rle4-run-past-row-end                       1 ok,    0 refused
+fuzz  fields-4444-header40-alpha-ignored          0 ok,    1 refused
+fuzz  fields-8888-abgr-header108                  1 ok,    0 refused
+fuzz  depth1-w33                                  1 ok,    0 refused
+fuzz  fields-565-header56                         0 ok,    1 refused
+fuzz  depth16-w1                                  1 ok,    1 refused
+fuzz  fields-11-11-10-header40-alpha-ignored      1 ok,    0 refused
+fuzz  depth2-w9                                   0 ok,    1 refused
+fuzz  fields-no-blue-header40-alpha-ignored       0 ok,    1 refused
+fuzz  palette-short                               0 ok,    1 refused
+fuzz  depth16-w33-topdown                         1 ok,    0 refused
+fuzz  depth1-w1                                   0 ok,    1 refused
+fuzz  depth2-w33-topdown                          0 ok,    1 refused
+fuzz  depth1-w9                                   1 ok,    0 refused
+fuzz  fields-no-blue-header40                     0 ok,    1 refused
+fuzz  fields-11-11-10-header40                    0 ok,    1 refused
+fuzz  header16-rgb24                              1 ok,    0 refused
+fuzz  fields-10-10-10-2-header56                  1 ok,    0 refused
+fuzz  fields-10-10-10-2-alphabitfields            0 ok,    1 refused
+fuzz  fields-10-10-10-2-header108                 1 ok,    0 refused
+fuzz  depth16-w3-topdown                          0 ok,    1 refused
+fuzz  fields-overlapping-header40-alpha-ignored    1 ok,    0 refused
+fuzz  depth4-w33                                  1 ok,    0 refused
+fuzz  fields-555-header124                        0 ok,    1 refused
+fuzz  fields-32-bit-red-header40-alpha-ignored    0 ok,    1 refused
+fuzz  depth32-w3-topdown                          1 ok,    0 refused
+fuzz  fields-32-bit-red-header40                  0 ok,    1 refused
+fuzz  fields-11-11-10-header56                    1 ok,    0 refused
+fuzz  depth4-w1                                   1 ok,    0 refused
+fuzz  depth2-w1-topdown                           0 ok,    1 refused
+fuzz  depth4-w1-topdown                           1 ok,    0 refused
+fuzz  fields-one-bit-each-header108               1 ok,    0 refused

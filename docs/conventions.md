@@ -95,10 +95,11 @@ So there are two tiers:
 
 | Tier | Files | What's in it | Run by |
 |---|---|---|---|
-| Everyday | `test_*.phi` | The least that shows each feature works: an outside suite's files, and one or a few made cases for each feature and each kind of error. Quick to run, and quick to remake | `.\build.ps1 -Test` |
+| Everyday | `test_*.phi` | The least that shows each feature works: an outside suite's files, and one or a few made cases for each feature and each kind of error. A few of every kind of test the release tier has, too (a few files cut short, a few dozen fuzzed, a short run of the crash fuzzer), so that no kind goes unrun, but not thousands covering the same thing. Quick to run, and quick to remake | `.\build.ps1 -Test` |
 | Release | `release_*.phi` | The full suite: every size, files cut short at many lengths, thousands of fuzzed files checked against outside decoders, crash fuzzers of hundreds of thousands, stress runs with other seeds | `.\build.ps1 -Test -Release`, when preparing a library for release |
 
-Nothing has been released yet, so the release tier waits. A new feature gets everyday tests. Its edge cases,
+We still want a few of each required test, but thousands of them covering the same issues is a waste for
+early development builds. Nothing has been released yet, so the release tier waits. A new feature gets everyday tests. Its edge cases,
 fuzzing and stress go in the release tier, or wait until release is near. Don't run the release tier as part
 of everyday work.
 

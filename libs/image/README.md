@@ -165,10 +165,11 @@ python3 -P tools/image/make_png_tests.py --release         # (and the others): r
 
 **Two tiers,** as [the conventions](../../docs/conventions.md#tests) say: during development, light, quick
 tests; the full suite when preparing a release. The everyday tests (`test_*`, in `cases.bin`) are each
-format's outside suite and the cases made for each feature and each kind of error, a few sizes of each:
-about 1,000 decodes, in seconds. The release tests (`release_*`, in `release.bin`) add every size, good files
-cut short at many lengths, fuzzed files, and the crash fuzzers; their generators check every one of those
-against the outside decoders too. The release figures below are from their last run (2026-11-08).
+format's outside suite and the cases made for each feature and each kind of error, a few sizes of each, and a
+few of every other kind: two good files cut at 7 lengths each and 40 fuzzed files per format, all checked
+against the outside decoders, and a short run of each crash fuzzer. All of imagelib's everyday tests, built
+and run, take about 20 seconds. The release tests (`release_*`, in `release.bin`) are the full suite: every
+size, good files cut short at many lengths, thousands of fuzzed files, and the crash fuzzers' full runs. The release figures below are from their last run (2026-11-08).
 
 Each format's rules are written plainly in Python, in [tools/image](../../tools/image), and checked against
 outside evidence before any case is written; imagelib follows them check for check.
@@ -208,13 +209,13 @@ copy of libjpeg-turbo is asked instead. Pillow is counted too.
 |---|---|
 | `test_bmp` | The decoder against the rules, on the everyday cases in [tests/bmp](tests/bmp) (listed in `cases.txt`): BMP Suite's files, and files made for what it doesn't cover |
 | `release_bmp` | The same on the release cases (`release.bin`): the made files at every width, good files cut short at many lengths, and files with bytes changed |
-| `release_bmp_fuzz` | 100,000 random changes to good files, every value of each of the first 160 bytes of ten of them, troublesome numbers in every header field, and noise. All must come back, with an image within the limit or a reason |
+| `test_bmp_fuzz`, `release_bmp_fuzz` | The crash fuzzer, in `fuzz_bmp.phi`: a short run every day (2,000 random changes, one file's header bytes, a little noise), and the full run for release. The full run: 100,000 random changes to good files, every value of each of the first 160 bytes of ten of them, troublesome numbers in every header field, and noise. All must come back, with an image within the limit or a reason |
 | `test_png` | The same for PNG, on the everyday cases in [tests/png](tests/png): PngSuite's files, and files made for what it doesn't cover (every color type and depth at 4 sizes, interlaced and not, every filter, tRNS and PLTE of each kind, chunks in each wrong place, image data that's damaged, short or too long) |
 | `release_png` | The same on the release cases: the made files at 13 sizes, good files cut short, and files with bytes changed, most with their CRCs mended so the change reaches what it was aimed at |
-| `release_png_fuzz` | 100,000 random changes to good files (three in four with their CRCs mended), every value of each of the first 64 bytes of eight, troublesome numbers in every field of the first 100 bytes, and 30,000 files made from noise: random pixel data of about the right size in stored blocks with the right Adler-32, so that it reaches the filters and the pixels. All must come back, with an image within the limit or a reason |
+| `test_png_fuzz`, `release_png_fuzz` | The crash fuzzer, in `fuzz_png.phi`: a short run every day (2,000 random changes, one file's header bytes, a little noise), and the full run for release. The full run: 100,000 random changes to good files (three in four with their CRCs mended), every value of each of the first 64 bytes of eight, troublesome numbers in every field of the first 100 bytes, and 30,000 files made from noise: random pixel data of about the right size in stored blocks with the right Adler-32, so that it reaches the filters and the pixels. All must come back, with an image within the limit or a reason |
 | `test_jpeg` | The same for JPEG, on the everyday cases in [tests/jpeg](tests/jpeg): files written by libjpeg-turbo (a few sizes, and many qualities and subsamplings, optimized tables, restart markers, RGB), and files made by the encoder for the rest (every sampling layout, one component a scan, scans of two, restart intervals of every length, 16-bit and redefined tables, each way of naming the color space, markers in every wrong place, and damaged entropy-coded data) |
 | `release_jpeg` | The same on the release cases: more sizes, good files cut short, and files with bytes changed |
-| `release_jpeg_fuzz` | 100,000 random changes to good files, every value of each of the first 200 bytes of six, troublesome numbers in every 16-bit field of the first 400 bytes, and 30,000 good headers followed by noise, so that random coefficients reach the IDCT (the 64-bit path too). All must come back, with an image within the limit or a reason. Its limit is 2048 by 2048, so that no image is refused for memory in 32 bits and read in 64 |
+| `test_jpeg_fuzz`, `release_jpeg_fuzz` | The crash fuzzer, in `fuzz_jpeg.phi`: a short run every day (2,000 random changes, one file's header bytes, a little noise), and the full run for release. The full run: 100,000 random changes to good files, every value of each of the first 200 bytes of six, troublesome numbers in every 16-bit field of the first 400 bytes, and 30,000 good headers followed by noise, so that random coefficients reach the IDCT (the 64-bit path too). All must come back, with an image within the limit or a reason. Its limit is 2048 by 2048, so that no image is refused for memory in 32 bits and read in 64 |
 | `test_image` | The API: finding the format, the limit, the reasons, freeing, and `BlendRow` against values worked out in Python |
 | `tests/use/test_imagelib` | The compiled `imagelib.philib` on its own, with corelib reached through it (its reader for BMP, its inflate for PNG, and its bit reader for JPEG) |
 

@@ -612,6 +612,20 @@ def small_image(data):
     return ok and result[0] * result[1] <= 65536
 
 
+def cut_lengths(size, step):
+    """the lengths a good file of size bytes is cut at: in the release cases, every one near its start
+    and its end and every few between (step says how far to the next); in the everyday ones, a few,
+    from inside the first header to just before the end"""
+    if RELEASE:
+        out = []
+        at = 0
+        while at < size:
+            out.append(at)
+            at += step(at)
+        return out
+    return sorted(set(at for at in (8, 20, 40, size // 4, size // 2, size * 3 // 4, size - 1) if 0 < at < size))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--pngsuite', help='PngSuite-2017jul19 unpacked, to copy and check against')
@@ -639,29 +653,19 @@ def main():
         index[name] = cases.add(SUITE_GROUP, 0, name, data, payload='tests/png/pngsuite/' + name)
     for name, data, max_pixels, _ in made:
         index[name] = cases.add(MADE, 1, name, data, max_pixels)
-    if not RELEASE:
-        if problems:
-            print('\n'.join(problems))
-            sys.exit('the rules and the outside evidence disagree, %d times' % len(problems))
-        size = cases.write()
-        print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
-        return
-
     # cut short: every length near the start, and then every 13th, and near the end
-    for name in ('basn0g01.png', 'basi2c08.png', 'basn3p04.png', 'basi6a16.png', 'tbrn2c08.png',
-                 'c3-d2-i-17x9', 'c6-d8-n-33x6', 'idat-one-byte-each', 'idat-stored', 'trns-rgb16'):
+    for name in (('basn0g01.png', 'basi2c08.png', 'basn3p04.png', 'basi6a16.png', 'tbrn2c08.png',
+                 'c3-d2-i-17x9', 'c6-d8-n-33x6', 'idat-one-byte-each', 'idat-stored', 'trns-rgb16') if RELEASE else ('basn0g01.png', 'basi2c08.png')):
         source = index[name]
         data = cases.list[source][5]
-        at = 0
-        while at < len(data):
+        for at in cut_lengths(len(data), lambda at: 1 if at < 120 or len(data) - at <= 40 else 13):
             cases.add(CUT, 2, '%s-to-%d' % (name, at), data[:at], 0, (source, at))
-            at += 1 if at < 120 or len(data) - at <= 40 else 13
 
     # fuzz: a few bytes changed, mostly near the start; three in four with their CRCs mended
     r = random.Random(20261108)
     small = [name for name, data, _, rule in made if len(data) < 600 and rule != 'limit' and small_image(data)]
     small += [name for name in suite_files() if not name.startswith('x') and os.path.getsize(os.path.join(SUITE, name)) < 600]
-    for k in range(4000):
+    for k in range(4000 if RELEASE else 40):
         name = r.choice(small)
         source = index[name]
         base = cases.list[source][5]
@@ -701,8 +705,8 @@ def main():
             cases.write()               # for looking into the problems: OUT is the caller's
         sys.exit('the rules and the outside evidence disagree, %d times' % len(problems))
 
-    size = cases.write('release')
-    print('release.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())
+    size = cases.write('release' if RELEASE else 'cases')
+    print('%s.bin: %d cases, %d bytes:' % ('release' if RELEASE else 'cases', len(cases.list), size), cases.summary())
 
 
 if __name__ == '__main__':
