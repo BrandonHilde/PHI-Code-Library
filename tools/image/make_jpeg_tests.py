@@ -15,9 +15,9 @@ Writes libs/image/tests/jpeg/:
 What each case expects comes from jpeg_reference.py, the rules written plainly in Python. Before
 writing anything, this checks those rules against libjpeg-turbo, which both of the outside decoders
 use (Pillow its own copy, ImageMagick the system's): every file the rules read must give the same
-pixels in both, exactly, and every file the rules refuse must at least make libjpeg warn, unless
-the case says the rules are stricter (libjpeg reads it without a word), or it's a kind of JPEG that
-imagelib doesn't read yet. There's no free JPEG test suite to take, so the files are made here:
+pixels as libjpeg-turbo's C code (through ImageMagick, with JSIMD_FORCENONE), damaged files
+included, and every file the rules refuse libjpeg must refuse too, unless it's a kind of JPEG that
+imagelib doesn't read yet. The cut and fuzz cases are checked this way as well. There's no free JPEG test suite to take, so the files are made here:
 
     libjpeg   files written by libjpeg-turbo itself, through Pillow and ImageMagick: many sizes,
               qualities and subsamplings, optimized tables, restart markers, RGB, and kinds that
@@ -37,6 +37,9 @@ import struct
 import subprocess
 import sys
 
+# libjpeg-turbo's C code, in Pillow too (it reads this when it starts): see magick()
+os.environ['JSIMD_FORCENONE'] = '1'
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from jpeg_reference import decode, MAX_PIXELS, ZIGZAG  # noqa: E402
@@ -55,17 +58,23 @@ def difference(a, b):
     import numpy as np
     if a is None or b is None or a.shape != b.shape:
         return None
-    return int(np.abs(a.astype(int) - b.astype(int)).max())
+    return int(np.abs(a.astype(np.int16) - b.astype(np.int16)).max())
 
 
 def magick(data):
-    """ImageMagick's pixels, as RGBA, or None if libjpeg gives up; and whether libjpeg warned"""
+    """ImageMagick's pixels, as RGBA, or None if libjpeg gives up; and whether libjpeg warned, or
+    'gave up' when ImageMagick did, not libjpeg (after a thousand warnings, "insufficient image
+    data": as when a segment runs past the end of the file, and its source manager gives an EOI,
+    and a warning, for every 2 bytes skipped)"""
     import numpy as np
+    # libjpeg-turbo's C code, not its SIMD: the two give the same pixels for every block of a good
+    # file, but the SIMD IDCT saturates where the C one wraps, so they differ on the garbage
+    # blocks of a damaged one, and the C code is the reference the SIMD is tested against
     r = subprocess.run(['magick', 'jpg:-', '-depth', '8', '-format', '%w %h\n', '-write', 'info:-', 'rgb:-'],
-                       input=data, capture_output=True)
+                       input=data, capture_output=True, env=dict(os.environ, JSIMD_FORCENONE='1'))
     warned = b'warning/' in r.stderr or b'error/' in r.stderr
     if r.returncode != 0:
-        return None, warned
+        return None, 'gave up' if b'insufficient image data' in r.stderr else warned
     head, _, body = r.stdout.partition(b'\n')
     try:
         w, h = map(int, head.split())
@@ -77,9 +86,10 @@ def magick(data):
     return np.concatenate([a, np.full((h, w, 1), 255, np.uint8)], axis=2), warned
 
 
-def pillow(data):
+def pillow(data, truncated=False):
     import numpy as np
-    from PIL import Image
+    from PIL import Image, ImageFile
+    ImageFile.LOAD_TRUNCATED_IMAGES = truncated
     try:
         im = Image.open(io.BytesIO(data))
         if im.format != 'JPEG':
@@ -406,10 +416,8 @@ def join(p):
 # ---------------------------------------------------------------- the cases
 
 # a case's rule, for the outside check:
-#   same          the rules read it, and libjpeg (through ImageMagick) gives the same pixels
-#   warns         the same, though libjpeg warns
-#   refuses       the rules refuse it, and libjpeg refuses it or warns about it
-#   strict        the rules refuse it, where libjpeg reads it without a word
+#   auto          libjpeg must do what the rules do: give the same pixels when they read it (with a
+#                 warning or not), and give up when they refuse it
 #   unsupported   a kind of JPEG imagelib doesn't read (yet), which libjpeg reads
 #   limit         refused for imagelib's pixel limit, which libjpeg doesn't have
 
@@ -446,7 +454,7 @@ def libjpeg_cases():
         a = np.stack([(x * 255 // max(w - 1, 1)), (y * 255 // max(h - 1, 1)), ((x * 7 + y * 3) % 256)], axis=2)
         return np.clip(a + r.integers(-30, 31, size=a.shape), 0, 255).astype(np.uint8)
 
-    def pil(name, a, rule='same', **kw):
+    def pil(name, a, rule='auto', **kw):
         b = io.BytesIO()
         im = Image.fromarray(a)
         if kw.pop('cmyk', False):
@@ -459,7 +467,7 @@ def libjpeg_cases():
         Image.fromarray(a).save(b, 'PNG')
         out = subprocess.run(['magick', 'png:-'] + list(args) + ['jpg:-'], input=b.getvalue(), capture_output=True,
                              check=True).stdout
-        cases.append((name, out, 0, 'same'))
+        cases.append((name, out, 0, 'auto'))
 
     for w, h in ((1, 1), (2, 2), (3, 5), (8, 8), (17, 9), (33, 31), (64, 48)):
         a = picture(w, h)
@@ -491,7 +499,7 @@ def libjpeg_cases():
 def made_cases():
     cases = []
 
-    def add(name, data, rule='same', max_pixels=0):
+    def add(name, data, rule='auto', max_pixels=0):
         cases.append((name, data, max_pixels, rule))
 
     # every sampling layout, at sizes that are and aren't whole MCUs
@@ -544,7 +552,7 @@ def made_cases():
     add('no-markers-ids-rgb', jpeg(9, 9, ((82, 1, 1), (71, 1, 1), (66, 1, 1)), sample=rgbish, app=b''))
     add('no-markers-ids-012', jpeg(9, 9, ((0, 1, 1), (1, 1, 1), (2, 1, 1)), sample=rgbish, app=b''))
     for t in (0, 1, 2):
-        add('adobe-%d' % t, jpeg(9, 9, comps_of('444'), sample=rgbish, app=adobe(t)), 'warns' if t == 2 else 'same')
+        add('adobe-%d' % t, jpeg(9, 9, comps_of('444'), sample=rgbish, app=adobe(t)))
     add('jfif-and-adobe-0', jpeg(9, 9, comps_of('444'), sample=rgbish, app=JFIF + adobe(0)))
     add('adobe-short', jpeg(9, 9, ((82, 1, 1), (71, 1, 1), (66, 1, 1)), sample=rgbish, app=segment(0xEE, b'Adobe\x00')))
     add('jfif-short-ids-rgb', jpeg(9, 9, ((82, 1, 1), (71, 1, 1), (66, 1, 1)), sample=rgbish, app=segment(0xE0, b'JFIF\x00')))
@@ -574,27 +582,27 @@ def made_cases():
 
     # wrong: the file's structure
     good = jpeg(13, 11, comps_of('420'), 301)
-    add('bad-empty', b'', 'refuses')
-    add('bad-not-jpeg', b'\x89PNG' + good[4:], 'refuses')
-    add('bad-soi-only', b'\xff\xd8', 'refuses')
-    add('bad-no-eoi', good[:-2], 'refuses')
-    add('bad-second-soi', good[:2] + b'\xff\xd8' + good[2:], 'refuses')
-    add('bad-garbage-between', good[:2] + b'\x00\x00' + good[2:], 'refuses')
-    add('bad-rst-outside', good[:2] + b'\xff\xd0' + good[2:], 'strict')
-    add('bad-tem', good[:2] + b'\xff\x01' + good[2:], 'strict')
-    add('bad-unknown-marker', good[:2] + segment(0x02, b'') + good[2:], 'refuses')
-    add('bad-segment-length-0', good[:2] + b'\xff\xfe\x00\x00' + good[2:], 'strict')
-    add('bad-segment-past-end', good[:2] + b'\xff\xfe\xff\xf0abc', 'refuses')
-    add('bad-dnl', good[:-2] + segment(0xDC, b'\x00\x0b') + b'\xff\xd9', 'strict')
-    add('bad-jpg-marker', good[:2] + segment(0xC8, b'') + good[2:], 'refuses')
-    add('bad-jpgn-marker', good[:2] + segment(0xF0, b'abc') + good[2:], 'refuses')
+    add('bad-empty', b'')
+    add('bad-not-jpeg', b'\x89PNG' + good[4:])
+    add('bad-soi-only', b'\xff\xd8')
+    add('bad-no-eoi', good[:-2])
+    add('bad-second-soi', good[:2] + b'\xff\xd8' + good[2:])
+    add('bad-garbage-between', good[:2] + b'\x00\x00' + good[2:])
+    add('bad-rst-outside', good[:2] + b'\xff\xd0' + good[2:])
+    add('bad-tem', good[:2] + b'\xff\x01' + good[2:])
+    add('bad-unknown-marker', good[:2] + segment(0x02, b'') + good[2:])
+    add('bad-segment-length-0', good[:2] + b'\xff\xfe\x00\x00' + good[2:])
+    add('bad-segment-past-end', good[:2] + b'\xff\xfe\xff\xf0abc')
+    add('bad-dnl', good[:-2] + segment(0xDC, b'\x00\x0b') + b'\xff\xd9')
+    add('bad-jpg-marker', good[:2] + segment(0xC8, b'') + good[2:])
+    add('bad-jpgn-marker', good[:2] + segment(0xF0, b'abc') + good[2:])
     for marker, name in ((0xC2, 'progressive'), (0xC3, 'lossless'), (0xC5, 'hierarchical'),
                          (0xC9, 'arithmetic'), (0xDE, 'dhp')):
         p = dict(base)
         p['sof'] = bytes([0xFF, marker]) + base['sof'][2:]
         if marker == 0xDE:
             p['sof'] = segment(0xDE, base['sof'][4:]) + base['sof']
-        add('bad-%s' % name, join(p), 'unsupported' if marker == 0xC9 else 'refuses')
+        add('bad-%s' % name, join(p), 'unsupported' if marker == 0xC9 else 'auto')
 
     # wrong: the frame header
     def frame(body):
@@ -603,21 +611,21 @@ def made_cases():
         return join(p)
     sof = base['sof'][4:]
     add('bad-sof-12-bit', frame(b'\x0c' + sof[1:]), 'unsupported')
-    add('bad-sof-short', frame(sof[:-1]), 'refuses')
-    add('bad-sof-long', frame(sof + b'\x00'), 'refuses')
-    add('bad-sof-tiny', frame(sof[:4]), 'refuses')
-    add('bad-two-frames', join(dict(base, dht=base['sof'] + base['dht'])), 'refuses')
-    add('bad-width-0', frame(sof[:3] + b'\x00\x00' + sof[5:]), 'refuses')
-    add('bad-height-0', frame(sof[:1] + b'\x00\x00' + sof[3:]), 'refuses')
-    add('bad-2-components', frame(sof[:5] + b'\x02' + sof[6:12]), 'refuses')
+    add('bad-sof-short', frame(sof[:-1]))
+    add('bad-sof-long', frame(sof + b'\x00'))
+    add('bad-sof-tiny', frame(sof[:4]))
+    add('bad-two-frames', join(dict(base, dht=base['sof'] + base['dht'])))
+    add('bad-width-0', frame(sof[:3] + b'\x00\x00' + sof[5:]))
+    add('bad-height-0', frame(sof[:1] + b'\x00\x00' + sof[3:]))
+    add('bad-2-components', frame(sof[:5] + b'\x02' + sof[6:12]))
     add('bad-4-components', jpeg(9, 9, ((1, 1, 1), (2, 1, 1), (3, 1, 1), (4, 1, 1)), 302, app=b''), 'unsupported')
-    add('bad-sampling-0', frame(sof[:7] + b'\x01' + sof[8:]), 'refuses')
-    add('bad-sampling-5', frame(sof[:7] + b'\x51' + sof[8:]), 'refuses')
-    add('bad-quant-table-4', frame(sof[:8] + b'\x04' + sof[9:]), 'refuses')
-    add('bad-same-ids', frame(sof[:9] + b'\x01' + sof[10:]), 'refuses')
-    add('bad-uneven-sampling', jpeg(9, 9, ((1, 3, 1), (2, 2, 1), (3, 1, 1)), 303), 'refuses')
-    add('bad-mcu-11-blocks', jpeg(9, 9, ((1, 3, 3), (2, 1, 1), (3, 1, 1)), 304), 'refuses')
-    add('bad-mcu-12-blocks', jpeg(9, 9, ((1, 2, 2), (2, 2, 2), (3, 2, 2)), 305), 'refuses')
+    add('bad-sampling-0', frame(sof[:7] + b'\x01' + sof[8:]))
+    add('bad-sampling-5', frame(sof[:7] + b'\x51' + sof[8:]))
+    add('bad-quant-table-4', frame(sof[:8] + b'\x04' + sof[9:]))
+    add('bad-same-ids', frame(sof[:9] + b'\x01' + sof[10:]))
+    add('bad-uneven-sampling', jpeg(9, 9, ((1, 3, 1), (2, 2, 1), (3, 1, 1)), 303))
+    add('bad-mcu-11-blocks', jpeg(9, 9, ((1, 3, 3), (2, 1, 1), (3, 1, 1)), 304))
+    add('bad-mcu-12-blocks', jpeg(9, 9, ((1, 2, 2), (2, 2, 2), (3, 2, 2)), 305))
 
     # wrong: the tables
     def tables(dqt_seg=None, dht_seg=None):
@@ -628,21 +636,20 @@ def made_cases():
             p['dht'] = dht_seg
         return join(p)
     q = base['dqt'][4:]
-    add('bad-dqt-precision-2', tables(segment(0xDB, b'\x20' + q[1:])), 'refuses')
-    add('bad-dqt-table-4', tables(segment(0xDB, b'\x04' + q[1:])), 'refuses')
-    add('bad-dqt-short', tables(segment(0xDB, q[:-1])), 'refuses')
-    add('bad-no-dqt', tables(b''), 'refuses')
+    add('bad-dqt-precision-2', tables(segment(0xDB, b'\x20' + q[1:])))
+    add('bad-dqt-table-4', tables(segment(0xDB, b'\x04' + q[1:])))
+    add('bad-dqt-short', tables(segment(0xDB, q[:-1])))
+    add('bad-no-dqt', tables(b''))
     h = base['dht'][4:]
-    add('bad-dht-class-2', tables(dht_seg=segment(0xC4, b'\x20' + h[1:])), 'refuses')
-    add('bad-dht-table-4', tables(dht_seg=segment(0xC4, b'\x04' + h[1:])), 'refuses')
-    add('bad-dht-short', tables(dht_seg=segment(0xC4, h[:-1])), 'refuses')
-    add('bad-dht-counts-only', tables(dht_seg=segment(0xC4, h[:10])), 'refuses')
-    add('bad-no-dht', tables(dht_seg=b''), 'refuses')
+    add('bad-dht-class-2', tables(dht_seg=segment(0xC4, b'\x20' + h[1:])))
+    add('bad-dht-table-4', tables(dht_seg=segment(0xC4, b'\x04' + h[1:])))
+    add('bad-dht-short', tables(dht_seg=segment(0xC4, h[:-1])))
+    add('bad-dht-counts-only', tables(dht_seg=segment(0xC4, h[:10])))
+    add('bad-no-dht', tables(dht_seg=b''))
     add('dht-overfull-unused', tables(dht_seg=dht([(0, 0, [3] + [0] * 15, [0, 1, 2])]) + base['dht']))
-    add('bad-dht-overfull', tables(dht_seg=base['dht'] + dht([(0, 0, [3] + [0] * 15, [0, 1, 2])])), 'refuses')
-    add('bad-dht-257', tables(dht_seg=segment(0xC4, b'\x10' + bytes([0] * 8 + [255, 2] + [0] * 6) + bytes(257))),
-        'refuses')
-    add('bad-dc-value-16', tables(dht_seg=base['dht'] + dht([(0, 0, [0, 1] + [0] * 14, [16])])), 'refuses')
+    add('bad-dht-overfull', tables(dht_seg=base['dht'] + dht([(0, 0, [3] + [0] * 15, [0, 1, 2])])))
+    add('bad-dht-257', tables(dht_seg=segment(0xC4, b'\x10' + bytes([0] * 8 + [255, 2] + [0] * 6) + bytes(257))))
+    add('bad-dc-value-16', tables(dht_seg=base['dht'] + dht([(0, 0, [0, 1] + [0] * 14, [16])])))
 
     # wrong: the scan headers
     def scan(body, k=0, b=None):
@@ -650,36 +657,35 @@ def made_cases():
         p['scans'][k][1] = segment(0xDA, body)
         return join(p)
     sos = base['scans'][0][1][4:]
-    add('bad-sos-short', scan(sos[:-1]), 'refuses')
-    add('bad-sos-0-components', scan(b'\x00\x00\x3f\x00'), 'refuses')
-    add('bad-sos-unknown-component', scan(sos[:1] + b'\x09' + sos[2:]), 'refuses')
-    add('bad-sos-component-twice', scan(sos[:3] + b'\x01' + sos[4:]), 'refuses')
-    add('bad-sos-table-undefined', scan(sos[:2] + b'\x22' + sos[3:]), 'refuses')
-    add('bad-sos-ss', scan(sos[:-3] + b'\x01\x3f\x00'), 'refuses')
-    add('bad-sos-se', scan(sos[:-3] + b'\x00\x05\x00'), 'refuses')
-    add('bad-sos-approximation', scan(sos[:-3] + b'\x00\x3f\x01'), 'refuses')
-    add('bad-sos-before-sof', b'\xff\xd8' + base['scans'][0][1] + base['sof'] + good[2:], 'refuses')
+    add('bad-sos-short', scan(sos[:-1]))
+    add('bad-sos-0-components', scan(b'\x00\x00\x3f\x00'))
+    add('bad-sos-unknown-component', scan(sos[:1] + b'\x09' + sos[2:]))
+    add('bad-sos-component-twice', scan(sos[:3] + b'\x01' + sos[4:]))
+    add('bad-sos-table-undefined', scan(sos[:2] + b'\x22' + sos[3:]))
+    add('bad-sos-ss', scan(sos[:-3] + b'\x01\x3f\x00'))
+    add('bad-sos-se', scan(sos[:-3] + b'\x00\x05\x00'))
+    add('bad-sos-approximation', scan(sos[:-3] + b'\x00\x3f\x01'))
+    add('bad-sos-before-sof', b'\xff\xd8' + base['scans'][0][1] + base['sof'] + good[2:])
     sep = jpeg(13, 11, comps_of('420'), 306, scans=[[0], [1], [2]], parts=True)
-    add('bad-component-left-out', join(dict(sep, scans=sep['scans'][:2])), 'strict')
-    add('bad-component-in-two-scans', join(dict(sep, scans=sep['scans'] + [sep['scans'][0]])), 'strict')
+    add('bad-component-left-out', join(dict(sep, scans=sep['scans'][:2])))
+    add('bad-component-in-two-scans', join(dict(sep, scans=sep['scans'] + [sep['scans'][0]])))
     p = jpeg(13, 11, comps_of('420'), 307, tq=[0, 1, 2], parts=True)
     p['dqt'] = dqt([(0, qtable(LUMINANCE, 75), False), (1, qtable(CHROMINANCE, 75), False)])
-    add('bad-quant-table-undefined', join(p), 'refuses')
+    add('bad-quant-table-undefined', join(p))
 
     # wrong: the entropy-coded data
     def entropy(change, b=None, k=0):
         p = dict(b or base, scans=[list(s) for s in (b or base)['scans']])
         p['scans'][k][2] = change(p['scans'][k][2])
         return join(p)
-    add('bad-data-cut', entropy(lambda d: d[:len(d) // 2]), 'refuses')
-    add('bad-data-empty', entropy(lambda d: b''), 'refuses')
-    add('bad-data-all-ones', entropy(lambda d: b'\xff\x00' * (len(d) // 2)), 'refuses')
-    add('bad-data-zeros', entropy(lambda d: bytes(len(d))), 'refuses')
+    add('bad-data-cut', entropy(lambda d: d[:len(d) // 2]))
+    add('bad-data-empty', entropy(lambda d: b''))
+    add('bad-data-all-ones', entropy(lambda d: b'\xff\x00' * (len(d) // 2)))
+    add('bad-data-zeros', entropy(lambda d: bytes(len(d))))
     rst = jpeg(45, 37, comps_of('420'), 308, restart=2, parts=True)
-    add('bad-restart-missing', entropy(lambda d: d.replace(b'\xff\xd1', b'', 1), rst), 'refuses')
-    add('bad-restart-out-of-order', entropy(lambda d: d.replace(b'\xff\xd1', b'\xff\xd2', 1), rst), 'refuses')
-    add('bad-restart-extra', entropy(lambda d: d + b'\xff\xd0', jpeg(45, 37, comps_of('420'), 309, restart=200, parts=True)),
-        'strict')
+    add('bad-restart-missing', entropy(lambda d: d.replace(b'\xff\xd1', b'', 1), rst))
+    add('bad-restart-out-of-order', entropy(lambda d: d.replace(b'\xff\xd1', b'\xff\xd2', 1), rst))
+    add('bad-restart-extra', entropy(lambda d: d + b'\xff\xd0', jpeg(45, 37, comps_of('420'), 309, restart=200, parts=True)))
     # a run of zeros that goes past the end of a block: a ZRL and then a coefficient at 64
     run = jpeg(8, 8, ((1, 1, 1),), 310, sample=lambda ci, x, y: 128, parts=True)
     zrl = dht([(0, 0, [1] + [0] * 15, [0]), (1, 0, [0, 3] + [0] * 14, [0x00, 0xF0, 0xF1])])
@@ -687,13 +693,13 @@ def made_cases():
     # DC: code 0 (0 bits). AC codes: 00 EOB, 01 ZRL, 10 F1. Then ZRL x3 (48), F1 (k 64): past the end
     # (bits: DC 0; ZRL 01 01 01; F1 10 and its bit 1; then 1s to the byte)
     run['scans'][0][2] = bytes([0b00101011, 0b01111111])
-    add('bad-run-past-end', join(run), 'strict')
+    add('bad-run-past-end', join(run))
     run['scans'][0][2] = bytes([0b00101010, 0b01111111])     # ZRL x3 and EOB: fine
     add('zrl-then-eob', join(run))
     run['scans'][0][2] = bytes([0b00101010, 0xFF, 0x00])     # ZRL x4: k reaches 64, the block's end
     add('zrl-to-the-end', join(run))
     run['scans'][0][2] = bytes([0b11111111, 0x00, 0xFF, 0x00])     # a code not in the table
-    add('bad-huffman-code', join(run), 'refuses')
+    add('bad-huffman-code', join(run))
 
     # the limit, and a file that says it's big
     add('limit-at', jpeg(10, 10, comps_of('420'), 320), 'same', 100)
@@ -703,58 +709,64 @@ def made_cases():
     add('limit-default-over', join(big), 'limit')
     big['sof'] = segment(0xC0, struct.pack('>BHHB', 8, 4096, 4096, 1) + b'\x01\x11\x00')
     big['scans'] = [[b'', segment(0xDA, b'\x01\x01\x00\x00\x3f\x00'), b'\x00' * 100]]
-    add('bomb-claims-big', join(big), 'refuses')
+    add('bomb-claims-big', join(big))
     return cases
 
 
 # ---------------------------------------------------------------- checking
 
+# the reasons the rules give for kinds of JPEG imagelib doesn't read yet, and libjpeg does
+NOT_YET = ('progressive JPEG, which isn\'t supported yet', 'arithmetic coding, which isn\'t supported',
+           '12-bit samples, which aren\'t supported', 'four components (CMYK), which isn\'t supported',
+           'lossless JPEG, which isn\'t supported')
+
+
 def check(cases):
+    """the rules against libjpeg (through ImageMagick), and Pillow counted; cases are
+    (name, data, max_pixels, rule)"""
     problems = []
-    counts = {}
+    counts = {'same': 0, 'same, though libjpeg warns': 0, 'refused by both': 0, 'unsupported': 0, 'limit': 0,
+              'ImageMagick gives up, and Pillow\'s libjpeg agrees': 0, 'ImageMagick gives up, and Pillow stops short': []}
     pil = {'same': 0, 'differs': [], 'refuses too': 0, 'reads where the rules refuse': [],
            'refuses where the rules read': []}
     for name, data, max_pixels, rule in cases:
         ok, result = decode(data, max_pixels or MAX_PIXELS)
         m, warned = magick(data)
-        p = pillow(data)
         why = None
-        if rule == 'same':
-            mine = as_rgba(*result) if ok else None
-            if not ok:
-                why = 'the rules refuse it: ' + result
-            elif m is None or warned:
-                why = 'libjpeg refuses it, or warns'
-            elif difference(mine, m) != 0:
-                why = 'differs from libjpeg by %s' % difference(mine, m)
-        elif rule == 'warns':
-            if not ok:
-                why = 'the rules refuse it: ' + result
-            elif m is None or not warned:
-                why = 'libjpeg refuses it, or doesn\'t warn'
-            elif difference(as_rgba(*result), m) != 0:
-                why = 'differs from libjpeg by %s' % difference(as_rgba(*result), m)
-        elif rule == 'refuses':
-            if ok:
-                why = 'the rules read it'
-            elif m is not None and not warned:
-                why = 'libjpeg reads it without a warning (the rules: %s)' % result
-        elif rule == 'strict':
-            if ok:
-                why = 'the rules read it'
-            elif m is None or warned:
-                why = 'libjpeg refuses it or warns, so it isn\'t stricter (the rules: %s)' % result
-        elif rule == 'unsupported':
+        if rule == 'unsupported':
             if ok:
                 why = 'the rules read it'
             elif m is None:
                 why = 'libjpeg doesn\'t read it either (the rules: %s)' % result
+            else:
+                counts['unsupported'] += 1
         elif rule == 'limit':
             if ok or 'limit' not in result:
                 why = 'should be refused for the limit'
+            else:
+                counts['limit'] += 1
+        elif ok and m is None and warned == 'gave up':
+            if difference(as_rgba(*result), pillow(data, truncated=True)) == 0:
+                counts['ImageMagick gives up, and Pillow\'s libjpeg agrees'] += 1
+            else:
+                counts['ImageMagick gives up, and Pillow stops short'].append(name)
+        elif ok:
+            d = difference(as_rgba(*result), m)
+            if m is None:
+                why = 'libjpeg refuses it, where the rules read it'
+            elif d != 0:
+                why = 'differs from libjpeg by %s' % d
+            else:
+                counts['same, though libjpeg warns' if warned else 'same'] += 1
+        elif m is not None and result in NOT_YET:
+            counts['not read yet, as libjpeg does'] = counts.get('not read yet, as libjpeg does', 0) + 1
+        elif m is not None:
+            why = 'libjpeg reads it, where the rules refuse it: %s' % result
+        else:
+            counts['refused by both'] += 1
         if why:
             problems.append('%s: %s' % (name, why))
-        counts[rule] = counts.get(rule, 0) + 1
+        p = pillow(data)
         if ok and p is not None:
             if difference(as_rgba(*result), p) == 0:
                 pil['same'] += 1
@@ -769,22 +781,31 @@ def check(cases):
     return counts, pil, problems
 
 
+def report(label, cases, problems, show_pillow=True):
+    counts, pil, more = check(cases)
+    print('%s: %d cases, against libjpeg: %s' % (label, len(cases), counts))
+    if show_pillow:
+        print('  Pillow (its own copy of libjpeg-turbo, and its own reading of the markers): %d the same, '
+              '%d refused by both' % (pil['same'], pil['refuses too']))
+        for k in ('differs', 'reads where the rules refuse', 'refuses where the rules read'):
+            if pil[k]:
+                print('  Pillow %s: %d: %s' % (k, len(pil[k]), ' '.join(pil[k][:40])))
+    problems += more
+
+
+def small_image(data):
+    """whether the rules read data as an image of at most 256 by 256 pixels: fuzz cases start only
+    from those, as a small file can claim a big image, and every changed copy of it would be one"""
+    ok, result = decode(data)
+    return ok and result[0] * result[1] <= 65536
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     groups = (('libjpeg', libjpeg_cases()), ('made', made_cases()))
     problems = []
     for label, cases in groups:
-        counts, pil, more = check(cases)
-        print('%s: %d cases, against libjpeg by rule: %s' % (label, len(cases), counts))
-        print('  Pillow (its own copy of libjpeg-turbo, and its own reading of the markers): %d the same, '
-              '%d refused by both' % (pil['same'], pil['refuses too']))
-        for k in ('differs', 'reads where the rules refuse', 'refuses where the rules read'):
-            if pil[k]:
-                print('  Pillow %s: %d: %s' % (k, len(pil[k]), ' '.join(pil[k])))
-        problems += more
-    if problems:
-        print('\n'.join(problems))
-        sys.exit('the rules and the outside evidence disagree')
+        report(label, cases, problems)
 
     cases = CaseFile(decode, MAX_PIXELS, OUT, 'make_jpeg_tests.py', GROUP_NAMES)
     index = {}
@@ -805,7 +826,7 @@ def main():
     # fuzz: a few bytes changed, in the headers more often than not
     r = random.Random(20261108)
     small = [name for label, made in groups for name, data, _, rule in made
-             if len(data) < 1500 and rule == 'same']
+             if len(data) < 1500 and rule == 'auto' and small_image(data)]
     for k in range(4000):
         name = r.choice(small)
         source = index[name]
@@ -817,6 +838,13 @@ def main():
             data[at] = v
             changes[at] = v
         cases.add(FUZZ, 3, 'fuzz-%d-%s' % (k, name), bytes(data), 0, (source, sorted(changes.items())))
+
+    # the cut and fuzz cases against libjpeg too, as they're damaged files of every kind
+    for group, label in ((CUT, 'cut'), (FUZZ, 'fuzz')):
+        report(label, [(c[2], c[5], 0, 'auto') for c in cases.list if c[0] == group], problems, False)
+    if problems:
+        print('\n'.join(problems[:200]))
+        sys.exit('the rules and libjpeg disagree, %d times' % len(problems))
 
     size = cases.write()
     print('cases.bin: %d cases, %d bytes:' % (len(cases.list), size), cases.summary())

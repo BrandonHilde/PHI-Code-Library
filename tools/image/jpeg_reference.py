@@ -5,8 +5,8 @@
 
 pixels is a list of 0xAARRGGBB values (all opaque), a row at a time from the top. This is the rule
 book that imagelib's decoder follows, check for check and in the same order, so that the two give
-the same reasons. make_jpeg_tests.py checks it against libjpeg-turbo, through Pillow and through
-ImageMagick: the pixels must be the same, not merely close, because this does what libjpeg-turbo
+the same reasons. make_jpeg_tests.py checks it against libjpeg-turbo, through ImageMagick: the pixels
+must be the same, not merely close, damaged files included, because this does what libjpeg-turbo
 does by default, step for step:
 
   - the integer IDCT (libjpeg's "islow", from Loeffler, Ligtenberg and Moschytz), with its
@@ -14,23 +14,42 @@ does by default, step for step:
   - "fancy" upsampling, the triangle filter, for chroma at half width (h2v1), half height (h1v2) or
     both (h2v2), with the edges repeated; and plain repeating for other ratios, and for components
     of 2 samples across or fewer;
-  - YCbCr to RGB by libjpeg's fixed-point tables (16 fraction bits).
+  - YCbCr to RGB by libjpeg's fixed-point tables (16 fraction bits);
+  - and what it does with a damaged file, which is to show what it can:
+      - entropy-coded data that runs out (at a marker, or the end of the file) reads as zero bits,
+        and once a bit that isn't there has been used, the MCUs up to the next restart marker are
+        left at zero (they come out gray);
+      - a code that isn't in its Huffman table takes 17 bits, and is taken as 0;
+      - a run of coefficients past the end of a block puts the coefficient in the last place;
+      - restart markers out of order are resynced by libjpeg's rules (jpeg_resync_to_restart);
+      - bytes that aren't a marker where a marker should be are skipped, as are restart and TEM
+        markers outside a scan, DNL, and APPn or COM segments too short to be one;
+      - past the end of the file come EOI markers, again and again, as libjpeg's source
+        managers give them, wherever the end comes;
+      - with no Huffman table defined, tables 0 and 1 are the standard ones (from the JPEG
+        standard's Annex K, which libjpeg uses, as motion-JPEG frames expect);
+      - a scan that says it isn't sequential is read as if it were.
 
-The arithmetic is 32-bit, wrapping, as imagelib's is, and coefficients are kept in 16 bits, as
-libjpeg keeps them: that only matters for damaged files, whose results this and imagelib must still
-agree on.
+Every component's coefficients are kept until the end, as libjpeg keeps them for a file of several
+scans: so a component in no scan comes out as zero (gray), and one in two scans has the second's
+coefficients written over the first's, where they aren't zero. The IDCT's arithmetic is libjpeg's C
+code's (64-bit intermediates, a 32-bit work array, a 16-bit quantization table), and coefficients
+are kept in 16 bits, as libjpeg keeps them. (libjpeg-turbo's SIMD gives the same pixels on every
+good block, but saturates on the garbage blocks of a damaged file, where its C code wraps.)
+
+A file whose first scan has every component in it is finished when that scan is: libjpeg makes
+its pixels as it reads that scan, and what comes after (more scans, a marker it doesn't know, a
+second frame header) only matters to it when it's done, too late to change them.
 
 What it reads: baseline and extended sequential JPEG (SOF0, SOF1) with Huffman coding, 8-bit
 samples, gray or three components (YCbCr, or RGB when an Adobe marker or the component IDs say so),
 any sampling factors that divide evenly, interleaved scans or one component a scan, and restart
-markers. The color space is chosen as libjpeg-turbo chooses it.
-
-What it refuses, where libjpeg would warn and go on: entropy-coded data that's damaged or ends
-early, restart markers missing or out of order, a run of coefficients past the end of a block, a
-scan that isn't sequential, a component left out of every scan or in two, and a file that doesn't
-end with EOI. Not done: progressive (SOF2, which is next), lossless, hierarchical and arithmetic
-coding, 12-bit samples, four components (CMYK), and DNL. EXIF orientation isn't applied.
+markers. The color space is chosen as libjpeg-turbo chooses it. What it refuses is what libjpeg
+refuses: headers and tables that are wrong, and no image at all. Not done: progressive (SOF2, which
+is next), lossless, hierarchical and arithmetic coding, 12-bit samples, four components (CMYK). EXIF
+orientation isn't applied.
 """
+import array
 
 MAX_PIXELS = 16 * 1024 * 1024          # imagelib's default for Img.max_pixels
 
@@ -82,7 +101,8 @@ class Huff:
             k += self.counts[length - 1]
             if self.counts[length - 1]:
                 self.maxcode[length] = code - 1
-            if code > (1 << length):
+            # no code may be all ones, as libjpeg has it (jpeg_make_d_derived_tbl)
+            if code >= (1 << length):
                 raise Refused('a Huffman table with more codes than there\'s room for')
             code <<= 1
         if dc and any(v > 15 for v in self.values):
@@ -91,15 +111,18 @@ class Huff:
 
 class Bits:
     """the entropy-coded bits of one restart interval, high bit first, its stuffing taken out. Past
-    the end it gives zeros, and using one of them is a failure."""
+    the end it gives zeros, and using one of them sets short, as libjpeg's insufficient_data."""
 
     def __init__(self, data):
         self.data = data
         self.pos = 0                      # in bits
+        self.short = False
 
     def bit(self):
         if self.pos >= len(self.data) * 8:
-            raise Refused('the image data ends before the image does')
+            self.short = True
+            self.pos += 1
+            return 0
         b = (self.data[self.pos >> 3] >> (7 - (self.pos & 7))) & 1
         self.pos += 1
         return b
@@ -111,12 +134,14 @@ class Bits:
         return v
 
     def decode(self, h):
+        """the next value in table h; a code that isn't in it takes 17 bits, and is 0"""
         code = 0
         for length in range(1, 17):
             code = (code << 1) | self.bit()
             if code <= h.maxcode[length]:
                 return h.values[h.valptr[length] + code - h.mincode[length]]
-        raise Refused('a code that isn\'t in its Huffman table')
+        self.bit()
+        return 0
 
 
 def extend(v, s):
@@ -144,23 +169,27 @@ def limit(x):
 
 
 def idct(coef, q):
-    """an 8 by 8 block's samples, from its coefficients (natural order) and quantization table"""
+    """an 8 by 8 block's samples, from its coefficients (natural order) and quantization table, as
+    libjpeg-turbo's C code works them out (jidctint.c): its intermediates are JLONG, 64 bits, so they
+    don't overflow, but the work array between the passes is int, so its values are cut to 32 bits;
+    and the quantization table is kept in 16 bits, signed (libjpeg's MULTIPLIER, a short)"""
+    q = [i16(v) for v in q]
     ws = [0] * 64
     for col in range(8):
         if not any(coef[8 * k + col] for k in range(1, 8)):
-            dc = i32(i32(coef[col] * q[col]) << PASS1_BITS)
+            dc = i32((coef[col] * q[col]) << PASS1_BITS)
             for k in range(8):
                 ws[8 * k + col] = dc
             continue
-        d = [i32(coef[8 * k + col] * q[8 * k + col]) for k in range(8)]
+        d = [coef[8 * k + col] * q[8 * k + col] for k in range(8)]
         out = butterfly(d, CONST_BITS - PASS1_BITS)
         for k in range(8):
-            ws[8 * k + col] = out[k]
+            ws[8 * k + col] = i32(out[k])
     samples = [0] * 64
     for row in range(8):
         w = ws[8 * row:8 * row + 8]
         if not any(w[1:]):
-            v = limit(i32(w[0] + (1 << (PASS1_BITS + 2))) >> (PASS1_BITS + 3))
+            v = limit((w[0] + (1 << (PASS1_BITS + 2))) >> (PASS1_BITS + 3))
             for k in range(8):
                 samples[8 * row + k] = v
             continue
@@ -171,30 +200,28 @@ def idct(coef, q):
 
 
 def butterfly(d, shift):
-    """one 8-point pass of the islow IDCT, descaled by shift"""
-    m = lambda a, b: i32(a * b)  # noqa: E731
+    """one 8-point pass of the islow IDCT, descaled by shift, exactly (libjpeg's JLONG)"""
     z2, z3 = d[2], d[6]
-    z1 = m(i32(z2 + z3), F_0_541)
-    tmp2 = i32(z1 + m(z3, -F_1_847))
-    tmp3 = i32(z1 + m(z2, F_0_765))
-    tmp0 = i32(i32(d[0] + d[4]) << CONST_BITS)
-    tmp1 = i32(i32(d[0] - d[4]) << CONST_BITS)
-    tmp10, tmp13 = i32(tmp0 + tmp3), i32(tmp0 - tmp3)
-    tmp11, tmp12 = i32(tmp1 + tmp2), i32(tmp1 - tmp2)
+    z1 = (z2 + z3) * F_0_541
+    tmp2 = z1 - z3 * F_1_847
+    tmp3 = z1 + z2 * F_0_765
+    tmp0 = (d[0] + d[4]) << CONST_BITS
+    tmp1 = (d[0] - d[4]) << CONST_BITS
+    tmp10, tmp13 = tmp0 + tmp3, tmp0 - tmp3
+    tmp11, tmp12 = tmp1 + tmp2, tmp1 - tmp2
     t0, t1, t2, t3 = d[7], d[5], d[3], d[1]
-    z1, z2, z3, z4 = i32(t0 + t3), i32(t1 + t2), i32(t0 + t2), i32(t1 + t3)
-    z5 = m(i32(z3 + z4), F_1_175)
-    t0, t1, t2, t3 = m(t0, F_0_298), m(t1, F_2_053), m(t2, F_3_072), m(t3, F_1_501)
-    z1, z2 = m(z1, -F_0_899), m(z2, -F_2_562)
-    z3, z4 = i32(m(z3, -F_1_961) + z5), i32(m(z4, -F_0_390) + z5)
-    t0 = i32(t0 + i32(z1 + z3))
-    t1 = i32(t1 + i32(z2 + z4))
-    t2 = i32(t2 + i32(z2 + z3))
-    t3 = i32(t3 + i32(z1 + z4))
+    z1, z2, z3, z4 = t0 + t3, t1 + t2, t0 + t2, t1 + t3
+    z5 = (z3 + z4) * F_1_175
+    t0, t1, t2, t3 = t0 * F_0_298, t1 * F_2_053, t2 * F_3_072, t3 * F_1_501
+    z1, z2 = -z1 * F_0_899, -z2 * F_2_562
+    z3, z4 = z5 - z3 * F_1_961, z5 - z4 * F_0_390
+    t0 += z1 + z3
+    t1 += z2 + z4
+    t2 += z2 + z3
+    t3 += z1 + z4
     r = 1 << (shift - 1)
-    ds = lambda x: i32(x + r) >> shift  # noqa: E731
-    return [ds(tmp10 + t3), ds(tmp11 + t2), ds(tmp12 + t1), ds(tmp13 + t0),
-            ds(tmp13 - t0), ds(tmp12 - t1), ds(tmp11 - t2), ds(tmp10 - t3)]
+    return [(x + r) >> shift for x in (tmp10 + t3, tmp11 + t2, tmp12 + t1, tmp13 + t0,
+                                       tmp13 - t0, tmp12 - t1, tmp11 - t2, tmp10 - t3)]
 
 
 # ---------------------------------------------------------------- reading the file
@@ -202,16 +229,60 @@ def butterfly(d, shift):
 class Component:
     def __init__(self, cid, h, v, tq):
         self.id, self.h, self.v, self.tq = cid, h, v, tq
-        self.scanned = False
 
 
 def u16(d, at):
     return d[at] << 8 | d[at + 1]
 
 
+# libjpeg's standard tables, for a scan that uses table 0 or 1 when no DHT has defined it
+STD_DC_COUNTS = ([0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0], [0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0])
+STD_DC_VALUES = list(range(12))
+STD_AC_COUNTS = ([0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125], [0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119])
+STD_AC_VALUES = (
+    [1, 2, 3, 0, 4, 17, 5, 18, 33, 49, 65, 6, 19, 81, 97, 7, 34, 113, 20, 50, 129, 145, 161, 8, 35, 66, 177, 193,
+     21, 82, 209, 240, 36, 51, 98, 114, 130, 9, 10, 22, 23, 24, 25, 26, 37, 38, 39, 40, 41, 42, 52, 53, 54, 55, 56,
+     57, 58, 67, 68, 69, 70, 71, 72, 73, 74, 83, 84, 85, 86, 87, 88, 89, 90, 99, 100, 101, 102, 103, 104, 105,
+     106, 115, 116, 117, 118, 119, 120, 121, 122, 131, 132, 133, 134, 135, 136, 137, 138, 146, 147, 148, 149,
+     150, 151, 152, 153, 154, 162, 163, 164, 165, 166, 167, 168, 169, 170, 178, 179, 180, 181, 182, 183, 184,
+     185, 186, 194, 195, 196, 197, 198, 199, 200, 201, 202, 210, 211, 212, 213, 214, 215, 216, 217, 218, 225,
+     226, 227, 228, 229, 230, 231, 232, 233, 234, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250],
+    [0, 1, 2, 3, 17, 4, 5, 33, 49, 6, 18, 65, 81, 7, 97, 113, 19, 34, 50, 129, 8, 20, 66, 145, 161, 177, 193, 9,
+     35, 51, 82, 240, 21, 98, 114, 209, 10, 22, 36, 52, 225, 37, 241, 23, 24, 25, 26, 38, 39, 40, 41, 42, 53, 54,
+     55, 56, 57, 58, 67, 68, 69, 70, 71, 72, 73, 74, 83, 84, 85, 86, 87, 88, 89, 90, 99, 100, 101, 102, 103, 104,
+     105, 106, 115, 116, 117, 118, 119, 120, 121, 122, 130, 131, 132, 133, 134, 135, 136, 137, 138, 146, 147,
+     148, 149, 150, 151, 152, 153, 154, 162, 163, 164, 165, 166, 167, 168, 169, 170, 178, 179, 180, 181, 182,
+     183, 184, 185, 186, 194, 195, 196, 197, 198, 199, 200, 201, 202, 210, 211, 212, 213, 214, 215, 216, 217,
+     218, 226, 227, 228, 229, 230, 231, 232, 233, 234, 242, 243, 244, 245, 246, 247, 248, 249, 250])
+
+
+def next_marker(d, pos):
+    """libjpeg's next_marker: the next marker from pos, skipping anything that isn't one (FF 00
+    included), as (its code, where its segment starts); None at the end of the file"""
+    n = len(d)
+    while True:
+        while pos < n and d[pos] != 0xFF:
+            pos += 1
+        j = pos + 1
+        while j < n and d[j] == 0xFF:
+            j += 1
+        if j >= n:
+            return None
+        if d[j] == 0:
+            pos = j + 1
+            continue
+        return d[j], j + 1
+
+
+# what libjpeg's source managers give at the end of the file, again and again: EOI. A segment
+# can't be longer than 65,535 bytes, so this many is always enough to reach one.
+PAST_THE_END = b'\xff\xd9' * 32769
+
+
 def read(d, max_pixels):
     if len(d) < 2 or d[0] != 0xFF or d[1] != 0xD8:
         raise Refused('not a JPEG file')
+    d += PAST_THE_END
     n = len(d)
     pos = 2
     qt = [None] * 4
@@ -223,31 +294,27 @@ def read(d, max_pixels):
     adobe = None
     scans = 0
     while True:
-        if pos >= n:
-            raise Refused('the file is cut short')
-        if d[pos] != 0xFF:
-            raise Refused('something other than a marker, where a marker should be')
-        while pos < n and d[pos] == 0xFF:      # fill bytes before a marker
-            pos += 1
-        if pos >= n:
-            raise Refused('the file is cut short')
-        m = d[pos]
-        pos += 1
+        found = next_marker(d, pos)
+        if found is None:
+            break                              # the end of the file is taken as EOI
+        m, pos = found
         if m == 0xD9:
             break
         if m == 0xD8:
             raise Refused('a second start of image')
-        if 0xD0 <= m <= 0xD7:
-            raise Refused('a restart marker outside the image data')
-        if m == 0x01 or m == 0x00:
-            raise Refused('marker FF%02X, which JPEG doesn\'t use here' % m)
+        if 0xD0 <= m <= 0xD7 or m == 0x01:
+            continue                           # RSTn and TEM outside a scan: ignored
         if n - pos < 2:
-            raise Refused('the file is cut short')
+            break
         length = u16(d, pos)
+        skippable = 0xE0 <= m <= 0xEF or m == 0xFE or m == 0xDC
         if length < 2:
-            raise Refused('a segment of less than 2 bytes')
+            if not skippable:
+                raise Refused('a segment of less than 2 bytes')
+            pos += 2                           # as libjpeg's skip_variable: nothing to skip
+            continue
         if length > n - pos:
-            raise Refused('the file is cut short')
+            break                              # it runs past the end of the file, which is EOI
         body = d[pos + 2:pos + length]
         pos += length
 
@@ -271,29 +338,28 @@ def read(d, max_pixels):
             if length != 4:
                 raise Refused('a DRI segment of the wrong length')
             restart = u16(body, 0)
-        elif m == 0xDC:
-            raise Refused('a DNL marker, which isn\'t supported')
         elif m == 0xDA:
             if frame is None:
                 raise Refused('image data before the frame header')
             pos = read_scan(d, pos, body, frame, qt, dc_tables, ac_tables, restart)
             scans += 1
+            if scans == 1 and body[0] == len(frame.comps):
+                break                          # the image is done, as libjpeg's one pass makes it
         elif m == 0xE0:
             if len(body) >= 14 and body[:5] == b'JFIF\x00':
                 jfif = True
         elif m == 0xEE:
             if len(body) >= 12 and body[:5] == b'Adobe':
                 adobe = body[11]
-        elif 0xE1 <= m <= 0xEF or m == 0xFE or m == 0xCC:
-            pass                               # APPn, COM and DAC: skipped
+        elif m == 0xCC:
+            read_dac(body)
+        elif skippable:
+            pass                               # APPn, COM and DNL: skipped
         else:
             raise Refused('marker FF%02X, which JPEG doesn\'t use here' % m)
 
     if frame is None or scans == 0:
         raise Refused('no image data')
-    for c in frame.comps:
-        if not c.scanned:
-            raise Refused('a component with no image data')
     rgb = False
     if len(frame.comps) == 3:
         if jfif:
@@ -303,6 +369,8 @@ def read(d, max_pixels):
         else:
             ids = [c.id for c in frame.comps]
             rgb = ids == [82, 71, 66]
+    for c in frame.comps:
+        samples(c)
     return frame.width, frame.height, output(frame, rgb)
 
 
@@ -337,8 +405,6 @@ def read_frame(body, max_pixels):
         h, v = hv >> 4, hv & 15
         if not (1 <= h <= 4 and 1 <= v <= 4):
             raise Refused('a sampling factor JPEG doesn\'t have')
-        if tq > 3:
-            raise Refused('quantization table %d, which JPEG doesn\'t have' % tq)
         if any(c.id == cid for c in f.comps):
             raise Refused('two components with the same ID')
         f.comps.append(Component(cid, h, v, tq))
@@ -356,14 +422,24 @@ def read_frame(body, max_pixels):
         c.height = (height * c.v + f.vmax - 1) // f.vmax
         c.stride = f.mcux * c.h * 8                             # its plane's, padded to whole MCUs
         c.rows = f.mcuy * c.v * 8
-        c.plane = bytearray(c.stride * c.rows)
-    if len(f.comps) == 1:
-        # one component: libjpeg's MCU is its one block, whatever its sampling factors say
-        c = f.comps[0]
-        c.stride = (c.width + 7) // 8 * 8
-        c.rows = (c.height + 7) // 8 * 8
-        c.plane = bytearray(c.stride * c.rows)
+        if len(f.comps) == 1:
+            # one component: libjpeg's MCU is its one block, whatever its sampling factors say
+            c.stride = (c.width + 7) // 8 * 8
+            c.rows = (c.height + 7) // 8 * 8
+        c.coefs = [0] * (c.stride * c.rows)                     # 64 to a block, block by block
+        c.q = None                                              # its table, from its first scan
     return f
+
+
+def read_dac(body):
+    """DAC, the conditioning of arithmetic coding's tables, which isn't used here but is checked
+    as libjpeg checks it (get_dac): pairs of a table's index and its value"""
+    if len(body) % 2:
+        raise Refused('a DAC segment that\'s wrong')
+    for k in range(0, len(body), 2):
+        index, value = body[k], body[k + 1]
+        if index >= 32 or (index < 16 and (value & 15) > (value >> 4)):
+            raise Refused('a DAC segment that\'s wrong')
 
 
 def read_dqt(body, qt):
@@ -407,7 +483,8 @@ def read_dht(body, dc_tables, ac_tables):
 
 
 def read_scan(d, pos, body, frame, qt, dc_tables, ac_tables, restart):
-    """the scan's entropy-coded data, from pos, into its components' planes; where it ends"""
+    """the scan's entropy-coded data, from pos, into its components' coefficients; where the scan
+    ends (the marker after it)"""
     if len(body) < 1:
         raise Refused('a scan header of the wrong length')
     count = body[0]
@@ -415,34 +492,36 @@ def read_scan(d, pos, body, frame, qt, dc_tables, ac_tables, restart):
         raise Refused('a scan header of the wrong length')
     if count < 1 or count > 4:
         raise Refused('a scan of %d components' % count)
+    # in libjpeg's order: the components (get_sos), the MCU's size (per_scan_setup), the
+    # quantization tables (latch_quant_tables), and then the Huffman tables (start_pass)
     comps = []
     for k in range(count):
-        cid, t = body[1 + 2 * k], body[2 + 2 * k]
+        cid = body[1 + 2 * k]
         c = next((c for c in frame.comps if c.id == cid), None)
         if c is None:
             raise Refused('a scan of a component the frame doesn\'t have')
         if c in comps:
             raise Refused('a component twice in one scan')
-        if c.scanned:
-            raise Refused('a component in two scans')
-        td, ta = t >> 4, t & 15
-        if td > 3 or ta > 3 or dc_tables[td] is None or ac_tables[ta] is None:
-            raise Refused('a scan using a Huffman table that isn\'t defined')
-        if qt[c.tq] is None:
-            raise Refused('a component whose quantization table isn\'t defined')
-        c.dc, c.ac, c.q = dc_tables[td], ac_tables[ta], qt[c.tq]
-        c.dc.build(True)
-        c.ac.build(False)
+        c.td, c.ta = body[2 + 2 * k] >> 4, body[2 + 2 * k] & 15
         comps.append(c)
-    ss, se, a = body[1 + 2 * count], body[2 + 2 * count], body[3 + 2 * count]
-    if ss != 0 or se != 63 or a != 0:
-        raise Refused('a scan that isn\'t sequential')
     if count > 1 and sum(c.h * c.v for c in comps) > 10:
         raise Refused('more than 10 blocks in an MCU')
     for c in comps:
-        c.scanned = True
+        if c.q is None:
+            if c.tq > 3 or qt[c.tq] is None:
+                raise Refused('a component whose quantization table isn\'t defined')
+            c.q = qt[c.tq]
+    for c in comps:
+        for tables, tid, dc in ((dc_tables, c.td, True), (ac_tables, c.ta, False)):
+            if tid > 3:
+                raise Refused('a scan using a Huffman table that isn\'t defined')
+            if tables[tid] is None:
+                if tid > 1:
+                    raise Refused('a scan using a Huffman table that isn\'t defined')
+                tables[tid] = Huff(STD_DC_COUNTS[tid], STD_DC_VALUES) if dc else Huff(STD_AC_COUNTS[tid], STD_AC_VALUES[tid])
+            tables[tid].build(dc)
+        c.dc, c.ac = dc_tables[c.td], ac_tables[c.ta]
 
-    # the blocks of each MCU, as (component, block across, block down) for the MCU at 0, 0
     if count == 1:
         c = comps[0]
         across = (c.width + 7) // 8
@@ -450,15 +529,53 @@ def read_scan(d, pos, body, frame, qt, dc_tables, ac_tables, restart):
     else:
         across = frame.mcux
         total = frame.mcux * frame.mcuy
-    done = 0
-    interval = 0
-    while done < total:
-        data, pos = segment(d, pos)
-        todo = total - done if restart == 0 else min(restart, total - done)
-        bits = Bits(data)
-        preds = [0] * count
-        for k in range(todo):
-            mx, my = (done + k) % across, (done + k) // across
+
+    # libjpeg's entropy decoder, MCU by MCU, with its recovery: data, and the marker after it
+    data, marker = segment(d, pos)
+    bits = Bits(data)
+    held = False                 # whether the marker is being held, after a resync
+    short = False                # libjpeg's insufficient_data
+    preds = [0] * count
+    next_rst = 0
+    to_go = restart
+    for mcu in range(total):
+        if restart and to_go == 0:
+            m = marker_code(d, marker)
+            if m == 0xD0 + next_rst:
+                data, marker = segment(d, marker + 2)
+                held = False
+            else:
+                # jpeg_resync_to_restart
+                while True:
+                    if m is not None and m < 0xC0:
+                        action = 2
+                    elif m is None or not 0xD0 <= m <= 0xD7:
+                        action = 3
+                    elif m in (0xD0 + ((next_rst + 1) & 7), 0xD0 + ((next_rst + 2) & 7)):
+                        action = 3
+                    elif m in (0xD0 + ((next_rst - 1) & 7), 0xD0 + ((next_rst - 2) & 7)):
+                        action = 2
+                    else:
+                        action = 1
+                    if action == 1:
+                        data, marker = segment(d, marker + 2)
+                        held = False
+                        break
+                    if action == 2:
+                        marker = segment(d, marker + 2)[1]
+                        m = marker_code(d, marker)
+                        continue
+                    data = b''
+                    held = True
+                    break
+            next_rst = (next_rst + 1) & 7
+            bits = Bits(data)
+            preds = [0] * count
+            to_go = restart
+            if not held:
+                short = False
+        if not short:
+            mx, my = mcu % across, mcu // across
             for ci, c in enumerate(comps):
                 if count == 1:
                     blocks = [(mx, my)]
@@ -466,17 +583,20 @@ def read_scan(d, pos, body, frame, qt, dc_tables, ac_tables, restart):
                     blocks = [(mx * c.h + bx, my * c.v + by) for by in range(c.v) for bx in range(c.h)]
                 for bx, by in blocks:
                     preds[ci] = block(bits, c, preds[ci], bx, by)
-        done += todo
-        if done < total:
-            if pos + 1 >= len(d) or d[pos + 1] != 0xD0 + (interval & 7):
-                raise Refused('a restart marker missing or out of order')
-            pos += 2
-            interval += 1
-    return pos
+            short = bits.short
+        if restart:
+            to_go -= 1
+    return marker
+
+
+def marker_code(d, at):
+    """the code of the marker at at; None at the end of the file (which is EOI)"""
+    return d[at + 1] if at + 1 < len(d) else None
 
 
 def segment(d, pos):
-    """the entropy-coded bytes from pos to the next marker, unstuffed, and where that marker is"""
+    """the entropy-coded bytes from pos to the next marker, unstuffed, and where that marker is
+    (the end of the file, if there's none)"""
     out = bytearray()
     n = len(d)
     while pos < n:
@@ -499,12 +619,14 @@ def segment(d, pos):
 
 
 def block(bits, c, pred, bx, by):
-    """one block, decoded and put in its place; the DC prediction after it"""
-    coef = [0] * 64
+    """one block, decoded into the component's coefficients; the DC prediction after it. As in
+    libjpeg's buffered mode, the DC is always written, and the AC coefficients that aren't zero."""
+    coefs = c.coefs
+    base = (by * (c.stride // 8) + bx) * 64
     s = bits.decode(c.dc)
     diff = extend(bits.bits(s), s) if s else 0
     pred = i32(pred + diff)
-    coef[0] = i16(pred)
+    coefs[base] = i16(pred)
     k = 1
     while k < 64:
         rs = bits.decode(c.ac)
@@ -515,15 +637,22 @@ def block(bits, c, pred, bx, by):
             k += 16
             continue
         k += r
-        if k > 63:
-            raise Refused('a run of coefficients past the end of a block')
-        coef[ZIGZAG[k]] = extend(bits.bits(s), s)
+        coefs[base + ZIGZAG[min(k, 63)]] = extend(bits.bits(s), s)
         k += 1
-    samples = idct(coef, c.q)
-    base = by * 8 * c.stride + bx * 8
-    for y in range(8):
-        c.plane[base + y * c.stride:base + y * c.stride + 8] = bytes(samples[8 * y:8 * y + 8])
     return pred
+
+
+def samples(c):
+    """the component's coefficients made samples, block by block, into its plane"""
+    across = c.stride // 8
+    c.plane = bytearray(c.stride * c.rows)
+    q = c.q or [0] * 64
+    for b in range(across * (c.rows // 8)):
+        bx, by = b % across, b // across
+        out = idct(c.coefs[b * 64:b * 64 + 64], q)
+        at = by * 8 * c.stride + bx * 8
+        for y in range(8):
+            c.plane[at + y * c.stride:at + y * c.stride + 8] = bytes(out[8 * y:8 * y + 8])
 
 
 # ---------------------------------------------------------------- upsampling and color
@@ -592,7 +721,7 @@ def clamp(v):
 def output(frame, rgb):
     w, h = frame.width, frame.height
     planes = [upsample(frame, c) for c in frame.comps]
-    out = [0] * (w * h)
+    out = array.array('I', [0]) * (w * h)
     for y in range(h):
         if len(planes) == 1:
             row = planes[0][y]

@@ -15,8 +15,10 @@ The format of cases.bin (every number little-endian):
 
 Groups 2 and 3 are always cut and fuzz cases, which cases.txt sums up by the case they come from.
 """
+import array
 import os
 import struct
+import sys
 import zlib
 
 CUT, FUZZ = 2, 3
@@ -24,8 +26,18 @@ CUT, FUZZ = 2, 3
 
 def as_rgba(w, h, px):
     import numpy as np
-    a = np.array(px, dtype=np.uint32).reshape(h, w)
+    a = np.frombuffer(px, dtype=np.uint32) if isinstance(px, array.array) else np.array(px, dtype=np.uint32)
+    a = a.reshape(h, w)
     return np.stack([(a >> 16) & 255, (a >> 8) & 255, a & 255, a >> 24], axis=2).astype(np.uint8)
+
+
+def pixel_crc(px):
+    """the CRC-32 of pixels, each as 4 bytes, B G R A (a 0xAARRGGBB value, little-endian)"""
+    a = px if isinstance(px, array.array) and px.typecode == 'I' else array.array('I', px)
+    if sys.byteorder != 'little':
+        a = array.array('I', a)
+        a.byteswap()
+    return zlib.crc32(a.tobytes())
 
 
 class Cases:
@@ -35,10 +47,17 @@ class Cases:
         self.out = out                  # the folder cases.bin and cases.txt go in
         self.maker = maker              # the script's name, for cases.txt
         self.group_names = group_names
-        self.list = []                  # (group, kind, name, max_pixels, payload, data, verdict)
+        # (group, kind, name, max_pixels, payload, data, verdict), where the verdict is (True,
+        # (width, height, CRC of the pixels)) or (False, the reason): only that much of what the
+        # rules made is kept, as a case's pixels can be millions
+        self.list = []
 
     def add(self, group, kind, name, data, max_pixels=0, payload=None):
         ok, result = self.decode(data, max_pixels or self.max_pixels)
+        if ok:
+            w, h, px = result
+            result = (w, h, pixel_crc(px))
+            del px
         self.list.append((group, kind, name, max_pixels, payload, data, (ok, result)))
         return len(self.list) - 1
 
@@ -63,8 +82,7 @@ class Cases:
                 for at, v in changes:
                     out += struct.pack('<IB', at, v)
             if ok:
-                w, h, px = result
-                crc = zlib.crc32(struct.pack('<%dI' % len(px), *px))
+                w, h, crc = result
                 out += struct.pack('<BIII', 1, w, h, crc)
                 verdict = 'ok, %d by %d' % (w, h)
             else:

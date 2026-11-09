@@ -95,7 +95,7 @@ def difference(a, b):
     b = b.copy()
     a[a[:, :, 3] == 0] = 0
     b[b[:, :, 3] == 0] = 0
-    return int(np.abs(a.astype(int) - b.astype(int)).max())
+    return int(np.abs(a.astype(np.int16) - b.astype(np.int16)).max())
 
 
 def pillow(data):

@@ -123,19 +123,13 @@ libjpeg: 124 of 124 as the rules say (121 read, 3 refused):
   im-arithmetic: arithmetic coding, which isn't supported
   pil-100x75-q90: 100 by 75
   im-100x75-q60-420: 100 by 75
-made: 261 of 261 as the rules say (190 read, 71 refused), refused:
+made: 261 of 261 as the rules say (212 read, 49 refused), refused:
   bad-empty: not a JPEG file
   bad-not-jpeg: not a JPEG file
-  bad-soi-only: the file is cut short
-  bad-no-eoi: the file is cut short
+  bad-soi-only: no image data
   bad-second-soi: a second start of image
-  bad-garbage-between: something other than a marker, where a marker should be
-  bad-rst-outside: a restart marker outside the image data
-  bad-tem: marker FF01, which JPEG doesn't use here
   bad-unknown-marker: marker FF02, which JPEG doesn't use here
-  bad-segment-length-0: a segment of less than 2 bytes
-  bad-segment-past-end: the file is cut short
-  bad-dnl: a DNL marker, which isn't supported
+  bad-segment-past-end: no image data
   bad-jpg-marker: marker FFC8, which JPEG doesn't use here
   bad-jpgn-marker: marker FFF0, which JPEG doesn't use here
   bad-progressive: progressive JPEG, which isn't supported yet
@@ -154,7 +148,7 @@ made: 261 of 261 as the rules say (190 read, 71 refused), refused:
   bad-4-components: four components (CMYK), which isn't supported
   bad-sampling-0: a sampling factor JPEG doesn't have
   bad-sampling-5: a sampling factor JPEG doesn't have
-  bad-quant-table-4: quantization table 4, which JPEG doesn't have
+  bad-quant-table-4: a component whose quantization table isn't defined
   bad-same-ids: two components with the same ID
   bad-uneven-sampling: sampling factors that don't divide evenly
   bad-mcu-11-blocks: more than 10 blocks in an MCU
@@ -167,7 +161,6 @@ made: 261 of 261 as the rules say (190 read, 71 refused), refused:
   bad-dht-table-4: Huffman table 4 of class 0, which JPEG doesn't have
   bad-dht-short: a DHT segment of the wrong length
   bad-dht-counts-only: a DHT segment of the wrong length
-  bad-no-dht: a scan using a Huffman table that isn't defined
   bad-dht-overfull: a Huffman table with more codes than there's room for
   bad-dht-257: a Huffman table of more than 256 codes
   bad-dc-value-16: a DC Huffman table with a value over 15
@@ -176,25 +169,10 @@ made: 261 of 261 as the rules say (190 read, 71 refused), refused:
   bad-sos-unknown-component: a scan of a component the frame doesn't have
   bad-sos-component-twice: a component twice in one scan
   bad-sos-table-undefined: a scan using a Huffman table that isn't defined
-  bad-sos-ss: a scan that isn't sequential
-  bad-sos-se: a scan that isn't sequential
-  bad-sos-approximation: a scan that isn't sequential
   bad-sos-before-sof: image data before the frame header
-  bad-component-left-out: a component with no image data
-  bad-component-in-two-scans: a component in two scans
   bad-quant-table-undefined: a component whose quantization table isn't defined
-  bad-data-cut: the image data ends before the image does
-  bad-data-empty: the image data ends before the image does
-  bad-data-all-ones: a code that isn't in its Huffman table
-  bad-data-zeros: the image data ends before the image does
-  bad-restart-missing: a restart marker missing or out of order
-  bad-restart-out-of-order: a restart marker missing or out of order
-  bad-restart-extra: a restart marker outside the image data
-  bad-run-past-end: a run of coefficients past the end of a block
-  bad-huffman-code: a code that isn't in its Huffman table
   limit-over: 10 by 10 is more than the limit of 99 pixels
   limit-default-over: 65535 by 65535 is more than the limit of 16777216 pixels
-  bomb-claims-big: the image data ends before the image does
-cut: 3050 of 3050 as the rules say (0 read, 3050 refused)
-fuzz: 4000 of 4000 as the rules say (1476 read, 2524 refused)
+cut: 3050 of 3050 as the rules say (894 read, 2156 refused)
+fuzz: 4000 of 4000 as the rules say (2229 read, 1771 refused)
 done

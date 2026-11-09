@@ -19,6 +19,7 @@ depths and compressions it doesn't do (2-bit is done; 64-bit, Huffman 1D, RLE24 
 JPEG and PNG aren't), RLE stored top-down, masks that aren't one run of bits, and any image of
 more than max_pixels pixels, which is checked before anything is allocated.
 """
+import array
 
 MAX_PIXELS = 16 * 1024 * 1024          # imagelib's default for Img.max_pixels
 
@@ -172,7 +173,7 @@ def _decode(d, max_pixels):
     def color(index):
         return palette[index] if index < len(palette) else 0xFF000000
 
-    pixels = [0] * (width * height)
+    pixels = array.array('I', [0]) * (width * height)
     if rle:
         rle_decode(d[offset:], width, height, compression == RLE4, color, pixels)
         return width, height, pixels

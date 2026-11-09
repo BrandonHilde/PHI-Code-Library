@@ -20,6 +20,11 @@ phi.TestJpegFuzz:Program
 	const u32 WORK_SIZE: 70000;
 
 	call ImageLib.Start;
+	# a limit of 2048 by 2048, so that no file is refused for memory: a 32-bit program's heap stops
+	# at 128 MB, which a 4096 by 4096 image of three components nearly takes, so it would be
+	# refused there and read in 64 bits
+	const u32 MOST: 2048 * 2048;
+	Img.max_pixels is MOST;
 
 	# the starting points: the good files of test_jpeg's cases, of up to 6000 bytes
 	u32 cases_size: 0;
@@ -105,13 +110,13 @@ phi.TestJpegFuzz:Program
 			len--;
 		;;
 		# a quarter of them with a limit they may well reach
-		Img.max_pixels is 0;
+		Img.max_pixels is MOST;
 		if (n & 3) is 1
 			Img.max_pixels is 500;
 		;;
 		call Try: work len;
 	;;
-	Img.max_pixels is 0;
+	Img.max_pixels is MOST;
 	log 'changed at random: ' read ' read, ' refused ' refused, ' too_big ' over the limit\n';
 
 	# every value of each of the first 200 bytes of six files, of each kind

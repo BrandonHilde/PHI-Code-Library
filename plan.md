@@ -292,14 +292,16 @@ inflate's fast path it takes 190 ms, 126 of them inflate (Pillow: 56 ms). Not do
 
 **3.3, done 2026-11-08,** in [libs/image](libs/image). Better than the tolerance planned: the rules
 (`tools/image/jpeg_reference.py`) decode as libjpeg-turbo does by default, step for step (its integer
-IDCT, its fancy upsampling, its color tables), so the pixels are the same as libjpeg-turbo's, exactly,
-on all 121 files libjpeg-turbo wrote and all 190 good files from the script's own encoder (every
-sampling layout that divides evenly, one component a scan, restart intervals, 16-bit tables, each way
-of naming the color space). There's no free JPEG suite, so the script makes its files. imagelib agrees
-with the rules on all 7,435 cases (and 40,000 more fuzz cases with another seed), as 32 and 64-bit
-Linux programs, and comes back from 482,370 fuzzed files without a crash. A 2048 by 2048 photo takes
-147 ms at 4:2:0 (Pillow, with libjpeg-turbo's SIMD: 22 ms). Not done: progressive (3.4), CMYK, 12-bit,
-arithmetic coding, EXIF orientation.
+IDCT as its C code works it out, its fancy upsampling, its color tables, and its recovery from damage),
+so the pixels are the same as libjpeg-turbo's, exactly: on all 121 files libjpeg-turbo wrote, the 212
+the script's own encoder wrote that libjpeg reads (every sampling layout that divides evenly, one
+component a scan, restart intervals, 16-bit tables, each way of naming the color space, and damaged
+ones), and the 894 cut short and 2,229 fuzzed that it reads. There's no free JPEG suite, so the script
+makes its files. imagelib agrees with the rules on all 7,435 cases, as 32 and 64-bit Linux programs, and
+comes back from 477,807 fuzzed files without a crash. As the owner asked, it isn't stricter than libjpeg:
+a damaged or cut-short file shows what libjpeg shows. A 2048 by 2048 photo takes 162 ms at 4:2:0
+(Pillow, with libjpeg-turbo's SIMD: 22 ms). Not done: progressive (3.4), CMYK, 12-bit, arithmetic
+coding, EXIF orientation.
 
 **Done when:** milestones 3.1 to 3.6 pass, PngSuite's results are in the README, every decoder has been
 fuzzed, and a pixel bomb is refused before it allocates.

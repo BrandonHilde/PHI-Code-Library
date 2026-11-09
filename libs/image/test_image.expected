@@ -10,7 +10,7 @@ png no data: refused: no data was given
 png as bmp: refused: not a BMP file
 bmp as png: refused: not a PNG file
 jpeg: 2 by 2: FFF4C287 FF004300 FF3854DB FFC074FF
-jpeg without its end: refused: the file is cut short
+jpeg without its end: 2 by 2: FFF4C287 FF004300 FF3854DB FFC074FF
 jpeg as png: refused: not a PNG file
 png as jpeg: refused: not a JPEG file
 jpeg no data: refused: no data was given

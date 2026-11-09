@@ -225,6 +225,18 @@ phi.Img:Library
 		if d.plane2 is not 0
 			free d.plane2;
 		;;
+		if d.coef0 is not 0
+			free d.coef0;
+		;;
+		if d.coef1 is not 0
+			free d.coef1;
+		;;
+		if d.coef2 is not 0
+			free d.coef2;
+		;;
+		if d.padded is not 0
+			free d.padded;
+		;;
 		free d;
 	[end]
 

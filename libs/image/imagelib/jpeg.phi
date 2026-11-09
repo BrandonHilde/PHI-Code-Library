@@ -2,22 +2,36 @@
 # components (YCbCr, or RGB when the file says so), any sampling factors that divide evenly,
 # interleaved scans or one component a scan, and restart markers.
 #
-# The rules are tools/image/jpeg_reference.py's, which give the same pixels as libjpeg-turbo, and
-# this follows them check for check, in the same order, so that the two give the same reasons. It
-# does what libjpeg-turbo does by default, step for step: the integer IDCT ("islow"), "fancy"
-# upsampling (the triangle filter) for chroma at half width, half height or both, and YCbCr to RGB
-# by fixed-point tables. The arithmetic is 32-bit and wraps, and coefficients are kept in 16 bits,
-# as libjpeg's are, which only matters for damaged files.
+# The rules are tools/image/jpeg_reference.py's, which give the same pixels as libjpeg-turbo, damaged
+# files included, and this follows them check for check, in the same order, so that the two give
+# the same reasons. It does what libjpeg-turbo does by default, step for step: the integer IDCT
+# ("islow") as its C code works it out, "fancy" upsampling (the triangle filter) for chroma at half
+# width, half height or both, YCbCr to RGB by fixed-point tables, and its recovery from damage:
 #
-# Refused, where libjpeg would warn and go on: entropy-coded data that's damaged or ends early,
-# restart markers missing or out of order, a scan that isn't sequential, a component in no scan or
-# two, and a file that doesn't end with EOI. Not done: progressive, lossless, hierarchical and
-# arithmetic coding, 12-bit samples, CMYK, and DNL.
+#   - entropy-coded data that runs out reads as zero bits, and once a bit that isn't there has
+#     been used, the MCUs up to the next restart are left at zero (gray);
+#   - a code that isn't in its table takes 17 bits and is 0; a run past the end of a block puts
+#     its coefficient last;
+#   - restart markers out of order are resynced by libjpeg's rules;
+#   - what isn't a marker between segments is skipped, as are restart and TEM markers outside a
+#     scan, DNL, and APPn or COM segments too short to be one;
+#   - past the end of the file come EOI markers, again and again, as libjpeg's source managers
+#     give them (the file is copied with them after it);
+#   - with no Huffman table defined, tables 0 and 1 are the standard ones;
+#   - every component's coefficients are kept until the end, as libjpeg keeps them for a file of
+#     several scans, so a component in no scan is gray; and a file whose first scan has every
+#     component is done when that scan is.
 #
-# Every read is checked: the segments through CoreReader, and the entropy-coded data and the
-# samples through arrays, whose indexes are checked. The size is checked against the limit before
-# anything is allocated.
+# The IDCT works in 32 bits for a block whose dequantized coefficients are all within 1,173, which
+# can't overflow (as nearly every block of a good file is), and otherwise in 64 bits, as libjpeg's
+# C code does, cutting its work array to 32 bits as C's int does. Not done: progressive, lossless,
+# hierarchical and arithmetic coding, 12-bit samples, CMYK.
+#
+# Every read is checked: the segments through CoreReader, and the entropy-coded data, the
+# coefficients and the samples through arrays, whose indexes are checked. The size is checked
+# against the limit before anything is allocated.
 
+use memory.mem;
 use corelib;
 use imagelib.image;
 
@@ -25,10 +39,14 @@ use imagelib.image;
 struct.ImgJpeg
 {
 	ptr<ImgImage> image;    # what's been made so far, for Img to free if this fails
+	ptr<u8> padded;         # the file, with EOI markers after it; Img frees it
+	u32 plen;
 	ptr<u8> scratch;        # a restart interval's entropy-coded bytes, unstuffed; Img frees it
-	u32 scratch_len;
 	ptr<u8> rows;           # three rows of samples, upsampled; Img frees it
-	ptr<u8> plane0;         # each component's samples, in blocks; Img frees them
+	ptr<u16> coef0;         # each component's coefficients, 64 to a block; Img frees them
+	ptr<u16> coef1;
+	ptr<u16> coef2;
+	ptr<u8> plane0;         # and its samples, made from them at the end; Img frees them
 	ptr<u8> plane1;
 	ptr<u8> plane2;
 	CoreBits bits;
@@ -50,7 +68,9 @@ struct.ImgJpeg
 	u32 chs[3];
 	u32 strides[3];         # and its plane's, padded to whole blocks (or MCUs)
 	u32 plane_rows[3];
-	bln scanned[3];
+	bln one_pass;           # the first scan has every component: blocks go straight to samples
+	bln latched[3];         # whether it's had a scan, and so its quantization table
+	int comp_quant[192];    # that table, as libjpeg keeps it: 16 bits, signed
 
 	# the tables
 	u32 quant[256];         # four tables, natural order
@@ -67,6 +87,7 @@ struct.ImgJpeg
 	int adobe;              # the Adobe marker's transform; -1: none
 	u32 scans;
 	u32 seg_len;            # how many bytes are in scratch
+	u32 marker_next;        # where the segment of the marker NextMarker found starts
 
 	# the scan
 	u32 scan_count;
@@ -75,9 +96,12 @@ struct.ImgJpeg
 	u32 scan_ac[4];
 	int preds[4];
 	int coef[64];
+	int dq[64];
 	int ws[64];
 	int bf[8];
 	int bo[8];
+	i64 bf64[8];
+	i64 bo64[8];
 	int cr_r[256];
 	int cb_b[256];
 	int cr_g[256];
@@ -87,48 +111,53 @@ struct.ImgJpeg
 		if length < 2 or data:0 is not 0xFF or data:1 is not 0xD8
 			throw 'not a JPEG file';
 		;;
+		# the file, and then EOI markers, as libjpeg's source managers give them past its end: a
+		# segment can't be longer than 65,535 bytes, so this many always reaches one
+		plen is length + ImgJpegTables.PAST_THE_END;
+		padded is new u8[plen];
+		if padded is 0
+			throw 'out of memory';
+		;;
+		call Mem.Copy: padded data length;
+		while u32 k: length; k < plen; k++ 2;
+			padded:k is 0xFF;
+			padded:(k + 1) is 0xD9;
+		;;
 		adobe is -1;
 		CoreReader r;
-		call r.Start: data length;
+		call r.Start: padded plen;
 		u32 pos: 2;
-		# each segment takes at least 2 bytes, and a scan ends past where it starts, so the loop ends
+		# each turn moves past a marker, and a scan ends past where it starts, so the loop ends
 		while true
-			if pos >= length
-				throw 'the file is cut short';
+			u32 m: (NextMarker: (padded as u8[plen]) pos);
+			if m is 0x100
+				break;
 			;;
-			if data:pos is not 0xFF
-				throw 'something other than a marker, where a marker should be';
-			;;
-			while pos < length and data:pos is 0xFF
-				pos++;
-			;;
-			if pos >= length
-				throw 'the file is cut short';
-			;;
-			u32 m: data:pos;
-			pos++;
+			pos is marker_next;
 			if m is 0xD9
 				break;
 			;;
 			if m is 0xD8
 				throw 'a second start of image';
 			;;
-			if m >= 0xD0 and m <= 0xD7
-				throw 'a restart marker outside the image data';
+			if (m >= 0xD0 and m <= 0xD7) or m is 0x01
+				continue;           # RSTn and TEM outside a scan: ignored
 			;;
-			if m is 0x01 or m is 0x00
-				throw 'marker FF' (Hex2: m) ', which JPEG doesn't use here';
-			;;
-			if length - pos < 2
-				throw 'the file is cut short';
+			if plen - pos < 2
+				break;
 			;;
 			call r.Seek: pos;
 			u32 size: (r.U16BE);
+			bln skippable: (m >= 0xE0 and m <= 0xEF) or m is 0xFE or m is 0xDC;
 			if size < 2
-				throw 'a segment of less than 2 bytes';
+				if not skippable
+					throw 'a segment of less than 2 bytes';
+				;;
+				pos++ 2;            # as libjpeg's skip_variable: nothing to skip
+				continue;
 			;;
-			if size > length - pos
-				throw 'the file is cut short';
+			if size > plen - pos
+				break;
 			;;
 			u32 body: pos + 2;
 			u32 body_len: size - 2;
@@ -165,28 +194,35 @@ struct.ImgJpeg
 				call r.Seek: body;
 				restart is (r.U16BE);
 			;;
-			elif m is 0xDC
-				throw 'a DNL marker, which isn't supported';
-			;;
 			elif m is 0xDA
 				if not have_frame
 					throw 'image data before the frame header';
 				;;
-				pos is (Scan: r (data as u8[length]) pos body body_len);
+				u32 in_scan: padded:body;
+				if scans is 0
+					call Buffers: (in_scan is count);
+				;;
+				pos is (Scan: r (padded as u8[plen]) pos body body_len);
 				scans++;
+				if scans is 1 and in_scan is count
+					break;          # the image is done, as libjpeg's one pass makes it
+				;;
 			;;
 			elif m is 0xE0
-				if body_len >= 14 and (Starts: data body 'JFIF') and data:(body + 4) is 0
+				if body_len >= 14 and (Starts: padded body 'JFIF') and padded:(body + 4) is 0
 					jfif is true;
 				;;
 			;;
 			elif m is 0xEE
-				if body_len >= 12 and (Starts: data body 'Adobe')
-					adobe is data:(body + 11) as int;
+				if body_len >= 12 and (Starts: padded body 'Adobe')
+					adobe is padded:(body + 11) as int;
 				;;
 			;;
-			elif (m >= 0xE1 and m <= 0xEF) or m is 0xFE or m is 0xCC
-				# APPn, COM and DAC: skipped
+			elif m is 0xCC
+				call Dac: (padded as u8[plen]) body body_len;
+			;;
+			elif skippable
+				# APPn, COM and DNL: skipped
 			;;
 			else
 				throw 'marker FF' (Hex2: m) ', which JPEG doesn't use here';
@@ -195,11 +231,6 @@ struct.ImgJpeg
 
 		if not have_frame or scans is 0
 			throw 'no image data';
-		;;
-		while u32 c: 0; c < count; c++;
-			if not scanned:c
-				throw 'a component with no image data';
-			;;
 		;;
 		bln rgb: false;
 		if count is 3
@@ -213,8 +244,85 @@ struct.ImgJpeg
 				rgb is (ids:0 is 82 and ids:1 is 71 and ids:2 is 66);
 			;;
 		;;
+		if not one_pass
+			plane0 is (Samples: 0 coef0);
+			free coef0;
+			coef0 is 0;
+			if count is 3
+				plane1 is (Samples: 1 coef1);
+				free coef1;
+				coef1 is 0;
+				plane2 is (Samples: 2 coef2);
+				free coef2;
+				coef2 is 0;
+			;;
+		;;
 		call Output: rgb;
 	[end]
+
+	# Where the scans' blocks go, as libjpeg decides at the first scan: when it has every
+	# component, straight to samples, in planes that start as the zero block's (128); otherwise
+	# into coefficients, made samples at the end.
+	[Buffers: bln all: false;]
+		one_pass is all;
+		while u32 k: 0; k < count; k++;
+			if one_pass
+				ptr<u8> p: new u8[strides:k * plane_rows:k];
+				if p is 0
+					throw 'out of memory for the image's samples';
+				;;
+				call Mem.Fill: p 128 (strides:k * plane_rows:k);
+				when k
+					is 0
+						plane0 is p;
+					;;
+					is 1
+						plane1 is p;
+					;;
+					else
+						plane2 is p;
+					;;
+				;;
+			;;
+			else
+				when k
+					is 0
+						coef0 is (Coefficients: 0);
+					;;
+					is 1
+						coef1 is (Coefficients: 1);
+					;;
+					else
+						coef2 is (Coefficients: 2);
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	# libjpeg's next_marker: the next marker from pos, skipping anything that isn't one (FF 00
+	# included); its code, with marker_next where its segment starts, or 0x100 at the end
+	[NextMarker: u8 src[]; u32 pos: 0; : u32]
+		u32 n: src.len as u32;
+		while true
+			while pos < n and src:pos is not 0xFF
+				pos++;
+			;;
+			u32 j: pos + 1;
+			while j < n and src:j is 0xFF
+				j++;
+			;;
+			if j >= n
+				return 0x100;
+			;;
+			if src:j is 0
+				pos is j + 1;
+				continue;
+			;;
+			marker_next is j + 1;
+			return src:j;
+		;;
+	[end: 0x100]
 
 	# SOF0 or SOF1: the frame header, checked, and the planes for its components
 	[Frame: CoreReader r; u32 body: 0; u32 n: 0; u32 limit: 0;]
@@ -255,9 +363,6 @@ struct.ImgJpeg
 			u32 v: hv & 15;
 			if h < 1 or h > 4 or v < 1 or v > 4
 				throw 'a sampling factor JPEG doesn't have';
-			;;
-			if tq > 3
-				throw 'quantization table ' tq ', which JPEG doesn't have';
 			;;
 			while u32 j: 0; j < k; j++;
 				if ids:j is cid
@@ -300,23 +405,34 @@ struct.ImgJpeg
 			;;
 			total++ (strides:k as u64) * plane_rows:k;
 		;;
-		if total > 0x7FFFFFFF
+		if total > 0x7FFFFFFF / 3
 			throw 'the image's samples would be more than 2 GB';
-		;;
-		plane0 is (Plane: 0);
-		if count is 3
-			plane1 is (Plane: 1);
-			plane2 is (Plane: 2);
 		;;
 	[end]
 
-	# a component's plane, all zeros
-	[Plane: u32 k: 0; : ptr<u8>]
-		ptr<u8> p: new u8[strides:k * plane_rows:k];
+	# a component's coefficients, all zeros: 64 to a block, so one to a sample (for a file of
+	# several scans, as libjpeg keeps them)
+	[Coefficients: u32 k: 0; : ptr<u16>]
+		ptr<u16> p: new u16[strides:k * plane_rows:k];
 		if p is 0
-			throw 'out of memory for the image's samples';
+			throw 'out of memory for the image's coefficients';
 		;;
 	[end: p]
+
+	# DAC, the conditioning of arithmetic coding's tables, which isn't used here but is checked as
+	# libjpeg checks it (get_dac): pairs of a table's index and its value
+	[Dac: u8 src[]; u32 body: 0; u32 n: 0;]
+		if (n & 1) is 1
+			throw 'a DAC segment that's wrong';
+		;;
+		while u32 k: 0; k < n; k++ 2;
+			u32 index: src:(body + k);
+			u32 value: src:(body + k + 1);
+			if index >= 32 or (index < 16 and (value & 15) > (value >> 4))
+				throw 'a DAC segment that's wrong';
+			;;
+		;;
+	[end]
 
 	# DQT: one or more quantization tables
 	[Dqt: CoreReader r; u32 body: 0; u32 n: 0;]
@@ -407,7 +523,8 @@ struct.ImgJpeg
 			if c is not 0
 				maxcode:(t * 17 + len) is (code - 1) as int;
 			;;
-			if code > (1 << len)
+			# no code may be all ones, as libjpeg has it (jpeg_make_d_derived_tbl)
+			if code >= (1 << len)
 				throw 'a Huffman table with more codes than there's room for';
 			;;
 			code is code << 1;
@@ -441,7 +558,8 @@ struct.ImgJpeg
 		;;
 	[end]
 
-	# SOS: the scan header, and then its entropy-coded data, from pos; where the scan ends
+	# SOS: the scan header, and then its entropy-coded data, from pos, into its components'
+	# coefficients; where the scan ends (the marker after it)
 	[Scan: CoreReader r; u8 src[]; u32 pos: 0; u32 body: 0; u32 n: 0; : u32]
 		if n < 1
 			throw 'a scan header of the wrong length';
@@ -454,6 +572,8 @@ struct.ImgJpeg
 		if scan_count < 1 or scan_count > 4
 			throw 'a scan of ' scan_count ' components';
 		;;
+		# in libjpeg's order: the components (get_sos), the MCU's size (per_scan_setup), the
+		# quantization tables (latch_quant_tables), and then the Huffman tables (start_pass)
 		while u32 k: 0; k < scan_count; k++;
 			u32 cid: (r.U8);
 			u32 t: (r.U8);
@@ -471,28 +591,9 @@ struct.ImgJpeg
 					throw 'a component twice in one scan';
 				;;
 			;;
-			if scanned:c
-				throw 'a component in two scans';
-			;;
-			u32 td: t >> 4;
-			u32 ta: t & 15;
-			if td > 3 or ta > 3 or not huff_defined:td or not huff_defined:(4 + ta)
-				throw 'a scan using a Huffman table that isn't defined';
-			;;
-			if not quant_defined:(tqs:c)
-				throw 'a component whose quantization table isn't defined';
-			;;
-			call Build: td true;
-			call Build: (4 + ta) false;
 			scan_comps:k is c;
-			scan_dc:k is td;
-			scan_ac:k is 4 + ta;
-		;;
-		u32 ss: (r.U8);
-		u32 se: (r.U8);
-		u32 a: (r.U8);
-		if ss is not 0 or se is not 63 or a is not 0
-			throw 'a scan that isn't sequential';
+			scan_dc:k is t >> 4;
+			scan_ac:k is t & 15;
 		;;
 		if scan_count > 1
 			u32 blocks: 0;
@@ -504,7 +605,21 @@ struct.ImgJpeg
 			;;
 		;;
 		while u32 k: 0; k < scan_count; k++;
-			scanned:(scan_comps:k) is true;
+			u32 c: scan_comps:k;
+			if not latched:c
+				if tqs:c > 3 or not quant_defined:(tqs:c)
+					throw 'a component whose quantization table isn't defined';
+				;;
+				while u32 j: 0; j < 64; j++;
+					comp_quant:(c * 64 + j) is ((quant:(tqs:c * 64 + j) + 32768) & 0xFFFF) as int - 32768;
+				;;
+				latched:c is true;
+			;;
+		;;
+		while u32 k: 0; k < scan_count; k++;
+			call Table: scan_dc:k true;
+			call Table: scan_ac:k false;
+			scan_ac:k is 4 + scan_ac:k;
 		;;
 
 		u32 across: mcux;
@@ -515,27 +630,72 @@ struct.ImgJpeg
 			total is across * ((chs:c + 7) / 8);
 		;;
 		if scratch is 0
-			scratch_len is src.len as u32;
-			scratch is new u8[scratch_len + 1];
+			scratch is new u8[plen + 1];
 			if scratch is 0
 				throw 'out of memory';
 			;;
 		;;
-		u32 done: 0;
-		u32 interval: 0;
-		while done < total
-			pos is (Segment: src (scratch as u8[scratch_len]) pos);
-			u32 todo: total - done;
-			if restart is not 0 and restart < todo
-				todo is restart;
+		# libjpeg's entropy decoder, MCU by MCU, with its recovery: the data, and the marker after it
+		u32 marker: (Segment: src (scratch as u8[plen]) pos);
+		call bits.Start: scratch seg_len true;
+		bln held: false;        # whether the marker is being held, after a resync
+		bln short: false;       # libjpeg's insufficient_data
+		u32 next_rst: 0;
+		u32 to_go: restart;
+		while u32 k: 0; k < scan_count; k++;
+			preds:k is 0;
+		;;
+		while u32 mcu: 0; mcu < total; mcu++;
+			if restart is not 0 and to_go is 0
+				u32 m: (MarkerCode: src marker);
+				if m is 0xD0 + next_rst
+					marker is (Segment: src (scratch as u8[plen]) (marker + 2));
+					held is false;
+				;;
+				else
+					# jpeg_resync_to_restart; each turn moves to a later marker, so the loop ends
+					while true
+						u32 action: 1;
+						if m is not 0x100 and m < 0xC0
+							action is 2;
+						;;
+						elif m is 0x100 or m < 0xD0 or m > 0xD7
+							action is 3;
+						;;
+						elif m is 0xD0 + ((next_rst + 1) & 7) or m is 0xD0 + ((next_rst + 2) & 7)
+							action is 3;
+						;;
+						elif m is 0xD0 + ((next_rst + 7) & 7) or m is 0xD0 + ((next_rst + 6) & 7)
+							action is 2;
+						;;
+						if action is 1
+							marker is (Segment: src (scratch as u8[plen]) (marker + 2));
+							held is false;
+							break;
+						;;
+						if action is 2
+							marker is (Segment: src (scratch as u8[plen]) (marker + 2));
+							m is (MarkerCode: src marker);
+							continue;
+						;;
+						seg_len is 0;
+						held is true;
+						break;
+					;;
+				;;
+				next_rst is (next_rst + 1) & 7;
+				call bits.Start: scratch seg_len true;
+				while u32 k: 0; k < scan_count; k++;
+					preds:k is 0;
+				;;
+				to_go is restart;
+				if not held
+					short is false;
+				;;
 			;;
-			call bits.Start: scratch seg_len true;
-			while u32 k: 0; k < scan_count; k++;
-				preds:k is 0;
-			;;
-			while u32 i: 0; i < todo; i++;
-				u32 mx: (done + i) % across;
-				u32 my: (done + i) / across;
+			if not short
+				u32 mx: mcu % across;
+				u32 my: mcu / across;
 				while u32 si: 0; si < scan_count; si++;
 					u32 c: scan_comps:si;
 					if scan_count is 1
@@ -549,17 +709,56 @@ struct.ImgJpeg
 						;;
 					;;
 				;;
+				short is bits.failed;
 			;;
-			done++ todo;
-			if done < total
-				if pos + 1 >= (src.len as u32) or src:(pos + 1) is not (0xD0 + (interval & 7))
-					throw 'a restart marker missing or out of order';
-				;;
-				pos++ 2;
-				interval++;
+			if restart is not 0
+				to_go--;
 			;;
 		;;
-	[end: pos]
+	[end: marker]
+
+	# the code of the marker at where; 0x100 past the end (which can't be, after the EOIs)
+	[MarkerCode: u8 src[]; u32 where: 0; : u32]
+		if where + 1 < (src.len as u32)
+			return src:(where + 1);
+		;;
+	[end: 0x100]
+
+	# Huffman table t (DC, or AC) checked and made ready for a scan: the standard one when table 0
+	# or 1 hasn't been defined, as libjpeg does
+	[Table: u32 t: 0; bln dc: false;]
+		if t > 3
+			throw 'a scan using a Huffman table that isn't defined';
+		;;
+		u32 slot: t;
+		if not dc
+			slot is 4 + t;
+		;;
+		if not huff_defined:slot
+			if t > 1
+				throw 'a scan using a Huffman table that isn't defined';
+			;;
+			u32 total: 0;
+			while u32 k: 0; k < 16; k++;
+				u32 c: ImgJpegTables.std_dc_counts:(t * 16 + k);
+				if not dc
+					c is ImgJpegTables.std_ac_counts:(t * 16 + k);
+				;;
+				counts:(slot * 16 + k) is c as u8;
+				total++ c;
+			;;
+			while u32 k: 0; k < total; k++;
+				if dc
+					values:(slot * 256 + k) is ImgJpegTables.std_dc_values:k;
+				;;
+				else
+					values:(slot * 256 + k) is ImgJpegTables.std_ac_values:(t * 162 + k);
+				;;
+			;;
+			huff_defined:slot is true;
+		;;
+		call Build: slot dc;
+	[end]
 
 	# the entropy-coded bytes from pos to the next marker, unstuffed into dst (seg_len of them);
 	# where that marker is (each byte out takes at least one in, so dst has room)
@@ -594,7 +793,10 @@ struct.ImgJpeg
 		seg_len is put;
 	[end: n]
 
-	# one block of the scan's component si, decoded and put in its place
+	# One block of the scan's component si, decoded: in one pass, straight to its samples;
+	# otherwise into the component's coefficients, where, as in libjpeg's buffered mode, the DC is
+	# always written and the AC coefficients that aren't zero (which in one pass, where each block
+	# starts from zeros, comes to the same).
 	[Block: u32 si: 0; u32 bx: 0; u32 by: 0;]
 		while u32 k: 0; k < 64; k++;
 			coef:k is 0;
@@ -602,14 +804,10 @@ struct.ImgJpeg
 		u32 s: (Decode: scan_dc:si);
 		int diff: 0;
 		if s > 0
-			u32 v: (bits.Bits: s);
-			if bits.failed
-				throw 'the image data ends before the image does';
-			;;
-			diff is (Extend: v s);
+			diff is (Extend: (Take: s) s);
 		;;
 		preds:si is preds:si + diff;
-		coef:0 is (((preds:si + 32768) & 0xFFFF) - 32768);
+		coef:0 is ((preds:si + 32768) & 0xFFFF) - 32768;
 		u32 ac: scan_ac:si;
 		u32 k: 1;
 		while k < 64
@@ -624,26 +822,52 @@ struct.ImgJpeg
 				continue;
 			;;
 			k++ run;
-			if k > 63
-				throw 'a run of coefficients past the end of a block';
+			u32 at_k: k;
+			if at_k > 63
+				at_k is 63;
 			;;
-			u32 v: (bits.Bits: s);
-			if bits.failed
-				throw 'the image data ends before the image does';
-			;;
-			coef:(ImgJpegTables.zigzag:k) is (Extend: v s);
+			coef:(ImgJpegTables.zigzag:at_k) is (Extend: (Take: s) s);
 			k++;
 		;;
 		u32 c: scan_comps:si;
-		ptr<u8> plane: plane0;
+		u32 size: strides:c * plane_rows:c;
+		if one_pass
+			ptr<u8> plane: plane0;
+			if c is 1
+				plane is plane1;
+			;;
+			elif c is 2
+				plane is plane2;
+			;;
+			call Idct: (plane as u8[size]) strides:c (by * 8 * strides:c + bx * 8) (c * 64);
+			return;
+		;;
+		ptr<u16> buf: coef0;
 		if c is 1
-			plane is plane1;
+			buf is coef1;
 		;;
 		elif c is 2
-			plane is plane2;
+			buf is coef2;
 		;;
-		call Idct: (plane as u8[strides:c * plane_rows:c]) strides:c (by * 8 * strides:c + bx * 8) (tqs:c * 64);
+		call Keep: (buf as u16[size]) ((by * (strides:c / 8) + bx) * 64);
 	[end]
+
+	# coef into a component's coefficients at base: the DC, and the AC coefficients that aren't 0
+	[Keep: u16 coefs[]; u32 base: 0;]
+		coefs:base is (coef:0 & 0xFFFF) as u16;
+		while u32 k: 1; k < 64; k++;
+			if coef:k is not 0
+				coefs:(base + k) is (coef:k & 0xFFFF) as u16;
+			;;
+		;;
+	[end]
+
+	# the next n bits, as many of them as are there and then zeros (CoreBits' Bits gives 0 for all
+	# of them once one is missing)
+	[Take: u32 n: 0; : u32]
+		u32 v: (bits.Peek: n);
+		call bits.Drop: n;
+	[end: v]
 
 	# s bits as a signed value, as JPEG codes them
 	[Extend: u32 v: 0; u32 s: 0; : int]
@@ -653,15 +877,12 @@ struct.ImgJpeg
 	[end: v as int]
 
 	# The next value in Huffman table t. A code is found in one look when it's 9 bits or fewer,
-	# and otherwise a length at a time. Bits from past the end of the data are zeros, and using
-	# one is a failure: so a code is found where it is, or the data ends before it.
+	# and otherwise a length at a time. Bits from past the end of the data are zeros. A code that
+	# isn't in the table takes 17 bits and is 0, as in libjpeg.
 	[Decode: u32 t: 0; : u32]
 		u32 entry: fast:(t * 512 + (bits.Peek: 9));
 		if entry is not 0
 			call bits.Drop: entry & 15;
-			if bits.failed
-				throw 'the image data ends before the image does';
-			;;
 			return entry >> 4;
 		;;
 		u32 ahead: (bits.Peek: 16);
@@ -669,22 +890,51 @@ struct.ImgJpeg
 			int code: (ahead >> (16 - len)) as int;
 			if code <= maxcode:(t * 17 + len)
 				call bits.Drop: len;
-				if bits.failed
-					throw 'the image data ends before the image does';
-				;;
 				return values:(t * 256 + valptr:(t * 17 + len) + (code as u32) - mincode:(t * 17 + len));
 			;;
 		;;
-		# no code in 16 bits: the data ran out before them, or the code isn't in the table
-		if (bits.count - bits.fake) + (bits.len - bits.pos) * 8 < 16
-			throw 'the image data ends before the image does';
-		;;
-		throw 'a code that isn't in its Huffman table';
+		call bits.Drop: 16;
+		call bits.Drop: 1;
 	[end: 0]
 
-	# libjpeg's integer IDCT ("islow"): coef, with quantization table at q, into the 8 by 8
-	# samples at start in plane, whose rows are stride apart
+	# component k's coefficients made samples, block by block, into a new plane
+	[Samples: u32 k: 0; ptr<u16> buf: 0; : ptr<u8>]
+		u32 size: strides:k * plane_rows:k;
+		ptr<u8> p: new u8[size];
+		if p is 0
+			throw 'out of memory for the image's samples';
+		;;
+		call Blocks: (buf as u16[size]) (p as u8[size]) k;
+	[end: p]
+
+	[Blocks: u16 coefs[]; u8 plane[]; u32 k: 0;]
+		u32 across: strides:k / 8;
+		u32 blocks: across * (plane_rows:k / 8);
+		while u32 b: 0; b < blocks; b++;
+			while u32 j: 0; j < 64; j++;
+				coef:j is ((coefs:(b * 64 + j) as int) ^ 0x8000) - 0x8000;
+			;;
+			call Idct: plane strides:k ((b / across) * 8 * strides:k + (b % across) * 8) (k * 64);
+		;;
+	[end]
+
+	# libjpeg's integer IDCT ("islow"), as its C code works it out: coef, with the component's table
+	# at q in comp_quant, into the 8 by 8 samples at start in plane, whose rows are stride apart. In
+	# 32 bits when no dequantized coefficient is past 1,173, which can't overflow, and otherwise in
+	# 64 bits, as libjpeg's JLONG, with the work array cut to 32 bits as its int is.
 	[Idct: u8 plane[]; u32 stride: 0; u32 start: 0; u32 q: 0;]
+		int most: 0;
+		while u32 k: 0; k < 64; k++;
+			int v: coef:k * comp_quant:(q + k);
+			dq:k is v;
+			if v < 0
+				v is -v;
+			;;
+			if v > most
+				most is v;
+			;;
+		;;
+		bln wide: most > 1173;
 		# the columns
 		while u32 col: 0; col < 8; col++;
 			bln zero: true;
@@ -695,14 +945,24 @@ struct.ImgJpeg
 				;;
 			;;
 			if zero
-				int dc: (coef:col * (quant:(q + col) as int)) << 2;
+				int dc: dq:col << 2;
 				while u32 k: 0; k < 8; k++;
 					ws:(8 * k + col) is dc;
 				;;
 				continue;
 			;;
+			if wide
+				while u32 k: 0; k < 8; k++;
+					bf64:k is dq:(8 * k + col) as i64;
+				;;
+				call Butterfly64: 11;
+				while u32 k: 0; k < 8; k++;
+					ws:(8 * k + col) is bo64:k as int;
+				;;
+				continue;
+			;;
 			while u32 k: 0; k < 8; k++;
-				bf:k is coef:(8 * k + col) * (quant:(q + 8 * k + col) as int);
+				bf:k is dq:(8 * k + col);
 			;;
 			call Butterfly: 11;
 			while u32 k: 0; k < 8; k++;
@@ -721,9 +981,19 @@ struct.ImgJpeg
 				;;
 			;;
 			if zero
-				u8 v: (Limit: ((ws:w0 + 16) >> 5)) as u8;
+				u8 v: (Limit: ((((ws:w0 as i64) + 16) >> 5) as int)) as u8;
 				while u32 k: 0; k < 8; k++;
 					plane:(o + k) is v;
+				;;
+				continue;
+			;;
+			if wide
+				while u32 k: 0; k < 8; k++;
+					bf64:k is ws:(w0 + k) as i64;
+				;;
+				call Butterfly64: 18;
+				while u32 k: 0; k < 8; k++;
+					plane:(o + k) is (Limit: (bo64:k as int)) as u8;
 				;;
 				continue;
 			;;
@@ -780,6 +1050,51 @@ struct.ImgJpeg
 		bo:5 is (tmp12 - t1 + round) >> shift;
 		bo:3 is (tmp13 + t0 + round) >> shift;
 		bo:4 is (tmp13 - t0 + round) >> shift;
+	[end]
+
+	# the same pass in 64 bits, bf64 into bo64, for a block too big for 32
+	[Butterfly64: int shift: 0;]
+		i64 z2: bf64:2;
+		i64 z3: bf64:6;
+		i64 z1: (z2 + z3) * 4433;
+		i64 tmp2: z1 - z3 * 15137;
+		i64 tmp3: z1 + z2 * 6270;
+		i64 tmp0: (bf64:0 + bf64:4) << 13;
+		i64 tmp1: (bf64:0 - bf64:4) << 13;
+		i64 tmp10: tmp0 + tmp3;
+		i64 tmp13: tmp0 - tmp3;
+		i64 tmp11: tmp1 + tmp2;
+		i64 tmp12: tmp1 - tmp2;
+		i64 t0: bf64:7;
+		i64 t1: bf64:5;
+		i64 t2: bf64:3;
+		i64 t3: bf64:1;
+		z1 is t0 + t3;
+		z2 is t1 + t2;
+		z3 is t0 + t2;
+		i64 z4: t1 + t3;
+		i64 z5: (z3 + z4) * 9633;
+		t0 is t0 * 2446;
+		t1 is t1 * 16819;
+		t2 is t2 * 25172;
+		t3 is t3 * 12299;
+		z1 is 0 - z1 * 7373;
+		z2 is 0 - z2 * 20995;
+		z3 is z5 - z3 * 16069;
+		z4 is z5 - z4 * 3196;
+		t0 is t0 + z1 + z3;
+		t1 is t1 + z2 + z4;
+		t2 is t2 + z2 + z3;
+		t3 is t3 + z1 + z4;
+		i64 round: (1 as i64) << (shift - 1);
+		bo64:0 is (tmp10 + t3 + round) >> shift;
+		bo64:7 is (tmp10 - t3 + round) >> shift;
+		bo64:1 is (tmp11 + t2 + round) >> shift;
+		bo64:6 is (tmp11 - t2 + round) >> shift;
+		bo64:2 is (tmp12 + t1 + round) >> shift;
+		bo64:5 is (tmp12 - t1 + round) >> shift;
+		bo64:3 is (tmp13 + t0 + round) >> shift;
+		bo64:4 is (tmp13 - t0 + round) >> shift;
 	[end]
 
 	# libjpeg's range limit after the IDCT: x + 128 clamped, for any x a damaged file can give
@@ -964,6 +1279,27 @@ struct.ImgJpeg
 
 phi.ImgJpegTables:Library
 {
+	# how many bytes of EOI markers the file is copied with (an even number)
+	const u32 PAST_THE_END: 65538;
+
+	# libjpeg's standard Huffman tables (the JPEG standard's Annex K), tables 0 and 1 of each kind
+	u8 std_dc_counts: 0 1 5 1 1 1 1 1 1 0 0 0 0 0 0 0  0 3 1 1 1 1 1 1 1 1 1 0 0 0 0 0;
+	u8 std_dc_values: 0 1 2 3 4 5 6 7 8 9 10 11;
+	u8 std_ac_counts: 0 2 1 3 3 2 4 3 5 5 4 4 0 0 1 125  0 2 1 2 4 4 3 4 7 5 4 4 0 1 2 119;
+	u8 std_ac_values: 1 2 3 0 4 17 5 18 33 49 65 6 19 81 97 7 34 113 20 50 129 145 161 8 35 66 177 193
+		21 82 209 240 36 51 98 114 130 9 10 22 23 24 25 26 37 38 39 40 41 42 52 53 54 55 56 57 58 67 68
+		69 70 71 72 73 74 83 84 85 86 87 88 89 90 99 100 101 102 103 104 105 106 115 116 117 118 119 120
+		121 122 131 132 133 134 135 136 137 138 146 147 148 149 150 151 152 153 154 162 163 164 165 166
+		167 168 169 170 178 179 180 181 182 183 184 185 186 194 195 196 197 198 199 200 201 202 210 211
+		212 213 214 215 216 217 218 225 226 227 228 229 230 231 232 233 234 241 242 243 244 245 246 247
+		248 249 250
+		0 1 2 3 17 4 5 33 49 6 18 65 81 7 97 113 19 34 50 129 8 20 66 145 161 177 193 9 35 51 82 240 21
+		98 114 209 10 22 36 52 225 37 241 23 24 25 26 38 39 40 41 42 53 54 55 56 57 58 67 68 69 70 71 72
+		73 74 83 84 85 86 87 88 89 90 99 100 101 102 103 104 105 106 115 116 117 118 119 120 121 122 130
+		131 132 133 134 135 136 137 138 146 147 148 149 150 151 152 153 154 162 163 164 165 166 167 168
+		169 170 178 179 180 181 182 183 184 185 186 194 195 196 197 198 199 200 201 202 210 211 212 213
+		214 215 216 217 218 226 227 228 229 230 231 232 233 234 242 243 244 245 246 247 248 249 250;
+
 	# where each coefficient in the order JPEG codes them goes, in a block's rows
 	u8 zigzag: 0 1 8 16 9 2 3 10 17 24 32 25 18 11 4 5 12 19 26 33 40 48 41 34 27 20 13 6 7 14 21 28
 		35 42 49 56 57 50 43 36 29 22 15 23 30 37 44 51 58 59 52 45 38 31 39 46 53 60 61 54 47 55 62 63;
