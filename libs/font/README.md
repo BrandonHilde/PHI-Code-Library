@@ -1,10 +1,10 @@
 # fontlib
 
-Fonts in; metrics, outlines and smooth glyph bitmaps out. So far it reads TrueType fonts: the face, each
+Fonts in; metrics, outlines and smooth glyph bitmaps out. So far it reads TrueType and OpenType CFF fonts: the face, each
 glyph's outline and metrics, in font units, and which glyph a character is; it makes glyphs' bitmaps at
 a size, exactly as FreeType makes them; and it measures and draws runs of UTF-8 text in a list of fonts,
 with HarfBuzz's glyphs, advances and kerning ([plan.md](../../plan.md#phase-4-font-library), milestones
-4.1 to 4.4). It uses [corelib](../core), so a program
+4.1 to 4.5). It uses [corelib](../core), so a program
 using it has both `fontlib.philib` and `corelib.philib` beside it.
 
 ```phi
@@ -43,7 +43,7 @@ call Fnt.Free: face;
 ## API
 
 These names are the API. Everything else the library declares (`FntTrueType`, `FntFrame`,
-`FntMacRoman`, `FntRaster`, `FntCell`, `FntText`, `FntKern`, `FntSize`'s `scale`, `mult`, `cache`, `outline` and
+`FntMacRoman`, `FntRaster`, `FntCell`, `FntText`, `FntKern`, `FntCff`, `FntIndex`, `FntSize`'s `scale`, `mult`, `cache`, `outline` and
 `raster`, and `Fnt`'s `Grow`, `Release`, `ReleasePoints`, `Done`, `Failed`, `DivFix`, `Make`, `FreeBitmap`,
 `Blit` and `BlitRows`) is how it works, and may change.
 
@@ -55,7 +55,7 @@ These names are the API. Everything else the library declares (`FntTrueType`, `F
 | `Fnt.Free: face` | Gives back a face's memory (0 does nothing); not its bytes, which are the caller's |
 | `Fnt.GlyphOf: face code` → | The glyph for a Unicode code point, as HarfBuzz finds it, or 0 if the font has none |
 | `Fnt.Advance: face glyph` → | The glyph's advance from `hmtx`, in font units, as text is laid out with it (HarfBuzz's) |
-| `FntOutline` | A struct: `points`, `contours` (`u32`), `advance` (`int`, FreeType's: the glyph's, or a component's that says so), and `x`, `y` (`ptr<int>`), `on` (`ptr<u8>`) and `ends` (`ptr<u32>`) |
+| `FntOutline` | A struct: `points`, `contours` (`u32`), `advance` (`int`, FreeType's: the glyph's, or a component's that says so), and `x`, `y` (`ptr<int>`), `on` (`ptr<u8>`: 1 on the curve, 0 a quadratic control point (TrueType), 2 a cubic one (CFF)) and `ends` (`ptr<u32>`) |
 | `Fnt.NewOutline` → | An outline to load glyphs into, again and again; its arrays grow as they need to |
 | `Fnt.Outline: face glyph outline` → | Loads a glyph's outline: true, or false with the reason in `Fnt.error`, and the outline empty |
 | `Fnt.FreeOutline: outline` | Gives back an outline's memory (0 does nothing) |
@@ -94,9 +94,26 @@ Two references decide what fontlib makes of a font, as they decide what browsers
   leaves the font with no characters, as it does in HarfBuzz.
 
 Coordinates are kept to 32 bits, where FreeType keeps 64: only a composite nested past any real font's
-depth could tell them apart. **Not done yet:** CFF outlines (OpenType `.otf`, milestone 4.5), font
-collections, and the Arabic code pages of HarfBuzz's symbol fallback (a symbol font whose OS/2 names
-one maps nothing there).
+depth could tell them apart. When a glyph's `loca` end comes before its start, FreeType reads it to the end
+of `glyf`, and so does fontlib. **Not done yet:** font collections, and the Arabic code pages of
+HarfBuzz's symbol fallback (a symbol font whose OS/2 names one maps nothing there).
+
+## CFF
+
+An OpenType font with CFF outlines (`OTTO`, a `.otf`) is read as FreeType's CFF engine reads it, unhinted
+([cff_reference.py](../../tools/font/cff_reference.py)): the CFF table's header and indexes (each index's
+offsets checked when the font is loaded), the first font's Top DICT and Private DICT, and for a CID-keyed
+font its FDArray and FDSelect. Its glyphs are its charstrings, run as Type 2 in 16.16 fixed point: every
+path operator, flex and its kin, local and global subroutines with their bias (at most 10 deep), the hint
+operators counted so that `hintmask` skips the right bytes, and the width argument. Contours are closed as
+FreeType's builder closes them; points are whole font units, scaled at a size as TrueType's are, with no
+shift; the advance is `hmtx`'s. The bitmaps' cubic curves are split as `ftgrays.c`'s `gray_render_cubic`
+splits them.
+
+**Not done:** `seac` accents (an `endchar` with 4 arguments, which FreeType builds from the Standard
+Encoding and the charset) and the arithmetic operators, which fonts made since Type 1 days don't use (a
+glyph using them can't be loaded); a FontMatrix other than the default; and CFF2 (variable fonts). A
+CID-keyed font is read, but none has been tested yet.
 
 ## Bitmaps
 
@@ -148,7 +165,7 @@ From the repo's root:
 
 ```
 pwsh ./build.ps1 font -Test                       # (or .\build.ps1 font -Test on Windows)
-python3 -P tools/font/make_font_tests.py          # remakes tests/ttf/cases.bin (it's committed)
+python3 -P tools/font/make_font_tests.py          # remakes tests/ttf/cases.bin (it's committed): TrueType and CFF
 python3 -P tools/font/make_raster_tests.py        # remakes tests/raster/cases.bin
 python3 -P tools/font/make_text_tests.py          # remakes tests/text/cases.bin
 pwsh ./build.ps1 font -Test -Release              # and the release tests too
@@ -161,7 +178,10 @@ points, flags, contours and advance, and against uharfbuzz (HarfBuzz 15.0) for t
 point to U+FFFF and every 16th to U+2FFFF. It stops at any difference. fontlib follows the rules check
 for check. The fonts: Liberation Sans (in [tests/fonts](tests/fonts), OFL), 61 made with fontTools (each
 feature and each kind of damage), and fonts cut short and fuzzed. A case's verdict is its face and two
-CRC-32s: over every glyph, and over those characters' glyphs.
+CRC-32s: over every glyph, and over those characters' glyphs. CFF: Source Code Pro (OFL, every glyph the
+same as FreeType's), and fonts made with fontTools from charstrings written by hand: every operator, flex
+and its kin, subroutines, hints and widths, a path before any `moveto`, and damage (a bad version, offsets
+of 5 bytes, no CFF table, a subroutine that isn't there, 49 arguments).
 
 | Cases (2026-11-09, as 32 and 64-bit Linux programs) | Result |
 |---|---|

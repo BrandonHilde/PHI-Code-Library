@@ -514,6 +514,13 @@ phi.Fnt:Library
 	[end]
 
 	[Done: ptr<FntTrueType> tt: 0;]
+		if tt.cff is not 0
+			if tt.cff.px is not 0
+				free tt.cff.px;
+				free tt.cff.py;
+			;;
+			free tt.cff;
+		;;
 		if tt.frames is not 0
 			free tt.frames;
 		;;

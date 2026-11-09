@@ -1,6 +1,7 @@
 # made by tools/font/make_font_tests.py: what fontlib must make of each case in cases.bin
 # (the cut and fuzz cases are summed up by the case they come from, at the end)
 fonts LiberationSans-Regular.ttf                410712 bytes  ok, 2620 glyphs
+fonts SourceCodePro-Regular.otf                 131128 bytes  ok, 1568 glyphs
 made  simple                                       704 bytes  ok, 4 glyphs
 made  upem-16                                      704 bytes  ok, 4 glyphs
 made  upem-16384                                   704 bytes  ok, 4 glyphs
@@ -39,7 +40,7 @@ made  cmap-0-3                                    1772 bytes  ok, 3 glyphs
 made  cmap-symbol                                  668 bytes  ok, 3 glyphs
 made  cmap-mac-roman                               884 bytes  ok, 3 glyphs
 made  cmap-none                                    612 bytes  ok, 3 glyphs
-made  tag-otto                                     704 bytes  refused: CFF outlines (an OpenType .otf font), which aren't read yet
+made  tag-otto                                     704 bytes  refused: an OpenType font with no CFF table
 made  tag-ttcf                                     704 bytes  refused: a font collection, which isn't read yet
 made  tag-junk                                     704 bytes  refused: not a TrueType font
 made  tag-true                                     704 bytes  ok, 4 glyphs
@@ -66,6 +67,12 @@ made  overlap-compound                             676 bytes  ok, 3 glyphs
 made  kern-gpos-pairs                             1064 bytes  ok, 8 glyphs
 made  kern-gpos-classes                           1052 bytes  ok, 8 glyphs
 made  kern-legacy                                  920 bytes  ok, 8 glyphs
+made  cff                                         1076 bytes  ok, 13 glyphs
+made  cff-no-subroutines                           640 bytes  ok, 2 glyphs
+made  cff-version-2                               1076 bytes  refused: a CFF table this isn't version 1 of
+made  cff-offsets-of-5                            1076 bytes  refused: a CFF table this isn't version 1 of
+made  cff-table-missing                           1076 bytes  refused: an OpenType font with no CFF table
+made  cff-bad-glyphs                               676 bytes  ok, 4 glyphs
 made  points-2x16380                             42416 bytes  ok, 3 glyphs
 made  points-2x16400                             42468 bytes  ok, 3 glyphs
 cut   simple                                      2 ok,    5 refused
@@ -73,26 +80,26 @@ cut   composite-nested                            2 ok,    5 refused
 fuzz  composite-offset                            3 ok,    1 refused
 fuzz  composite-nested                            3 ok,    0 refused
 fuzz  cmap-format-4                               1 ok,    0 refused
-fuzz  points-2x16400                              1 ok,    0 refused
-fuzz  cmap-none                                   4 ok,    0 refused
-fuzz  points-2x16380                              1 ok,    0 refused
-fuzz  cmap-format-6                               1 ok,    0 refused
-fuzz  short-loca                                  1 ok,    0 refused
-fuzz  overlap-simple                              2 ok,    1 refused
-fuzz  composite-scaled-offset-2x2                 1 ok,    1 refused
-fuzz  composite-use-my-metrics                    1 ok,    2 refused
+fuzz  cff-no-subroutines                          1 ok,    0 refused
+fuzz  cmap-none                                   2 ok,    0 refused
+fuzz  cff                                         1 ok,    0 refused
+fuzz  points-2x16400                              3 ok,    0 refused
+fuzz  cmap-symbol                                 2 ok,    0 refused
+fuzz  cff-bad-glyphs                              1 ok,    0 refused
+fuzz  composite-scaled-offset-2x2                 2 ok,    1 refused
+fuzz  composite-use-my-metrics                    0 ok,    2 refused
 fuzz  composite-two                               1 ok,    0 refused
-fuzz  composite-of-empty                          1 ok,    0 refused
-fuzz  upem-16                                     1 ok,    0 refused
-fuzz  composite-xy-scale                          2 ok,    0 refused
-fuzz  upem-16384                                  0 ok,    1 refused
-fuzz  short-metrics                               1 ok,    0 refused
-fuzz  composite-offset-words                      1 ok,    0 refused
+fuzz  overlap-compound                            1 ok,    0 refused
+fuzz  composite-scale                             1 ok,    0 refused
+fuzz  overlap-compound-second                     2 ok,    0 refused
+fuzz  upem-16384                                  1 ok,    0 refused
+fuzz  cmap-format-13                              1 ok,    1 refused
+fuzz  cmap-format-0                               1 ok,    0 refused
 fuzz  cmap-mac-roman                              1 ok,    0 refused
 fuzz  line-gap                                    1 ok,    0 refused
-fuzz  cmap-format-12                              1 ok,    0 refused
-fuzz  lsb-not-xmin                                1 ok,    0 refused
-fuzz  cmap-symbol                                 1 ok,    0 refused
+fuzz  points-2x16380                              1 ok,    0 refused
+fuzz  composite-scaled-offset                     0 ok,    1 refused
+fuzz  tag-true                                    1 ok,    0 refused
 fuzz  simple                                      1 ok,    0 refused
 fuzz  kern-gpos-pairs                             1 ok,    0 refused
 fuzz  cmap-0-3                                    1 ok,    0 refused

@@ -1,6 +1,7 @@
 # made by tools/font/make_raster_tests.py: what fontlib must make of each font at each size
 LiberationSans-Regular.ttf                        12 px  2620 glyphs
 LiberationSans-Regular.ttf                        19 px  2620 glyphs
+SourceCodePro-Regular.otf                         14 px  1568 glyphs
 simple                                            12 px  4 glyphs
 upem-16                                           12 px  4 glyphs
 upem-16384                                        12 px  4 glyphs
@@ -41,6 +42,12 @@ tag-true                                          12 px  4 glyphs
 overlap-simple                                    12 px  2 glyphs
 overlap-compound-second                           12 px  3 glyphs
 overlap-compound                                  12 px  3 glyphs
+kern-gpos-pairs                                   12 px  8 glyphs
+kern-gpos-classes                                 12 px  8 glyphs
+kern-legacy                                       12 px  8 glyphs
+cff                                               12 px  13 glyphs
+cff-no-subroutines                                12 px  2 glyphs
+cff-bad-glyphs                                    12 px  4 glyphs
 fuzz-0-composite-scaled-offset-2x2-b              30 px  4 glyphs
 fuzz-1-overlap-simple                              5 px  2 glyphs
 fuzz-2-composite-2x2                               5 px  4 glyphs
@@ -50,10 +57,10 @@ fuzz-5-overlap-simple                              5 px  2 glyphs
 fuzz-6-composite-xy-scale                         12 px  4 glyphs
 fuzz-7-cmap-format-6                               5 px  3 glyphs
 fuzz-8-cmap-3-10-before-3-1                        5 px  3 glyphs
-fuzz-9-cmap-0-4-before-3-1                        30 px  3 glyphs
-fuzz-10-composite-scale                           30 px  4 glyphs
-fuzz-11-overlap-compound-second                   12 px  3 glyphs
-fuzz-12-short-loca                                30 px  4 glyphs
+fuzz-9-kern-legacy                                 5 px  8 glyphs
+fuzz-10-upem-16384                                 5 px  4 glyphs
+fuzz-11-kern-gpos-pairs                            5 px  8 glyphs
+fuzz-12-cff                                       30 px  13 glyphs
 fuzz-13-composite-nested                          30 px  6 glyphs
 fuzz-14-cmap-format-12                            30 px  3 glyphs
-fuzz-15-cmap-0-4-before-3-1                       30 px  3 glyphs
+fuzz-15-cff-bad-glyphs                            12 px  4 glyphs

@@ -1,0 +1,815 @@
+# CFF outlines (OpenType .otf fonts), as FreeType's CFF engine reads them, unhinted. The rules are
+# tools/font/cff_reference.py's, and this follows them check for check, giving the same reasons:
+#
+#   - The table: its header, the Name, Top DICT, String and Global Subrs indexes, the first font's Top
+#     DICT and Private DICT (and for a CID-keyed font, FDArray and FDSelect), each index's offsets
+#     checked when the font is loaded.
+#   - Type 2 charstrings in 16.16 fixed point: every path operator, flex and its kin, subroutines (at
+#     most 10 deep) with their bias, the hint operators counted so that hintmask skips the right bytes,
+#     and an odd first argument taken as the width.
+#   - Contours closed as FreeType's builder closes them; points in whole font units, rounded down.
+#   - Not done: seac accents and the arithmetic operators (a glyph using them can't be loaded).
+
+use corelib;
+use fontlib.face;
+
+# A CFF INDEX: count items, their offsets (size bytes each) at offsets_at, counted from data - 1
+struct.FntIndex
+{
+	u32 count;
+	u32 size;
+	u32 offsets_at;
+	u32 data;
+	u32 stop;               # where the index ends
+}
+
+struct.FntCff
+{
+	ptr<u8> d;
+	u32 length;
+	u32 table_end;
+	FntIndex gsubrs;
+	FntIndex charstrings;
+	FntIndex subrs[256];    # each font dict's local subroutines
+	bln has_subrs[256];
+	u32 dict_count;
+	bln cid;
+	u32 fd_select;
+
+	# the charstring being run
+	int stack[48];
+	u32 depth_count;
+	u32 stems;
+	bln width_done;
+	i64 x;
+	i64 y;
+	bln open;
+	u32 start;
+	u32 local;              # which font dict's subroutines
+
+	# the table, from start for length bytes; throws why it can't be read
+	[Load: ptr<u8> data: 0; u32 file_length: 0; u32 start: 0; u32 size: 0;]
+		d is data;
+		length is file_length;
+		call LoadIn: (data as u8[file_length]) start (start + size);
+	[end]
+
+	[LoadIn: u8 src[]; u32 start: 0; u32 stop: 0;]
+		table_end is stop;
+		if stop - start < 4
+			throw 'a CFF table too short for its header';
+		;;
+		u32 major: src:start;
+		u32 hdr: src:(start + 2);
+		u32 offsize: src:(start + 3);
+		if major is not 1 or hdr < 4 or offsize < 1 or offsize > 4
+			throw 'a CFF table this isn\'t version 1 of';
+		;;
+		FntIndex names;
+		FntIndex tops;
+		FntIndex strings;
+		call Read: src (start as i64 + hdr) stop addr names;
+		call Read: src names.stop stop addr tops;
+		call Read: src tops.stop stop addr strings;
+		call Read: src strings.stop stop addr gsubrs;
+		if tops.count is 0
+			throw 'a CFF table with no font in it';
+		;;
+		u32 ts: 0;
+		u32 te: 0;
+		call Item: src addr tops 0 addr ts addr te;
+		# CharstringType 2, if it's there
+		if (Has: src ts te 1206) and (First: src ts te 1206) is not 2
+			throw 'charstrings that aren\'t Type 2';
+		;;
+		if not (HasOperand: src ts te 17)
+			throw 'a CFF font with no charstrings';
+		;;
+		call Read: src (start as i64 + (Last: src ts te 17 0)) stop addr charstrings;
+		dict_count is 0;
+		cid is false;
+		if (Has: src ts te 1230)
+			if not (Has: src ts te 1236) or not (Has: src ts te 1237)
+				throw 'a CID-keyed CFF font without FDArray or FDSelect';
+			;;
+			FntIndex fds;
+			call Read: src (start as i64 + (Last: src ts te 1236 0)) stop addr fds;
+			while u32 k: 0; k < fds.count; k++;
+				if k >= 256
+					break;
+				;;
+				u32 fs: 0;
+				u32 fe: 0;
+				call Item: src addr fds k addr fs addr fe;
+				call Private: src fs fe start stop k;
+				dict_count++;
+			;;
+			cid is true;
+			fd_select is (start as i64 + (Last: src ts te 1237 0)) as u32;
+		;;
+		else
+			call Private: src ts te start stop 0;
+			dict_count is 1;
+		;;
+	[end]
+
+	# a font dict's Private DICT, and its local subroutines, as font dict k's
+	[Private: u8 src[]; u32 ds: 0; u32 de: 0; u32 start: 0; u32 stop: 0; u32 k: 0;]
+		has_subrs:k is false;
+		if (Operands: src ds de 18) < 2
+			return;
+		;;
+		int size: (Last: src ds de 18 1);
+		int off: (Last: src ds de 18 0);
+		i64 ps: start as i64 + off;
+		if size < 0 or off < 0 or ps + size > stop as i64
+			throw 'a CFF Private DICT past the end of the table';
+		;;
+		u32 pe: (ps + size) as u32;
+		if (HasOperand: src ps as u32 pe 19)
+			call Read: src (ps + (Last: src ps as u32 pe 19 0)) stop addr subrs:k;
+			has_subrs:k is true;
+		;;
+	[end]
+
+	# an INDEX at p, checked: every offset in order and within the table
+	[Read: u8 src[]; i64 p: 0; u32 stop: 0; ptr<FntIndex> ix: 0;]
+		if p < 0 or p + 2 > stop as i64
+			throw 'a CFF index past the end of the table';
+		;;
+		u32 q: p as u32;
+		ix.count is ((src:q as u32) << 8) | src:(q + 1);
+		if ix.count is 0
+			ix.stop is q + 2;
+			return;
+		;;
+		if q + 3 > stop
+			throw 'a CFF index past the end of the table';
+		;;
+		ix.size is src:(q + 2);
+		if ix.size < 1 or ix.size > 4
+			throw 'a CFF index with offsets of ' ix.size ' bytes';
+		;;
+		ix.offsets_at is q + 3;
+		u64 offsets_end: (ix.offsets_at as u64) + ((ix.count as u64) + 1) * (ix.size as u64);
+		if offsets_end > stop as u64
+			throw 'a CFF index past the end of the table';
+		;;
+		ix.data is (offsets_end - 1) as u32;
+		u32 last: (Offset: src ix ix.count);
+		if last < 1 or (ix.data as u64) + (last as u64) > stop as u64
+			throw 'a CFF index past the end of the table';
+		;;
+		u32 prev: (Offset: src ix 0);
+		while u32 k: 1; k <= ix.count; k++;
+			u32 v: (Offset: src ix k);
+			if v < prev or v > last
+				throw 'a CFF index whose offsets go backwards';
+			;;
+			prev is v;
+		;;
+		ix.stop is ix.data + last;
+	[end]
+
+	[Offset: u8 src[]; ptr<FntIndex> ix: 0; u32 k: 0; : u32]
+		u32 v: 0;
+		u32 p: ix.offsets_at + k * ix.size;
+		while u32 i: 0; i < ix.size; i++;
+			v is (v << 8) | src:(p + i);
+		;;
+	[end: v]
+
+	[Item: u8 src[]; ptr<FntIndex> ix: 0; u32 k: 0; ptr<u32> s_out: 0; ptr<u32> e_out: 0;]
+		s_out:0 is ix.data + (Offset: src ix k);
+		e_out:0 is ix.data + (Offset: src ix (k + 1));
+	[end]
+
+	# ---------------------------------------------------------------- DICTs
+
+	# the operand from the end (0 the last) of operator op's last entry in the DICT; 0 if none
+	[Last: u8 src[]; u32 ds: 0; u32 de: 0; u32 op: 0; u32 back: 0; : int]
+		call Scan: src ds de op;
+		if not found or back >= found_count
+			return 0;
+		;;
+	[end: found_ops:(found_count - 1 - back)]
+
+	# the first operand of operator op's last entry; 0 if none
+	[First: u8 src[]; u32 ds: 0; u32 de: 0; u32 op: 0; : int]
+		call Scan: src ds de op;
+		if not found or found_count is 0
+			return 0;
+		;;
+	[end: found_ops:0]
+
+	[Has: u8 src[]; u32 ds: 0; u32 de: 0; u32 op: 0; : bln]
+		call Scan: src ds de op;
+	[end: found]
+
+	[HasOperand: u8 src[]; u32 ds: 0; u32 de: 0; u32 op: 0; : bln]
+		call Scan: src ds de op;
+	[end: found and found_count > 0]
+
+	[Operands: u8 src[]; u32 ds: 0; u32 de: 0; u32 op: 0; : u32]
+		call Scan: src ds de op;
+		if not found
+			return 0;
+		;;
+	[end: found_count]
+
+	# what Scan found: whether op is there, and its last entry's operands (up to 48)
+	bln found;
+	u32 found_count;
+	int found_ops[48];
+	int ops[48];
+
+	[Scan: u8 src[]; u32 ds: 0; u32 de: 0; u32 want: 0;]
+		found is false;
+		found_count is 0;
+		u32 n: 0;
+		u32 p: ds;
+		while p < de
+			u32 b: src:p;
+			if b <= 21
+				u32 op: b;
+				if b is 12
+					if p + 1 >= de
+						break;
+					;;
+					op is 1200 + src:(p + 1);
+					p++ 2;
+				;;
+				else
+					p++;
+				;;
+				if op is want
+					found is true;
+					found_count is n;
+					while u32 k: 0; k < n; k++;
+						found_ops:k is ops:k;
+					;;
+				;;
+				n is 0;
+				continue;
+			;;
+			int v: 0;
+			if b is 28
+				if p + 3 > de
+					break;
+				;;
+				v is (Short: (((src:(p + 1) as u32) << 8) | src:(p + 2)) as int);
+				p++ 3;
+			;;
+			elif b is 29
+				if p + 5 > de
+					break;
+				;;
+				v is ((((src:(p + 1) as u32) << 24) | ((src:(p + 2) as u32) << 16) | ((src:(p + 3) as u32) << 8) | src:(p + 4))) as int;
+				p++ 5;
+			;;
+			elif b is 30
+				p++;
+				while p < de
+					u32 nib: src:p;
+					p++;
+					if (nib >> 4) is 15 or (nib & 15) is 15
+						break;
+					;;
+				;;
+				v is 0;
+			;;
+			elif b >= 32 and b <= 246
+				v is b as int - 139;
+				p++;
+			;;
+			elif b >= 247 and b <= 250
+				if p + 2 > de
+					break;
+				;;
+				v is (b as int - 247) * 256 + (src:(p + 1) as int) + 108;
+				p++ 2;
+			;;
+			elif b >= 251 and b <= 254
+				if p + 2 > de
+					break;
+				;;
+				v is 0 - (b as int - 251) * 256 - (src:(p + 1) as int) - 108;
+				p++ 2;
+			;;
+			else
+				p++;
+				continue;
+			;;
+			if n < 48
+				ops:n is v;
+				n++;
+			;;
+		;;
+	[end]
+
+	[Short: int v: 0; : int]
+		if v >= 0x8000
+			return v - 0x10000;
+		;;
+	[end: v]
+
+	# ---------------------------------------------------------------- glyphs
+
+	# which font dict glyph g's charstring uses
+	[FontDict: u8 src[]; u32 g: 0; : u32]
+		if not cid
+			return 0;
+		;;
+		u32 p: fd_select;
+		if p >= table_end
+			throw 'an FDSelect past the end of the table';
+		;;
+		u32 fmt: src:p;
+		u32 fd: 0;
+		if fmt is 0
+			if (p as u64) + 1 + (g as u64) >= table_end as u64
+				throw 'an FDSelect past the end of the table';
+			;;
+			fd is src:(p + 1 + g);
+		;;
+		elif fmt is 3
+			if p + 3 > table_end
+				throw 'an FDSelect past the end of the table';
+			;;
+			u32 n: ((src:(p + 1) as u32) << 8) | src:(p + 2);
+			if (p as u64) + 3 + 3 * (n as u64) + 2 > table_end as u64
+				throw 'an FDSelect past the end of the table';
+			;;
+			bln got: false;
+			while u32 k: 0; k < n; k++;
+				u32 q: p + 3 + 3 * k;
+				u32 first: ((src:q as u32) << 8) | src:(q + 1);
+				u32 after: ((src:(q + 3) as u32) << 8) | src:(q + 4);
+				if g >= first and g < after
+					fd is src:(q + 2);
+					got is true;
+					break;
+				;;
+			;;
+			if not got
+				throw 'a glyph FDSelect has no font dict for';
+			;;
+		;;
+		else
+			throw 'an FDSelect of a format CFF doesn\'t have';
+		;;
+		if fd >= dict_count
+			throw 'a glyph whose font dict isn\'t there';
+		;;
+	[end: fd]
+
+	# glyph g's outline into o, in whole font units (tags: 1 on the curve, 2 a cubic control point)
+	[Glyph: u32 g: 0; ptr<FntOutline> o: 0;]
+		if g >= charstrings.count
+			throw 'no such glyph';
+		;;
+		call GlyphIn: (d as u8[length]) g o;
+	[end]
+
+	[GlyphIn: u8 src[]; u32 g: 0; ptr<FntOutline> o: 0;]
+		local is (FontDict: src g);
+		o.points is 0;
+		o.contours is 0;
+		depth_count is 0;
+		stems is 0;
+		width_done is false;
+		x is 0;
+		y is 0;
+		open is false;
+		start is 0;
+		sp is 0;
+		u32 cs: 0;
+		u32 ce: 0;
+		call Item: src addr charstrings g addr cs addr ce;
+		call Run: src cs ce o;
+		call Close: o;
+		# whole font units, rounded down
+		while u32 i: 0; i < o.points; i++;
+			o.x:i is (W32: (px:i) >> 16);
+			o.y:i is (W32: (py:i) >> 16);
+		;;
+	[end]
+
+	# the points as they're made, in 16.16
+	ptr<i64> px;
+	ptr<i64> py;
+	u32 room;
+	u32 sp;                 # the stack's depth
+
+	[W32: i64 v: 0; : int]
+	[end: (v & 0xFFFFFFFF) as int]
+
+	# room for n more points: FreeType's limit, and the arrays grown
+	[Room: ptr<FntOutline> o: 0; u32 n: 0;]
+		if o.points + n > Fnt.MOST_POINTS
+			throw 'a glyph with too many points';
+		;;
+		call Fnt.Grow: o (o.points + n) (o.contours + 1);
+		if o.points + n > room
+			u32 grown_room: room * 2;
+			if grown_room < 64
+				grown_room is 64;
+			;;
+			while grown_room < o.points + n
+				grown_room is grown_room * 2;
+			;;
+			ptr<i64> nx: new i64[grown_room];
+			ptr<i64> ny: new i64[grown_room];
+			if nx is 0 or ny is 0
+				throw 'out of memory';
+			;;
+			while u32 k: 0; k < o.points; k++;
+				nx:k is px:k;
+				ny:k is py:k;
+			;;
+			if px is not 0
+				free px;
+				free py;
+			;;
+			px is nx;
+			py is ny;
+			room is grown_room;
+		;;
+	[end]
+
+	[Point: ptr<FntOutline> o: 0; i64 px_v: 0; i64 py_v: 0; u32 tag: 0;]
+		px:(o.points) is px_v;
+		py:(o.points) is py_v;
+		o.on:(o.points) is tag as u8;
+		o.points++;
+	[end]
+
+	[Move: ptr<FntOutline> o: 0; i64 dx: 0; i64 dy: 0;]
+		call Close: o;
+		call Room: o 1;
+		x is x + dx;
+		y is y + dy;
+		start is o.points;
+		call Point: o x y 1;
+		open is true;
+	[end]
+
+	[Begin: ptr<FntOutline> o: 0;]
+		if not open
+			call Move: o 0 0;
+		;;
+	[end]
+
+	[Line: ptr<FntOutline> o: 0; i64 dx: 0; i64 dy: 0;]
+		call Begin: o;
+		call Room: o 1;
+		x is x + dx;
+		y is y + dy;
+		call Point: o x y 1;
+	[end]
+
+	[Curve: ptr<FntOutline> o: 0; i64 d1x: 0; i64 d1y: 0; i64 d2x: 0; i64 d2y: 0; i64 d3x: 0; i64 d3y: 0;]
+		call Begin: o;
+		call Room: o 3;
+		i64 x1: x + d1x;
+		i64 y1: y + d1y;
+		i64 x2: x1 + d2x;
+		i64 y2: y1 + d2y;
+		x is x2 + d3x;
+		y is y2 + d3y;
+		call Point: o x1 y1 2;
+		call Point: o x2 y2 2;
+		call Point: o x y 1;
+	[end]
+
+	# a contour closed as FreeType's builder closes it
+	[Close: ptr<FntOutline> o: 0;]
+		if not open
+			return;
+		;;
+		open is false;
+		u32 last: o.points - 1;
+		if o.points - start > 1 and px:last is px:start and py:last is py:start and o.on:last is 1
+			o.points--;
+		;;
+		if o.points - 1 is start
+			o.points--;
+			return;
+		;;
+		if o.contours >= Fnt.MOST_CONTOURS
+			throw 'a glyph with too many contours';
+		;;
+		o.ends:(o.contours) is o.points - 1;
+		o.contours++;
+	[end]
+
+	# the first stack-clearing operator's extra argument is the width
+	[Width: bln even: false;]
+		if width_done
+			return;
+		;;
+		width_done is true;
+		if sp > 0 and ((sp % 2 is 1) is even)
+			while u32 k: 1; k < sp; k++;
+				stack:(k - 1) is stack:k;
+			;;
+			sp--;
+		;;
+	[end]
+
+	[Arg: u32 k: 0; : i64]
+	[end: stack:k as i64]
+
+	# a charstring from p to stop: true if it ended the glyph (endchar)
+	[Run: u8 src[]; u32 p: 0; u32 stop: 0; ptr<FntOutline> o: 0; : bln]
+		depth_count++;
+		if depth_count > 10
+			throw 'subroutines nested more than 10 deep';
+		;;
+		while p < stop
+			u32 b: src:p;
+			p++;
+			if b >= 32 or b is 28 or b is 255
+				int v: 0;
+				if b is 28
+					if p + 2 > stop
+						throw 'a charstring cut short';
+					;;
+					v is (Short: (((src:p as u32) << 8) | src:(p + 1)) as int) << 16;
+					p++ 2;
+				;;
+				elif b is 255
+					if p + 4 > stop
+						throw 'a charstring cut short';
+					;;
+					v is ((((src:p as u32) << 24) | ((src:(p + 1) as u32) << 16) | ((src:(p + 2) as u32) << 8) | src:(p + 3))) as int;
+					p++ 4;
+				;;
+				elif b <= 246
+					v is (b as int - 139) << 16;
+				;;
+				elif b <= 250
+					if p >= stop
+						throw 'a charstring cut short';
+					;;
+					v is ((b as int - 247) * 256 + (src:p as int) + 108) << 16;
+					p++;
+				;;
+				else
+					if p >= stop
+						throw 'a charstring cut short';
+					;;
+					v is (0 - (b as int - 251) * 256 - (src:p as int) - 108) << 16;
+					p++;
+				;;
+				if sp >= 48
+					throw 'a charstring with more than 48 arguments';
+				;;
+				stack:sp is v;
+				sp++;
+				continue;
+			;;
+			if b is 1 or b is 3 or b is 18 or b is 23
+				call Width: true;
+				stems++ sp / 2;
+				sp is 0;
+			;;
+			elif b is 19 or b is 20
+				call Width: true;
+				stems++ sp / 2;
+				sp is 0;
+				p++ (stems + 7) / 8;
+			;;
+			elif b is 21
+				call Width: true;
+				if sp < 2
+					throw 'a charstring short of arguments';
+				;;
+				call Move: o (Arg: sp - 2) (Arg: sp - 1);
+				sp is 0;
+			;;
+			elif b is 22 or b is 4
+				call Width: false;
+				if sp is 0
+					throw 'a charstring short of arguments';
+				;;
+				if b is 22
+					call Move: o (Arg: sp - 1) 0;
+				;;
+				else
+					call Move: o 0 (Arg: sp - 1);
+				;;
+				sp is 0;
+			;;
+			elif b is 5
+				u32 k: 0;
+				while k + 1 < sp
+					call Line: o (Arg: k) (Arg: k + 1);
+					k++ 2;
+				;;
+				sp is 0;
+			;;
+			elif b is 6 or b is 7
+				bln horizontal: (b is 6);
+				while u32 k: 0; k < sp; k++;
+					if horizontal
+						call Line: o (Arg: k) 0;
+					;;
+					else
+						call Line: o 0 (Arg: k);
+					;;
+					horizontal is not horizontal;
+				;;
+				sp is 0;
+			;;
+			elif b is 8
+				u32 k: 0;
+				while k + 5 < sp
+					call Curve: o (Arg: k) (Arg: k + 1) (Arg: k + 2) (Arg: k + 3) (Arg: k + 4) (Arg: k + 5);
+					k++ 6;
+				;;
+				sp is 0;
+			;;
+			elif b is 24
+				u32 k: 0;
+				while k + 6 + 2 <= sp
+					call Curve: o (Arg: k) (Arg: k + 1) (Arg: k + 2) (Arg: k + 3) (Arg: k + 4) (Arg: k + 5);
+					k++ 6;
+				;;
+				if k + 2 <= sp
+					call Line: o (Arg: k) (Arg: k + 1);
+				;;
+				sp is 0;
+			;;
+			elif b is 25
+				u32 k: 0;
+				while k + 2 + 6 <= sp
+					call Line: o (Arg: k) (Arg: k + 1);
+					k++ 2;
+				;;
+				if k + 6 <= sp
+					call Curve: o (Arg: k) (Arg: k + 1) (Arg: k + 2) (Arg: k + 3) (Arg: k + 4) (Arg: k + 5);
+				;;
+				sp is 0;
+			;;
+			elif b is 26 or b is 27
+				u32 k: 0;
+				i64 first: 0;
+				if sp % 4 is 1
+					first is (Arg: 0);
+					k is 1;
+				;;
+				while k + 4 <= sp
+					if b is 26
+						call Curve: o first (Arg: k) (Arg: k + 1) (Arg: k + 2) 0 (Arg: k + 3);
+					;;
+					else
+						call Curve: o (Arg: k) first (Arg: k + 1) (Arg: k + 2) (Arg: k + 3) 0;
+					;;
+					first is 0;
+					k++ 4;
+				;;
+				sp is 0;
+			;;
+			elif b is 30 or b is 31
+				bln horizontal: (b is 31);
+				u32 k: 0;
+				while k + 4 <= sp
+					bln last: (sp - k is 5);
+					i64 extra: 0;
+					if last
+						extra is (Arg: k + 4);
+					;;
+					if horizontal
+						call Curve: o (Arg: k) 0 (Arg: k + 1) (Arg: k + 2) extra (Arg: k + 3);
+					;;
+					else
+						call Curve: o 0 (Arg: k) (Arg: k + 1) (Arg: k + 2) (Arg: k + 3) extra;
+					;;
+					horizontal is not horizontal;
+					if last
+						k++ 5;
+					;;
+					else
+						k++ 4;
+					;;
+				;;
+				sp is 0;
+			;;
+			elif b is 10 or b is 29
+				if sp is 0
+					throw 'a charstring short of arguments';
+				;;
+				sp--;
+				int which: stack:sp >> 16;
+				bln global: (b is 29);
+				if not global and not has_subrs:local
+					throw 'a call to subroutines the font hasn\'t';
+				;;
+				u32 count: gsubrs.count;
+				if not global
+					count is subrs:local.count;
+				;;
+				int bias: 32768;
+				if count < 1240
+					bias is 107;
+				;;
+				elif count < 33900
+					bias is 1131;
+				;;
+				int n: which + bias;
+				if n < 0 or n as u32 >= count
+					throw 'a call to a subroutine that isn\'t there';
+				;;
+				u32 ss: 0;
+				u32 se: 0;
+				if global
+					call Item: src addr gsubrs n as u32 addr ss addr se;
+				;;
+				else
+					call Item: src addr subrs:local n as u32 addr ss addr se;
+				;;
+				if (Run: src ss se o)
+					depth_count--;
+					return true;
+				;;
+			;;
+			elif b is 11
+				depth_count--;
+				return false;
+			;;
+			elif b is 14
+				call Width: true;
+				if sp >= 4
+					throw 'a seac accent, which isn\'t read yet';
+				;;
+				sp is 0;
+				depth_count--;
+				return true;
+			;;
+			elif b is 12
+				if p >= stop
+					throw 'a charstring cut short';
+				;;
+				u32 e: src:p;
+				p++;
+				call Flex: o e;
+				sp is 0;
+			;;
+			else
+				throw 'a charstring operator that isn\'t read yet (' b ')';
+			;;
+		;;
+		depth_count--;
+	[end: false]
+
+	[Flex: ptr<FntOutline> o: 0; u32 e: 0;]
+		if e is 35
+			if sp < 13
+				throw 'a charstring short of arguments';
+			;;
+			call Curve: o (Arg: 0) (Arg: 1) (Arg: 2) (Arg: 3) (Arg: 4) (Arg: 5);
+			call Curve: o (Arg: 6) (Arg: 7) (Arg: 8) (Arg: 9) (Arg: 10) (Arg: 11);
+		;;
+		elif e is 34
+			if sp < 7
+				throw 'a charstring short of arguments';
+			;;
+			i64 y0: y;
+			call Curve: o (Arg: 0) 0 (Arg: 1) (Arg: 2) (Arg: 3) 0;
+			call Curve: o (Arg: 4) 0 (Arg: 5) (y0 - y) (Arg: 6) 0;
+		;;
+		elif e is 36
+			if sp < 9
+				throw 'a charstring short of arguments';
+			;;
+			call Curve: o (Arg: 0) (Arg: 1) (Arg: 2) (Arg: 3) (Arg: 4) 0;
+			call Curve: o (Arg: 5) 0 (Arg: 6) (Arg: 7) (Arg: 8) (0 - ((Arg: 1) + (Arg: 3) + (Arg: 7)));
+		;;
+		elif e is 37
+			if sp < 11
+				throw 'a charstring short of arguments';
+			;;
+			i64 x0: x;
+			i64 y0: y;
+			i64 dx: (Arg: 0) + (Arg: 2) + (Arg: 4) + (Arg: 6) + (Arg: 8);
+			i64 dy: (Arg: 1) + (Arg: 3) + (Arg: 5) + (Arg: 7) + (Arg: 9);
+			call Curve: o (Arg: 0) (Arg: 1) (Arg: 2) (Arg: 3) (Arg: 4) (Arg: 5);
+			if (Abs: dx) > (Abs: dy)
+				call Curve: o (Arg: 6) (Arg: 7) (Arg: 8) (Arg: 9) (Arg: 10) (y0 - (y + (Arg: 7) + (Arg: 9)));
+			;;
+			else
+				call Curve: o (Arg: 6) (Arg: 7) (Arg: 8) (Arg: 9) (x0 - (x + (Arg: 6) + (Arg: 8))) (Arg: 10);
+			;;
+		;;
+		else
+			throw 'a charstring operator that isn\'t read yet (12 ' e ')';
+		;;
+	[end]
+
+	[Abs: i64 v: 0; : i64]
+		if v < 0
+			return 0 - v;
+		;;
+	[end: v]
+}

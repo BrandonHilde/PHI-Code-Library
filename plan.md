@@ -381,7 +381,7 @@ call Fnt.Free: face;
 | 4.2 Rasterizer ✓ | Anti-aliased coverage in fixed-point, with a glyph cache | FreeType's bitmaps, within a tolerance |
 | 4.3 Simple text ✓ | UTF-8, advances, line metrics, measuring and drawing a run, fallback across faces | HarfBuzz advances, and reference bitmaps |
 | 4.4 Kerning ✓ | `kern`, and pair adjustment in `GPOS` | FreeType/HarfBuzz advances |
-| 4.5 OpenType CFF | `.otf` outlines | FreeType |
+| 4.5 OpenType CFF ✓ | `.otf` outlines | FreeType |
 | 4.6 Web fonts | WOFF 1 (uses inflate) | Sample fonts, compared with the same font unpacked |
 | Later | Ligatures (`GSUB`), WOFF2 (needs Brotli), variable fonts, color fonts, TrueType hinting | |
 
@@ -428,6 +428,13 @@ offsets on every case with one font, and fontlib gives the rules' on all 43 text
 programs. **Phase 4 is done, as its "done when" says:** 4.1 to 4.4 pass, text beyond code page 437 is
 drawn as its reference, and every parser (the directory, every table read, outlines, bitmaps, and kerning)
 is fuzzed. 4.5 (CFF) and 4.6 (WOFF) are next.
+
+**4.5, done 2026-11-10,** in [libs/font](libs/font): OpenType CFF fonts (`.otf`), their charstrings run
+as FreeType's CFF engine runs them, and their cubic curves rasterized as `ftgrays.c` splits them. Every
+glyph of Source Code Pro (committed, OFL) has FreeType's outline, and its bitmaps FreeType's, exactly; so
+have fonts made with each charstring operator. Found on the way: when `loca` gives a glyph's end before its
+start, FreeType reads it to the end of `glyf`. Not done: `seac` accents, the arithmetic operators, other
+FontMatrices, CFF2.
 
 **Done when:** milestones 4.1 to 4.4 pass, a test draws Unicode text beyond code page 437 that matches its
 reference, and every parser has been fuzzed.

@@ -136,11 +136,10 @@ class Face:
         if len(d) < 12:
             raise Refused('not a font file')
         tag = d[:4]
-        if tag == b'OTTO':
-            raise Refused('CFF outlines (an OpenType .otf font), which aren\'t read yet')
+        self.cff = None
         if tag == b'ttcf':
             raise Refused('a font collection, which isn\'t read yet')
-        if tag not in (b'\x00\x01\x00\x00', b'true'):
+        if tag not in (b'\x00\x01\x00\x00', b'true', b'OTTO'):
             raise Refused('not a TrueType font')
         n = u16(d, 4)
         # the directory: as many entries as there are; FreeType keeps those inside the file, and
@@ -197,6 +196,16 @@ class Face:
             if hmtx is None:
                 raise Refused('a font with no hmtx table')
             self.hmtx = hmtx
+        if tag == b'OTTO':
+            # CFF outlines (cff_reference): the glyphs are its charstrings
+            t = self.table(b'CFF ')
+            if t is None:
+                raise Refused('an OpenType font with no CFF table')
+            import cff_reference
+            self.cff = cff_reference.Cff(d, t[0], t[1])
+            self.num_glyphs = self.cff.charstrings.count
+            self.line_metrics()
+            return
         # glyf and loca: no glyf is no outlines; no loca refuses the font
         glyf = self.table(b'glyf')
         self.glyf = glyf if glyf is not None else (0, 0)
@@ -208,6 +217,12 @@ class Face:
             raise Refused('a loca table too big for the glyphs it can have')
         self.loca = loca
         self.num_locations = loca[1] >> shift
+        self.fix_glyph_count(shift)
+        self.line_metrics()
+
+    def fix_glyph_count(self, shift):
+        d = self.data
+        loca = self.loca
         if self.num_locations != self.num_glyphs + 1 and self.num_locations <= self.num_glyphs:
             # FreeType: if the bytes up to the next table (or the end) can hold loca for every glyph,
             # it's taken as that long; otherwise there are fewer glyphs
@@ -223,6 +238,9 @@ class Face:
                 self.num_locations = self.num_glyphs + 1
             else:
                 self.num_glyphs = self.num_locations - 1 if self.num_locations else 0
+
+    def line_metrics(self):
+        d = self.data
         # the line, as FreeType has it: OS/2's typo metrics when its USE_TYPO_METRICS bit is set; or
         # else hhea's, or OS/2's when hhea's ascender and descender are both 0. OS/2 counts if its
         # fields for its version are in the file. The height is kept in 16 bits, and made positive.
@@ -314,7 +332,8 @@ class Face:
                 pos2 = glyf_len
             else:
                 return 0, 0
-        return pos1, (pos2 - pos1 if pos2 >= pos1 else pos1 - pos2)
+        # an end before the start: FreeType reads to the end of glyf
+        return pos1, (pos2 - pos1 if pos2 >= pos1 else glyf_len - pos1)
 
     # ------------------------------------------------------------ glyphs
 
@@ -326,6 +345,18 @@ class Face:
         if g >= self.num_glyphs:
             return 'no such glyph'
         self.scale = scale
+        if self.cff is not None:
+            # CFF: no shift, the advance hmtx's
+            import cff_reference
+            self.pp1 = 0
+            self.overlap = False
+            try:
+                points, tags, ends = cff_reference.outline(self.cff, g)
+            except Refused as e:
+                return str(e)
+            if scale:
+                points = [(w32(mul_fix(x, scale)), w32(mul_fix(y, scale))) for x, y in points]
+            return points, tags, ends, self.metrics(g)[0]
         self.overlap = False      # FreeType's FT_OUTLINE_OVERLAP: any simple glyph's first point, or
                                   # the outermost composite's first component, says they overlap
         self.loading = []

@@ -124,6 +124,9 @@ def cases():
     liberation = open(os.path.join(M.FONTS, M.LIBERATION), 'rb').read()
     for ppem in ((7, 12, 19, 33, 100) if RELEASE else (12, 19)):
         out.append((M.LIBERATION, ppem, 0, 'tests/fonts/' + M.LIBERATION, liberation))
+    source_code = open(os.path.join(M.FONTS, M.SOURCE_CODE), 'rb').read()
+    for ppem in ((9, 14, 40) if RELEASE else (14,)):
+        out.append((M.SOURCE_CODE, ppem, 0, 'tests/fonts/' + M.SOURCE_CODE, source_code))
     made = [(n, d) for n, d, rule in M.made_cases() if rule == 'read' and len(d) < 20000]
     for name, data in made:
         for ppem in ((3, 12, 37) if RELEASE else (12,)):

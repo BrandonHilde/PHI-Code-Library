@@ -77,6 +77,7 @@ struct.FntTrueType
 	u32 kind;               # 0 as it is; 1 symbol; 2 Mac Roman; 3 ASCII only
 
 	# loading a glyph
+	ptr<FntCff> cff;        # CFF outlines, for an OpenType (OTTO) font; 0 for TrueType's
 	ptr<FntFrame> frames;
 	u32 frame_room;
 	u32 depth;
@@ -104,13 +105,10 @@ struct.FntTrueType
 
 	[Face: u8 src[];]
 		u32 tag: (U32: src 0);
-		if tag is 0x4F54544F
-			throw 'CFF outlines (an OpenType .otf font), which aren\'t read yet';
-		;;
 		if tag is 0x74746366
 			throw 'a font collection, which isn\'t read yet';
 		;;
-		if tag is not 0x00010000 and tag is not 0x74727565
+		if tag is not 0x00010000 and tag is not 0x74727565 and tag is not 0x4F54544F
 			throw 'not a TrueType font';
 		;;
 		if not (AnyTable: src)
@@ -171,6 +169,22 @@ struct.FntTrueType
 			;;
 		;;
 
+		# CFF outlines (cff.phi): the glyphs are its charstrings
+		if tag is 0x4F54544F
+			u32 cff_len: 0;
+			u32 cff_at: (Table: src 0x43464620 addr cff_len);
+			if cff_len is 0
+				throw 'an OpenType font with no CFF table';
+			;;
+			cff is new FntCff;
+			if cff is 0
+				throw 'out of memory';
+			;;
+			call cff.Load: data length cff_at cff_len;
+			glyph_count is cff.charstrings.count;
+			call Line: src;
+			return;
+		;;
 		# glyf and loca: no glyf is no outlines; no loca refuses the font
 		glyf_at is (Table: src 0x676C7966 addr glyf_len);
 		if glyf_len is 0
@@ -435,7 +449,7 @@ struct.FntTrueType
 			size_out:0 is pos2 - pos1;
 		;;
 		else
-			size_out:0 is pos1 - pos2;
+			size_out:0 is glyf_len - pos1;     # an end before the start: FreeType reads to glyf's end
 		;;
 	[end: pos1]
 
@@ -453,6 +467,21 @@ struct.FntTrueType
 		o.points is 0;
 		o.contours is 0;
 		depth is 0;
+		if cff is not 0
+			# CFF: no shift, and the advance hmtx's
+			call cff.Glyph: g o;
+			if scale is not 0
+				while u32 i: 0; i < o.points; i++;
+					o.x:i is (W32: (MulFix: o.x:i scale));
+					o.y:i is (W32: (MulFix: o.y:i scale));
+				;;
+			;;
+			int lsb: 0;
+			pp1 is 0;
+			advance is (Metrics: (data as u8[length]) g addr lsb);
+			o.advance is advance;
+			return;
+		;;
 		call Load: (data as u8[length]) g o;
 	[end]
 

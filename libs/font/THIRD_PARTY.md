@@ -9,6 +9,7 @@ Read by the tests, never built into a program.
 
 | Where | What | From | License |
 |---|---|---|---|
+| `tests/fonts/SourceCodePro-Regular.otf` | Source Code Pro 2.042, unchanged | Adobe, <https://github.com/adobe-fonts/source-code-pro> (from Fedora's `adobe-source-code-pro-fonts`) | SIL Open Font License 1.1, with Reserved Font Name "Source": its text is beside it, in `SourceCodePro.LICENSE`. The font is unchanged |
 | `tests/fonts/LiberationSans-Regular.ttf` | Liberation Sans 2.1, unchanged | Red Hat, <https://github.com/liberationfonts/liberation-fonts> (from Fedora's `liberation-sans-fonts`) | SIL Open Font License 1.1, with Reserved Font Name "Liberation": its text is beside it, in `LiberationSans.LICENSE`. The font is unchanged, so the reserved name doesn't come into it |
 
 The rest of `tests/` (`cases.bin`, `cases.txt`, `release.bin`, `release.txt`) is made by

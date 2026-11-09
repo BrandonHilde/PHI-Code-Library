@@ -17,7 +17,7 @@ use corelib;
 use fontlib.face;
 
 # A glyph's bitmap: width by height bytes of coverage, 0 to 255, a row at a time from the top; its left
-# is left pixels right of the origin, and its top, top pixels above the baseline
+# is left pixels right of the origin, and its top, top pixels over_top the baseline
 struct.FntBitmap
 {
 	int left;
@@ -53,6 +53,9 @@ struct.FntRaster
 	int cover;
 	i64 x;
 	i64 y;
+	# a cubic curve being split: arcs of 4 points (end, control 2, control 1, start), 3 apart
+	i64 arc_x[64];
+	i64 arc_y[64];
 
 	# ready for a bitmap of w by h
 	[Start: u32 width: 0; u32 height: 0;]
@@ -352,6 +355,72 @@ struct.FntRaster
 		;;
 	[end]
 
+	# a cubic curve from the pen, through (c1x, c1y) and (c2x, c2y), to (tx, ty), in 64ths, as
+	# gray_render_cubic splits it: in halves until its control points are within half a pixel of the
+	# chord's thirds
+	[CubicTo: i64 c1x: 0; i64 c1y: 0; i64 c2x: 0; i64 c2y: 0; i64 tx: 0; i64 ty: 0;]
+		arc_x:0 is tx << 2;
+		arc_y:0 is ty << 2;
+		arc_x:1 is c2x << 2;
+		arc_y:1 is c2y << 2;
+		arc_x:2 is c1x << 2;
+		arc_y:2 is c1y << 2;
+		arc_x:3 is x;
+		arc_y:3 is y;
+		i64 hh: h;
+		bln over_top: true;
+		bln under_bottom: true;
+		while u32 k: 0; k < 4; k++;
+			if (arc_y:k >> 8) < hh
+				over_top is false;
+			;;
+			if (arc_y:k >> 8) >= 0
+				under_bottom is false;
+			;;
+		;;
+		if over_top or under_bottom
+			x is arc_x:0;
+			y is arc_y:0;
+			return;
+		;;
+		u32 top: 0;
+		while true
+			bln split: false;
+			if top < 60
+				split is ((Abs: 2 * arc_x:top - 3 * arc_x:(top + 1) + arc_x:(top + 3)) > 128 or
+					(Abs: 2 * arc_y:top - 3 * arc_y:(top + 1) + arc_y:(top + 3)) > 128 or
+					(Abs: arc_x:top - 3 * arc_x:(top + 2) + 2 * arc_x:(top + 3)) > 128 or
+					(Abs: arc_y:top - 3 * arc_y:(top + 2) + 2 * arc_y:(top + 3)) > 128);
+			;;
+			if split
+				call Split: arc_x top;
+				call Split: arc_y top;
+				top++ 3;
+				continue;
+			;;
+			call Line: arc_x:top arc_y:top;
+			if top is 0
+				return;
+			;;
+			top is top - 3;
+		;;
+	[end]
+
+	# gray_split_cubic, on one coordinate of the arc at base
+	[Split: i64 v[]; u32 base: 0;]
+		v:(base + 6) is v:(base + 3);
+		i64 a: v:base + v:(base + 1);
+		i64 b: v:(base + 1) + v:(base + 2);
+		i64 c: v:(base + 2) + v:(base + 3);
+		v:(base + 5) is c >> 1;
+		c is c + b;
+		v:(base + 4) is c >> 2;
+		v:(base + 1) is a >> 1;
+		a is a + b;
+		v:(base + 2) is a >> 2;
+		v:(base + 3) is (a + c) >> 3;
+	[end]
+
 	# the rows swept into the bitmap's pixels (zeroed already), top row first
 	[Sweep: u8 dst[];]
 		call Record;
@@ -406,7 +475,7 @@ struct.FntRaster
 		int i: first as int;
 		int limit: last as int;
 		if o.on:first is 0
-			if o.on:last is not 0
+			if o.on:last is 1
 				sx is ((o.x:last as i64) + dx) * k;
 				sy is ((o.y:last as i64) + dy) * k;
 				limit--;
@@ -417,14 +486,31 @@ struct.FntRaster
 			;;
 			i--;
 		;;
+		if o.on:first is 2
+			throw 'a contour that starts with a cubic control point';
+		;;
 		call MoveTo: sx sy;
 		while i < limit
 			i++;
 			i64 px: ((o.x:(i as u32) as i64) + dx) * k;
 			i64 py: ((o.y:(i as u32) as i64) + dy) * k;
-			if o.on:(i as u32) is not 0
+			if o.on:(i as u32) is 1
 				call LineTo: px py;
 				continue;
+			;;
+			if o.on:(i as u32) is 2
+				if i + 1 > limit or o.on:((i + 1) as u32) is not 2
+					throw 'a cubic control point without its pair';
+				;;
+				i64 qx: ((o.x:((i + 1) as u32) as i64) + dx) * k;
+				i64 qy: ((o.y:((i + 1) as u32) as i64) + dy) * k;
+				i++ 2;
+				if i <= limit
+					call CubicTo: px py qx qy (((o.x:(i as u32) as i64) + dx) * k) (((o.y:(i as u32) as i64) + dy) * k);
+					continue;
+				;;
+				call CubicTo: px py qx qy sx sy;
+				return;
 			;;
 			i64 ctl_x: px;
 			i64 ctl_y: py;
@@ -433,7 +519,7 @@ struct.FntRaster
 					i++;
 					i64 qx: ((o.x:(i as u32) as i64) + dx) * k;
 					i64 qy: ((o.y:(i as u32) as i64) + dy) * k;
-					if o.on:(i as u32) is not 0
+					if o.on:(i as u32) is 1
 						call ConicTo: ctl_x ctl_y qx qy;
 						break;
 					;;

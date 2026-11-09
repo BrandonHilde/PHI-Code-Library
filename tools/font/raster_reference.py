@@ -200,6 +200,30 @@ class Raster:
             qy += ry
             self.render_line(px >> 32, py >> 32)
 
+    def cubic_to(self, c1, c2, to):
+        """a cubic curve from the pen, as gray_render_cubic splits it: in halves until its control
+        points are within half a pixel of the chord's thirds"""
+        up = lambda p: (p[0] << (PIXEL_BITS - 6), p[1] << (PIXEL_BITS - 6))  # noqa: E731
+        arc = [up(to), up(c2), up(c1), (self.x, self.y)]
+        t = lambda v: v >> PIXEL_BITS  # noqa: E731
+        ys = [p[1] for p in arc]
+        if all(t(y) >= self.h for y in ys) or all(t(y) < 0 for y in ys):
+            self.x, self.y = arc[0]
+            return
+        stack = [arc]
+        while stack:
+            a = stack[-1]
+            # (no more than 21 arcs deep: only coordinates far past any glyph's could go further)
+            if len(stack) < 21 and (abs(2 * a[0][0] - 3 * a[1][0] + a[3][0]) > ONE // 2 or abs(2 * a[0][1] - 3 * a[1][1] + a[3][1]) > ONE // 2 or
+                    abs(a[0][0] - 3 * a[2][0] + 2 * a[3][0]) > ONE // 2 or abs(a[0][1] - 3 * a[2][1] + 2 * a[3][1]) > ONE // 2):
+                stack.pop()
+                end_half, start_half = split_cubic(a)
+                stack.append(end_half)
+                stack.append(start_half)
+                continue
+            self.render_line(*a[0])
+            stack.pop()
+
     def sweep(self):
         self.record()
         self.area = self.cover = 0
@@ -227,6 +251,27 @@ class Raster:
                 for k in range(x, self.w):
                     bitmap[row + k] = v
         return bitmap
+
+
+def split_cubic(a):
+    """gray_split_cubic: (the half toward the end, the half toward the start), each [end, c2, c1, start]"""
+    out = []
+    for k in (0, 1):
+        p0, p1, p2, p3 = a[0][k], a[1][k], a[2][k], a[3][k]
+        b6 = p3
+        x = p0 + p1
+        y = p1 + p2
+        z = p2 + p3
+        b5 = z >> 1
+        z += y
+        b4 = z >> 2
+        b1 = x >> 1
+        x += y
+        b2 = x >> 2
+        b3 = (x + z) >> 3
+        out.append((p0, b1, b2, b3, b4, b5, b6))
+    pts = [(out[0][i], out[1][i]) for i in range(7)]
+    return pts[0:4], pts[3:7]
 
 
 def coverage(area):
@@ -272,13 +317,16 @@ def render(points, flags, ends, overlap=False):
 
 
 def decompose(r, pts, tags):
-    """one contour, as FT_Outline_Decompose gives it to the rasterizer"""
+    """one contour, as FT_Outline_Decompose gives it to the rasterizer: tags 1 on the curve, 0 a
+    quadratic control point, 2 a cubic one"""
     n = len(pts)
     start = pts[0]
     i = 0
     limit = n - 1
-    if not tags[0]:
-        if tags[-1]:
+    if tags[0] == 2:
+        raise ValueError('a contour that starts with a cubic control point')
+    if tags[0] == 0:
+        if tags[-1] == 1:
             start = pts[-1]
             limit -= 1
         else:
@@ -287,14 +335,24 @@ def decompose(r, pts, tags):
     r.move_to(*start)
     while i < limit:
         i += 1
-        if tags[i]:
+        if tags[i] == 1:
             r.line_to(*pts[i])
             continue
+        if tags[i] == 2:
+            if i + 1 > limit or tags[i + 1] != 2:
+                raise ValueError('a cubic control point without its pair')
+            c1, c2 = pts[i], pts[i + 1]
+            i += 2
+            if i <= limit:
+                r.cubic_to(c1, c2, pts[i])
+                continue
+            r.cubic_to(c1, c2, start)
+            return
         control = pts[i]
         while True:
             if i < limit:
                 i += 1
-                if tags[i]:
+                if tags[i] == 1:
                     r.conic_to(control[0], control[1], *pts[i])
                     break
                 mid = (tdiv(control[0] + pts[i][0], 2), tdiv(control[1] + pts[i][1], 2))

@@ -1,5 +1,5 @@
-fonts to change: 56
-changed at random: 1589 read, 411 refused, 18969 glyphs (312 that can't be loaded), 7060 bitmaps
-every value of the first 200 bytes: 40302 read, 10898 refused
+fonts to change: 59
+changed at random: 1608 read, 392 refused, 16784 glyphs (383 that can't be loaded), 7119 bitmaps
+every value of the first 200 bytes: 40303 read, 10897 refused
 troublesome numbers: 5161 read, 794 refused
 done

@@ -34,6 +34,7 @@ kern-dflt-only-cyrl                  width  15564, pen  15628
 kern-legacy-table                    width   8362, pen   8426
 kern-gpos-before-legacy              width   3443, pen   3507
 kern-not-across-fallback             width   3840, pen   3904
+source-code-pro-cff                  width  23616, pen  23680
 half-transparent-color               width  20928, pen  20928
 off-the-left                         width  17417, pen  14217
 off-the-right                        width  17417, pen  19977

@@ -88,6 +88,9 @@ def cases():
     out.append(('kern-gpos-before-legacy', [(both, 20)], 300, 30, 0, 64, 22, 0xFF000000, 'AV VA'.encode()))
     out.append(('kern-not-across-fallback', [(squares, 20), (legacy, 20)], 300, 30, 0, 64, 22, 0xFF000000,
                 'AV aV'.encode()))
+    scp = (0, 'tests/fonts/' + M.SOURCE_CODE, open(os.path.join(M.FONTS, M.SOURCE_CODE), 'rb').read())
+    out.append(('source-code-pro-cff', [(scp, 15)], 360, 30, 0, 64, 22, 0xFF102030,
+                'fn main() { let Ω = "Ünïcödé"; } // AV To'.encode()))
     out.append(('half-transparent-color', [(lib, 16)], 200, 30, 1, 0, 22, 0x80C02010, texts['beyond-437']))
     out.append(('off-the-left', [(lib, 24)], 80, 40, 0, -50 * 64, 30, 0xFF000000, texts['ascii']))
     out.append(('off-the-right', [(lib, 24)], 80, 40, 0, 40 * 64, 30, 0xFF000000, texts['ascii']))
