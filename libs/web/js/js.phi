@@ -314,6 +314,17 @@ phi.Js:Library
 		JsVm.fuel is 0;
 	[end]
 
+	# The host's clock, for Date: a method giving the time in milliseconds since 1970 began (UTC). With
+	# none, Date's now is 0, the start of 1970: the library asks nothing of the system it runs on.
+	[SetClockHook: method<:f64> hook: 0;]
+		JsDate.clock_hook is hook;
+	[end]
+
+	# Math.random's seed, from the host (its clock, say); with none, every run gives the same numbers
+	[SetRandomSeed: u64 seed: 0;]
+		call JsMath.Seed: seed;
+	[end]
+
 	[SetPollHook: method<:bln> hook: 0; int every: 20000;]
 		JsRt.r.poll_hook is hook;
 		JsRt.r.fuel_period is every;

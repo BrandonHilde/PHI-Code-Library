@@ -53,6 +53,8 @@ A program with `weblib.philib` beside it says `use weblib;` and needs none of th
 
 **The DOM** covers `Node`, `Element`, `Document` and collections that stay up to date, `innerHTML`, `classList`, `dataset`, `style`, `getComputedStyle`, selectors, capture and bubble events, `CustomEvent`, timers, `requestAnimationFrame`, `fetch`, `XMLHttpRequest`, `localStorage`, `location` and `navigator`.
 
+**The time and randomness are the host's.** The library asks nothing of the system it runs on, so a browser gives it a clock and a seed: `Js.SetClockHook: hook` (a `method<:f64>` giving the time in milliseconds since 1970 began, UTC), which `Date` reads, and `Js.SetRandomSeed: seed` (a `u64`, from its clock, say), which seeds `Math.random`. Without them, `Date`'s now is 0, the start of 1970, and every run's `Math.random` gives the same numbers.
+
 ## How it's checked
 
 From the repo's root:

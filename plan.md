@@ -218,7 +218,8 @@ The outside suites, rerun on Linux the same day, are in the table below.
 phases after it):
 - [x] Take `--target` and promises about particular systems out of its docs (2026-11-10: DESIGN.md and
       JS-INTERNALS.md; the README's dated results say which programs ran)
-- [ ] Move the use of `OS.Now` and `OS.GetTicks` (`Date`, and seeding `Math.random`) behind hooks
+- [x] Move the use of `OS.Now` and `OS.GetTicks` (`Date`, and seeding `Math.random`) behind hooks
+      (2026-11-10: `Js.SetClockHook` and `Js.SetRandomSeed`; without them, the start of 1970 and a fixed seed)
 - [ ] List its x87 assembly, and write plain PHI versions where they're practical
 
 | Suite | Last recorded (browse README, Windows) | Linux, 2026-11-07 |

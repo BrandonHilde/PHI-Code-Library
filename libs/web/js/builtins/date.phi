@@ -184,18 +184,16 @@ phi.JsDate:Library
 	[ToUtc: f64 t: 0.0;]
 	[end: t - (tz_minutes as f64) * 60000.0]
 
+	# the time now, from the host's clock (Js.SetClockHook); 0, the start of 1970, if it has none, so
+	# that the library asks nothing of the system it runs on
 	[Current]
-		# OS.Now is whole seconds, so the milliseconds come from the program's clock, lined up the first time
-		f64 secs: (OS.Now) as f64;
-		f64 ticks: (OS.GetTicks) as f64;
-		if not clock_set
-			clock_set is true;
-			clock_base is secs * 1000.0 - ticks;
+		if clock_hook is 0
+			return 0.0;
 		;;
-	[end: clock_base + ticks]
+		f64 now: (clock_hook);
+	[end: now]
 
-	bln clock_set: false;
-	f64 clock_base: 0.0;
+	method<:f64> clock_hook;    # the host's clock: milliseconds since 1970 began (UTC)
 
 	# ---- objects ----
 
