@@ -1061,6 +1061,19 @@ phi.CssSupports:Library
 		pos is close + 1;
 	[end: result]
 
+	# The same, asked from outside a condition (an @import's supports(decl)): of these tokens.
+	# Declaration reads ts and t, which are a condition's own: left as they were, they'd be
+	# the tokens of whatever condition was read last, long since freed.
+	[DeclarationIn: ptr<CssToks> toks: 0; u32 from: 0; u32 to: 0;]
+		ptr<CssToks> saved_ts: ts;
+		ptr<CssTok> saved_t: t;
+		ts is toks;
+		t is toks.t;
+		bln ok: (Declaration: from to);
+		ts is saved_ts;
+		t is saved_t;
+	[end: ok]
+
 	[Declaration: u32 from: 0; u32 to: 0;]
 		u32 saved_pos: pos;
 		u32 saved_stop: stop;
@@ -1345,7 +1358,7 @@ phi.CssSheetP:Library
 		if p < pt and t:p.type is CssLex.FUNCTION and (CssVp.Kw: addr t:p) is CssK.SUPPORTS
 			u32 close: t:p.match;
 			# supports(cond), or supports(decl) with the declaration not in parentheses of its own
-			bln said: (CssSupports.Declaration: (FirstReal: p + 1 close) close);
+			bln said: (CssSupports.DeclarationIn: ts (FirstReal: p + 1 close) close);
 			if said is false
 				said is (CssSupports.Eval: ts p + 1 close);
 			;;
