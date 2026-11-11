@@ -11,8 +11,11 @@ the PHI repo.
    real user.
 2. **A way to mark what's public in a library.** Everything a library declares is exposed, so helpers need
    prefixes too. PHI's plan says this can come later.
-3. **A jump table for a dense `when`.** It matters to image and font decoding as well as to weblib's JS VM.
-   It's already on PHI's optimizing list.
+3. ~~**A jump table for a dense `when`.**~~ **Done in PHI (`1c0c750`, 2026-11-10):** a `when` on a number
+   whose values are constants close together (5 or more, the table no more than three entries a value)
+   is one jump through a table, in 32- and 64-bit code. weblib's JS VM was what showed the need: with it
+   and a 64-bit value copied in one load and store, `release_js_bench run` went from 13.7 s to 10.9 s as
+   a 64-bit Linux program.
 
 ## Found on Linux (2026-11-07)
 
@@ -61,4 +64,9 @@ unhandled `FileNotFoundException` comes out, with its stack trace, from `TestRun
 `build/test_inflate.linux64/program.asm`), so an index of 2^31 or more reaches below `p` instead of
 past it. Nothing here meets it yet, as corelib and imagelib hold every size under 2 GB, but a `u32`
 index ought to be zero-extended.
+
+**Fixed in PHI (`1c0c750`, 2026-11-10):** a `u32` index through a pointer is zero-extended
+(`mov eax, eax`), and an `int` index keeps its sign (`movsxd rax, eax`), so a negative one still
+reaches before the pointer. Checked 2026-11-11 in the code for `p:(i * 3 + 1)` with `i` a `u32` and
+an `int`.
 
