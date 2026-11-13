@@ -65,6 +65,11 @@ phi.PageEvents:Library
 		call Js.DefineNative: event_proto 'stopPropagation' addr StopPropagation 0;
 		call Js.DefineNative: event_proto 'stopImmediatePropagation' addr StopImmediate 0;
 		call Js.DefineNative: event_proto 'composedPath' addr ComposedPath 0;
+		# (the old way of making one: document.createEvent, then one of these)
+		call Js.DefineNative: event_proto 'initEvent' addr InitEvent 3;
+		call Js.DefineNative: event_proto 'initCustomEvent' addr InitEvent 4;
+		call Js.DefineNative: event_proto 'initUIEvent' addr InitEvent 3;
+		call Js.DefineNative: event_proto 'initMouseEvent' addr InitEvent 3;
 		call Js.DefineGetter: event_proto 'defaultPrevented' addr GetCanceled 0;
 		ui_proto is (Sub: 'UIEvent' UI event_proto keep);
 		mouse_proto is (Sub: 'MouseEvent' MOUSE ui_proto keep);
@@ -206,6 +211,26 @@ phi.PageEvents:Library
 		call Js.Define: o 'timeStamp' (JsV.Num: Page.current.now - Page.current.started_at) JsObjs.E;
 		call Js.Define: o 'isTrusted' JsV.FALSE JsObjs.W | JsObjs.E;
 	[end: ov]
+
+	# initEvent: type bubbles cancelable; initCustomEvent has a detail after them
+	[InitEvent: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageEventData> d: (This: args);
+		if d is 0 or d.dispatching return JsV.UNDEF;
+		ptr<JsObj> o: (JsV.AsObj: args:(-1));
+		bln bubbles: (JsOps.ToBool: (Js.Arg: args argc 1));
+		bln cancelable: (JsOps.ToBool: (Js.Arg: args argc 2));
+		d.bubbles is bubbles;
+		d.cancelable is cancelable;
+		d.canceled is false;
+		d.stop is false;
+		d.stop_now is false;
+		call Js.Define: o 'type' (JsV.Str: (JsOps.ToStr: (Js.Arg: args argc 0))) JsObjs.E;
+		call Js.Define: o 'bubbles' (JsV.Bool: bubbles) JsObjs.E;
+		call Js.Define: o 'cancelable' (JsV.Bool: cancelable) JsObjs.E;
+		if argc > 3
+			call Js.Define: o 'detail' args:3 JsObjs.E;
+		;;
+	[end: JsV.UNDEF]
 
 	[This: ptr<u64> args: 0;]
 		u64 t: args:(-1);

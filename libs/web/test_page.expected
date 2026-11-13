@@ -43,10 +43,14 @@ console[0]: written written
 console[0]: microtask
 console[0]: queued microtask
 console[0]: xhr 200 {"answer": 7} 4
-console[0]: DOMContentLoaded interactive
+console[0]: timing number 0 0
+console[0]: initCustomEvent old-way true false 7
+console[0]: initEvent plain false true
+console[0]: canvas context null
 console[0]: fetch 200 true
 console[0]: fetch 404 404 false
 console[0]: json 7
+console[0]: DOMContentLoaded interactive
 console[0]: load complete
 readyState after load: 1
 console[0]: timeout x y
@@ -197,6 +201,20 @@ document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 </script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
 <p>after the script</p>
+<script>
+// the old ways a page asks about its loading, makes an event, and asks to draw
+console.log('timing', typeof performance.timing.responseStart, performance.getEntriesByType('navigation').length, performance.navigation.type);
+var old = document.createEvent('CustomEvent');
+old.initCustomEvent('old-way', true, false, 7);
+var heard = '';
+document.body.addEventListener('old-way', function (e) { heard = e.type + ' ' + e.bubbles + ' ' + e.cancelable + ' ' + e.detail; });
+document.body.dispatchEvent(old);
+console.log('initCustomEvent', heard);
+var plain = document.createEvent('Event');
+plain.initEvent('plain', false, true);
+console.log('initEvent', plain.type, plain.bubbles, plain.cancelable);
+console.log('canvas context', document.createElement('canvas').getContext('2d'));
+</script>
 
 
 </body></html><!DOCTYPE html><html><head>
@@ -336,6 +354,20 @@ document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 </script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
 <p>after the script</p>
+<script>
+// the old ways a page asks about its loading, makes an event, and asks to draw
+console.log('timing', typeof performance.timing.responseStart, performance.getEntriesByType('navigation').length, performance.navigation.type);
+var old = document.createEvent('CustomEvent');
+old.initCustomEvent('old-way', true, false, 7);
+var heard = '';
+document.body.addEventListener('old-way', function (e) { heard = e.type + ' ' + e.bubbles + ' ' + e.cancelable + ' ' + e.detail; });
+document.body.dispatchEvent(old);
+console.log('initCustomEvent', heard);
+var plain = document.createEvent('Event');
+plain.initEvent('plain', false, true);
+console.log('initEvent', plain.type, plain.bubbles, plain.cancelable);
+console.log('canvas context', document.createElement('canvas').getContext('2d'));
+</script>
 
 
 </body></html>
@@ -384,10 +416,14 @@ console[0]: written written
 console[0]: microtask
 console[0]: queued microtask
 console[0]: xhr 200 {"answer": 7} 4
-console[0]: DOMContentLoaded interactive
+console[0]: timing number 0 0
+console[0]: initCustomEvent old-way true false 7
+console[0]: initEvent plain false true
+console[0]: canvas context null
 console[0]: fetch 200 true
 console[0]: fetch 404 404 false
 console[0]: json 7
+console[0]: DOMContentLoaded interactive
 console[0]: load complete
 readyState after load: 1
 console[0]: timeout x y
@@ -538,6 +574,20 @@ document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 </script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
 <p>after the script</p>
+<script>
+// the old ways a page asks about its loading, makes an event, and asks to draw
+console.log('timing', typeof performance.timing.responseStart, performance.getEntriesByType('navigation').length, performance.navigation.type);
+var old = document.createEvent('CustomEvent');
+old.initCustomEvent('old-way', true, false, 7);
+var heard = '';
+document.body.addEventListener('old-way', function (e) { heard = e.type + ' ' + e.bubbles + ' ' + e.cancelable + ' ' + e.detail; });
+document.body.dispatchEvent(old);
+console.log('initCustomEvent', heard);
+var plain = document.createEvent('Event');
+plain.initEvent('plain', false, true);
+console.log('initEvent', plain.type, plain.bubbles, plain.cancelable);
+console.log('canvas context', document.createElement('canvas').getContext('2d'));
+</script>
 
 
 </body></html><!DOCTYPE html><html><head>
@@ -677,6 +727,20 @@ document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 </script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
 <p>after the script</p>
+<script>
+// the old ways a page asks about its loading, makes an event, and asks to draw
+console.log('timing', typeof performance.timing.responseStart, performance.getEntriesByType('navigation').length, performance.navigation.type);
+var old = document.createEvent('CustomEvent');
+old.initCustomEvent('old-way', true, false, 7);
+var heard = '';
+document.body.addEventListener('old-way', function (e) { heard = e.type + ' ' + e.bubbles + ' ' + e.cancelable + ' ' + e.detail; });
+document.body.dispatchEvent(old);
+console.log('initCustomEvent', heard);
+var plain = document.createEvent('Event');
+plain.initEvent('plain', false, true);
+console.log('initEvent', plain.type, plain.bubbles, plain.cancelable);
+console.log('canvas context', document.createElement('canvas').getContext('2d'));
+</script>
 
 
 </body></html>

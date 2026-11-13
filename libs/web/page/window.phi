@@ -436,8 +436,47 @@ phi.PageWindow:Library
 		call Js.DefineNative: o 'mark' addr PageBind.Nothing 1;
 		call Js.DefineNative: o 'measure' addr PageBind.Nothing 1;
 		call Js.Define: o 'timeOrigin' JsV.INT_BASE JsObjs.E;
+		# what's measured of the page's own loading: nothing is, so no entries; and the old
+		# performance.timing, every moment of it the page's start
+		call Js.DefineNative: o 'getEntries' addr NoEntries 0;
+		call Js.DefineNative: o 'getEntriesByType' addr NoEntries 1;
+		call Js.DefineNative: o 'getEntriesByName' addr NoEntries 1;
+		call Js.DefineNative: o 'clearMarks' addr PageBind.Nothing 0;
+		call Js.DefineNative: o 'clearMeasures' addr PageBind.Nothing 0;
+		call Js.DefineNative: o 'clearResourceTimings' addr PageBind.Nothing 0;
+		call Js.DefineNative: o 'setResourceTimingBufferSize' addr PageBind.Nothing 1;
+		ptr<JsObj> timing: (JsObjs.NewObject);
+		call Js.Define: timing 'navigationStart' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'unloadEventStart' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'unloadEventEnd' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'redirectStart' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'redirectEnd' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'fetchStart' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'domainLookupStart' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'domainLookupEnd' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'connectStart' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'connectEnd' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'secureConnectionStart' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'requestStart' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'responseStart' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'responseEnd' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'domLoading' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'domInteractive' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'domContentLoadedEventStart' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'domContentLoadedEventEnd' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'domComplete' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'loadEventStart' JsV.INT_BASE JsObjs.E;
+		call Js.Define: timing 'loadEventEnd' JsV.INT_BASE JsObjs.E;
+		call Js.Define: o 'timing' (JsV.Obj: timing) JsObjs.E;
+		ptr<JsObj> navigation: (JsObjs.NewObject);
+		call Js.Define: navigation 'type' JsV.INT_BASE JsObjs.E;
+		call Js.Define: navigation 'redirectCount' JsV.INT_BASE JsObjs.E;
+		call Js.Define: o 'navigation' (JsV.Obj: navigation) JsObjs.E;
 		call JsObjs.DefineZ: JsRt.r.global 'performance' (JsV.Obj: o) JsObjs.E | JsObjs.C;
 	[end]
+
+	[NoEntries: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Obj: (JsObjs.NewArray: 0))]
 
 	[PerfNow: ptr<u64> args: 0; int argc: 0;]
 		ptr<Page> p: Page.current;

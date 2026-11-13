@@ -137,5 +137,19 @@ document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 </script>
 <p>after the script</p>
+<script>
+// the old ways a page asks about its loading, makes an event, and asks to draw
+console.log('timing', typeof performance.timing.responseStart, performance.getEntriesByType('navigation').length, performance.navigation.type);
+var old = document.createEvent('CustomEvent');
+old.initCustomEvent('old-way', true, false, 7);
+var heard = '';
+document.body.addEventListener('old-way', function (e) { heard = e.type + ' ' + e.bubbles + ' ' + e.cancelable + ' ' + e.detail; });
+document.body.dispatchEvent(old);
+console.log('initCustomEvent', heard);
+var plain = document.createEvent('Event');
+plain.initEvent('plain', false, true);
+console.log('initEvent', plain.type, plain.bubbles, plain.cancelable);
+console.log('canvas context', document.createElement('canvas').getContext('2d'));
+</script>
 </body>
 </html>

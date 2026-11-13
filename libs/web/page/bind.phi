@@ -772,6 +772,8 @@ phi.PageBind:Library
 		call Method: p 'insertAdjacentElement' addr InsertAdjacentNode 2 0;
 		call Method: p 'insertAdjacentText' addr InsertAdjacentText 2 0;
 		call Method: p 'getBoundingClientRect' addr BoundingRect 0 0;
+		# (a <canvas> can't be drawn on: its context is null, which is how a page is told so)
+		call Method: p 'getContext' addr NoContext 1 0;
 		call Method: p 'getClientRects' addr ClientRects 0 0;
 		call Method: p 'remove' addr RemoveSelf 0 0;
 		call Method: p 'focus' addr Focus 0 1;
@@ -874,6 +876,9 @@ phi.PageBind:Library
 
 	[Nothing: ptr<u64> args: 0; int argc: 0;]
 	[end: JsV.UNDEF]
+
+	[NoContext: ptr<u64> args: 0; int argc: 0;]
+	[end: JsV.NULL]
 
 	[Zero: ptr<u64> args: 0; int argc: 0;]
 	[end: JsV.INT_BASE]
