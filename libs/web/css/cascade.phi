@@ -1452,8 +1452,15 @@ phi.CssCascade:Library
 		else
 			from is (CssStyles.initial.Val: prop);
 		;;
-		call CssV.Retain: from;
-		call SetSlot: prop from;
+		# (a copy: SetSlot gives back the reference it's handed, which clears the value it's
+		# handed, and `from` is the parent's own)
+		CssVal taken;
+		taken.bits is from.bits;
+		taken.code is from.code;
+		taken.kind is from.kind;
+		taken.unit is from.unit;
+		call CssV.Retain: addr taken;
+		call SetSlot: prop addr taken;
 		if prop is CssP.FONT_SIZE
 			if inherit
 				cur.font_px is parent_style.font_px;

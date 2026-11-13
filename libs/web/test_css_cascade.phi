@@ -101,6 +101,17 @@ phi.TestCssCascade:Program
 	call C: 's' 'line-height' '1.5';
 	call Finish;
 
+	# inheriting a value that's a list (a font's families, here from a variable) leaves the
+	# parent's own as it was: the child asked first, then the parent
+	call Setup: 'html(body(div#fo(span#fi("x") span#fu("y"))))'
+		':root { --stack: Arial, sans-serif; } #fo { font-family: var(--stack, Helvetica); quotes: "<" ">"; } #fi { font-family: inherit; quotes: inherit; } #fu { font-family: unset; }';
+	call C: 'fi' 'font-family' 'Arial, sans-serif';
+	call C: 'fu' 'font-family' 'Arial, sans-serif';
+	call C: 'fi' 'quotes' '"<" ">"';
+	call C: 'fo' 'font-family' 'Arial, sans-serif';
+	call C: 'fo' 'quotes' '"<" ">"';
+	call Finish;
+
 	# revert goes back to the UA's value; unset to inherited or initial
 	call Setup: 'html(body(h1#a p#b.x div#c(p#d)))'
 		'h1 { font-size: 50px; font-weight: 100; display: inline; } #a { font-size: revert; display: revert; font-weight: revert; } .x { margin-top: 100px; margin-top: revert; } #c { color: red; } #d { color: unset; margin-top: unset; }';
