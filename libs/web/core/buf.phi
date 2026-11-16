@@ -9,6 +9,9 @@
 
 use memory.mem;
 
+# (Kept by hand, not a u8 array that grows: a WlBuf is a plain struct that also sits in arena
+# and collected memory, which PHI doesn't free, and it keeps a zero after its last byte so
+# its data is text.)
 struct.WlBuf
 {
 	ptr<u8> data;

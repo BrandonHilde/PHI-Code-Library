@@ -35,6 +35,8 @@ struct.JsLabelUse
 	ptr<JsStr> name;
 }
 
+# (Its buffers are kept by hand: a JsFnState is in the compiler's arena, which is let go all
+# at once when a script is compiled; an array PHI frees with its owner can't be in it.)
 struct.JsFnState
 {
 	ptr<JsFnState> parent;

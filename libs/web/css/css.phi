@@ -12,9 +12,9 @@
 # querySelector and friends:
 #
 #   ptr<DomNode> first: (Css.Query: root text len);   # 0 if none, or invalid: Css.invalid says which
-#   CssNodeList found;
+#   new CssNodeList found;                             # freed with the variable
 #   int count: (Css.QueryAll: root text len addr found);   # -1 if the selector's invalid
-#   call found.Free;
+#   ptr<DomNode> one: found.items:0;
 #   bln yes: (Css.Matches: element text len);
 #
 # The JS style object:
@@ -48,40 +48,14 @@ use css.cssserialize;
 use css.ua;
 use css.cascade;
 
+# the nodes a selector found, in document order: an array that grows, which the list's owner
+# frees with it (declare one with new)
 struct.CssNodeList
 {
-	ptr<ptr<DomNode>> items;
-	u32 count;
-	u32 cap;
+	ptr<DomNode> items[];
 
 	[Add: ptr<DomNode> n: 0;]
-		if count >= cap
-			u32 room: cap * 2;
-			if room is 0
-				room is 16;
-			;;
-			ptr<ptr<DomNode>> grown: new ptr<DomNode>[room];
-			if grown is 0
-				throw 'out of memory for a list of nodes';
-			;;
-			if items is not 0
-				call Mem.Copy: grown items count * sizeof ptr<DomNode>;
-				free items;
-			;;
-			items is grown;
-			cap is room;
-		;;
-		items:count is n;
-		count++;
-	[end]
-
-	[Free]
-		if items is not 0
-			free items;
-		;;
-		items is 0;
-		count is 0;
-		cap is 0;
+		items++ n;
 	[end]
 }
 
@@ -259,7 +233,7 @@ phi.Css:Library
 			return -1;
 		;;
 		if invalid return -1;
-	[end: results.count as int]
+	[end: results.items.len as int]
 
 	[QueryInner: ptr<DomNode> root: 0; ptr<u8> text: 0; u32 len: 0; ptr<CssNodeList> results: 0;]
 		call Start;

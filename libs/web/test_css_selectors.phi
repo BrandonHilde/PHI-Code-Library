@@ -381,13 +381,13 @@ phi.TestCssSelectors:Program
 	[end]
 
 	[QUnder: ptr<DomNode> root: 0; ptr<u8> sel: 0; ptr<u8> want: 0;]
-		CssNodeList found;
+		new CssNodeList found;
 		int n: (Css.QueryAll: root sel (WlText.LenZ: sel) addr found);
 		WlBuf text;
 		if n < 0
 			call text.AddZ: 'INVALID';
 		;;
-		while u32 i: 0; i < found.count; i++;
+		while u32 i: 0; i < found.items.len; i++;
 			ptr<DomNode> e: found.items:i;
 			if i > 0
 				call text.Add: 32;
@@ -400,7 +400,6 @@ phi.TestCssSelectors:Program
 				call text.Add: 63;
 			;;
 		;;
-		call found.Free;
 		if (WlText.EqZ: text.data text.len want)
 			passed++;
 		;;
@@ -441,7 +440,7 @@ phi.TestCssSelectors:Program
 		bln a: Css.invalid;
 		bln m: (Css.Matches: e sel n);
 		bln b: Css.invalid;
-		CssNodeList found;
+		new CssNodeList found;
 		int count: (Css.QueryAll: doc.root sel n addr found);
 		if a and b and got is 0 and m is false and count is -1 and n < 100
 			passed++;
@@ -460,7 +459,6 @@ phi.TestCssSelectors:Program
 			;;
 			log ' ' a ' ' b ' ' count '\n';
 		;;
-		call found.Free;
 	[end]
 
 	[NotInvalid: ptr<u8> sel: 0;]

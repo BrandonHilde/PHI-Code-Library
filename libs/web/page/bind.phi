@@ -1287,22 +1287,20 @@ phi.PageBind:Library
 		ptr<DomNode> n: (ThisNode: args);
 		WlBuf b;
 		call Js.TextOf: (Js.Arg: args argc 0) addr b;
-		CssNodeList list;
+		new CssNodeList list;
 		int count: (Css.QueryAll: n b.data b.len addr list);
 		call b.Free;
 		if count < 0
-			call list.Free;
 			call DomError: 'SyntaxError' 'The selector is not valid';
 		;;
 		u64 r: (StaticList: addr list);
-		call list.Free;
 	[end: r]
 
 	# what querySelectorAll gives: its nodes in a list that doesn't change
 	[StaticList: ptr<CssNodeList> list: 0;]
-		ptr<JsObj> a: (JsObjs.NewArray: list.count);
+		ptr<JsObj> a: (JsObjs.NewArray: list.items.len);
 		a.proto is nodelist_proto;
-		while u32 i: 0; i < list.count; i++;
+		while u32 i: 0; i < list.items.len; i++;
 			call JsObjs.ArrayPush: a (Wrap: list.items:i);
 		;;
 	[end: (JsV.Obj: a)]

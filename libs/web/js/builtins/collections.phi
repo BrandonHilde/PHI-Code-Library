@@ -14,6 +14,9 @@ struct.JsMapEntry
 	u32 seq;
 }
 
+# (Hand-made, not a Map<Key Value>: JavaScript's Map and Set keep insertion order through
+# deletes, with holes and sequence numbers an iterator needs, as the spec says, and the
+# collector frees them.)
 struct.JsMapData
 {
 	ptr<JsMapEntry> entries;

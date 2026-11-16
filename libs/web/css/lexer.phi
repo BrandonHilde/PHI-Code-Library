@@ -30,6 +30,8 @@ struct.CssTok
 	f64 num;        # a number, percentage or dimension's value; a unicode-range's first code point
 }
 
+# (Its tokens are kept by hand, not in an array that grows: the lexer hands out a CssToks made
+# with new, as a pointer, and its text is in its own arena; both are freed by hand together.)
 struct.CssToks
 {
 	ptr<CssTok> t;

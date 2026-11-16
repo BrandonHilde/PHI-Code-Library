@@ -23,6 +23,8 @@ use css.calc;
 use css.selector;
 
 # custom properties: each element that sets some has a map of what it set, in front of its parent's
+# (Hand-made, not a Map<Key Value>: shared by the elements that inherit it (refs), chained to
+# the parent's, kept sorted by atom, and freed when the last holder lets it go.)
 struct.CssVarMap
 {
 	u32 refs;

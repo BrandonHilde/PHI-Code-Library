@@ -20,6 +20,9 @@ struct.CssDecl
 	u8 important;
 }
 
+# (Its declarations are kept by hand, not in an array that grows: a CssDecls is reached through
+# raw pointers, a sheet's chain and an element's inline style, and freed by hand with what holds
+# it; an array PHI frees with its owner can't be in memory PHI doesn't own.)
 struct.CssDecls
 {
 	ptr<CssDecl> items;

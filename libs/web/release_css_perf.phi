@@ -164,10 +164,9 @@ phi.ReleaseCssPerf:Program
 	int t5: (OS.GetTicks);
 
 	# querySelectorAll
-	CssNodeList found;
+	new CssNodeList found;
 	int count: (Css.QueryAll: doc.root 'section div > p.x + p' 21 addr found);
 	log 'query found some ' (count > 0) '\n';
-	call found.Free;
 	int t6: (OS.GetTicks);
 
 	if show
