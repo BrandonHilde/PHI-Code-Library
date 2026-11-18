@@ -1,0 +1,17 @@
+load http://test.example/screen.css
+load http://test.example/words.css
+--- styles worked out
+load http://test.example/imported.css
+load http://test.example/nested.css
+screen 16843263 print 255 words 50529279 alternate 255 narrow 255 off 255
+style for print 255 style with blank media 134744319 own 117901311 imported 168430335 imported by the import 185273343
+inside a closed details: display none hidden, its summary shown, inside an open one shown
+a fraction: inline-block 1, its top a block 1, an annotation hidden
+--- the window made 400 wide
+load http://test.example/narrow.css
+screen 16843263 print 255 words 50529279 alternate 255 narrow 84215295 off 255
+style for print 255 style with blank media 134744319 own 117901311 imported 168430335 imported by the import 185273343
+--- and 800 again
+screen 16843263 print 255 words 50529279 alternate 255 narrow 255 off 255
+style for print 255 style with blank media 134744319 own 117901311 imported 168430335 imported by the import 185273343
+done

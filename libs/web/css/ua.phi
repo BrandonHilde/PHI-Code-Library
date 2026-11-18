@@ -109,6 +109,29 @@ video { object-fit: contain; }
 iframe { border: 2px inset gray; }
 details > summary:first-of-type { list-style-type: disclosure-closed; }
 details[open] > summary:first-of-type { list-style-type: disclosure-open; }
+details:not([open]) > :not(summary) { display: none !important; }
+math { font-family: serif; font-size: 1.06em; font-style: normal; font-weight: normal; text-indent: 0; letter-spacing: normal; line-height: normal; }
+math[display=block i] { display: block; margin: 0.5em 0; text-align: center; }
+mi { font-style: italic; }
+mi[mathvariant=normal i] { font-style: normal; }
+mo { margin: 0 0.24em; }
+mo[fence=true i], mo[separator=true i] { margin: 0; }
+mfrac { display: inline-block; vertical-align: middle; text-align: center; margin: 0 0.15em; font-size: 0.9em; }
+mfrac > * { display: block; padding: 0 0.2em; }
+mfrac > :first-child { border-bottom: 1px solid currentcolor; padding-bottom: 1px; }
+msub > :nth-child(2), msup > :nth-child(2), msubsup > :nth-child(2), msubsup > :nth-child(3) { font-size: 0.72em; }
+msub > :nth-child(2), msubsup > :nth-child(2) { vertical-align: sub; }
+msup > :nth-child(2), msubsup > :nth-child(3) { vertical-align: super; }
+msqrt, mroot { display: inline-block; vertical-align: middle; border-top: 1px solid currentcolor; padding: 1px 0.15em 0 0; }
+msqrt::before, mroot::before { content: "\\221A"; }
+munder, mover, munderover { display: inline-block; vertical-align: middle; text-align: center; }
+munder > *, mover > *, munderover > * { display: block; }
+munder > :nth-child(2), mover > :nth-child(2), munderover > :nth-child(n+2) { font-size: 0.72em; }
+mtable { display: inline-table; vertical-align: middle; }
+mtr { display: table-row; }
+mtd { display: table-cell; padding: 0.2em 0.4em; text-align: center; }
+mphantom { visibility: hidden; }
+annotation, annotation-xml { display: none; }
 @page { margin: 0.75in; }';
 	[end: text]
 }

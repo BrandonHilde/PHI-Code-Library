@@ -68,6 +68,7 @@ struct.PageRequest
 	PageLoad kind;
 	bln done;
 	ptr<DomNode> node;      # the script or link it's for
+	ptr<CssImport> import;  # a sheet's @import it's for (the kind is STYLE, and there's no node)
 	u64 a;                  # resolve, or the XMLHttpRequest
 	u64 b;                  # reject
 	ptr<u8> url;
@@ -156,6 +157,7 @@ phi.Page:Library
 		p.parser.host_data is p as ptr<u8>;
 		p.parser.on_script is addr OnScript;
 		p.css is (Css.NewEngine: p.doc);
+		p.css.on_import is addr OnImport;
 		call p.css.SetViewport: width height;
 		p.rt is (Js.New);
 		p.keep is JsV.UNDEF;
@@ -375,7 +377,7 @@ phi.Page:Library
 
 	# ---- requests ----
 
-	[Request: ptr<Page> p: 0; ptr<u8> url: 0; u32 n: 0; PageLoad kind: PageLoad.FETCH; ptr<DomNode> node: 0; u64 a: 0; u64 b: 0;]
+	[Request: ptr<Page> p: 0; ptr<u8> url: 0; u32 n: 0; PageLoad kind: PageLoad.FETCH; ptr<DomNode> node: 0; u64 a: 0; u64 b: 0; ptr<CssImport> import: 0;]
 		if p.requests.len >= p.requests.max
 			call Compact: p;
 			if p.requests.len >= p.requests.max
@@ -391,6 +393,7 @@ phi.Page:Library
 		p.requests:at_.id is id;
 		p.requests:at_.kind is kind;
 		p.requests:at_.node is node;
+		p.requests:at_.import is import;
 		p.requests:at_.a is a;
 		p.requests:at_.b is b;
 		p.requests:at_.url is (full.Take);
@@ -478,7 +481,15 @@ phi.Page:Library
 				;;
 			;;
 			is PageLoad.STYLE
-				if ok
+				if r.import is not 0
+					# a sheet another sheet asked for with @import: it goes to the import, if the
+					# sheet that asked is still one of the page's
+					if ok and (ImportLives: p r.import)
+						bln took: (Css.ImportDone: p.css r.import bytes n);
+						call Invalidate: p;
+					;;
+				;;
+				elif ok
 					call SheetArrived: p r.node bytes n r.url;
 					call FireNode: p r.node 'load';
 				;;
@@ -592,10 +603,62 @@ phi.Page:Library
 		s.node is n;
 	[end: s]
 
+	# Whether a <style> or <link>'s sheet is for this page as it is now: what its media attribute
+	# says, if it has one (media="print" is for paper, media="(max-width: 600px)" for a narrow
+	# window). Nothing written, or only spaces, is everything.
+	[MediaHolds: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		ptr<u8> media: (Dom.AttrValue: n 'media');
+		if media is 0 return true;
+		u32 len: (WlText.LenZ: media);
+		bln blank: true;
+		while u32 i: 0; i < len; i++;
+			if media:i > 32
+				blank is false;
+				break;
+			;;
+		;;
+		if blank return true;
+	[end: (Css.MatchMedia: p.css media len)]
+
+	# a sheet whose media no longer holds is taken out; it's read again if it holds later
+	[DropSheet: ptr<Page> p: 0; ptr<PageSheet> s: 0;]
+		if s.sheet is not 0
+			call p.css.RemoveSheet: s.sheet;
+			call Css.FreeSheet: s.sheet;
+			s.sheet is 0;
+		;;
+		s.text_hash is 0;
+		s.text_len is 0;
+	[end]
+
+	# whether a rel attribute names a stylesheet to use: 'stylesheet' is one of its words, in
+	# either case, and 'alternate' isn't (an alternate sheet is one the reader may choose instead)
+	[IsSheetRel: ptr<u8> rel: 0;]
+		bln sheet: false;
+		u32 i: 0;
+		while rel:i is not 0
+			while rel:i is not 0 and rel:i <= 32
+				i++;
+			;;
+			u32 from: i;
+			while rel:i > 32
+				i++;
+			;;
+			if (WlText.EqNoCaseZ: rel + from i - from 'stylesheet')
+				sheet is true;
+			;;
+			elif (WlText.EqNoCaseZ: rel + from i - from 'alternate') return false;
+		;;
+	[end: sheet]
+
 	[SeeStyle: ptr<Page> p: 0; ptr<DomNode> n: 0;]
 		ptr<PageSheet> s: (SheetFor: p n);
 		if s is 0 return;
 		s.seen is true;
+		if not (MediaHolds: p n)
+			call DropSheet: p s;
+			return;
+		;;
 		WlBuf text;
 		call Dom.TextContent: n text;
 		u32 h: (WlText.Hash: text.data text.len);
@@ -618,10 +681,15 @@ phi.Page:Library
 		ptr<u8> rel: (Dom.AttrValue: n 'rel');
 		ptr<u8> href: (Dom.AttrValue: n 'href');
 		if rel is 0 or href is 0 return;
-		if not (Same: rel 'stylesheet') return;
+		if not (IsSheetRel: rel) return;
 		ptr<PageSheet> s: (SheetFor: p n);
 		if s is 0 return;
 		s.seen is true;
+		# one that isn't for this page as it is (a sheet for print, say) isn't asked for
+		if (Dom.AttrValue: n 'disabled') is not 0 or not (MediaHolds: p n)
+			call DropSheet: p s;
+			return;
+		;;
 		# asked for once; an empty record means it's on its way
 		if s.text_hash is 0
 			s.text_hash is 1;
@@ -636,12 +704,47 @@ phi.Page:Library
 		if s.sheet is not 0
 			call p.css.RemoveSheet: s.sheet;
 			call Css.FreeSheet: s.sheet;
+			s.sheet is 0;
+		;;
+		# (the window may have changed while it was on its way)
+		if not (MediaHolds: p n)
+			s.text_hash is 0;
+			return;
 		;;
 		s.sheet is (Css.ParseSheet: bytes len base_url);
 		if s.sheet is not 0
 			call p.css.AddSheet: s.sheet;
 		;;
 	[end]
+
+	# The style engine found an @import that applies (as it worked the styles out): the sheet is
+	# asked of the host like any other, and goes to the import when it comes (DeliverNow). The
+	# styles are right again at the next UpdateStyle after that.
+	[OnImport: ptr<CssEngine> e: 0; ptr<CssImport> im: 0;]
+		ptr<Page> p: current;
+		if p is 0 or p.css is not e or im is 0 or im.url is 0 return;
+		u32 id: (Request: p im.url (WlText.LenZ: im.url) PageLoad.STYLE 0 as ptr<DomNode> JsV.UNDEF JsV.UNDEF im);
+	[end]
+
+	# whether an @import is still in one of the page's sheets (or in a sheet one of them imported)
+	[ImportLives: ptr<Page> p: 0; ptr<CssImport> im: 0;]
+		while u32 i: 0; i < p.sheets.len; i++;
+			if p.sheets:i.sheet is not 0 and (ImportIn: p.sheets:i.sheet.first im 0) return true;
+		;;
+	[end: false]
+
+	[ImportIn: ptr<CssRule> first: 0; ptr<CssImport> im: 0; u32 depth: 0;]
+		if depth > 16 return false;
+		ptr<CssRule> r: first;
+		while r is not 0
+			if r.import is not 0
+				if r.import is im return true;
+				if r.import.sheet is not 0 and (ImportIn: r.import.sheet.first im depth + 1) return true;
+			;;
+			if r.first_child is not 0 and (ImportIn: r.first_child im depth + 1) return true;
+			r is r.next;
+		;;
+	[end: false]
 
 	# Every element's node.style right for the document as it is now. False if that failed; Css.error says why.
 	[UpdateStyle: ptr<Page> p: 0;]
@@ -654,6 +757,7 @@ phi.Page:Library
 		p.width is width;
 		p.height is height;
 		call p.css.SetViewport: width height;
+		p.sheets_scanned is false;              # a sheet's media may hold now, or no longer
 		call PageBind.SyncWindow: p;
 		call Fire: p (JsV.Obj: JsRt.r.global) 'resize' false;
 		call RunJobs: p;

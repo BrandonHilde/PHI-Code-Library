@@ -1,0 +1,120 @@
+# Which stylesheets a page uses: a <link> or <style> whose media doesn't hold isn't used (or
+# asked for), nor is an alternate sheet; a sheet another names with @import is asked of the host
+# and used when it comes; a change of the window's width brings in a sheet whose media holds now.
+# And two things the built-in sheet says: what's in a closed <details> but its <summary> isn't
+# shown, and MathML's fraction is a box of two.
+use weblib;
+
+phi.TestPageSheets:Program
+{
+	ptr<Page> page: 0;
+
+	call Weblib.Start: 900000;
+	PageHost host;
+	host.load is addr Load;
+	ptr<u8> html: '<!DOCTYPE html><html><head>
+<link rel="stylesheet" href="screen.css" media="screen">
+<link rel="stylesheet" href="print.css" media="print">
+<link rel="StyleSheet preload" href="words.css">
+<link rel="alternate stylesheet" href="alternate.css">
+<link rel="stylesheet" href="narrow.css" media="(max-width: 500px)">
+<link rel="stylesheet" href="off.css" disabled>
+<style media="print">#styled { color: rgb(9, 9, 9); }</style>
+<style media=" ">#blank { color: rgb(8, 8, 8); }</style>
+<style>@import url("imported.css"); @import "paper.css" print; #own { color: rgb(7, 7, 7); }</style>
+</head><body>
+<p id="screen">s</p><p id="print">p</p><p id="words">w</p><p id="alternate">a</p><p id="narrow">n</p>
+<p id="off">o</p><p id="styled">st</p><p id="blank">b</p><p id="own">o</p><p id="imported">i</p><p id="nested">n</p>
+<details><summary id="summary">more</summary><div id="inside">hidden</div></details>
+<details open><summary>more</summary><div id="shown">shown</div></details>
+<math><mfrac id="frac"><mi id="over">a</mi><mi>b</mi></mfrac><annotation id="note">a/b</annotation></math>
+</body></html>';
+	page is (Page.New: addr host 800.0 600.0);
+	call Page.Load: page html (WlText.LenZ: html) 'http://test.example/page.html';
+	log '--- styles worked out\n';
+	bln ok: (Page.UpdateStyle: page);
+	# (the imports were asked for as the styles were worked out, and answered at once)
+	ok is (Page.UpdateStyle: page);
+	call Colors;
+	log 'inside a closed details: display none ' (Shown: '#inside') ', its summary ' (Shown: '#summary') ', inside an open one ' (Shown: '#shown') '\n';
+	ptr<CssComputed> frac: (Css.StyleOf: (Css.Query: page.doc.root '#frac' 5));
+	ptr<CssComputed> over: (Css.StyleOf: (Css.Query: page.doc.root '#over' 5));
+	log 'a fraction: inline-block ' (frac.Is: CssP.DISPLAY CssK.INLINE_BLOCK) ', its top a block ' (over.Is: CssP.DISPLAY CssK.BLOCK) ', an annotation ' (Shown: '#note') '\n';
+
+	log '--- the window made 400 wide\n';
+	call Page.SetViewport: page 400.0 600.0;
+	ok is (Page.UpdateStyle: page);
+	call Colors;
+	log '--- and 800 again\n';
+	call Page.SetViewport: page 800.0 600.0;
+	ok is (Page.UpdateStyle: page);
+	call Colors;
+	call Page.Free: page;
+	log 'done\n';
+	exit 0;
+
+	# each paragraph's color: black (0x000000FF) unless a sheet that's used says otherwise
+	[Colors]
+		log 'screen ' (Color: '#screen') ' print ' (Color: '#print') ' words ' (Color: '#words') ' alternate ' (Color: '#alternate')
+			' narrow ' (Color: '#narrow') ' off ' (Color: '#off') '\n';
+		log 'style for print ' (Color: '#styled') ' style with blank media ' (Color: '#blank') ' own ' (Color: '#own')
+			' imported ' (Color: '#imported') ' imported by the import ' (Color: '#nested') '\n';
+	[end]
+
+	[Color: ptr<u8> selector: 0; : u32]
+		ptr<DomNode> n: (Css.Query: page.doc.root selector (WlText.LenZ: selector));
+		if n is 0 return 1;
+		ptr<CssComputed> s: (Css.StyleOf: n);
+	[end: (s.TextColor)]
+
+	[Shown: ptr<u8> selector: 0; : ptr<u8>]
+		ptr<DomNode> n: (Css.Query: page.doc.root selector (WlText.LenZ: selector));
+		if n is 0 return 'missing';
+		ptr<CssComputed> s: (Css.StyleOf: n);
+		if (s.Is: CssP.DISPLAY CssK.NONE) return 'hidden';
+	[end: 'shown']
+
+	# a pretend network: answers at once, and says what was asked for
+	[Load: ptr<Page> p: 0; ptr<u8> url: 0; PageLoad kind: PageLoad.DOCUMENT; u32 id: 0;]
+		log 'load ' url '\n';
+		ptr<u8> css: 0;
+		if (Ends: url 'screen.css')
+			css is '#screen { color: rgb(1, 1, 1); }';
+		;;
+		elif (Ends: url 'print.css')
+			css is '#print { color: rgb(2, 2, 2); }';
+		;;
+		elif (Ends: url 'words.css')
+			css is '#words { color: rgb(3, 3, 3); }';
+		;;
+		elif (Ends: url 'alternate.css')
+			css is '#alternate { color: rgb(4, 4, 4); }';
+		;;
+		elif (Ends: url 'narrow.css')
+			css is '#narrow { color: rgb(5, 5, 5); }';
+		;;
+		elif (Ends: url 'off.css')
+			css is '#off { color: rgb(6, 6, 6); }';
+		;;
+		elif (Ends: url 'imported.css')
+			css is '@import "nested.css"; #imported { color: rgb(10, 10, 10); }';
+		;;
+		elif (Ends: url 'nested.css')
+			css is '#nested { color: rgb(11, 11, 11); }';
+		;;
+		elif (Ends: url 'paper.css')
+			css is '#own { color: rgb(12, 12, 12); }';
+		;;
+		if css is 0
+			call Page.Delivered: p id 404 0 0;
+			return;
+		;;
+		call Page.Delivered: p id 200 css (WlText.LenZ: css);
+	[end]
+
+	[Ends: ptr<u8> text: 0; ptr<u8> ending: 0;]
+		u32 a: (WlText.LenZ: text);
+		u32 b: (WlText.LenZ: ending);
+		if b > a return false;
+	[end: (WlText.EqZ: text + a - b b ending)]
+}
