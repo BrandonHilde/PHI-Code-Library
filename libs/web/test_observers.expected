@@ -1,0 +1,29 @@
+taken by mo3: 1
+not a function: TypeError
+nothing asked: TypeError
+script ends
+io thresholds: 0,0.5
+cookie: fromhost=1; other=2
+the host is given a cookie: k=v; Path=/
+typeof MutationRecord: function, WebKit: true
+mo: 8 records, to itself
+  childList a +SPAN
+  attributes SPAN @class
+  attributes SPAN @class was x
+  characterData #text was one
+  childList a -SPAN
+  attributes a @title
+  attributes a @lang
+  childList a +I
+mo2: 1 records
+  attributes a @title
+--- a timer
+io: lazy true 1
+io: a true 1
+--- a frame
+ro: a 0x0 0
+--- later
+after disconnect, mo2 still sees: true
+mo2: 1 records
+  attributes a @title
+done

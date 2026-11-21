@@ -1946,8 +1946,23 @@ phi.PageBind:Library
 		call b.Free;
 	[end: JsV.UNDEF]
 
-	# cookies are the browser's to keep; a page sees what it set in this session
+	# cookies are the browser's to keep (PageHost.cookies and set_cookie); without it, a page sees what
+	# it set in this session
 	[CookieGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		if p is not 0 and p.host.cookies is not 0
+			ptr<u8> room: new u8[8192];
+			if room is 0
+				return (JsV.Str: JsRt.blank);
+			;;
+			int n: (p.host.cookies: p room 8192);
+			if n < 0
+				n is 0;
+			;;
+			u64 text: (Js.NewString: room n as u32);
+			free room;
+			return text;
+		;;
 		ptr<JsProp> found: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: '%cookie') as ptr<u8>);
 		if found is 0
 			return (JsV.Str: JsRt.blank);
@@ -1956,6 +1971,14 @@ phi.PageBind:Library
 
 	[CookieSet: ptr<u64> args: 0; int argc: 0;]
 		ptr<JsStr> given: (JsStrs.Flat: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		ptr<Page> p: Page.current;
+		if p is not 0 and p.host.set_cookie is not 0
+			WlBuf whole;
+			call whole.AddN: given.data given.bytes;
+			call p.host.set_cookie: p whole.data;
+			call whole.Free;
+			return JsV.UNDEF;
+		;;
 		# only the name=value part, added to what's there
 		u32 end_at: 0;
 		while end_at < given.bytes and given.data:end_at is not ';'

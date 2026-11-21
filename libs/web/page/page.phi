@@ -23,6 +23,7 @@ use js.js;
 use page.bind;
 use page.events;
 use page.window;
+use page.observers;
 
 # what's asked of PageHost.load
 enum.PageLoad
@@ -49,6 +50,10 @@ struct.PageHost
 	method<ptr<Page> ptr<DomNode> ptr<f64>> box;
 	# window.alert
 	method<ptr<Page> ptr<u8>> alert;
+	# document.cookie: the cookies for the page (into a buffer of the size given: their length), and one
+	# the page sets ("name=value; Path=/..."). Without them, a page sees what it set, this session.
+	method<ptr<Page> ptr<u8> int: int> cookies;
+	method<ptr<Page> ptr<u8>> set_cookie;
 	ptr<u8> user;           # the browser's own
 }
 
@@ -145,6 +150,8 @@ phi.Page:Library
 			p.host.navigate is host.navigate;
 			p.host.box is host.box;
 			p.host.alert is host.alert;
+			p.host.cookies is host.cookies;
+			p.host.set_cookie is host.set_cookie;
 			p.host.user is host.user;
 		;;
 		p.width is width;
@@ -165,6 +172,7 @@ phi.Page:Library
 		p.storage is JsV.UNDEF;
 		current is p;
 		call PageBind.Install: p;
+		call PageObservers.Install: p;
 		call Js.AddRootFn: addr MarkAll;
 	[end: p]
 

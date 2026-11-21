@@ -1,0 +1,58 @@
+<!doctype html><html><head><title>observers</title></head><body>
+<div id="a"><p id="p">one</p></div><img id="lazy" alt="">
+<script>
+var log = function (s) { console.log(s); };
+function show(records) {
+  records.forEach(function (r) {
+    log('  ' + r.type + ' ' + (r.target.id || r.target.nodeName) +
+        (r.addedNodes.length ? ' +' + r.addedNodes[0].nodeName : '') +
+        (r.removedNodes.length ? ' -' + r.removedNodes[0].nodeName : '') +
+        (r.attributeName ? ' @' + r.attributeName : '') +
+        (r.oldValue !== null ? ' was ' + r.oldValue : ''));
+  });
+}
+var a = document.getElementById('a');
+var mo = new MutationObserver(function (records, o) {
+  log('mo: ' + records.length + ' records' + (o === mo && this === mo ? ', to itself' : ''));
+  show(records);
+});
+mo.observe(a, { childList: true, subtree: true, attributes: true, attributeOldValue: true, characterDataOldValue: true });
+var mo2 = new MutationObserver(function (records) { log('mo2: ' + records.length + ' records'); show(records); });
+mo2.observe(a, { attributeFilter: ['title'] });
+var span = document.createElement('span');
+a.appendChild(span);
+span.setAttribute('class', 'x');
+span.setAttribute('class', 'y');
+document.getElementById('p').firstChild.data = 'two';
+a.removeChild(span);
+a.setAttribute('title', 't');
+a.setAttribute('lang', 'en');
+document.body.setAttribute('data-out', '1');
+var mo3 = new MutationObserver(function () { log('mo3 should not be called'); });
+mo3.observe(a, { childList: true });
+a.appendChild(document.createElement('i'));
+log('taken by mo3: ' + mo3.takeRecords().length);
+mo3.disconnect();
+try { new MutationObserver(1); } catch (e) { log('not a function: ' + e.name); }
+try { mo3.observe(a, {}); } catch (e) { log('nothing asked: ' + e.name); }
+log('script ends');
+setTimeout(function () {
+  mo.disconnect();
+  a.appendChild(document.createElement('b'));
+  log('after disconnect, mo2 still sees: ' + a.hasAttribute('title'));
+  a.removeAttribute('title');
+}, 50);
+var io = new IntersectionObserver(function (entries, o) {
+  entries.forEach(function (e) { log('io: ' + e.target.id + ' ' + e.isIntersecting + ' ' + e.intersectionRatio + (o === io ? '' : ' (wrong observer)')); });
+}, { threshold: [0, 0.5] });
+io.observe(document.getElementById('lazy'));
+io.observe(a);
+log('io thresholds: ' + io.thresholds.join(','));
+var ro = new ResizeObserver(function (entries) {
+  entries.forEach(function (e) { log('ro: ' + e.target.id + ' ' + e.contentRect.width + 'x' + e.contentRect.height + ' ' + e.borderBoxSize[0].inlineSize); });
+});
+ro.observe(a);
+log('cookie: ' + document.cookie);
+document.cookie = 'k=v; Path=/';
+log('typeof MutationRecord: ' + typeof MutationRecord + ', WebKit: ' + (window.WebKitMutationObserver === MutationObserver));
+</script></body></html>

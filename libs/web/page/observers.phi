@@ -1,0 +1,57 @@
+# MutationObserver, IntersectionObserver and ResizeObserver: observers.js, run in each page once its
+# window is set up (observersjs.phi holds it). The DOM tells Mutated of each change while anything is
+# observed, and Mutated tells the script, which keeps the observers and makes their records.
+
+use page.observersjs;
+
+phi.PageObservers:Library
+{
+	[Install: ptr<Page> p: 0;]
+		call Js.DefineNative: JsRt.r.global '%watchMutations' addr Watch 1;
+		str js: (PageObserversJs.Source);
+		call Page.RunSource: p addr js:0 js.len as u32 'observers';
+	[end]
+
+	# %watchMutations(on): the document tells Mutated of its changes from now on, or stops
+	[Watch: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		if p is not 0
+			if (JsOps.ToBool: (Js.Arg: args argc 0))
+				p.doc.on_mutation is addr Mutated;
+			;;
+			else
+				p.doc.on_mutation is 0;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	# one change, from the DOM: to the script's %mutated(kind, target, node, name, old)
+	[Mutated: ptr<DomNode> target: 0; int kind: 0; ptr<DomNode> node: 0; ptr<WlAtom> name: 0; ptr<u8> old: 0; int old_length: 0;]
+		ptr<Page> p: Page.current;
+		if p is 0 return;
+		ptr<JsProp> found: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: '%mutated') as ptr<u8>);
+		if found is 0 or not (JsOps.IsCallable: found.value) return;
+		u64 fn: found.value;
+		call Js.Push: (JsV.Int: kind);
+		call Js.Push: (PageBind.Wrap: target);
+		if node is 0
+			call Js.Push: JsV.NULL;
+		;;
+		else
+			call Js.Push: (PageBind.Wrap: node);
+		;;
+		if name is 0
+			call Js.Push: JsV.NULL;
+		;;
+		else
+			call Js.Push: (Js.NewString: name.text name.len);
+		;;
+		if old_length < 0
+			call Js.Push: JsV.NULL;
+		;;
+		else
+			call Js.Push: (Js.NewString: old old_length as u32);
+		;;
+		u64 ignored: (Js.Call: fn JsV.UNDEF 5);
+	[end]
+}

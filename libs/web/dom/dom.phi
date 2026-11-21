@@ -109,12 +109,23 @@ struct.DomDocument
 	bln limited_quirks;
 	u32 version;            # goes up by one on every change, so a cache can see it's stale
 	method<ptr<DomNode> int> on_change;     # called after every change (see DomChange), if set
+	# for MutationObserver: told of each change a script could see, with what it changed: the target,
+	# the kind (Dom.ADDED, REMOVED, ATTRIBUTE, TEXT), the node added or taken out, the attribute's
+	# name, and the value before (its length; -1 when there wasn't one). Attributes and text are told
+	# before they change, children after. Set only while something observes.
+	method<ptr<DomNode> int ptr<DomNode> ptr<WlAtom> ptr<u8> int> on_mutation;
 	ptr<u8> url;            # the document's address, zero-terminated (the document's to free)
 	ptr<u8> host_data;      # the browser's own: its tab, say
 }
 
 phi.Dom:Library
 {
+	# what on_mutation is told
+	const int ADDED: 0;
+	const int REMOVED: 1;
+	const int ATTRIBUTE: 2;
+	const int TEXT: 3;
+
 	const u32 DIRTY_STYLE: 1;        # this element's style must be worked out again
 	const u32 DIRTY_CHILD: 2;        # something under it is DIRTY_STYLE
 	const u32 DIRTY_LAYOUT: 4;       # for the browser: it needs laying out again
@@ -190,6 +201,9 @@ phi.Dom:Library
 	# ---- text
 
 	[SetText: ptr<DomNode> node: 0; ptr<u8> text: 0; u32 n: 0;]
+		if node.doc.on_mutation is not 0
+			call node.doc.on_mutation: node TEXT 0 as ptr<DomNode> 0 as ptr<WlAtom> node.text node.text_len as int;
+		;;
 		if node.text is 0 or node.text_cap < n + 1
 			u32 room: n + 1;
 			if room < 16
@@ -259,6 +273,9 @@ phi.Dom:Library
 	[Remove: ptr<DomNode> node: 0;]
 		ptr<DomNode> parent: node.parent;
 		if parent is 0 return;
+		if node.doc.on_mutation is not 0
+			call node.doc.on_mutation: parent REMOVED node 0 as ptr<WlAtom> 0 as ptr<u8> (-1);
+		;;
 		if node.prev is not 0
 			node.prev.next is node.next;
 		;;
@@ -312,6 +329,9 @@ phi.Dom:Library
 			ref.prev is node;
 		;;
 		call Changed: parent DomChange.CHILDREN;
+		if node.doc.on_mutation is not 0
+			call node.doc.on_mutation: parent ADDED node 0 as ptr<WlAtom> 0 as ptr<u8> (-1);
+		;;
 	[end]
 
 	[Append: ptr<DomNode> parent: 0; ptr<DomNode> node: 0;]
@@ -424,6 +444,15 @@ phi.Dom:Library
 
 	[SetAttr: ptr<DomNode> element: 0; ptr<WlAtom> name: 0; ptr<u8> value: 0; u32 n: 0;]
 		ptr<DomAttr> a: (Attr: element name);
+		if element.doc.on_mutation is not 0
+			if a is 0
+				call element.doc.on_mutation: element ATTRIBUTE 0 as ptr<DomNode> name 0 as ptr<u8> (-1);
+			;;
+			else
+				call element.doc.on_mutation: element ATTRIBUTE 0 as ptr<DomNode> name a.value a.value_len as int;
+			;;
+			a is (Attr: element name);
+		;;
 		if a is 0
 			a is new DomAttr;
 			if a is 0
@@ -458,6 +487,9 @@ phi.Dom:Library
 		ptr<DomAttr> before: 0;
 		while a is not 0
 			if a.name is name
+				if element.doc.on_mutation is not 0
+					call element.doc.on_mutation: element ATTRIBUTE 0 as ptr<DomNode> name a.value a.value_len as int;
+				;;
 				if before is 0
 					element.attrs is a.next;
 				;;

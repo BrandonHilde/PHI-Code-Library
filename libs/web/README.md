@@ -94,12 +94,16 @@ Most of the test262 failures are things deliberately not here (see below), and w
 
 Every JS fixture also runs with a garbage collection at every safepoint, which is how missing roots are found, and the HTML, CSS and JS parsers are fuzzed with fixed seeds. `test_page` runs a whole page, normally and under that stress, and insists the two come out the same.
 
+**Observers** (2026-11-21): `MutationObserver` is the DOM standard's (records' `previousSibling` and `nextSibling` are always null); `IntersectionObserver` reports every target wholly in view, once, as a browser that shows the whole page and scrolls it itself would want; `ResizeObserver` reports each target's size once. They're `page/observers.js`, run in every page (`tools/web/make_observers.py` makes `observersjs.phi` from it), with the DOM's `on_mutation` hook telling it of changes while anything observes.
+
+**Cookies** are the browser's (`PageHost.cookies` and `set_cookie`, which PHI OS answers from netlib's jar); a host without them gives a page what it set in this session.
+
 ## What it doesn't do yet
 
 - **JavaScript:** no `BigInt` (which alone is most of the remaining test262 failures in typed arrays), no `with`, no modules or dynamic `import()`, and direct `eval` runs as global code. No `Intl`. `String.normalize` returns text as it is. `\p{...}` knows the general categories but not scripts. No resizable or detached buffers, no `SharedArrayBuffer`, and the `v` regex flag is read as `u`, without its set notation.
 - **CSS:** no nesting, no `@container`, `@property` or `@counter-style`. Animations and transitions are parsed and kept, but don't run. `ex` and `ch` are 0.5em. Colours are 8-bit sRGB. Logical properties assume left-to-right text.
 - **HTML:** input is always read as UTF-8, with no `<meta charset>` or encoding sniffing. No declarative shadow DOM.
-- **DOM:** no shadow DOM at all, no `MutationObserver`, `IntersectionObserver` or custom elements, no `<canvas>`, no `Range` or `Selection`. `<script type=module>` doesn't run. Time zones are one fixed offset (`JsDate.tz_minutes`), UTC until a browser sets it, with no daylight saving. `localStorage` lasts as long as the page. `attributes` is a snapshot, not live.
+- **DOM:** no shadow DOM at all, no custom elements, no `<canvas>`, no `Range` or `Selection`. `<script type=module>` doesn't run. Time zones are one fixed offset (`JsDate.tz_minutes`), UTC until a browser sets it, with no daylight saving. `localStorage` lasts as long as the page. `attributes` is a snapshot, not live.
 - **Nodes aren't freed until their document is.** A long-lived page that makes and drops many nodes keeps growing until it's left.
 - **PHI OS is a separate project.** The library builds for it, but it's only tested on Windows. Its 64 KB program stack would limit how deeply scripts can nest.
 
