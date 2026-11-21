@@ -1,6 +1,6 @@
 # fontlib
 
-Fonts in; metrics, outlines and smooth glyph bitmaps out. It reads TrueType and OpenType CFF fonts, and either wrapped as WOFF: the face, each
+Fonts in; metrics, outlines and smooth glyph bitmaps out. It reads TrueType and OpenType CFF fonts, and either wrapped as WOFF or WOFF2: the face, each
 glyph's outline and metrics, in font units, and which glyph a character is; it makes glyphs' bitmaps at
 a size, exactly as FreeType makes them; and it measures and draws runs of UTF-8 text in a list of fonts,
 with HarfBuzz's glyphs, advances and kerning ([plan.md](../../plan.md#phase-4-font-library), milestones
@@ -65,7 +65,7 @@ These names are the API. Everything else the library declares (`FntTrueType`, `F
 | `Fnt.Bitmap: size glyph` → | A `ptr<FntBitmap>`, the glyph at that size, made the first time it's asked for and kept by the size (not to be freed); or 0 with the reason in `Fnt.error` |
 | `FntBitmap` | A struct: `width` by `height` bytes of coverage (0 to 255) at `pixels`, a row at a time from the top (`pixels` is 0 when there are none); `left` (pixels right of the pen), `top` (pixels above the baseline), and `advance` (64ths of a pixel) |
 | `Fnt.FreeSize: size` | Gives back a size's memory and its bitmaps (0 does nothing) |
-| `Fnt.MOST_FONT_BYTES` | 33,554,432: the most a WOFF file may unpack to, so that a small file can't claim gigabytes (the biggest CJK fonts are about 20 MB) |
+| `Fnt.MOST_FONT_BYTES` | 33,554,432: the most a WOFF or WOFF2 file may unpack to, so that a small file can't claim gigabytes (the biggest CJK fonts are about 20 MB) |
 | `Fnt.MOST_BITMAP_PIXELS` | 1,048,576: the most pixels a glyph's bitmap may have, so that a damaged font's glyph can't ask for gigabytes |
 | `FntStack` | A struct: `sizes` (up to 8 `ptr<FntSize>`) and `count`: fonts tried in turn for each character, the first being the main one; `script`, the OpenType script tag kerning is for (0, as it starts, means `latn`); and `no_kerning` |
 | `Fnt.Measure: stack text length` → | How wide `length` bytes of UTF-8 are, in 64ths of a pixel |
@@ -108,7 +108,26 @@ that holds its own directory and is a multiple of 4, metadata and private data w
 ascending order; each table inside the file, no longer compressed than unpacked, within the total; and a
 compressed table inflating to exactly its length, its Adler-32 right. The unpacked font is laid out as
 FreeType lays it out, and is the face's own (freed with it). fontlib adds one limit FreeType hasn't: a
-font of more than 32 MB, unpacked, is refused. WOFF 2 (Brotli) isn't read.
+font of more than 32 MB, unpacked, is refused.
+
+## WOFF2
+
+A WOFF2 file (`wOF2`, the W3C's WOFF 2.0) is unpacked the same way: its tables come out of one Brotli
+stream (corelib's `CoreBrotli`), glyf and loca are made again from the transform most WOFF2 files use (each
+glyph's contour count, points, flags, coordinate triplets, composites, boxes and instructions, each in a
+stream of its own) and hmtx from its transform when it has one, and the result is an ordinary font, its
+directory sorted, its checksums worked out. A simple glyph comes out written plainly (a flag for each point,
+16-bit coordinates), with the overlap flag where the file's overlap bitmap says. Collections (`ttcf`) aren't
+read. Brotli's static dictionary is the program's to give: call `CoreBrotli.Dictionary` with
+`libs/core/brotli/dictionary.bin`'s bytes before loading a WOFF2 font, or a font whose stream uses a word
+from it is refused, saying so.
+
+Checked two ways (2026-11-20). Liberation Sans and Source Code Pro, packed as WOFF2 by
+`tools/font/make_woff2_tests.py` (transformed and not), are read by macOS's CoreText exactly as the fonts
+they came from, glyph for glyph; and `test_woff2` shows fontlib gives every glyph's outline and advance from
+them exactly as from the fonts themselves (2,620 glyphs and 71,785 points; 1,568 and 43,352). And a WOFF2
+font made by another encoder (Fraunces SemiBold, glyf transformed, 245 glyphs), read by fontlib and by
+CoreText: every advance the same, and every drawn glyph's bounding box the same.
 
 ## CFF
 

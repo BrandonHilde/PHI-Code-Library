@@ -10,7 +10,7 @@ the program, so there's nothing extra to ship.
 |---|---|---|
 | `weblib` | HTML, CSS and JavaScript: bytes in; DOM, computed styles and running scripts out | Moved here, in [libs/web](libs/web) |
 | `imagelib` | Image files in, pixels out | Reads BMP, PNG, JPEG (baseline and progressive), GIF (animations too) and WebP (lossless and lossy, exactly as libwebp), writes PNG, and scales, in [libs/image](libs/image) |
-| `fontlib` | Font files in; metrics and smooth glyph bitmaps out | Reads TrueType, CFF (`.otf`) and WOFF fonts (faces, outlines, metrics, characters), makes FreeType's glyph bitmaps, and measures, kerns and draws text, in [libs/font](libs/font) |
+| `fontlib` | Font files in; metrics and smooth glyph bitmaps out | Reads TrueType, CFF (`.otf`), WOFF and WOFF2 fonts (faces, outlines, metrics, characters), makes FreeType's glyph bitmaps, and measures, kerns and draws text, in [libs/font](libs/font) |
 | `corelib` | Checked byte reading; inflate, deflate and Brotli; shared by `imagelib` and `fontlib` | Built and tested, in [libs/core](libs/core) |
 | `vectorlib` | Shapes drawn smooth onto pixels: paths, SVG path data, transforms, gradients, outlines, dashes, clipping | Built and tested, in [libs/vector](libs/vector); checked against Quartz |
 | `editlib` | Text being edited: the caret, selecting, moving by words and lines, undo and redo, finding | Built and tested, in [libs/edit](libs/edit); PHI OS's text fields and Notes use it |

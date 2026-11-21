@@ -102,6 +102,13 @@ struct.FntTrueType
 			d is unpacked;
 			n is size;
 		;;
+		elif n >= 4 and d:0 is 'w' and d:1 is 'O' and d:2 is 'F' and d:3 is '2'
+			# a WOFF2 file: the same, its tables Brotli-packed and glyf perhaps transformed
+			u32 size2: 0;
+			unpacked is (FntWoff2.Unwoff2: d n addr size2);
+			d is unpacked;
+			n is size2;
+		;;
 		data is d;
 		length is n;
 		if n < 12

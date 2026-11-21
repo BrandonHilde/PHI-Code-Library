@@ -399,8 +399,8 @@ call Fnt.Free: face;
 | 4.3 Simple text ✓ | UTF-8, advances, line metrics, measuring and drawing a run, fallback across faces | HarfBuzz advances, and reference bitmaps |
 | 4.4 Kerning ✓ | `kern`, and pair adjustment in `GPOS` | FreeType/HarfBuzz advances |
 | 4.5 OpenType CFF ✓ | `.otf` outlines | FreeType |
-| 4.6 Web fonts ✓ | WOFF 1 (uses inflate) | Sample fonts, compared with the same font unpacked |
-| Later | Ligatures (`GSUB`), WOFF2 (needs Brotli), variable fonts, color fonts, TrueType hinting | |
+| 4.6 Web fonts ✓ | WOFF 1 (uses inflate), and WOFF2 (2026-11-21, Brotli) | Sample fonts, compared with the same font unpacked; WOFF2 with CoreText too |
+| Later | Ligatures (`GSUB`), variable fonts, color fonts, TrueType hinting | |
 
 **Left out on purpose:** TrueType hinting (a bytecode VM that mostly matters at low resolution, and a
 security risk) and complex scripts such as Arabic and Indic shaping, which are a project of their own.
@@ -489,6 +489,7 @@ what 1.0 does wrong goes in [phi-notes.md](docs/phi-notes.md), not into PHI.
 | `editlib` ✓ | Text being edited: caret, selection, words, lines, undo and redo, finding | The text field's and Notes' own editing; selecting, copy and paste, undo, everywhere text is typed |
 | corelib's deflate ✓ | DEFLATE, zlib and gzip, written | What a PNG file needs; and gzip for anyone |
 | vectorlib ✓ | Shapes drawn smooth: paths, SVG path data, transforms, gradients, outlines, dashes, clipping | SVG gradients, clipping and transforms in the browser, CSS transforms, a `<canvas>`, Paint's smooth shapes, the desktop's round corners |
+| fontlib's WOFF2 ✓ | WOFF2 fonts, glyf and hmtx transforms included | The web fonts most sites send now, in the browser |
 | corelib's Brotli ✓ | Brotli (RFC 7932), its dictionary given by the program | WOFF2 fonts (next, in fontlib), and `Content-Encoding: br` |
 | imagelib's WebP ✓ | Lossless and lossy WebP, read exactly as libwebp reads them | Pictures on today's web, which are more and more WebP, in the browser |
 | imagelib's PNG writer ✓ | An image to a PNG file, the smallest kind that loses nothing | Paint's pictures at about a fiftieth of a BMP's size on a disk with 3 MB to spare |
@@ -503,6 +504,10 @@ and what's selected after each action, and every line of it was worked out by ha
 accumulation), outlines made as FreeType's stroker makes them, gradients premultiplied. Checked
 against macOS's Quartz on 15 scenes (`tools/vector/check_svg.py`): at most 2 pixels in 4,096 differ by
 more than a quarter, the mean by at most 1.2 of 255. Next: PHI OS's browser draws SVG with it.
+
+**WOFF2, done 2026-11-21,** in [libs/font](libs/font): the container, Brotli, and the glyf, loca and hmtx
+transforms. Fonts packed here are read by CoreText as their originals and by fontlib glyph for glyph as their
+originals; a font from another encoder (Fraunces) agrees with CoreText on every advance and box.
 
 **Brotli, done 2026-11-20,** in [libs/core](libs/core): every kind of meta-block, context modelling and
 the dictionary's words and transforms; 45 of 45 streams from Brotli's encoder (every quality, several

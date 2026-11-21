@@ -1,0 +1,815 @@
+# WOFF 2 (W3C's WOFF File Format 2.0): a TrueType or CFF font whose tables are packed together with
+# Brotli (corelib's), the glyf and loca tables usually transformed into streams that pack better,
+# and hmtx sometimes; unpacked into the font it holds, which is then read as any font is.
+#
+#   - The header: the signature, the file's own length, at least one table, and not a collection
+#     (fontlib reads one font at a time).
+#   - The directory: each table's tag (one of 63 known, by number, or written out), its length, and
+#     for a transformed one the length of its transform; glyf and loca transformed together or not
+#     at all. Then the tables' data, Brotli-packed in one stream, which must unpack to exactly the
+#     lengths the directory says.
+#   - glyf, from its transform's seven streams (each glyph's contour count, each contour's point
+#     count, each point's flag, the points' coordinates as triplets, composite glyphs' components,
+#     bounding boxes, and instructions), and loca from where each glyph lands. A simple glyph is
+#     written out plainly (each point's flag, its coordinates as 16-bit steps), with the overlap flag
+#     on its first point where the overlap bitmap says.
+#   - hmtx, from its transform: the advances, and the left side bearings it left out taken from the
+#     glyphs' bounding boxes.
+#   - The font: its directory sorted by tag, each table at a multiple of 4, with its checksum, and
+#     head's checkSumAdjustment made good.
+#
+# Brotli's static dictionary is the program's to give corelib (CoreBrotli.Dictionary): a font whose
+# stream uses a word from it before then fails, saying so.
+
+use memory.mem;
+use user.math;
+use corelib;
+use fontlib.face;
+
+# reading one of the transform's streams: each read past its end throws
+struct.FntStream
+{
+	ptr<u8> p;
+	u32 len;
+	u32 pos;
+
+	[Start: ptr<u8> place: 0; u32 n: 0;]
+		p is place;
+		len is n;
+		pos is 0;
+	[end]
+
+	[U8: : u32]
+		if pos >= len
+			throw 'a WOFF2 glyph stream cut short';
+		;;
+		u32 v: p:pos;
+		pos++;
+	[end: v]
+
+	[U16: : u32]
+		u32 hi: (U8);
+	[end: (hi << 8) | (U8)]
+
+	[I16: : int]
+		int v: (U16) as int;
+		if v >= 32768
+			v-- 65536;
+		;;
+	[end: v]
+
+	[U32: : u32]
+		u32 hi: (U16);
+	[end: (hi << 16) | (U16)]
+
+	# WOFF2's 255UInt16: a byte, or a byte past 253 or 506, or a 16-bit word
+	[Short255: : u32]
+		u32 code: (U8);
+		if code is 253 return (U16);
+		if code is 255 return (U8) + 253;
+		if code is 254 return (U8) + 506;
+	[end: code]
+
+	[Skip: u32 n: 0;]
+		if n > len - pos
+			throw 'a WOFF2 glyph stream cut short';
+		;;
+		pos++ n;
+	[end]
+}
+
+# bytes being written, which grow
+struct.FntOut
+{
+	ptr<u8> bytes;
+	u32 used;
+	u32 room;
+
+	[Room: u32 n: 0;]
+		if used + n <= room return;
+		if used + n > Fnt.MOST_FONT_BYTES
+			throw 'a WOFF2 font of more than 32 MB';
+		;;
+		u32 fresh: room * 2;
+		if fresh < used + n + 4096
+			fresh is used + n + 4096;
+		;;
+		ptr<u8> bigger: new u8[fresh];
+		if bigger is 0
+			throw 'out of memory';
+		;;
+		if used > 0
+			call Mem.Copy: bigger bytes used;
+		;;
+		if bytes is not 0
+			free bytes;
+		;;
+		bytes is bigger;
+		room is fresh;
+	[end]
+
+	[U8: u32 v: 0;]
+		call Room: 1;
+		bytes:used is (v & 255) as u8;
+		used++;
+	[end]
+
+	[U16: u32 v: 0;]
+		call U8: v >> 8;
+		call U8: v;
+	[end]
+
+	[Copy: ptr<u8> from: 0; u32 n: 0;]
+		if n is 0 return;
+		call Room: n;
+		call Mem.Copy: bytes + used from n;
+		used++ n;
+	[end]
+
+	# up to a multiple of `of` with zeros
+	[Pad: u32 of: 4;]
+		while (used % of) is not 0
+			call U8: 0;
+		;;
+	[end]
+
+	[Free]
+		if bytes is not 0
+			free bytes;
+		;;
+		bytes is 0;
+		used is 0;
+		room is 0;
+	[end]
+}
+
+phi.FntWoff2:Library
+{
+	# the tags a table's number names (WOFF 2.0, 5.1)
+	str known: 'cmap' 'head' 'hhea' 'hmtx' 'maxp' 'name' 'OS/2' 'post' 'cvt ' 'fpgm' 'glyf' 'loca' 'prep'
+		'CFF ' 'VORG' 'EBDT' 'EBLC' 'gasp' 'hdmx' 'kern' 'LTSH' 'PCLT' 'VDMX' 'vhea' 'vmtx' 'BASE' 'GDEF'
+		'GPOS' 'GSUB' 'EBSC' 'JSTF' 'MATH' 'CBDT' 'CBLC' 'COLR' 'CPAL' 'SVG ' 'sbix' 'acnt' 'avar' 'bdat'
+		'bloc' 'bsln' 'cvar' 'fdsc' 'feat' 'fmtx' 'fvar' 'gvar' 'hsty' 'just' 'lcar' 'mort' 'morx' 'opbd'
+		'prop' 'trak' 'Zapf' 'Silf' 'Glat' 'Gloc' 'Feat' 'Sill';
+
+	const u32 TAG_GLYF: 0x676C7966;
+	const u32 TAG_LOCA: 0x6C6F6361;
+	const u32 TAG_HMTX: 0x686D7478;
+	const u32 TAG_HEAD: 0x68656164;
+	const u32 TAG_HHEA: 0x68686561;
+	const u32 TAG_MAXP: 0x6D617870;
+	const int MOST_TABLES: 256;
+
+	# the directory being read: each table's tag, its transform (255: none), its length in the font,
+	# its length in the unpacked stream, and where it starts there
+	u32 d_tags[256];
+	u32 d_versions[256];
+	u32 d_origs[256];
+	u32 d_sizes[256];
+	u32 d_starts[256];
+
+	# what glyf's reconstruction works with (Clean gives it back): points, flags, contours' ends,
+	# and each glyph's xMin, for hmtx
+	ptr<int> w_xs: 0;
+	ptr<int> w_ys: 0;
+	ptr<u8> w_ons: 0;
+	ptr<u32> w_ends: 0;
+	ptr<i16> w_mins: 0;
+	u32 w_room: 0;
+
+	# the font a WOFF2 file holds, on the heap (the caller frees it), its length in size_out; throws
+	# why it can't be unpacked
+	[Unwoff2: ptr<u8> d: 0; u32 n: 0; ptr<u32> size_out: 0; : ptr<u8>]
+	[end: (In: (d as u8[n]) d n size_out)]
+
+	[In: u8 src[]; ptr<u8> d: 0; u32 n: 0; ptr<u32> size_out: 0; : ptr<u8>]
+		if n < 48 or src:0 is not 'w' or src:1 is not 'O' or src:2 is not 'F' or src:3 is not '2'
+			throw 'not a WOFF2 file';
+		;;
+		u32 flavor: (Big32: src 4);
+		u32 length: (Big32: src 8);
+		u32 count: (Big16: src 12);
+		u32 packed: (Big32: src 20);
+		if flavor is 0x74746366
+			throw 'a WOFF2 collection, which fontlib doesn\'t read (one font at a time)';
+		;;
+		if length is not n or count is 0 or count > MOST_TABLES
+			throw 'a WOFF2 header that doesn\'t add up';
+		;;
+		# the directory (in the class's arrays: more than a kernel's stack takes)
+		ptr<u32> tags: addr d_tags;
+		ptr<u32> versions: addr d_versions;
+		ptr<u32> origs: addr d_origs;
+		ptr<u32> sizes: addr d_sizes;
+		ptr<u32> starts: addr d_starts;
+		u32 pos: 48;
+		u32 total: 0;
+		int glyf_at: -1;
+		int loca_at: -1;
+		int hmtx_at: -1;
+		while u32 k: 0; k < count; k++;
+			if pos >= n
+				throw 'a WOFF2 directory cut short';
+			;;
+			u32 flags: src:pos;
+			pos++;
+			u32 index: flags & 63;
+			u32 tag: 0;
+			if index is 63
+				if pos + 4 > n
+					throw 'a WOFF2 directory cut short';
+				;;
+				tag is (Big32: src pos);
+				pos++ 4;
+			;;
+			else
+				ptr<u8> name: known:index;
+				tag is ((name:0 as u32) << 24) | ((name:1 as u32) << 16) | ((name:2 as u32) << 8) | name:3;
+			;;
+			u32 version: flags >> 6;
+			u32 orig: (Base128: src addr pos n);
+			u32 size: orig;
+			bln transformed: false;
+			if tag is TAG_GLYF or tag is TAG_LOCA
+				transformed is (version is 0);
+				if not transformed and version is not 3
+					throw 'a WOFF2 glyf or loca transformed a way there isn\'t';
+				;;
+			;;
+			elif version is not 0
+				transformed is true;
+				if tag is not TAG_HMTX or version is not 1
+					throw 'a WOFF2 table transformed a way there isn\'t';
+				;;
+			;;
+			if transformed
+				size is (Base128: src addr pos n);
+				if tag is TAG_LOCA and size is not 0
+					throw 'a transformed WOFF2 loca that isn\'t empty';
+				;;
+			;;
+			tags:k is tag;
+			versions:k is version;
+			if not transformed
+				versions:k is 255;                  # (stored as it is)
+			;;
+			origs:k is orig;
+			sizes:k is size;
+			starts:k is total;
+			if size > Fnt.MOST_FONT_BYTES - total
+				throw 'a WOFF2 font of more than 32 MB';
+			;;
+			total++ size;
+			if tag is TAG_GLYF
+				glyf_at is k as int;
+			;;
+			elif tag is TAG_LOCA
+				loca_at is k as int;
+			;;
+			elif tag is TAG_HMTX
+				hmtx_at is k as int;
+			;;
+		;;
+		bln glyf_t: glyf_at >= 0 and versions:glyf_at is 0;
+		bln loca_t: loca_at >= 0 and versions:loca_at is 0;
+		if glyf_t is not loca_t
+			throw 'a WOFF2 font with glyf and loca transformed apart';
+		;;
+		if packed > n - pos
+			throw 'WOFF2 data past the end of the file';
+		;;
+		# the tables, unpacked
+		u32 got: 0;
+		ptr<u8> stream: (CoreBrotli.Decode: d + pos packed total addr got);
+		if stream is 0
+			throw 'WOFF2 data that won\'t unpack: ' CoreBrotli.error;
+		;;
+		if got is not total
+			free stream;
+			throw 'WOFF2 data that unpacks to the wrong length';
+		;;
+		FntOut glyf;
+		FntOut loca;
+		FntOut hmtx;
+		call Mem.Fill: addr glyf 0 sizeof FntOut;
+		call Mem.Fill: addr loca 0 sizeof FntOut;
+		call Mem.Fill: addr hmtx 0 sizeof FntOut;
+		ptr<u8> font: 0;
+		if call font is Assemble: stream d_tags d_versions d_origs d_sizes d_starts count glyf_at loca_at hmtx_at glyf loca hmtx size_out throws err
+			free stream;
+			call glyf.Free;
+			call loca.Free;
+			call hmtx.Free;
+			call Clean;
+			throw err.text;
+		;;
+		free stream;
+		call glyf.Free;
+		call loca.Free;
+		call hmtx.Free;
+		call Clean;
+	[end: font]
+
+	# what glyf's reconstruction works with, given back
+	[Clean]
+		if w_xs is not 0
+			free w_xs;
+		;;
+		if w_ys is not 0
+			free w_ys;
+		;;
+		if w_ons is not 0
+			free w_ons;
+		;;
+		if w_ends is not 0
+			free w_ends;
+		;;
+		if w_mins is not 0
+			free w_mins;
+		;;
+		w_xs is 0;
+		w_ys is 0;
+		w_ons is 0;
+		w_ends is 0;
+		w_mins is 0;
+		w_room is 0;
+	[end]
+
+	# room for n points and n contours' ends (the ends there are kept)
+	[Points: u32 n: 0;]
+		if n <= w_room return;
+		u32 fresh: (Math.Max: n 1024);
+		ptr<u32> ends: new u32[fresh];
+		if ends is 0
+			throw 'out of memory';
+		;;
+		if w_ends is not 0
+			call Mem.Copy: ends w_ends w_room * 4;
+			free w_ends;
+			free w_xs;
+			free w_ys;
+			free w_ons;
+		;;
+		w_ends is ends;
+		w_room is fresh;
+		w_xs is new int[fresh];
+		w_ys is new int[fresh];
+		w_ons is new u8[fresh];
+		if w_xs is 0 or w_ys is 0 or w_ons is 0
+			throw 'out of memory';
+		;;
+	[end]
+
+	# the font, from the unpacked tables (transformed ones made again first)
+	[Assemble: ptr<u8> stream: 0; u32 tags[]; u32 versions[]; u32 origs[]; u32 sizes[]; u32 starts[]; u32 count: 0;
+		int glyf_at: -1; int loca_at: -1; int hmtx_at: -1; FntOut glyf; FntOut loca; FntOut hmtx; ptr<u32> size_out: 0; : ptr<u8>]
+		u32 glyphs: 0;
+		if glyf_at >= 0 and versions:glyf_at is 0
+			FntStream g;
+			call g.Start: stream + starts:glyf_at sizes:glyf_at;
+			glyphs is (Glyf: g glyf loca);
+			if loca.used is not origs:loca_at
+				throw 'a WOFF2 loca that comes out the wrong length';
+			;;
+		;;
+		if hmtx_at >= 0 and versions:hmtx_at is 1
+			if w_mins is 0
+				throw 'a WOFF2 hmtx transformed without a transformed glyf';
+			;;
+			call Hmtx: stream tags sizes starts count hmtx_at glyphs w_mins hmtx origs:hmtx_at;
+		;;
+		# the font's directory, sorted by tag
+		int order[256];
+		while int k: 0; k < count; k++;
+			order:k is k;
+		;;
+		while int k: 1; k < count; k++;
+			int v: order:k;
+			int j: k - 1;
+			while j >= 0 and tags:(order:j) > tags:v
+				order:(j + 1) is order:j;
+				j--;
+			;;
+			order:(j + 1) is v;
+		;;
+		FntOut out_font;
+		call Mem.Fill: addr out_font 0 sizeof FntOut;
+		u32 flavor: 0x00010000;
+		if (Find: tags count 0x43464620) >= 0
+			flavor is 0x4F54544F;                   # 'OTTO': CFF outlines
+		;;
+		call out_font.U16: flavor >> 16;
+		call out_font.U16: flavor;
+		call out_font.U16: count;
+		u32 search: 1;
+		u32 selector: 0;
+		while search * 2 <= count
+			search is search * 2;
+			selector++;
+		;;
+		call out_font.U16: search * 16;
+		call out_font.U16: selector;
+		call out_font.U16: count * 16 - search * 16;
+		u32 dir_at: out_font.used;
+		while u32 k: 0; k < count * 16; k++;
+			call out_font.U8: 0;
+		;;
+		u32 head_at: 0;
+		while u32 i: 0; i < count; i++;
+			int k: order:i;
+			ptr<u8> data: stream + starts:k;
+			u32 len: sizes:k;
+			if k is glyf_at and glyf.used > 0
+				data is glyf.bytes;
+				len is glyf.used;
+			;;
+			elif k is loca_at and versions:k is 0
+				data is loca.bytes;
+				len is loca.used;
+			;;
+			elif k is hmtx_at and versions:k is 1
+				data is hmtx.bytes;
+				len is hmtx.used;
+			;;
+			u32 place: out_font.used;
+			call out_font.Copy: data len;
+			call out_font.Pad: 4;
+			if tags:k is TAG_HEAD
+				head_at is place;
+				if len >= 12
+					# checkSumAdjustment is 0 while the checksums are worked out
+					call Mem.Fill: out_font.bytes + place + 8 0 4;
+				;;
+			;;
+			u32 rec: dir_at + i * 16;
+			call Put32: out_font.bytes rec tags:k;
+			call Put32: out_font.bytes rec + 4 (Sum: out_font.bytes + place len);
+			call Put32: out_font.bytes rec + 8 place;
+			call Put32: out_font.bytes rec + 12 len;
+		;;
+		if head_at > 0
+			u32 all: (Sum: out_font.bytes out_font.used);
+			call Put32: out_font.bytes head_at + 8 0xB1B0AFBA - all;
+		;;
+		size_out:0 is out_font.used;
+	[end: out_font.bytes]
+
+	[Find: u32 tags[]; u32 count: 0; u32 tag: 0;]
+		while int k: 0; k < count; k++;
+			if tags:k is tag return k;
+		;;
+	[end: -1]
+
+	# the sum of a table's big-endian 32-bit words, its last padded with zeros
+	[Sum: ptr<u8> p: 0; u32 n: 0; : u32]
+		u32 sum: 0;
+		u32 i: 0;
+		while i + 4 <= n
+			sum++ ((p:i as u32) << 24) | ((p:(i + 1) as u32) << 16) | ((p:(i + 2) as u32) << 8) | p:(i + 3);
+			i++ 4;
+		;;
+		if i < n
+			u32 last: 0;
+			while u32 k: 0; k < 4; k++;
+				last is last << 8;
+				if i + k < n
+					last is last | p:(i + k);
+				;;
+			;;
+			sum++ last;
+		;;
+	[end: sum]
+
+	[Put32: ptr<u8> p: 0; u32 at_pos: 0; u32 v: 0;]
+		p:at_pos is (v >> 24) as u8;
+		p:(at_pos + 1) is ((v >> 16) & 255) as u8;
+		p:(at_pos + 2) is ((v >> 8) & 255) as u8;
+		p:(at_pos + 3) is (v & 255) as u8;
+	[end]
+
+	[Big16: u8 src[]; u32 p: 0; : u32]
+	[end: ((src:p as u32) << 8) | src:(p + 1)]
+
+	[Big32: u8 src[]; u32 p: 0; : u32]
+	[end: ((src:p as u32) << 24) | ((src:(p + 1) as u32) << 16) | ((src:(p + 2) as u32) << 8) | src:(p + 3)]
+
+	# WOFF2's UIntBase128: up to five bytes of 7 bits each, the first not a leading zero
+	[Base128: u8 src[]; ptr<u32> pos: 0; u32 n: 0; : u32]
+		u32 v: 0;
+		while int i: 0; i < 5; i++;
+			if pos:0 >= n
+				throw 'a WOFF2 directory cut short';
+			;;
+			u32 b: src:(pos:0);
+			pos:0++;
+			if i is 0 and b is 0x80
+				throw 'a WOFF2 number with a leading zero';
+			;;
+			if (v & 0xFE000000) is not 0
+				throw 'a WOFF2 number past 32 bits';
+			;;
+			v is (v << 7) | (b & 0x7F);
+			if (b & 0x80) is 0 return v;
+		;;
+		throw 'a WOFF2 number of more than five bytes';
+	[end: 0]
+
+	# ---- glyf and loca, from the transform (WOFF 2.0, 5.1): how many glyphs
+
+	[Glyf: FntStream g; FntOut glyf; FntOut loca; : u32]
+		u32 reserved: (g.U16);
+		u32 options: (g.U16);
+		u32 glyphs: (g.U16);
+		u32 index_format: (g.U16);
+		u32 lens[7];
+		while int i: 0; i < 7; i++;
+			lens:i is (g.U32);
+		;;
+		FntStream streams[7];
+		u32 place: g.pos;
+		while int i: 0; i < 7; i++;
+			if lens:i > g.len - place
+				throw 'a WOFF2 glyf stream past its table';
+			;;
+			call streams:i.Start: g.p + place lens:i;
+			place++ lens:i;
+		;;
+		ptr<u8> overlap: 0;
+		if (options & 1) is not 0
+			u32 olen: (glyphs + 7) >> 3;
+			if olen > g.len - place
+				throw 'a WOFF2 overlap bitmap past its table';
+			;;
+			overlap is g.p + place;
+		;;
+		# the bbox stream starts with a bit for each glyph that has a box of its own
+		u32 bitmap_len: ((glyphs + 31) >> 5) * 4;
+		ptr<u8> bitmap: streams:5.p;
+		call streams:5.Skip: bitmap_len;
+		w_mins is new i16[glyphs + 1];
+		if w_mins is 0
+			throw 'out of memory';
+		;;
+		ptr<i16> mins: w_mins;
+		call Points: 1024;
+		while u32 gi: 0; gi < glyphs; gi++;
+			# where it starts in glyf
+			call Loca: loca index_format glyf.used;
+			mins:gi is 0;
+			int contours: (streams:0.I16);
+			bln boxed: (bitmap:(gi >> 3) & (0x80 >> (gi & 7))) is not 0;
+			if contours is 0
+				if boxed
+					throw 'an empty WOFF2 glyph with a box';
+				;;
+				continue;
+			;;
+			if contours < 0
+				# composite: its components as written, then its instructions, if it says so
+				if not boxed
+					throw 'a composite WOFF2 glyph with no box';
+				;;
+				call glyf.U16: 0xFFFF;
+				int bx0: (streams:5.I16);
+				mins:gi is bx0 as i16;
+				call glyf.U16: bx0 as u32 & 0xFFFF;
+				call glyf.U16: (streams:5.I16) as u32 & 0xFFFF;
+				call glyf.U16: (streams:5.I16) as u32 & 0xFFFF;
+				call glyf.U16: (streams:5.I16) as u32 & 0xFFFF;
+				bln instructions: false;
+				int parts: 0;
+				while true
+					parts++;
+					if parts > 4096
+						throw 'a composite WOFF2 glyph of too many parts';
+					;;
+					u32 flags: (streams:4.U16);
+					call glyf.U16: flags;
+					u32 arg_bytes: 2;
+					if (flags & 1) is not 0
+						arg_bytes is 4;
+					;;
+					u32 scale_bytes: 0;
+					if (flags & 8) is not 0
+						scale_bytes is 2;
+					;;
+					elif (flags & 0x40) is not 0
+						scale_bytes is 4;
+					;;
+					elif (flags & 0x80) is not 0
+						scale_bytes is 8;
+					;;
+					u32 n_bytes: 2 + arg_bytes + scale_bytes;
+					while u32 k: 0; k < n_bytes; k++;
+						call glyf.U8: (streams:4.U8);
+					;;
+					if (flags & 0x100) is not 0
+						instructions is true;
+					;;
+					if (flags & 0x20) is 0 break;
+				;;
+				if instructions
+					u32 ilen: (streams:3.Short255);
+					call glyf.U16: ilen;
+					if ilen > streams:6.len - streams:6.pos
+						throw 'WOFF2 instructions past their stream';
+					;;
+					call glyf.Copy: streams:6.p + streams:6.pos ilen;
+					call streams:6.Skip: ilen;
+				;;
+				call glyf.Pad: 4;
+				continue;
+			;;
+			# simple: its contours' ends, its points from the triplets, its instructions
+			if contours as u32 > Fnt.MOST_CONTOURS
+				throw 'a WOFF2 glyph of too many contours';
+			;;
+			call Points: contours as u32;
+			u32 points: 0;
+			while int c: 0; c < contours; c++;
+				points++ (streams:1.Short255);
+				if points > Fnt.MOST_POINTS
+					throw 'a WOFF2 glyph of too many points';
+				;;
+				w_ends:c is points - 1;
+			;;
+			call Points: points;
+			ptr<int> xs: w_xs;
+			ptr<int> ys: w_ys;
+			ptr<u8> ons: w_ons;
+			int x: 0;
+			int y: 0;
+			int lo_x: 32767;
+			int lo_y: 32767;
+			int hi_x: -32768;
+			int hi_y: -32768;
+			while u32 p: 0; p < points; p++;
+				u32 flag: (streams:2.U8);
+				ons:p is 1;
+				if (flag & 0x80) is not 0
+					ons:p is 0;
+				;;
+				int f: (flag & 0x7F) as int;
+				int dx: 0;
+				int dy: 0;
+				if f < 10
+					dy is (Signed: f ((f & 14) << 7) + (streams:3.U8) as int);
+				;;
+				elif f < 20
+					dx is (Signed: f (((f - 10) & 14) << 7) + (streams:3.U8) as int);
+				;;
+				elif f < 84
+					int b0: f - 20;
+					int b1: (streams:3.U8) as int;
+					dx is (Signed: f 1 + (b0 & 0x30) + (b1 >> 4));
+					dy is (Signed: f >> 1 1 + ((b0 & 0x0C) << 2) + (b1 & 0x0F));
+				;;
+				elif f < 120
+					int b0: f - 84;
+					int b1: (streams:3.U8) as int;
+					int b2: (streams:3.U8) as int;
+					dx is (Signed: f 1 + ((b0 / 12) << 8) + b1);
+					dy is (Signed: f >> 1 1 + (((b0 % 12) >> 2) << 8) + b2);
+				;;
+				elif f < 124
+					int b1: (streams:3.U8) as int;
+					int b2: (streams:3.U8) as int;
+					int b3: (streams:3.U8) as int;
+					dx is (Signed: f (b1 << 4) + (b2 >> 4));
+					dy is (Signed: f >> 1 ((b2 & 0x0F) << 8) + b3);
+				;;
+				else
+					int b1: (streams:3.U8) as int;
+					int b2: (streams:3.U8) as int;
+					int b3: (streams:3.U8) as int;
+					int b4: (streams:3.U8) as int;
+					dx is (Signed: f (b1 << 8) + b2);
+					dy is (Signed: f >> 1 (b3 << 8) + b4);
+				;;
+				x++ dx;
+				y++ dy;
+				xs:p is x;
+				ys:p is y;
+				lo_x is (Math.Min: lo_x x);
+				lo_y is (Math.Min: lo_y y);
+				hi_x is (Math.Max: hi_x x);
+				hi_y is (Math.Max: hi_y y);
+			;;
+			u32 ilen: (streams:3.Short255);
+			if boxed
+				lo_x is (streams:5.I16);
+				lo_y is (streams:5.I16);
+				hi_x is (streams:5.I16);
+				hi_y is (streams:5.I16);
+			;;
+			elif points is 0
+				lo_x is 0;
+				lo_y is 0;
+				hi_x is 0;
+				hi_y is 0;
+			;;
+			mins:gi is lo_x as i16;
+			call glyf.U16: contours as u32;
+			call glyf.U16: lo_x as u32 & 0xFFFF;
+			call glyf.U16: lo_y as u32 & 0xFFFF;
+			call glyf.U16: hi_x as u32 & 0xFFFF;
+			call glyf.U16: hi_y as u32 & 0xFFFF;
+			while int c: 0; c < contours; c++;
+				call glyf.U16: w_ends:c;
+			;;
+			call glyf.U16: ilen;
+			if ilen > streams:6.len - streams:6.pos
+				throw 'WOFF2 instructions past their stream';
+			;;
+			call glyf.Copy: streams:6.p + streams:6.pos ilen;
+			call streams:6.Skip: ilen;
+			# each point's flag (on the curve, and overlap on the first), then x and y as 16-bit steps
+			bln overlaps: overlap is not 0 and (overlap:(gi >> 3) & (0x80 >> (gi & 7))) is not 0;
+			while u32 p: 0; p < points; p++;
+				u32 fl: ons:p;
+				if p is 0 and overlaps
+					fl is fl | 0x40;
+				;;
+				call glyf.U8: fl;
+			;;
+			int px: 0;
+			while u32 p: 0; p < points; p++;
+				call glyf.U16: (xs:p - px) as u32 & 0xFFFF;
+				px is xs:p;
+			;;
+			int py: 0;
+			while u32 p: 0; p < points; p++;
+				call glyf.U16: (ys:p - py) as u32 & 0xFFFF;
+				py is ys:p;
+			;;
+			call glyf.Pad: 4;
+		;;
+		call Loca: loca index_format glyf.used;
+	[end: glyphs]
+
+	# a glyph's start in loca: its offset, or half of it in the short format
+	[Loca: FntOut loca; u32 format: 0; u32 offset: 0;]
+		if format is 0 and offset > 0x1FFFE
+			throw 'a WOFF2 glyf too big for its short loca';
+		;;
+		if format is 0
+			call loca.U16: offset >> 1;
+			return;
+		;;
+		call loca.U16: offset >> 16;
+		call loca.U16: offset;
+	[end]
+
+	# a triplet's coordinate: positive when the flag's bit 0 is set
+	[Signed: int flag: 0; int v: 0;]
+		if (flag & 1) is not 0 return v;
+	[end: 0 - v]
+
+	# ---- hmtx, from its transform: advances, and the left side bearings it kept
+
+	[Hmtx: ptr<u8> stream: 0; u32 tags[]; u32 sizes[]; u32 starts[]; u32 count: 0; int place: 0; u32 glyphs: 0; ptr<i16> mins: 0; FntOut hmtx; u32 orig: 0;]
+		int hhea: (Find: tags count TAG_HHEA);
+		if hhea < 0 or sizes:hhea < 36
+			throw 'a WOFF2 font without hhea';
+		;;
+		ptr<u8> hh: stream + starts:hhea;
+		u32 metrics: ((hh:34 as u32) << 8) | hh:35;
+		if metrics is 0 or metrics > glyphs
+			throw 'a WOFF2 hhea whose metrics don\'t add up';
+		;;
+		FntStream s;
+		call s.Start: stream + starts:place sizes:place;
+		u32 flags: (s.U8);
+		if (flags & 0xFC) is not 0 or (flags & 3) is 0
+			throw 'a WOFF2 hmtx transform with flags there aren\'t';
+		;;
+		ptr<u32> advances: new u32[metrics];
+		if advances is 0
+			throw 'out of memory';
+		;;
+		while u32 i: 0; i < metrics; i++;
+			advances:i is (s.U16);
+		;;
+		while u32 i: 0; i < metrics; i++;
+			call hmtx.U16: advances:i;
+			if (flags & 1) is 0
+				call hmtx.U16: (s.U16);
+			;;
+			else
+				call hmtx.U16: (mins:i as int) as u32 & 0xFFFF;
+			;;
+		;;
+		free advances;
+		while u32 i: metrics; i < glyphs; i++;
+			if (flags & 2) is 0
+				call hmtx.U16: (s.U16);
+			;;
+			else
+				call hmtx.U16: (mins:i as int) as u32 & 0xFFFF;
+			;;
+		;;
+		if hmtx.used is not orig
+			throw 'a WOFF2 hmtx that comes out the wrong length';
+		;;
+	[end]
+}

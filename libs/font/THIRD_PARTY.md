@@ -15,6 +15,10 @@ Read by the tests, never built into a program.
 The rest of `tests/` (`cases.bin`, `cases.txt`, `release.bin`, `release.txt`) is made by
 `tools/font/make_font_tests.py`, from Liberation Sans and fonts it makes with fontTools.
 
+`tests/woff2/` holds those two fonts repackaged as WOFF2 by `tools/font/make_woff2_tests.py`, under the
+same license (their texts are beside the fonts): the fonts' names and glyphs are unchanged, as CoreText and
+fontlib, reading every glyph of each, show.
+
 ## Used to check, not kept here
 
 - **FreeType** (through freetype-py, which brings FreeType 2.13.2), whose faces, outlines and metrics the

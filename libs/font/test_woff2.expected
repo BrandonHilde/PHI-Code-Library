@@ -1,0 +1,5 @@
+the dictionary: 1
+tests/woff2/LiberationSans-transformed.woff2: 2620 glyphs (the font has 2620), 2620 the same, 71785 points
+tests/woff2/LiberationSans-plain.woff2: 2620 glyphs (the font has 2620), 2620 the same, 71785 points
+tests/woff2/SourceCodePro.woff2: 1568 glyphs (the font has 1568), 1568 the same, 43352 points
+damaged: 100 came back (1 read, 99 refused)
