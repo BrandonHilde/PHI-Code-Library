@@ -1,7 +1,7 @@
 # corelib
 
 What `imagelib` and `fontlib` both need: checked reading of bytes and bits, Adler-32, and inflating
-DEFLATE, zlib and gzip data. It's small on purpose, and depends on no other library here.
+and deflating DEFLATE, zlib and gzip data. It's small on purpose, and depends on no other library here.
 
 ```phi
 use corelib;
@@ -32,6 +32,7 @@ These names are the API. Everything else the library declares (`CoreHuff`, `Core
 | `CoreBits` | A struct reading bits: `Start: bytes length msb_first`; `Bits: n` → (n at most 24), `Bit` →, `Peek: n` →, `Drop: n`, `AlignByte`, `Release` (gives back whole bytes it's holding, so `pos` is the next unread byte); `failed` |
 | `CoreAdler` | `Of: data length` → Adler-32, `Add: adler data length` → (carries on from an earlier one). CRC-32 is the standard library's `data.crc32` |
 | `CoreInflate` | `Raw`, `Zlib`, `Gzip`, each `: data length limit size_out` → the output, or 0 with the reason in `CoreInflate.error`. `CoreInflate.used` is how many bytes of the input the stream took |
+| `CoreDeflate` | `Raw`, `Zlib`, `Gzip`, each `: data length level size_out` → the packed bytes on the heap (free them), or 0 with the reason in `CoreDeflate.error`. `level` is 0 (stored) to 9 (packs the most), 6 as zlib's default. At most 1 GB of input |
 | `CoreInflate.ZlibUpTo: data length limit size_out` → | zlib data inflated up to `limit` bytes and no more, for a reader that knows how much it needs (as a PNG's image data is): it stops at the limit, with `CoreInflate.more` true if the stream had more to give, and when the data ends too soon it gives back what it made, with the reason in `error`. It fails (0) only when the stream is damaged before the limit |
 
 **A read past the end** of a `CoreReader` or `CoreBits` gives 0 and sets `failed`, which stays set.
@@ -55,7 +56,14 @@ checked, except that a match just past it whose distance reaches before the star
 a match's distance before its room; zlib checks it once there's room, so asking zlib for one byte more is
 how the test finds this out).
 
-**One thread at a time:** `CoreInflate.error`, `used` and `more` are shared.
+**Deflate** finds earlier copies over a 32 KB window through chains of 3-byte hashes, the level saying
+how many places along a chain it looks (4 at level 1, 128 at 6, 4,096 at 9), and takes a copy as soon as
+it's found it (zlib, from level 4, waits a byte to see whether a longer one starts there). Every 16,384
+copies and characters make a block, written whichever of three ways is smallest: with Huffman codes made
+for it (none longer than 15 bits), with DEFLATE's fixed codes, or stored. So what doesn't pack grows by
+about 5 bytes in every 16 KB, and never by more. Gzip's header has no name and no time.
+
+**One thread at a time:** `CoreInflate.error`, `used` and `more`, and `CoreDeflate.error`, are shared.
 
 ## How it's checked
 
@@ -74,6 +82,7 @@ pwsh ./build.ps1 core -Test -Release              # the release tests too
 | `test_inflate`, `release_inflate` | Inflate against zlib, on the cases in [tests/inflate](tests/inflate) (listed in `cases.txt`), and six good streams cut short: every day at a few lengths each, and for release at every length near their ends and every 13th between (`inflatecases.phi` does both) |
 | `test_inflate_upto`, `release_inflate_upto` | `ZlibUpTo` against zlib, on the cases in `upto.bin` every day (each good zlib stream cut at 2 lengths, and whole with 3 limits; and the bad zlib streams) and `upto-release.bin` for release (cut at many lengths, and 6 limits). Each must give what zlib gives of it as far as it goes, by length and CRC-32, and say whether there's more past the limit, or be damaged where zlib finds it damaged (`uptocases.phi` does both) |
 | `release_inflate_fuzz` (release tier) | 100,000 random changes to good streams, every value of each of the first 48 bytes of one stream in each format, and noise. All of them must come back, with a result or a failure |
+| `test_deflate` | Deflate at levels 0, 1, 6 and 9 on eight kinds of data (nothing, one byte, a short text, every byte, noise, zeros, words, a drawing), in each framing, read back by corelib's inflate exactly; and the size each packs to, so a change in how well it packs shows |
 | `tests/use/test_corelib` | The compiled `corelib.philib`, on its own |
 
 The reference is Python's zlib. `make_inflate_tests.py` makes the streams with it, at every level and
@@ -88,6 +97,23 @@ for each way a stream can be broken. Every case's expected result is zlib's own 
 | Fuzz cases (small streams with bits changed), agreeing with zlib | 600 of 600 (230 good, 370 bad) |
 | Good streams cut short, refused | 3,513 of 3,513 |
 | `ZlibUpTo`, as zlib gives it (2026-11-08) | 2,689 of 2,689: 323 to the limit exactly, 353 with more past it, 2,008 shorter as the data ends first, 5 damaged |
+
+**Deflate against zlib** (2026-11-20, `python3 -I tools/core/check_deflate.py PHI`, on macOS): each
+input packed by corelib at levels 0, 1, 6 and 9, in each of the three framings, and unpacked by Python's
+zlib. **Every one comes back exactly.** In zlib's framing, corelib's size against zlib's own:
+
+| Input | Bytes | Level 1 | Level 6 | Level 9 |
+|---|---|---|---|---|
+| Noise | 200,000 | 200,071 / 200,071 | 200,071 / 200,071 | 200,071 / 200,071 |
+| Zeros | 500,000 | 506 / 2,202 | 506 / 506 | 506 / 506 |
+| Words | 200,104 | 35,859 / 37,622 | 25,965 / 25,970 | 24,161 / 24,179 |
+| corelib's source and docs | 78,152 | 25,779 / 27,507 | 23,254 / 22,611 | 23,211 / 22,551 |
+| weblib's `entities.phi` | 30,098 | 12,516 / 13,020 | 12,066 / 11,470 | 12,058 / 11,466 |
+| A drawing in 16 colors, as PNG rows | 256,400 | 2,138 / 3,436 | 2,192 / 2,195 | 1,406 / 1,282 |
+| A picture like a photo, as PNG rows | 230,640 | 184,275 / 184,504 | 175,955 / 201,383 | 175,955 / 201,383 |
+
+At level 0 both store, and come to the same size. On source text corelib is up to 5% bigger than zlib at
+levels 6 and 9 (it doesn't match lazily); on the rest it's as small or smaller.
 
 **Speed** (2026-11-08, as a 64-bit Linux program, with Python's zlib on the same data for comparison):
 

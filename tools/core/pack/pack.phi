@@ -1,0 +1,70 @@
+# For check_deflate.py: packs a file with corelib's deflate and writes what it made.
+#   pack IN OUT LEVEL FRAME      (FRAME: 0 bare, 1 zlib, 2 gzip)
+use corelib;
+
+phi.Pack:Program
+{
+	call CoreLib.Start;
+	str args: (OS.Arguments);
+	str input: '';
+	str output: '';
+	int level: 6;
+	int frame: 1;
+	int part: 0;
+	str word: '';
+	args++ ' ';
+	while int i: 0; i < args.len; i++;
+		if args:i is not ' '
+			word++ args:i;
+			continue;
+		;;
+		if word.len is 0
+			continue;
+		;;
+		when part
+			is 0
+				input is word;
+			;;
+			is 1
+				output is word;
+			;;
+			is 2
+				level is word:0 - '0';
+			;;
+			is 3
+				frame is word:0 - '0';
+			;;
+		;;
+		part++;
+		word is '';
+	;;
+	int size: (OS.FileSize: input);
+	if size < 0
+		log 'no file ' input '\n';
+		exit 1;
+	;;
+	ptr<u8> data: new u8[size + 1];
+	int got: (OS.ReadFile: input data size);
+	u32 packed_size: 0;
+	ptr<u8> packed: 0;
+	when frame
+		is 0
+			packed is (CoreDeflate.Raw: data got as u32 level addr packed_size);
+		;;
+		is 2
+			packed is (CoreDeflate.Gzip: data got as u32 level addr packed_size);
+		;;
+		else
+			packed is (CoreDeflate.Zlib: data got as u32 level addr packed_size);
+		;;
+	;;
+	if packed is 0
+		log 'failed: ' CoreDeflate.error '\n';
+		exit 1;
+	;;
+	if (OS.WriteFile: output packed packed_size as int) <= 0
+		log 'not written\n';
+		exit 1;
+	;;
+	exit 0;
+}

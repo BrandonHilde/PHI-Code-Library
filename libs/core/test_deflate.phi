@@ -1,0 +1,104 @@
+# corelib's deflate, every day: each kind of data at levels 0, 1, 6 and 9, in each framing, read back
+# by corelib's inflate, which must give the data exactly. What it packs to is printed too, so a
+# change in how well it packs shows. (tools/core/check_deflate.py has zlib read the same output.)
+use corelib;
+use memory.mem;
+
+phi.TestDeflate:Program
+{
+	call CoreLib.Start;
+	ptr<u8> data: new u8[300000];
+	u32 seed: 12345;
+	int levels: 0 1 6 9;
+
+	call Case: 'empty' 0;
+	data:0 is 'a';
+	call Case: 'one byte' 1;
+	str hello: 'hello hello hello hello, corelib packs hello';
+	call Mem.Copy: data hello hello.len;
+	call Case: 'a short text' hello.len;
+	while int i: 0; i < 256; i++;
+		data:i is i as u8;
+	;;
+	call Case: 'every byte once' 256;
+	while int i: 0; i < 100000; i++;
+		seed is seed * 1103515245 + 12345;
+		data:i is (seed >> 16) as u8;
+	;;
+	call Case: 'noise' 100000;
+	call Mem.Fill: data 0 300000;
+	call Case: 'zeros' 300000;
+	# words from a small set, in an order that wanders: what text is like
+	str words: 'the ' 'quick ' 'brown ' 'fox ' 'jumps ' 'over ' 'lazy ' 'dog ' 'and ' 'packs ' 'its ' 'bags\n';
+	int n: 0;
+	while n < 60000
+		seed is seed * 1103515245 + 12345;
+		str w: words:((seed >> 16) % 12);
+		call Mem.Copy: data + n w w.len;
+		n++ w.len;
+	;;
+	call Case: 'words' n;
+	# a picture of 256 colors, 640 by 400, as a paint program has one: shapes on a plain ground
+	while int y: 0; y < 400; y++;
+		while int x: 0; x < 640; x++;
+			u8 c: 3;
+			if (x - 320) * (x - 320) + (y - 200) * (y - 200) < 120 * 120
+				c is 9;
+			;;
+			if x > 40 and x < 200 and y > 50 and y < 140
+				c is 4;
+			;;
+			if (x + y) % 97 < 3
+				c is 0;
+			;;
+			data:(y * 640 + x) is c;
+		;;
+	;;
+	call Case: 'a picture' 256000;
+
+	# the other framings, once each
+	u32 size: 0;
+	ptr<u8> raw: (CoreDeflate.Raw: hello hello.len 6 addr size);
+	ptr<u8> back: (CoreInflate.Raw: raw size 0 addr size);
+	log 'raw: ' (back is not 0 and size is hello.len and (Mem.Equal: back hello size)) '\n';
+	free raw;
+	free back;
+	ptr<u8> gz: (CoreDeflate.Gzip: hello hello.len 9 addr size);
+	log 'gzip: header ' gz:0 ' ' gz:1 ' ' gz:2 ' ' gz:8 ', ' size ' bytes';
+	back is (CoreInflate.Gzip: gz size 0 addr size);
+	log ', back: ' (back is not 0 and size is hello.len and (Mem.Equal: back hello size)) '\n';
+	free gz;
+	free back;
+	ptr<u8> none: (CoreDeflate.Zlib: 0 5 6 addr size);
+	log 'no data: ' (none is 0) ', ' CoreDeflate.error '\n';
+	free data;
+	exit 0;
+
+	# n bytes of data at each level, through zlib and back
+	[Case: ptr<u8> name: 0; int n: 0;]
+		log name ' (' n '):';
+		while int l: 0; l < 4; l++;
+			u32 packed_size: 0;
+			ptr<u8> packed: (CoreDeflate.Zlib: data n as u32 levels:l addr packed_size);
+			if packed is 0
+				log ' failed: ' CoreDeflate.error;
+				continue;
+			;;
+			u32 size: 0;
+			ptr<u8> back: (CoreInflate.Zlib: packed packed_size 0 addr size);
+			bln same: back is not 0 and size is n as u32;
+			if same and n > 0
+				same is (Mem.Equal: back data n);
+			;;
+			log ' ' packed_size;
+			if not same
+				log ' WRONG (' CoreInflate.error ')';
+			;;
+			free packed;
+			if back is not 0
+				free back;
+			;;
+		;;
+		log '\n';
+	[end]
+}

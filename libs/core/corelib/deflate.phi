@@ -1,0 +1,741 @@
+# corelib's deflate: data made smaller, as DEFLATE (RFC 1951), bare or in zlib's framing (RFC 1950)
+# or gzip's (RFC 1952), for corelib's inflate, or any other, to read back.
+#
+#   u32 size: 0;
+#   ptr<u8> packed: (CoreDeflate.Zlib: data length 6 addr size);  # level 0 to 9; 0 if it failed
+#   if packed is 0
+#       log 'not packed: ' CoreDeflate.error '\n';
+#   ;;
+#   free packed;
+#
+# How: LZ77 over a 32 KB window. Earlier copies are found through chains of places whose next three
+# bytes hash alike, and how far along a chain it looks is the level; a copy is taken as soon as it's
+# found (no lazy matching). Every 16,384 copies and characters make a block, written whichever of
+# three ways is smallest: with Huffman codes made for it, with DEFLATE's fixed codes, or stored as it
+# is. So data that doesn't pack is never much bigger than it was. Level 0 stores it all.
+
+use memory.mem;
+use data.crc32;
+use corelib.adler;
+
+# bits written one after another, the first in a byte's lowest bit, into memory that grows
+struct.CoreBitOut
+{
+	ptr<u8> output;
+	u32 room;
+	u32 used;
+	u32 bits;                   # bits waiting to make a byte, the first lowest
+	int count;                  # how many are waiting
+	bln failed;                 # memory ran out: what came after is lost
+
+	[Start: u32 guess: 0;]
+		room is guess + 64;
+		output is new u8[room];
+		used is 0;
+		bits is 0;
+		count is 0;
+		failed is (output is 0);
+		if failed
+			room is 0;
+		;;
+	[end]
+
+	# value's low n bits (n at most 16)
+	[Bits: u32 value: 0; int n: 0;]
+		if n <= 0 return;
+		bits is bits | ((value & ((1 << n) - 1)) << count);
+		count++ n;
+		while count >= 8
+			call Byte: bits & 255;
+			bits is bits >> 8;
+			count-- 8;
+		;;
+	[end]
+
+	# a Huffman code: its first bit is its top one
+	[Code: u32 code: 0; int n: 0;]
+		u32 turned: 0;
+		while int i: 0; i < n; i++;
+			turned is (turned << 1) | ((code >> i) & 1);
+		;;
+		call Bits: turned n;
+	[end]
+
+	[Byte: u32 b: 0;]
+		if used >= room and not (Grow: 1) return;
+		output:used is (b & 255) as u8;
+		used++;
+	[end]
+
+	# what's waiting, padded with 0 to a whole byte
+	[Align]
+		if count > 0
+			call Byte: bits & 255;
+		;;
+		bits is 0;
+		count is 0;
+	[end]
+
+	[Grow: u32 more: 0;]
+		if failed return false;
+		u32 fresh: room * 2;
+		if fresh < used + more + 1024
+			fresh is used + more + 1024;
+		;;
+		ptr<u8> bigger: new u8[fresh];
+		if bigger is 0
+			failed is true;
+			return false;
+		;;
+		if used > 0
+			call Mem.Copy: bigger output used;
+		;;
+		free output;
+		output is bigger;
+		room is fresh;
+	[end: true]
+}
+
+# One run of deflate: the window's hash chains, the block being gathered, and the codes made for it.
+struct.CoreDeflater
+{
+	ptr<u8> data;
+	int length;
+	int chain;                  # how many earlier places a search looks at, at most
+	int nice;                   # a copy this long is long enough to stop looking
+	ptr<int> head;              # for each hash of three bytes, the last place it was seen (-1: none)
+	ptr<int> prev;              # for each place in the window, the place before it with its hash
+	ptr<u32> tokens;            # the block's: a character (below 256), or a copy, its distance << 16 | its length
+	int token_count;
+	int block_start;            # where in data the block's bytes begin
+	CoreBitOut w;
+	u32 lit_freq[288];
+	u32 dist_freq[32];
+	u8 lit_len[288];            # the block's own codes
+	u16 lit_code[288];
+	u8 dist_len[32];
+	u16 dist_code[32];
+	u8 fixed_lit_len[288];      # DEFLATE's fixed ones
+	u16 fixed_lit_code[288];
+	u8 fixed_dist_len[32];
+	u16 fixed_dist_code[32];
+	# the code lengths of the block's codes, as they're written: symbol, and the extra bits' value
+	u8 cl_sym[320];
+	u8 cl_extra[320];
+	int cl_count;
+	u32 cl_freq[19];
+	u8 cl_len[19];
+	u16 cl_code[19];
+	int hlit;
+	int hdist;
+	int hclen;
+	# for making Huffman codes: a node's weight, and its parent (-1 for the root)
+	u32 node_weight[600];
+	int node_parent[600];
+	bln node_used[600];
+
+	# everything to w, as DEFLATE: false if memory ran out
+	[Run: ptr<u8> bytes: 0; int n: 0; int level: 6;]
+		data is bytes;
+		length is n;
+		if level <= 0
+			call Stored: 0 n true;
+			return not w.failed;
+		;;
+		int chains: 4 8 16 32 64 128 256 1024 4096;
+		int nices: 8 16 32 64 128 128 258 258 258;
+		if level > 9
+			level is 9;
+		;;
+		chain is chains:(level - 1);
+		nice is nices:(level - 1);
+		head is new int[32768];
+		prev is new int[32768];
+		tokens is new u32[16384];
+		if head is 0 or prev is 0 or tokens is 0
+			call Done;
+			return false;
+		;;
+		call Mem.Fill32: head as ptr<u32> 0xFFFFFFFF 32768;
+		call Fixed;
+		int pos: 0;
+		block_start is 0;
+		token_count is 0;
+		while pos < n
+			int best_len: 0;
+			int best_dist: 0;
+			if n - pos >= 3
+				int h: (Hash: pos);
+				int cand: head:h;
+				int most: n - pos;
+				if most > 258
+					most is 258;
+				;;
+				int looked: 0;
+				while cand >= 0 and pos - cand <= 32768 and looked < chain and best_len < most
+					# a copy is only worth looking at if it beats the best at its end
+					if data:(cand + best_len) is data:(pos + best_len) and data:cand is data:pos
+						int k: 0;
+						ptr<u8> a: data + cand;
+						ptr<u8> b: data + pos;
+						while k < most and a:k is b:k
+							k++;
+						;;
+						if k > best_len
+							best_len is k;
+							best_dist is pos - cand;
+							if k >= nice break;
+						;;
+					;;
+					int before: prev:(cand & 32767);
+					if before >= cand break;
+					cand is before;
+					looked++;
+				;;
+				prev:(pos & 32767) is head:h;
+				head:h is pos;
+			;;
+			if best_len >= 3
+				tokens:token_count is ((best_dist as u32) << 16) | best_len as u32;
+				token_count++;
+				# the places inside the copy go into the chains too
+				int stop: pos + best_len;
+				pos++;
+				while pos < stop
+					if n - pos >= 3
+						int hk: (Hash: pos);
+						prev:(pos & 32767) is head:hk;
+						head:hk is pos;
+					;;
+					pos++;
+				;;
+			;;
+			else
+				tokens:token_count is data:pos;
+				token_count++;
+				pos++;
+			;;
+			if token_count >= 16384
+				call Block: pos false;
+			;;
+		;;
+		call Block: n true;
+		call Done;
+	[end: not w.failed]
+
+	# the hash of the three bytes at pos
+	[Hash: int pos: 0;]
+	[end: (((data:pos as int) << 10) ^ ((data:(pos + 1) as int) << 5) ^ (data:(pos + 2) as int)) & 32767]
+
+	[Done]
+		if head is not 0
+			free head;
+		;;
+		if prev is not 0
+			free prev;
+		;;
+		if tokens is not 0
+			free tokens;
+		;;
+		head is 0;
+		prev is 0;
+		tokens is 0;
+	[end]
+
+	# The tokens gathered, which are data from block_start to stop, as a block: the cheapest of
+	# its own codes, the fixed ones, or stored.
+	[Block: int stop: 0; bln final: false;]
+		call Mem.Fill: addr lit_freq 0 288 * 4;
+		call Mem.Fill: addr dist_freq 0 32 * 4;
+		while int i: 0; i < token_count; i++;
+			u32 t: tokens:i;
+			if t < 256
+				lit_freq:t++;
+			;;
+			else
+				lit_freq:(LenSym: (t & 0xFFFF) as int)++;
+				dist_freq:(DistSym: (t >> 16) as int)++;
+			;;
+		;;
+		lit_freq:256++;
+		# its own codes, and what they come to
+		call Lengths: addr lit_freq 286 15 addr lit_len;
+		call Lengths: addr dist_freq 30 15 addr dist_len;
+		call Codes: addr lit_len addr lit_code 288;
+		call Codes: addr dist_len addr dist_code 32;
+		u32 own: 3 + (Header) + (Cost: addr lit_len addr dist_len);
+		u32 fixed: 3 + (Cost: addr fixed_lit_len addr fixed_dist_len);
+		u32 bytes: (stop - block_start) as u32;
+		u32 stored: 8 * (bytes + 5 * (bytes / 65535 + 1)) + 10;
+		if stored <= own and stored <= fixed
+			call Stored: block_start stop final;
+		;;
+		elif fixed <= own
+			call w.Bits: final as u32 1;
+			call w.Bits: 1 2;
+			call Write: addr fixed_lit_len addr fixed_lit_code addr fixed_dist_len addr fixed_dist_code;
+		;;
+		else
+			call w.Bits: final as u32 1;
+			call w.Bits: 2 2;
+			call w.Bits: (hlit - 257) as u32 5;
+			call w.Bits: (hdist - 1) as u32 5;
+			call w.Bits: (hclen - 4) as u32 4;
+			int order: 16 17 18 0 8 7 9 6 10 5 11 4 12 3 13 2 14 1 15;
+			while int i: 0; i < hclen; i++;
+				call w.Bits: cl_len:(order:i) 3;
+			;;
+			while int i: 0; i < cl_count; i++;
+				int s: cl_sym:i;
+				call w.Code: cl_code:s cl_len:s;
+				if s is 16
+					call w.Bits: cl_extra:i 2;
+				;;
+				elif s is 17
+					call w.Bits: cl_extra:i 3;
+				;;
+				elif s is 18
+					call w.Bits: cl_extra:i 7;
+				;;
+			;;
+			call Write: addr lit_len addr lit_code addr dist_len addr dist_code;
+		;;
+		block_start is stop;
+		token_count is 0;
+	[end]
+
+	# data from start to stop as stored blocks, at most 65,535 bytes each (one, empty, if there
+	# are none)
+	[Stored: int start: 0; int stop: 0; bln final: false;]
+		int pos: start;
+		while true
+			int n: stop - pos;
+			if n > 65535
+				n is 65535;
+			;;
+			bln last: final and pos + n >= stop;
+			call w.Bits: last as u32 1;
+			call w.Bits: 0 2;
+			call w.Align;
+			call w.Byte: (n & 255) as u32;
+			call w.Byte: (n >> 8) as u32;
+			call w.Byte: ((n & 255) ^ 255) as u32;
+			call w.Byte: ((n >> 8) ^ 255) as u32;
+			if n > 0
+				if w.used + (n as u32) > w.room and not (w.Grow: n as u32) return;
+				call Mem.Copy: w.output + w.used data + pos n;
+				w.used++ n as u32;
+			;;
+			pos++ n;
+			if pos >= stop break;
+		;;
+	[end]
+
+	# the tokens with these codes, then the end of the block
+	[Write: ptr<u8> ll: 0; ptr<u16> lc: 0; ptr<u8> dl: 0; ptr<u16> dc: 0;]
+		int len_extra: 0 0 0 0 0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3 4 4 4 4 5 5 5 5 0;
+		int len_base: 3 4 5 6 7 8 9 10 11 13 15 17 19 23 27 31 35 43 51 59 67 83 99 115 131 163 195 227 258;
+		int dist_extra: 0 0 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13;
+		int dist_base: 1 2 3 4 5 7 9 13 17 25 33 49 65 97 129 193 257 385 513 769 1025 1537 2049 3073 4097 6145 8193 12289 16385 24577;
+		while int i: 0; i < token_count; i++;
+			u32 t: tokens:i;
+			if t < 256
+				call w.Code: lc:t ll:t;
+				continue;
+			;;
+			int len: (t & 0xFFFF) as int;
+			int dist: (t >> 16) as int;
+			int ls: (LenSym: len);
+			call w.Code: lc:ls ll:ls;
+			call w.Bits: (len - len_base:(ls - 257)) as u32 len_extra:(ls - 257);
+			int ds: (DistSym: dist);
+			call w.Code: dc:ds dl:ds;
+			call w.Bits: (dist - dist_base:ds) as u32 dist_extra:ds;
+		;;
+		call w.Code: lc:256 ll:256;
+	[end]
+
+	# how many bits the tokens and the end come to with these codes' lengths
+	[Cost: ptr<u8> ll: 0; ptr<u8> dl: 0; : u32]
+		int len_extra: 0 0 0 0 0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3 4 4 4 4 5 5 5 5 0;
+		int dist_extra: 0 0 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13;
+		u32 total: ll:256;
+		while int s: 0; s < 286; s++;
+			if lit_freq:s is not 0
+				u32 bits_each: ll:s;
+				if s > 256
+					bits_each++ len_extra:(s - 257) as u32;
+				;;
+				total++ lit_freq:s * bits_each;
+			;;
+		;;
+		while int s: 0; s < 30; s++;
+			if dist_freq:s is not 0
+				total++ dist_freq:s * (dl:s + dist_extra:s) as u32;
+			;;
+		;;
+	[end: total - ll:256]
+
+	# the symbol for a copy's length (257 to 285)
+	[LenSym: int len: 0;]
+		int len_base: 3 4 5 6 7 8 9 10 11 13 15 17 19 23 27 31 35 43 51 59 67 83 99 115 131 163 195 227 258;
+		if len >= 258 return 285;
+		int s: 27;
+		while s > 0 and len_base:s > len
+			s--;
+		;;
+	[end: 257 + s]
+
+	# the symbol for a copy's distance (0 to 29)
+	[DistSym: int dist: 0;]
+		int dist_base: 1 2 3 4 5 7 9 13 17 25 33 49 65 97 129 193 257 385 513 769 1025 1537 2049 3073 4097 6145 8193 12289 16385 24577;
+		int s: 29;
+		while s > 0 and dist_base:s > dist
+			s--;
+		;;
+	[end: s]
+
+	# DEFLATE's fixed codes (RFC 1951, 3.2.6)
+	[Fixed]
+		while int s: 0; s < 288; s++;
+			u8 n: 8;
+			if s >= 144 and s < 256
+				n is 9;
+			;;
+			elif s >= 256 and s < 280
+				n is 7;
+			;;
+			fixed_lit_len:s is n;
+		;;
+		while int s: 0; s < 32; s++;
+			fixed_dist_len:s is 5;
+		;;
+		call Codes: addr fixed_lit_len addr fixed_lit_code 288;
+		call Codes: addr fixed_dist_len addr fixed_dist_code 32;
+	[end]
+
+	# The lengths of the block's codes as they're written (runs of the same length as 16, 17 and
+	# 18), their own code, and how many bits that header is.
+	[Header: : u32]
+		hlit is 286;
+		while hlit > 257 and lit_len:(hlit - 1) is 0
+			hlit--;
+		;;
+		hdist is 30;
+		while hdist > 1 and dist_len:(hdist - 1) is 0
+			hdist--;
+		;;
+		u8 all[320];
+		int n: 0;
+		while int i: 0; i < hlit; i++;
+			all:n is lit_len:i;
+			n++;
+		;;
+		while int i: 0; i < hdist; i++;
+			all:n is dist_len:i;
+			n++;
+		;;
+		cl_count is 0;
+		call Mem.Fill: addr cl_freq 0 19 * 4;
+		int i: 0;
+		while i < n
+			int v: all:i;
+			int run: 1;
+			while i + run < n and all:(i + run) is v
+				run++;
+			;;
+			if v is 0 and run >= 3
+				int take: run;
+				if take > 138
+					take is 138;
+				;;
+				if take >= 11
+					call Put: 18 take - 11;
+				;;
+				else
+					call Put: 17 take - 3;
+				;;
+				i++ take;
+				continue;
+			;;
+			call Put: v 0;
+			i++;
+			run--;
+			while run >= 3
+				int again: run;
+				if again > 6
+					again is 6;
+				;;
+				call Put: 16 again - 3;
+				i++ again;
+				run-- again;
+			;;
+		;;
+		call Lengths: addr cl_freq 19 7 addr cl_len;
+		call Codes: addr cl_len addr cl_code 19;
+		int order: 16 17 18 0 8 7 9 6 10 5 11 4 12 3 13 2 14 1 15;
+		hclen is 19;
+		while hclen > 4 and cl_len:(order:(hclen - 1)) is 0
+			hclen--;
+		;;
+		u32 bits: 14 + hclen as u32 * 3;
+		while int k: 0; k < cl_count; k++;
+			int s: cl_sym:k;
+			bits++ cl_len:s;
+			if s is 16
+				bits++ 2;
+			;;
+			elif s is 17
+				bits++ 3;
+			;;
+			elif s is 18
+				bits++ 7;
+			;;
+		;;
+	[end: bits]
+
+	[Put: int sym: 0; int extra: 0;]
+		cl_sym:cl_count is sym as u8;
+		cl_extra:cl_count is extra as u8;
+		cl_count++;
+		cl_freq:sym++;
+	[end]
+
+	# Huffman code lengths for n symbols from how often each comes, none longer than limit: a
+	# symbol that never comes has none. If the code would be too deep, the counts are halved (none
+	# below 1) until it isn't. One symbol alone gets a length of 1, as zlib gives it.
+	[Lengths: ptr<u32> freq: 0; int n: 0; int limit: 15; ptr<u8> lengths: 0;]
+		call Mem.Fill: lengths 0 n;
+		int used: 0;
+		int only: 0;
+		while int s: 0; s < n; s++;
+			if freq:s is not 0
+				used++;
+				only is s;
+			;;
+		;;
+		if used is 0
+			lengths:0 is 1;                     # (a block with no copies still has a distance code)
+			return;
+		;;
+		if used is 1
+			lengths:only is 1;
+			return;
+		;;
+		u32 shrink: 0;                          # how many times the counts were halved
+		while true
+			int nodes: 0;
+			while int s: 0; s < n; s++;
+				node_weight:s is 0;
+				node_used:s is true;
+				node_parent:s is -1;
+				if freq:s is not 0
+					u32 f: freq:s >> shrink;
+					if f is 0
+						f is 1;
+					;;
+					node_weight:s is f;
+					node_used:s is false;
+				;;
+			;;
+			nodes is n;
+			int left: used;
+			while left > 1
+				int a: (Smallest: nodes);
+				node_used:a is true;
+				int b: (Smallest: nodes);
+				node_used:b is true;
+				node_weight:nodes is node_weight:a + node_weight:b;
+				node_used:nodes is false;
+				node_parent:nodes is -1;
+				node_parent:a is nodes;
+				node_parent:b is nodes;
+				nodes++;
+				left--;
+			;;
+			int deepest: 0;
+			while int s: 0; s < n; s++;
+				if freq:s is not 0
+					int depth: 0;
+					int p: node_parent:s;
+					while p >= 0
+						depth++;
+						p is node_parent:p;
+					;;
+					lengths:s is depth as u8;
+					if depth > deepest
+						deepest is depth;
+					;;
+				;;
+			;;
+			if deepest <= limit return;
+			shrink++;
+		;;
+	[end]
+
+	# the node not yet used with the least weight (the first, of equal ones)
+	[Smallest: int nodes: 0;]
+		int best: -1;
+		while int i: 0; i < nodes; i++;
+			if not node_used:i and (best < 0 or node_weight:i < node_weight:best)
+				best is i;
+			;;
+		;;
+	[end: best]
+
+	# the canonical codes for these lengths (RFC 1951, 3.2.2)
+	[Codes: ptr<u8> lengths: 0; ptr<u16> codes: 0; int n: 0;]
+		int counts[16];
+		int next[16];
+		while int s: 0; s < n; s++;
+			counts:(lengths:s)++;
+		;;
+		counts:0 is 0;
+		int code: 0;
+		while int b: 1; b < 16; b++;
+			code is (code + counts:(b - 1)) << 1;
+			next:b is code;
+		;;
+		while int s: 0; s < n; s++;
+			int len: lengths:s;
+			codes:s is 0;
+			if len > 0
+				codes:s is next:len as u16;
+				next:len++;
+			;;
+		;;
+	[end]
+}
+
+phi.CoreDeflate:Library
+{
+	const u32 MOST: 0x40000000;         # the most data it takes: 1 GB
+
+	str error: [79];
+
+	# data as bare DEFLATE, packed at level (0 stores it; 1 is quickest, 9 packs the most, 6 is
+	# zlib's default): the packed bytes, on the heap, with their count in size_out; 0 if it failed,
+	# with the reason in error
+	[Raw: ptr<u8> data: 0; u32 length: 0; int level: 6; ptr<u32> size_out: 0; : ptr<u8>]
+	[end: (Pack: data length level size_out 0)]
+
+	# data in zlib's framing: a header, DEFLATE, and the Adler-32 of the data
+	[Zlib: ptr<u8> data: 0; u32 length: 0; int level: 6; ptr<u32> size_out: 0; : ptr<u8>]
+	[end: (Pack: data length level size_out 1)]
+
+	# data in gzip's framing, as one member with no name and no time
+	[Gzip: ptr<u8> data: 0; u32 length: 0; int level: 6; ptr<u32> size_out: 0; : ptr<u8>]
+	[end: (Pack: data length level size_out 2)]
+
+	# frame 0 bare, 1 zlib, 2 gzip
+	[Pack: ptr<u8> data: 0; u32 length: 0; int level: 6; ptr<u32> size_out: 0; int frame: 0; : ptr<u8>]
+		error is '';
+		if size_out is not 0
+			size_out:0 is 0;
+		;;
+		if data is 0 and length > 0
+			error is 'no data was given';
+			return 0;
+		;;
+		if length > MOST
+			error is 'more than 1 GB of data';
+			return 0;
+		;;
+		if level < 0 or level > 9
+			level is 6;
+		;;
+		ptr<CoreDeflater> d: new CoreDeflater;
+		if d is 0
+			error is 'output of memory';
+			return 0;
+		;;
+		call Mem.Fill: d 0 sizeof CoreDeflater;
+		call d.w.Start: length / 2 + 64;
+		if d.w.failed
+			free d;
+			error is 'output of memory';
+			return 0;
+		;;
+		bln ok: false;
+		bln ran: false;
+		if call ran is Frame: d data length level frame throws err
+			if err.kind is ErrorKind.THROWN
+				error is err.text;
+			;;
+			else
+				error is err.message;
+			;;
+			call d.Done;
+			ok is false;
+		;;
+		else
+			ok is ran and not d.w.failed;
+		;;
+		ptr<u8> output: d.w.output;
+		u32 used: d.w.used;
+		free d;
+		if not ok
+			if output is not 0
+				free output;
+			;;
+			if error.len is 0
+				error is 'output of memory';
+			;;
+			return 0;
+		;;
+		if size_out is not 0
+			size_out:0 is used;
+		;;
+	[end: output]
+
+	[Frame: ptr<CoreDeflater> d: 0; ptr<u8> data: 0; u32 length: 0; int level: 6; int frame: 0;]
+		if frame is 1
+			u32 flevel: 2;
+			if level <= 1
+				flevel is 0;
+			;;
+			elif level <= 5
+				flevel is 1;
+			;;
+			elif level >= 7
+				flevel is 3;
+			;;
+			u32 flg: flevel << 6;
+			flg++ 31 - ((0x78 * 256 + flg) % 31);
+			call d.w.Byte: 0x78;
+			call d.w.Byte: flg;
+		;;
+		elif frame is 2
+			u32 head: 0x1F 0x8B 8 0 0 0 0 0 0 255;
+			if level >= 9
+				head:8 is 2;
+			;;
+			elif level is 1
+				head:8 is 4;
+			;;
+			while int i: 0; i < 10; i++;
+				call d.w.Byte: head:i;
+			;;
+		;;
+		bln ran: (d.Run: data length as int level);
+		call d.w.Align;
+		if frame is 1
+			u32 adler: (CoreAdler.Of: data length);
+			call d.w.Byte: adler >> 24;
+			call d.w.Byte: adler >> 16;
+			call d.w.Byte: adler >> 8;
+			call d.w.Byte: adler;
+		;;
+		elif frame is 2
+			u32 crc: (Crc32.Of: data length);
+			call d.w.Byte: crc;
+			call d.w.Byte: crc >> 8;
+			call d.w.Byte: crc >> 16;
+			call d.w.Byte: crc >> 24;
+			call d.w.Byte: length;
+			call d.w.Byte: length >> 8;
+			call d.w.Byte: length >> 16;
+			call d.w.Byte: length >> 24;
+		;;
+	[end: ran]
+}

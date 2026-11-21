@@ -32,6 +32,16 @@ phi.TestCorelib:Program
 	call r.Start: text size;
 	log 'reader: ' (r.U32BE) ' ' (r.U16LE) ' left ' (r.Left) '\n';
 	log 'adler: ' (CoreAdler.Of: text size) '\n';
+
+	# deflate, and back
+	u32 packed_size: 0;
+	ptr<u8> packed: (CoreDeflate.Zlib: text size 9 addr packed_size);
+	u32 back_size: 0;
+	ptr<u8> back: (CoreInflate.Zlib: packed packed_size 0 addr back_size);
+	log 'deflate: ' size ' bytes to ' packed_size ', back: ';
+	call Show: back back_size;
+	free packed;
+	free back;
 	free text;
 	free more;
 	exit 0;

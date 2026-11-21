@@ -1,0 +1,11 @@
+empty (0): 11 8 8 8
+one byte (1): 12 9 9 9
+a short text (44): 55 32 32 32
+every byte once (256): 267 267 267 267
+noise (100000): 100016 100041 100041 100041
+zeros (300000): 300031 313 313 313
+words (60001): 60012 12580 9648 9302
+a picture (256000): 256026 6851 4481 2718
+raw: 1
+gzip: header 31 139 8 2, 44 bytes, back: 1
+no data: 1, no data was given
