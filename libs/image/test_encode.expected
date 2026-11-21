@@ -1,0 +1,9 @@
+one_pixel (1 by 1): 82 bytes, palette of 1 bits, read back the same
+three_colors (3 by 2): 105 bytes, palette of 2 bits, read back the same
+drawing (640 by 400): 4929 bytes, palette of 4 bits, read back the same
+stored (640 by 400): 32483 bytes, palette of 1 bits, read back the same
+two_hundred_colors (20 by 10): 890 bytes, palette of 8 bits, read back the same
+opaque_photo (64 by 48): 3008 bytes, RGB of 8 bits, read back the same
+see_through (50 by 30): 124 bytes, RGBA of 8 bits, read back the same
+long_row (1000 by 1): 105 bytes, RGB of 8 bits, read back the same
+no image: 1, there is no image to write

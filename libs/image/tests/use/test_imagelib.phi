@@ -42,6 +42,18 @@ phi.TestImagelib:Program
 		log ' ' (Hex: image.pixels:i);
 	;;
 	log '\n';
+
+	# written as a PNG again (through corelib's deflate), and read back
+	u32 written_size: 0;
+	ptr<u8> written: (Img.EncodePng: image 6 addr written_size);
+	ptr<ImgImage> again: (Img.DecodePng: written written_size);
+	log 'written: ' written_size ' bytes, read back:';
+	while u32 i: 0; i < 4; i++;
+		log ' ' (Hex: again.pixels:i);
+	;;
+	log '\n';
+	free written;
+	call Img.Free: again;
 	call Img.Free: image;
 
 	# 2 by 2 JPEG, YCbCr 4:4:4 (libjpeg-turbo gives FFF4C287 FF004300 FF3854DB FFC074FF)

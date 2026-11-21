@@ -540,6 +540,137 @@ phi.Img:Library
 		;;
 	[end]
 
+	# An image as a PNG file (imagelib/pngout.phi says which kind): the file's bytes, on the heap
+	# for the caller to free, with their count in size_out; 0 if it can't be made, with the reason in
+	# error. level is how hard deflate works, 0 (stored) to 9; 6 if it's neither.
+	[EncodePng: ptr<ImgImage> image: 0; int level: 6; ptr<u32> size_out: 0; : ptr<u8>]
+		error is '';
+		if size_out is not 0
+			size_out:0 is 0;
+		;;
+		if image is 0 or image.pixels is 0 or image.w <= 0 or image.h <= 0
+			error is 'there is no image to write';
+			return 0;
+		;;
+		if image.w > 0x100000 or image.h > 0x3FFFFFFF / (image.w * 4 + 1)
+			error is 'too big to write: ' image.w ' by ' image.h;
+			return 0;
+		;;
+		if level < 0 or level > 9
+			level is 6;
+		;;
+		ptr<ImgPngOut> o: new ImgPngOut;
+		if o is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		call Mem.Fill: o 0 sizeof ImgPngOut;
+		o.image is image;
+		ptr<u8> file: 0;
+		if call file is WritePng: o level size_out throws err
+			if err.kind is ErrorKind.THROWN
+				error is err.text;
+			;;
+			else
+				error is err.message;
+			;;
+			file is 0;
+		;;
+		call o.Done;
+		free o;
+	[end: file]
+
+	[WritePng: ptr<ImgPngOut> o: 0; int level: 6; ptr<u32> size_out: 0; : ptr<u8>]
+		if not (o.Count)
+			throw 'out of memory';
+		;;
+		ptr<ImgImage> image: o.image;
+		if o.colors <= 256
+			o.kind is 3;
+			o.depth is 8;
+			if o.colors <= 2
+				o.depth is 1;
+			;;
+			elif o.colors <= 4
+				o.depth is 2;
+			;;
+			elif o.colors <= 16
+				o.depth is 4;
+			;;
+		;;
+		else
+			o.kind is 2;
+			o.depth is 8;
+			int n: image.w * image.h;
+			while int i: 0; i < n; i++;
+				if (image.pixels:i >> 24) is not 255
+					o.kind is 6;
+					break;
+				;;
+			;;
+		;;
+		if not (o.Rows)
+			throw 'out of memory';
+		;;
+		u32 packed_size: 0;
+		ptr<u8> packed: (CoreDeflate.Zlib: o.rows o.rows_size level addr packed_size);
+		if packed is 0
+			throw 'the pixels could not be packed: ' CoreDeflate.error;
+		;;
+		# what each chunk holds
+		u8 header[13];
+		header:0 is (image.w >> 24) as u8;
+		header:1 is ((image.w >> 16) & 255) as u8;
+		header:2 is ((image.w >> 8) & 255) as u8;
+		header:3 is (image.w & 255) as u8;
+		header:4 is (image.h >> 24) as u8;
+		header:5 is ((image.h >> 16) & 255) as u8;
+		header:6 is ((image.h >> 8) & 255) as u8;
+		header:7 is (image.h & 255) as u8;
+		header:8 is o.depth as u8;
+		header:9 is o.kind as u8;
+		u8 colors[768];
+		u8 alphas[256];
+		int see_through: 0;                     # how many of the palette's alphas tRNS needs
+		if o.kind is 3
+			while int i: 0; i < o.colors; i++;
+				u32 c: o.palette:i;
+				colors:(i * 3) is ((c >> 16) & 255) as u8;
+				colors:(i * 3 + 1) is ((c >> 8) & 255) as u8;
+				colors:(i * 3 + 2) is (c & 255) as u8;
+				alphas:i is (c >> 24) as u8;
+				if alphas:i is not 255
+					see_through is i + 1;
+				;;
+			;;
+		;;
+		u32 room: 8 + 25 + 12 + 768 + 12 + 256 + 12 + packed_size + 12;
+		ImgPngFile f;
+		f.bytes is new u8[room];
+		if f.bytes is 0
+			free packed;
+			throw 'out of memory';
+		;;
+		f.room is room;
+		u8 signature: 137 80 78 71 13 10 26 10;
+		while int i: 0; i < 8; i++;
+			call f.Byte: signature:i;
+		;;
+		call f.Chunk: 'IHDR' addr header 13;
+		if o.kind is 3
+			call f.Chunk: 'PLTE' addr colors (o.colors * 3) as u32;
+			if see_through > 0
+				call f.Chunk: 'tRNS' addr alphas see_through as u32;
+			;;
+		;;
+		call f.Chunk: 'IDAT' packed packed_size;
+		call f.Chunk: 'IEND' 0 0;
+		free packed;
+		if size_out is not 0
+			size_out:0 is f.used;
+		;;
+	[end: f.bytes]
+
 	# gives back an image's memory (0 is allowed, and does nothing)
 	[Free: ptr<ImgImage> image: 0;]
 		if image is 0 return;

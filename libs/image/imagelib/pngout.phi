@@ -1,0 +1,260 @@
+# Writing a PNG file (Img.EncodePng): an image's pixels in, a file's bytes out, as small as this
+# can make them without losing anything.
+#
+#   u32 size: 0;
+#   ptr<u8> file: (Img.EncodePng: image 6 addr size);   # 0 if it failed, with the reason in Img.error
+#   ... write size bytes of file ...
+#   free file;
+#
+# The kind of PNG is chosen from the pixels:
+#   - 256 colors or fewer (counting a color's alpha as part of it): a palette, of 1, 2, 4 or 8 bits
+#     a pixel, as few as hold them, with a tRNS chunk if any is see-through. Rows aren't filtered,
+#     as libpng advises for palettes.
+#   - otherwise, every pixel opaque: RGB, 8 bits a channel
+#   - otherwise RGBA, straight alpha as the image has it
+# For RGB and RGBA each row gets the filter whose bytes come to the least, read as signed (libpng's
+# way of guessing which will pack best). The rows are packed by corelib's deflate at the level given
+# (0 to 9) into one IDAT. Nothing else goes in: no gamma, no time, no text.
+
+use memory.mem;
+use data.crc32;
+use corelib;
+use imagelib.image;
+
+struct.ImgPngOut
+{
+	ptr<ImgImage> image;
+	int kind;                   # 2 RGB, 3 a palette, 6 RGBA (PNG's color types)
+	int depth;                  # bits a pixel's sample, for a palette 1, 2, 4 or 8
+	u32 palette[256];
+	int colors;
+	ptr<u32> slots;             # a hash of the colors seen: color, and its index + 1 (0: empty)
+	ptr<u8> rows;               # the image as PNG's rows, each with its filter byte first
+	u32 rows_size;
+
+	# How many colors the image has, up to 257, with the first 256 in palette in the order
+	# they come; false if there's no memory to count them.
+	[Count: : bln]
+		slots is new u32[2048 * 2];
+		if slots is 0 return false;
+		call Mem.Fill: slots as ptr<u8> 0 2048 * 2 * 4;
+		colors is 0;
+		int n: image.w * image.h;
+		ptr<u32> p: image.pixels;
+		u32 last: 0;
+		bln any: false;
+		while int i: 0; i < n; i++;
+			u32 c: p:i;
+			if any and c is last
+				continue;
+			;;
+			any is true;
+			last is c;
+			if (Index: c) < 0
+				if colors >= 256
+					colors is 257;
+					return true;
+				;;
+				call Remember: c colors;
+				palette:colors is c;
+				colors++;
+			;;
+		;;
+	[end: true]
+
+	# where a color is in the palette; -1 if it isn't
+	[Index: u32 c: 0;]
+		u32 h: ((c * 2654435761) >> 21) & 2047;
+		while true
+			u32 kept: slots:(h * 2 + 1);
+			if kept is 0 return -1;
+			if slots:(h * 2) is c return (kept - 1) as int;
+			h is (h + 1) & 2047;
+		;;
+	[end: -1]
+
+	[Remember: u32 c: 0; int index: 0;]
+		u32 h: ((c * 2654435761) >> 21) & 2047;
+		while slots:(h * 2 + 1) is not 0
+			h is (h + 1) & 2047;
+		;;
+		slots:(h * 2) is c;
+		slots:(h * 2 + 1) is (index + 1) as u32;
+	[end]
+
+	# The rows, filtered, into rows: false if there's no memory.
+	[Rows: : bln]
+		int w: image.w;
+		int h: image.h;
+		int bpp: 4;                             # bytes a pixel, for the filters
+		int row_bytes: 0;
+		if kind is 3
+			row_bytes is (w * depth + 7) / 8;
+			bpp is 1;
+		;;
+		elif kind is 2
+			row_bytes is w * 3;
+			bpp is 3;
+		;;
+		else
+			row_bytes is w * 4;
+		;;
+		rows_size is ((row_bytes + 1) * h) as u32;
+		rows is new u8[rows_size];
+		if rows is 0 return false;
+		call Mem.Fill: rows 0 rows_size;
+		if kind is 3
+			while int y: 0; y < h; y++;
+				ptr<u8> row: rows + y * (row_bytes + 1) + 1;
+				ptr<u32> from: image.pixels + y * w * 4;
+				int per: 8 / depth;
+				while int x: 0; x < w; x++;
+					u32 index: (Index: from:x) as u32;
+					int shift: 8 - depth * (x % per + 1);
+					row:(x / per) is (row:(x / per) | (index << shift)) as u8;
+				;;
+			;;
+			return true;
+		;;
+		# for RGB and RGBA: the row as it is in plain, then each filter tried, the least kept
+		ptr<u8> plain: new u8[row_bytes * 2];
+		ptr<u8> trial: new u8[row_bytes];
+		if plain is 0 or trial is 0
+			if plain is not 0
+				free plain;
+			;;
+			if trial is not 0
+				free trial;
+			;;
+			return false;
+		;;
+		ptr<u8> prior: plain + row_bytes;       # the row above, unfiltered (zeros for the first)
+		call Mem.Fill: prior 0 row_bytes;
+		while int y: 0; y < h; y++;
+			ptr<u32> from: image.pixels + y * w * 4;
+			while int x: 0; x < w; x++;
+				u32 c: from:x;
+				int o: x * bpp;
+				plain:o is ((c >> 16) & 255) as u8;
+				plain:(o + 1) is ((c >> 8) & 255) as u8;
+				plain:(o + 2) is (c & 255) as u8;
+				if bpp is 4
+					plain:(o + 3) is (c >> 24) as u8;
+				;;
+			;;
+			ptr<u8> out_row: rows + y * (row_bytes + 1);
+			u32 best: 0xFFFFFFFF;
+			while int f: 0; f < 5; f++;
+				u32 cost: (Filter: f plain prior trial row_bytes bpp);
+				if cost < best
+					best is cost;
+					out_row:0 is f as u8;
+					call Mem.Copy: out_row + 1 trial row_bytes;
+				;;
+			;;
+			call Mem.Copy: prior plain row_bytes;
+		;;
+		free plain;
+		free trial;
+	[end: true]
+
+	# a row filtered with filter f (PNG's 0 to 4) into made: the sum of its bytes read as signed
+	[Filter: int f: 0; ptr<u8> row: 0; ptr<u8> prior: 0; ptr<u8> made: 0; int n: 0; int bpp: 1; : u32]
+		u32 cost: 0;
+		while int i: 0; i < n; i++;
+			int a: 0;
+			int c: 0;
+			if i >= bpp
+				a is row:(i - bpp);
+				c is prior:(i - bpp);
+			;;
+			int b: prior:i;
+			int guess: 0;
+			when f
+				is 1
+					guess is a;
+				;;
+				is 2
+					guess is b;
+				;;
+				is 3
+					guess is (a + b) / 2;
+				;;
+				is 4
+					guess is (Paeth: a b c);
+				;;
+			;;
+			int v: (row:i - guess) & 255;
+			made:i is v as u8;
+			if v < 128
+				cost++ v as u32;
+			;;
+			else
+				cost++ (256 - v) as u32;
+			;;
+		;;
+	[end: cost]
+
+	[Paeth: int a: 0; int b: 0; int c: 0;]
+		int p: a + b - c;
+		int pa: p - a;
+		int pb: p - b;
+		int pc: p - c;
+		if pa < 0
+			pa is 0 - pa;
+		;;
+		if pb < 0
+			pb is 0 - pb;
+		;;
+		if pc < 0
+			pc is 0 - pc;
+		;;
+		if pa <= pb and pa <= pc return a;
+		if pb <= pc return b;
+	[end: c]
+
+	[Done]
+		if slots is not 0
+			free slots;
+		;;
+		if rows is not 0
+			free rows;
+		;;
+		slots is 0;
+		rows is 0;
+	[end]
+}
+
+# the file being put together: chunks, each with its length, type, data and CRC-32
+struct.ImgPngFile
+{
+	ptr<u8> bytes;
+	u32 used;
+	u32 room;
+
+	[Byte: u32 b: 0;]
+		bytes:used is (b & 255) as u8;
+		used++;
+	[end]
+
+	[U32: u32 v: 0;]
+		call Byte: v >> 24;
+		call Byte: v >> 16;
+		call Byte: v >> 8;
+		call Byte: v;
+	[end]
+
+	# a chunk of type (four letters) whose data is n bytes at data
+	[Chunk: ptr<u8> type: 0; ptr<u8> data: 0; u32 n: 0;]
+		call U32: n;
+		u32 from: used;
+		while int i: 0; i < 4; i++;
+			call Byte: type:i;
+		;;
+		if n > 0
+			call Mem.Copy: bytes + used data n;
+			used++ n;
+		;;
+		call U32: (Crc32.Of: bytes + from n + 4);
+	[end]
+}

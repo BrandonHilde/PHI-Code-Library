@@ -2,8 +2,8 @@
 
 Image files in, pixels out. Whatever the file, the pixels are 32-bit `0xAARRGGBB` with straight (not
 premultiplied) alpha, a row at a time from the top. It reads BMP, PNG, JPEG (baseline and progressive) and GIF,
-animations too, and scales images as Pillow does
-([plan.md](../../plan.md#phase-3-image-library)). It uses [corelib](../core), so a program using it
+animations too, scales images as Pillow does
+([plan.md](../../plan.md#phase-3-image-library)), and writes PNG files. It uses [corelib](../core), so a program using it
 has `corelib.philib` beside `imagelib.philib`.
 
 ```phi
@@ -42,6 +42,7 @@ These names are the API. Everything else the library declares (`ImgBmp`, `ImgBmp
 | `Img.CloseAnimation: animation` | Gives back an animation's memory, its frame too (0 does nothing) |
 | `Img.Format: data length` → | Which format the bytes are in, from their first few: `Img.BMP`, `Img.PNG`, `Img.JPEG`, `Img.GIF`, or `Img.UNKNOWN` |
 | `Img.Scale: image new_w new_h how` → | A new image, `image` scaled to `new_w` by `new_h`, as Pillow's `Image.resize` scales it; `how` is `Img.BILINEAR` (the default) or `Img.NEAREST`. The old image is left as it was. 0 with the reason in `Img.error` if it can't be (the new size counts against `max_pixels`) |
+| `Img.EncodePng: image level size_out` → | The image as a PNG file: its bytes on the heap (the caller frees them), their count in `size_out`; 0 with the reason in `Img.error` if it can't be. `level` is corelib's deflate's, 0 to 9 (6 if it's neither). [Writing PNG](#writing-png) says which kind of PNG it makes |
 | `Img.Free: image` | Gives back an image's memory (0 does nothing) |
 | `Img.BlendRow: dest src count` | Draws `count` pixels of `src` over `dest`, which is taken as opaque: each color becomes `(src * alpha + dest * (255 - alpha)) / 255`, rounded, and `dest`'s top byte stays as it was |
 | `Img.max_pixels` | The most pixels an image may have. 0, as it starts, means `Img.DEFAULT_MAX_PIXELS` (16,777,216: 4096 by 4096, 64 MB of pixels) |
@@ -229,6 +230,24 @@ Memory: the new image, a few weights for each new pixel along each axis, and the
 needs, scaled across, kept in a ring (up to 4 million pixels of them; past that, each is scaled across again
 when it's needed again).
 
+## Writing PNG
+
+`Img.EncodePng` writes nothing an image doesn't need, and loses nothing: read back, every pixel is the
+same, alpha too. It chooses the kind from the pixels:
+
+- **256 colors or fewer** (a color's alpha is part of it): a palette of 1, 2, 4 or 8 bits a pixel, as
+  few as hold them, with a `tRNS` chunk if any color is see-through. Rows aren't filtered, as libpng
+  advises for palettes.
+- **More, all opaque:** RGB, 8 bits a channel. **More, some see-through:** RGBA, straight alpha.
+
+RGB and RGBA rows each get the filter whose bytes add up to the least, read as signed: libpng's way of
+guessing which packs best. The rows go into one `IDAT`, packed by [corelib's deflate](../core#api). The
+file has `IHDR`, `PLTE` and `tRNS` when there's a palette, `IDAT` and `IEND`, and nothing else (no
+gamma, no time, no text). Nothing is interlaced, and there's no gray kind or 16-bit kind yet: a gray
+image of 256 grays or fewer is a palette, and one of more is RGB.
+
+A 640 by 400 drawing in a few colors, as a paint program has one, is 4,929 bytes (as an 8-bit BMP, 257 KB).
+
 ## How it's checked
 
 From the repo's root:
@@ -297,8 +316,15 @@ copy of libjpeg-turbo is asked instead. Pillow is counted too.
 | `test_jpeg` | The same for JPEG, on the everyday cases in [tests/jpeg](tests/jpeg): files written by libjpeg-turbo (a few sizes, and many qualities and subsamplings, optimized tables, restart markers, RGB), and files made by the encoder for the rest (every sampling layout, one component a scan, scans of two, restart intervals of every length, 16-bit and redefined tables, each way of naming the color space, markers in every wrong place, and damaged entropy-coded data) |
 | `release_jpeg` | The same on the release cases: more sizes, good files cut short, and files with bytes changed |
 | `test_jpeg_fuzz`, `release_jpeg_fuzz` | The crash fuzzer, in `fuzz_jpeg.phi`: a short run every day (2,000 random changes, one file's header bytes, a little noise), and the full run for release. The full run: 100,000 random changes to good files, every value of each of the first 200 bytes of six, troublesome numbers in every 16-bit field of the first 400 bytes, and 30,000 good headers followed by noise, so that random coefficients reach the IDCT (the 64-bit path too). All must come back, with an image within the limit or a reason. Its limit is 2048 by 2048, so that no image is refused for memory in 32 bits and read in 64 |
+| `test_encode` | The PNG writer: eight made images, one of each kind it chooses (palettes of 1, 2, 4 and 8 bits, with and without `tRNS`, RGB, RGBA, stored), each written and read back by the decoder with every pixel the same. Given a folder it writes them out, for `tools/image/check_png_writer.py` |
 | `test_image` | The API: finding the format, the limit, the reasons, freeing, and `BlendRow` against values worked out in Python |
 | `tests/use/test_imagelib` | The compiled `imagelib.philib` on its own, with corelib reached through it (its reader for BMP, its inflate for PNG, and its bit reader for JPEG) |
+
+### Writing PNG, against outside evidence (2026-11-20)
+
+`python3 -I tools/image/check_png_writer.py PHI` has ImageMagick 7.1.2 (which reads PNG with libpng)
+read each file `test_encode` writes. **All 8 are read without a warning, with every pixel the same**, and
+ImageMagick finds the color type and depth imagelib chose for each.
 
 ### BMP: the rules, against outside evidence (2026-11-08)
 

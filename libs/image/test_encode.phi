@@ -1,0 +1,146 @@
+# imagelib's PNG writer, every day: images of each kind it chooses between, each written and read back
+# by imagelib's own decoder, which must give every pixel exactly. Given a folder (test_encode FOLDER),
+# it also writes each as NAME.png beside its pixels as NAME.rgba (red, green, blue, alpha a byte each,
+# a row at a time), for tools/image/check_png_writer.py to have another decoder read.
+use imagelib;
+use memory.mem;
+
+phi.TestEncode:Program
+{
+	call ImageLib.Start;
+	str folder: (OS.Arguments);
+	while folder.len > 0 and folder:(folder.len - 1) is ' '
+		folder:(folder.len - 1) is 0;
+	;;
+	u32 seed: 99;
+
+	# one pixel
+	ptr<ImgImage> image: (Img.New: 1 1);
+	image.pixels:0 is 0xFFE5484D;
+	call Case: 'one_pixel' image 6;
+
+	# a few colors, one of them see-through and one not there at all
+	image is (Img.New: 3 2);
+	image.pixels:0 is 0xFF000000;
+	image.pixels:1 is 0x80FFFFFF;
+	image.pixels:2 is 0x00000000;
+	image.pixels:3 is 0xFF000000;
+	image.pixels:4 is 0x00000000;
+	image.pixels:5 is 0x80FFFFFF;
+	call Case: 'three_colors' image 6;
+
+	# a paint program's drawing: shapes in a few colors on white
+	image is (Img.New: 640 400);
+	while int y: 0; y < 400; y++;
+		while int x: 0; x < 640; x++;
+			u32 c: 0xFFFFFFFF;
+			if (x - 320) * (x - 320) + (y - 200) * (y - 200) < 120 * 120
+				c is 0xFF2F6FE4;
+			;;
+			if x > 40 and x < 200 and y > 50 and y < 140
+				c is 0xFFE5484D;
+			;;
+			if (x + y) % 97 < 3
+				c is 0xFF000000;
+			;;
+			if y > 300 and x % 50 < 25
+				c is 0xFF30A46C;
+			;;
+			image.pixels:(y * 640 + x) is c;
+		;;
+	;;
+	call Case: 'drawing' image 6;
+
+	# the same, stored rather than packed
+	image is (Img.New: 640 400);
+	call Mem.Fill32: image.pixels 0xFFFFFFFF 640 * 400;
+	call Case: 'stored' image 0;
+
+	# 200 colors: a palette of 8 bits
+	image is (Img.New: 20 10);
+	while int i: 0; i < 200; i++;
+		image.pixels:i is 0xFF000000 | (i * 0x010305) as u32;
+	;;
+	call Case: 'two_hundred_colors' image 9;
+
+	# opaque, with too many colors for a palette: RGB
+	image is (Img.New: 64 48);
+	while int y: 0; y < 48; y++;
+		while int x: 0; x < 64; x++;
+			seed is seed * 1103515245 + 12345;
+			u32 r: (x * 4) as u32;
+			u32 g: (y * 5) as u32;
+			u32 b: (seed >> 16) & 15;
+			image.pixels:(y * 64 + x) is 0xFF000000 | (r << 16) | (g << 8) | b;
+		;;
+	;;
+	call Case: 'opaque_photo' image 6;
+
+	# see-through, with too many colors for a palette: RGBA
+	image is (Img.New: 50 30);
+	while int y: 0; y < 30; y++;
+		while int x: 0; x < 50; x++;
+			u32 a: (x * 5) as u32;
+			image.pixels:(y * 50 + x) is (a << 24) | ((y * 8) << 16) as u32 | (x * 3) as u32;
+		;;
+	;;
+	call Case: 'see_through' image 6;
+
+	# a row 1,000 pixels long of 300 colors
+	image is (Img.New: 1000 1);
+	while int x: 0; x < 1000; x++;
+		image.pixels:x is 0xFF000000 | ((x % 300) * 0x0101) as u32;
+	;;
+	call Case: 'long_row' image 1;
+
+	u32 size: 0;
+	ptr<u8> none: (Img.EncodePng: 0 6 addr size);
+	log 'no image: ' (none is 0) ', ' Img.error '\n';
+	exit 0;
+
+	# image written at level, read back, and the two compared; the image is freed after
+	[Case: ptr<u8> name: 0; ptr<ImgImage> image: 0; int level: 6;]
+		u32 size: 0;
+		ptr<u8> file: (Img.EncodePng: image level addr size);
+		if file is 0
+			log name ': failed: ' Img.error '\n';
+			call Img.Free: image;
+			return;
+		;;
+		str kinds: '' '' 'RGB' 'palette' '' '' 'RGBA';
+		log name ' (' image.w ' by ' image.h '): ' size ' bytes, ' kinds:(file:25) ' of ' file:24 ' bits';
+		ptr<ImgImage> back: (Img.DecodePng: file size);
+		if back is 0
+			log ', NOT READ: ' Img.error '\n';
+		;;
+		elif back.w is not image.w or back.h is not image.h or not (Mem.Equal: back.pixels image.pixels image.w * image.h * 4)
+			log ', NOT THE SAME\n';
+		;;
+		else
+			log ', read back the same\n';
+		;;
+		if folder.len > 0
+			str path: (folder '/' name '.png');
+			if (OS.WriteFile: path file size as int) <= 0
+				log ' (not written)';
+			;;
+			int n: image.w * image.h;
+			ptr<u8> rgba: new u8[n * 4];
+			while int i: 0; i < n; i++;
+				u32 c: image.pixels:i;
+				rgba:(i * 4) is ((c >> 16) & 255) as u8;
+				rgba:(i * 4 + 1) is ((c >> 8) & 255) as u8;
+				rgba:(i * 4 + 2) is (c & 255) as u8;
+				rgba:(i * 4 + 3) is (c >> 24) as u8;
+			;;
+			path is (folder '/' name '.rgba');
+			if (OS.WriteFile: path rgba n * 4) <= 0
+				log ' (pixels not written)';
+			;;
+			free rgba;
+		;;
+		free file;
+		call Img.Free: back;
+		call Img.Free: image;
+	[end]
+}

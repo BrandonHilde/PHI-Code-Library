@@ -10,6 +10,7 @@ use corelib;
 use imagelib.image;
 use imagelib.bmp;
 use imagelib.png;
+use imagelib.pngout;
 use imagelib.jpeg;
 use imagelib.gif;
 use imagelib.scale;
