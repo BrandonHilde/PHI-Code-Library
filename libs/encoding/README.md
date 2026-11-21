@@ -25,6 +25,7 @@ These names are the API. `EncTables`, `EncAttr` and `Enc`'s other methods are ho
 | `Enc.Name: enc` → | Its name as the standard writes it (`str`); `none` for -1 |
 | `Enc.Decode: enc data length size_out` → | The bytes as UTF-8, on the heap (the caller frees them), their count in `size_out`; 0 with the reason in `Enc.error`. A byte-order mark says the encoding instead and goes, as the standard's *decode* has it |
 | `Enc.Sniff: data length transport n` → | An HTML page's encoding: a byte-order mark's; else the server's label (`transport`, n bytes; 0 0 for none); else what a `<meta>` in the first 1,024 bytes says (HTML's prescan, its steps followed: comments passed over, `charset`, `http-equiv` with `content`, UTF-16 taken as UTF-8 and x-user-defined as windows-1252); else windows-1252, as browsers have it for a page that says nothing |
+| `Enc.Prescan: data length` → | What a `<meta>` in the first 1,024 bytes says, by HTML's prescan alone: -1 if nothing (for a program with a guess of its own to make where a page says nothing) |
 | `Enc.Bom: data length` → | The encoding a byte-order mark says, its length in `Enc.bom`; -1 for none |
 | `Enc.UTF8`, `UTF16BE`, `UTF16LE`, `WINDOWS_1252`, `X_USER_DEFINED`, `REPLACEMENT` | Some encodings' numbers |
 
