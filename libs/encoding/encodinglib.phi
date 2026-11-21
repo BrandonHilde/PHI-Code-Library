@@ -1,0 +1,19 @@
+# encodinglib: text in the encodings the web uses, made UTF-8 (the WHATWG Encoding standard), and
+# an HTML page's encoding found as browsers find it.
+#
+#   phi build encodinglib.phi --library      # encodinglib.philib, which a program includes with `use encodinglib;`
+#
+# README.md says which names are its API.
+
+use encodinglib.tables;
+use encodinglib.encoding;
+
+phi.EncodingLib:Library
+{
+	const int VERSION: 1;
+
+	# Call this once, before anything else in the library. There's nothing to set up yet, but a
+	# program that calls it keeps working when there is.
+	[Start]
+	[end]
+}

@@ -1,0 +1,28 @@
+# encodinglib through encodinglib.philib alone, as a program using it has it: no source beside this, so
+# a test here proves the compiled library works (one beside the source would test the source).
+use encodinglib;
+
+phi.TestEncodinglib:Program
+{
+	call EncodingLib.Start;
+	log 'version: ' EncodingLib.VERSION '\n';
+	# 'caf' and e acute in windows-1252, and KOI8-R's word for peace
+	u8 latin: 99 97 102 233;
+	u8 koi: 205 201 210;
+	u32 n: 0;
+	ptr<u8> a: (Enc.Decode: (Enc.Label: 'latin1' 6) addr latin 4 addr n);
+	log 'latin1: ' n ' bytes:';
+	while u32 i: 0; i < n; i++;
+		log ' ' a:i;
+	;;
+	log '\n';
+	ptr<u8> b: (Enc.Decode: (Enc.Label: 'koi8-r' 6) addr koi 3 addr n);
+	log 'koi8-r: ' n ' bytes:';
+	while u32 i: 0; i < n; i++;
+		log ' ' b:i;
+	;;
+	log '\n';
+	free a;
+	free b;
+	exit 0;
+}

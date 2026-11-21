@@ -1,0 +1,20 @@
+decoded as Python decodes them: 66 of 66
+labels: 190, unknown is -1 and -1
+-- a page's encoding
+<meta charset="koi8-r">: KOI8-R
+<meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-2">: ISO-8859-2
+<meta content="text/html; charset=windows-1251" http-equiv=content-type>: windows-1251
+<meta content="text/html; charset=windows-1251">: windows-1252
+<!-- <meta charset="koi8-r"> --><meta charset=utf-8>: UTF-8
+<meta charset="utf-16">: UTF-8
+<meta charset="x-user-defined">: windows-1252
+<html><head><title>x</title><meta charset='iso-8859-7'>: ISO-8859-7
+<meta charset="bogus"><meta charset="koi8-u">: KOI8-U
+<META CHARSET=" Windows-1250 ">: windows-1250
+<meta name="description" content="charset=koi8-r">: windows-1252
+<script>var x = "<meta charset=koi8-r>";</script>: KOI8-R
+<meta charset="koi8-r">, the server saying iso-8859-4: ISO-8859-4
+<meta/charset=koi8-r>: KOI8-R
+<metal charset=koi8-r>: windows-1252
+(1,100 spaces, then a meta): windows-1252
+a UTF-16LE byte-order mark: UTF-16LE

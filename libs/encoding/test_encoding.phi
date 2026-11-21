@@ -1,0 +1,103 @@
+# encodinglib, every day: the cases in tests/cases.bin (every single-byte encoding's 256 bytes, UTF-8 and
+# UTF-16 with each kind of bad sequence, byte-order marks, labels), each decoded as Python's codecs
+# decode it, made by tools/encoding/make_cases.py; and HTML's encoding sniffing on pages made here, each
+# answer worked out by the HTML standard's steps (13.2.3).
+use encodinglib;
+use memory.mem;
+
+phi.TestEncoding:Program
+{
+	call EncodingLib.Start;
+	int size: (OS.FileSize: 'tests/cases.bin');
+	ptr<u8> all: new u8[size];
+	int got: (OS.ReadFile: 'tests/cases.bin' all size);
+	u32 count: (U32: all);
+	int right: 0;
+	while u32 i: 0; i < count; i++;
+		u32 label_len: all:at_byte;
+		ptr<u8> label: all + at_byte + 1;
+		at_byte++ 1 + label_len;
+		u32 n: (U32: all);
+		ptr<u8> data: all + at_byte;
+		at_byte++ n;
+		u32 want_len: (U32: all);
+		ptr<u8> want: all + at_byte;
+		at_byte++ want_len;
+		str name: '';
+		while u32 k: 0; k < label_len; k++;
+			name++ label:k as chr;
+		;;
+		int enc: (Enc.Label: label label_len as int);
+		u32 out_len: 0;
+		ptr<u8> out_text: (Enc.Decode: enc data n addr out_len);
+		if out_text is not 0 and out_len is want_len and (out_len is 0 or (Mem.Equal: out_text want out_len))
+			right++;
+		;;
+		else
+			log 'case ' i ' (' name ', as ' (Enc.Name: enc) '): not as Python decodes it\n';
+		;;
+		if out_text is not 0
+			free out_text;
+		;;
+	;;
+	log 'decoded as Python decodes them: ' right ' of ' count '\n';
+	log 'labels: ' EncTables.labels.len ', unknown is ' (Enc.Label: 'shift_jis' 9) ' and ' (Enc.Label: 'nonsense' 8) '\n';
+
+	log '-- a page\'s encoding\n';
+	call Sniff: '<meta charset="koi8-r">' 0;
+	call Sniff: '<meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-2">' 0;
+	call Sniff: '<meta content="text/html; charset=windows-1251" http-equiv=content-type>' 0;
+	call Sniff: '<meta content="text/html; charset=windows-1251">' 0;
+	call Sniff: '<!-- <meta charset="koi8-r"> --><meta charset=utf-8>' 0;
+	call Sniff: '<meta charset="utf-16">' 0;
+	call Sniff: '<meta charset="x-user-defined">' 0;
+	call Sniff: '<html><head><title>x</title><meta charset=\'iso-8859-7\'>' 0;
+	call Sniff: '<meta charset="bogus"><meta charset="koi8-u">' 0;
+	call Sniff: '<META CHARSET=" Windows-1250 ">' 0;
+	call Sniff: '<meta name="description" content="charset=koi8-r">' 0;
+	call Sniff: '<script>var x = "<meta charset=koi8-r>";</script>' 0;
+	call Sniff: '<meta charset="koi8-r">' 'iso-8859-4';
+	call Sniff: '<meta/charset=koi8-r>' 0;
+	call Sniff: '<metal charset=koi8-r>' 0;
+	str far: '';
+	while int k: 0; k < 1100; k++;
+		far++ ' ';
+	;;
+	far++ '<meta charset="koi8-r">';
+	call Sniff: far 0;
+	u8 bom: 0xFF 0xFE 60 0;
+	log 'a UTF-16LE byte-order mark: ' (Enc.Name: (Enc.Sniff: addr bom 4 0 0)) '\n';
+	exit 0;
+
+	u32 at_byte: 0;
+
+	# the next little-endian u32 of the cases
+	[U32: ptr<u8> p: 0; : u32]
+		u32 v: p:at_byte | (p:(at_byte + 1) << 8) | (p:(at_byte + 2) << 16) | ((p:(at_byte + 3) as u32) << 24);
+		at_byte++ 4;
+	[end: v]
+
+	[Sniff: ptr<u8> page: 0; ptr<u8> transport: 0;]
+		int n: 0;
+		while page:n is not 0
+			n++;
+		;;
+		int tn: 0;
+		if transport is not 0
+			while transport:tn is not 0
+				tn++;
+			;;
+		;;
+		int enc: (Enc.Sniff: page n as u32 transport tn);
+		if n > 1000
+			log '(1,100 spaces, then a meta)';
+		;;
+		else
+			log page;
+		;;
+		if transport is not 0
+			log ', the server saying ' transport;
+		;;
+		log ': ' (Enc.Name: enc) '\n';
+	[end]
+}

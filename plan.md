@@ -468,7 +468,7 @@ Picked up when there's a reason to. Taken from weblib's list of what it doesn't 
 
 | Area | Missing | Note |
 |---|---|---|
-| HTML | Encoding sniffing, `<meta charset>` | Input is always read as UTF-8 today, which breaks older pages |
+| HTML | Encoding sniffing, `<meta charset>` | Input is always read as UTF-8 today, which breaks older pages. encodinglib (2026-11-21) does it for a browser to use before weblib |
 | JS | Modules, `BigInt`, `Intl`, `with`, direct `eval` | `BigInt` is most of what remains failing in test262's typed arrays |
 | DOM | `MutationObserver`, `IntersectionObserver`, custom elements, shadow DOM | |
 | Canvas | `<canvas>` | Becomes possible once Image and Font exist, through hooks |
@@ -489,6 +489,7 @@ what 1.0 does wrong goes in [phi-notes.md](docs/phi-notes.md), not into PHI.
 | `editlib` ✓ | Text being edited: caret, selection, words, lines, undo and redo, finding | The text field's and Notes' own editing; selecting, copy and paste, undo, everywhere text is typed |
 | corelib's deflate ✓ | DEFLATE, zlib and gzip, written | What a PNG file needs; and gzip for anyone |
 | vectorlib ✓ | Shapes drawn smooth: paths, SVG path data, transforms, gradients, outlines, dashes, clipping | SVG gradients, clipping and transforms in the browser, CSS transforms, a `<canvas>`, Paint's smooth shapes, the desktop's round corners |
+| encodinglib ✓ | The web's text encodings to UTF-8, and HTML's encoding sniffing | Pages not written in UTF-8 (older ones, and some in Russian, Greek, Hebrew, ...), read as their authors wrote them |
 | fontlib's WOFF2 ✓ | WOFF2 fonts, glyf and hmtx transforms included | The web fonts most sites send now, in the browser |
 | corelib's Brotli ✓ | Brotli (RFC 7932), its dictionary given by the program | WOFF2 fonts (next, in fontlib), and `Content-Encoding: br` |
 | imagelib's WebP ✓ | Lossless and lossy WebP, read exactly as libwebp reads them | Pictures on today's web, which are more and more WebP, in the browser |
@@ -504,6 +505,10 @@ and what's selected after each action, and every line of it was worked out by ha
 accumulation), outlines made as FreeType's stroker makes them, gradients premultiplied. Checked
 against macOS's Quartz on 15 scenes (`tools/vector/check_svg.py`): at most 2 pixels in 4,096 differ by
 more than a quarter, the mean by at most 1.2 of 255. Next: PHI OS's browser draws SVG with it.
+
+**encodinglib, done 2026-11-21,** in [libs/encoding](libs/encoding): UTF-8, UTF-16 and the 28 single-byte
+encodings decoded as Python's codecs decode them (WHATWG's known differences taken), and HTML's sniffing,
+prescan included. Later: the East Asian encodings, their tables given by the program as files.
 
 **WOFF2, done 2026-11-21,** in [libs/font](libs/font): the container, Brotli, and the glyf, loca and hmtx
 transforms. Fonts packed here are read by CoreText as their originals and by fontlib glyph for glyph as their

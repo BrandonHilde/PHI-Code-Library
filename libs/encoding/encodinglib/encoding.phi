@@ -1,0 +1,583 @@
+# encodinglib's Enc: text in the encodings the web uses (the WHATWG Encoding standard), made UTF-8.
+#
+#   int enc: (Enc.Label: 'latin1' 6);           # a label to an encoding: windows-1252 (-1: none)
+#   u32 size: 0;
+#   ptr<u8> utf8: (Enc.Decode: enc bytes length addr size);   # on the heap: free it
+#   int page: (Enc.Sniff: bytes length 'koi8-r' 6);          # an HTML page's encoding (HTML 13.2.3)
+#
+# Decoding is the standard's: a byte-order mark, if there's one, says the encoding and goes (its
+# "decode"); every byte or sequence that isn't a character becomes U+FFFD (in UTF-8, one for each
+# maximal part of a sequence, as the standard says); UTF-16's surrogates pair up or become U+FFFD.
+# The encodings: UTF-8, UTF-16BE and UTF-16LE, the 28 single-byte ones (IBM866, the ISO-8859s,
+# KOI8-R and -U, macintosh, windows-874 and 1250 to 1258, x-mac-cyrillic), x-user-defined, and
+# replacement (what a few dangerous labels name: the whole text one U+FFFD). Not yet: the East
+# Asian ones (GBK and gb18030, Big5, EUC-JP, ISO-2022-JP, Shift_JIS, EUC-KR), whose labels give -1.
+
+use memory.mem;
+use encodinglib.tables;
+
+phi.Enc:Library
+{
+	const int REPLACEMENT: 0;
+	const int UTF8: 1;
+	const int UTF16BE: 2;
+	const int UTF16LE: 3;
+	const int WINDOWS_1252: 24;
+	const int X_USER_DEFINED: 32;
+	const int COUNT: 33;
+
+	str error: [127];
+	int bom: 0;                     # how many bytes the last Decode's byte-order mark took
+
+	# the encoding a label names (ASCII whitespace round it and letters' case don't matter): -1 if
+	# none, or one this library doesn't decode
+	[Label: ptr<u8> text: 0; int n: 0;]
+		if text is 0 return -1;
+		while n > 0 and (Space: text:0)
+			text++;
+			n--;
+		;;
+		while n > 0 and (Space: text:(n - 1))
+			n--;
+		;;
+		if n <= 0 or n > 40 return -1;
+		u8 low[41];
+		while int i: 0; i < n; i++;
+			int c: text:i;
+			if c >= 'A' and c <= 'Z'
+				c++ 32;
+			;;
+			low:i is c as u8;
+		;;
+		low:n is 0;
+		int lo: 0;
+		int hi: EncTables.labels.len - 1;
+		while lo <= hi
+			int mid: (lo + hi) / 2;
+			int c: (Compare: addr low n EncTables.labels:mid);
+			if c is 0 return EncTables.label_to:mid;
+			if c < 0
+				hi is mid - 1;
+			;;
+			else
+				lo is mid + 1;
+			;;
+		;;
+	[end: -1]
+
+	# an encoding's name, as the standard writes it ('none' for -1)
+	[Name: int enc: 0;]
+		str name: 'none';
+		if enc >= 0 and enc < COUNT
+			name is EncTables.names:enc;
+		;;
+	[end: name]
+
+	[Space: int c: 0;]
+	[end: c is 9 or c is 10 or c is 12 or c is 13 or c is 32]
+
+	[Compare: ptr<u8> a: 0; int n: 0; ptr<u8> b: 0;]
+		int i: 0;
+		while i < n and b:i is not 0
+			if a:i is not b:i
+				return (a:i as int) - (b:i as int);
+			;;
+			i++;
+		;;
+		if i < n return 1;
+		if b:i is not 0 return -1;
+	[end: 0]
+
+	# the encoding a byte-order mark at the start says (and its length in bom): -1 if there's none
+	[Bom: ptr<u8> data: 0; u32 length: 0;]
+		bom is 0;
+		if length >= 3 and data:0 is 0xEF and data:1 is 0xBB and data:2 is 0xBF
+			bom is 3;
+			return UTF8;
+		;;
+		if length >= 2 and data:0 is 0xFE and data:1 is 0xFF
+			bom is 2;
+			return UTF16BE;
+		;;
+		if length >= 2 and data:0 is 0xFF and data:1 is 0xFE
+			bom is 2;
+			return UTF16LE;
+		;;
+	[end: -1]
+
+	# Bytes in an encoding, as UTF-8 on the heap (the caller frees it), its length in size_out; a
+	# byte-order mark says the encoding instead, and goes. 0 if enc isn't one, or no memory.
+	[Decode: int enc: 0; ptr<u8> data: 0; u32 length: 0; ptr<u32> size_out: 0; : ptr<u8>]
+		error is '';
+		size_out:0 is 0;
+		if enc < 0 or enc >= COUNT
+			error is 'not an encoding this library decodes';
+			return 0;
+		;;
+		if data is 0
+			length is 0;
+		;;
+		if length > 0x20000000
+			error is 'more than 512 MB of text';
+			return 0;
+		;;
+		int marked: (Bom: data length);
+		if marked >= 0
+			enc is marked;
+			data++ bom;
+			length-- bom as u32;
+		;;
+		ptr<u8> out_text: new u8[length * 3 + 4];
+		if out_text is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		u32 n: 0;
+		if enc is REPLACEMENT
+			if length > 0
+				n is (Put: out_text 0 0xFFFD);
+			;;
+		;;
+		elif enc is UTF8
+			n is (Utf8: data length out_text);
+		;;
+		elif enc is UTF16BE or enc is UTF16LE
+			n is (Utf16: data length out_text enc is UTF16BE);
+		;;
+		else
+			while u32 i: 0; i < length; i++;
+				u32 b: data:i;
+				u32 cp: b;
+				if b >= 0x80
+					if enc is X_USER_DEFINED
+						cp is 0xF780 + b - 0x80;
+					;;
+					else
+						cp is EncTables.single:((enc - 4) * 128 + (b - 0x80) as int);
+						if cp is 0
+							cp is 0xFFFD;
+						;;
+					;;
+				;;
+				n is (Put: out_text n cp);
+			;;
+		;;
+		size_out:0 is n;
+	[end: out_text]
+
+	# a code point written as UTF-8 at n: where the next goes
+	[Put: ptr<u8> p: 0; u32 n: 0; u32 cp: 0; : u32]
+		if cp < 0x80
+			p:n is cp as u8;
+			return n + 1;
+		;;
+		if cp < 0x800
+			p:n is (0xC0 | (cp >> 6)) as u8;
+			p:(n + 1) is (0x80 | (cp & 0x3F)) as u8;
+			return n + 2;
+		;;
+		if cp < 0x10000
+			p:n is (0xE0 | (cp >> 12)) as u8;
+			p:(n + 1) is (0x80 | ((cp >> 6) & 0x3F)) as u8;
+			p:(n + 2) is (0x80 | (cp & 0x3F)) as u8;
+			return n + 3;
+		;;
+		p:n is (0xF0 | (cp >> 18)) as u8;
+		p:(n + 1) is (0x80 | ((cp >> 12) & 0x3F)) as u8;
+		p:(n + 2) is (0x80 | ((cp >> 6) & 0x3F)) as u8;
+		p:(n + 3) is (0x80 | (cp & 0x3F)) as u8;
+	[end: n + 4]
+
+	# UTF-8 as the standard decodes it: a sequence cut off, or a byte that can't come where it is,
+	# is U+FFFD, and the byte that showed it is read again
+	[Utf8: ptr<u8> data: 0; u32 length: 0; ptr<u8> out_text: 0; : u32]
+		u32 n: 0;
+		u32 cp: 0;
+		int needed: 0;
+		int seen: 0;
+		u32 lower: 0x80;
+		u32 upper: 0xBF;
+		u32 i: 0;
+		while i < length
+			u32 b: data:i;
+			if needed is 0
+				i++;
+				if b < 0x80
+					out_text:n is b as u8;
+					n++;
+				;;
+				elif b >= 0xC2 and b <= 0xDF
+					needed is 1;
+					cp is b & 0x1F;
+				;;
+				elif b >= 0xE0 and b <= 0xEF
+					if b is 0xE0
+						lower is 0xA0;
+					;;
+					if b is 0xED
+						upper is 0x9F;
+					;;
+					needed is 2;
+					cp is b & 0xF;
+				;;
+				elif b >= 0xF0 and b <= 0xF4
+					if b is 0xF0
+						lower is 0x90;
+					;;
+					if b is 0xF4
+						upper is 0x8F;
+					;;
+					needed is 3;
+					cp is b & 7;
+				;;
+				else
+					n is (Put: out_text n 0xFFFD);
+				;;
+				continue;
+			;;
+			if b < lower or b > upper
+				# the sequence ends short: U+FFFD, and this byte again from the start
+				cp is 0;
+				needed is 0;
+				seen is 0;
+				lower is 0x80;
+				upper is 0xBF;
+				n is (Put: out_text n 0xFFFD);
+				continue;
+			;;
+			i++;
+			lower is 0x80;
+			upper is 0xBF;
+			cp is (cp << 6) | (b & 0x3F);
+			seen++;
+			if seen is needed
+				n is (Put: out_text n cp);
+				cp is 0;
+				needed is 0;
+				seen is 0;
+			;;
+		;;
+		if needed > 0
+			n is (Put: out_text n 0xFFFD);
+		;;
+	[end: n]
+
+	[Utf16: ptr<u8> data: 0; u32 length: 0; ptr<u8> out_text: 0; bln big: false; : u32]
+		u32 n: 0;
+		u32 lead: 0;
+		u32 i: 0;
+		while i + 1 < length
+			u32 unit: data:i | (data:(i + 1) << 8);
+			if big
+				unit is (data:i << 8) | data:(i + 1);
+			;;
+			i++ 2;
+			if lead is not 0
+				if unit >= 0xDC00 and unit <= 0xDFFF
+					n is (Put: out_text n 0x10000 + ((lead - 0xD800) << 10) + (unit - 0xDC00));
+					lead is 0;
+					continue;
+				;;
+				n is (Put: out_text n 0xFFFD);
+				lead is 0;
+			;;
+			if unit >= 0xD800 and unit <= 0xDBFF
+				lead is unit;
+				continue;
+			;;
+			if unit >= 0xDC00 and unit <= 0xDFFF
+				n is (Put: out_text n 0xFFFD);
+				continue;
+			;;
+			n is (Put: out_text n unit);
+		;;
+		if lead is not 0 or i < length
+			n is (Put: out_text n 0xFFFD);
+		;;
+	[end: n]
+
+	# ---- an HTML page's encoding (HTML, 13.2.3: the encoding sniffing algorithm)
+
+	# A byte-order mark's; or the one the server said (transport, a label: 0 if none); or what a
+	# <meta> in the first 1,024 bytes says; or windows-1252, as browsers have it for a page that
+	# says nothing.
+	[Sniff: ptr<u8> data: 0; u32 length: 0; ptr<u8> transport: 0; int transport_len: 0;]
+		int found: (Bom: data length);
+		if found >= 0 return found;
+		if transport is not 0
+			found is (Label: transport transport_len);
+			if found >= 0 return found;
+		;;
+		found is (Prescan: data length);
+		if found >= 0 return found;
+	[end: WINDOWS_1252]
+
+	# what the page's first <meta charset> or <meta http-equiv=content-type content=...> says, as
+	# HTML's prescan finds it: -1 if none
+	[Prescan: ptr<u8> data: 0; u32 length: 0;]
+		if data is 0 return -1;
+		u32 end_at: length;
+		if end_at > 1024
+			end_at is 1024;
+		;;
+		u32 p: 0;
+		while p < end_at
+			if (Starts: data end_at p '<!--')
+				# to the end of the comment: '-->' (its dashes may be the opening's)
+				u32 q: p + 2;
+				while q + 2 < end_at and not (data:q is '-' and data:(q + 1) is '-' and data:(q + 2) is '>')
+					q++;
+				;;
+				p is q + 3;
+				continue;
+			;;
+			if (StartsLower: data end_at p '<meta') and p + 5 < end_at and ((Space: data:(p + 5)) or data:(p + 5) is '/')
+				p++ 5;
+				int got: (Meta: data end_at addr p);
+				if got >= 0 return got;
+				continue;
+			;;
+			if data:p is '<' and p + 1 < end_at and ((Letter: data:(p + 1)) or (data:(p + 1) is '/' and p + 2 < end_at and (Letter: data:(p + 2))))
+				# another tag: its name, then its attributes, passed over
+				while p < end_at and not (Space: data:p) and data:p is not '>'
+					p++;
+				;;
+				EncAttr a;
+				int attrs: 0;
+				while attrs < 200 and (Attribute: data end_at addr p a)
+					attrs++;
+				;;
+				continue;
+			;;
+			if (Starts: data end_at p '<!') or (Starts: data end_at p '</') or (Starts: data end_at p '<?')
+				while p < end_at and data:p is not '>'
+					p++;
+				;;
+				p++;
+				continue;
+			;;
+			p++;
+		;;
+	[end: -1]
+
+	# a <meta>'s attributes (p just after "<meta"): the encoding it says, or -1
+	[Meta: ptr<u8> data: 0; u32 end_at: 0; ptr<u32> p: 0;]
+		bln got_pragma: false;
+		int need_pragma: -1;                    # -1 unknown, 0 no, 1 yes
+		int charset: -1;
+		bln failed: false;
+		bln seen_equiv: false;
+		bln seen_content: false;
+		bln seen_charset: false;
+		EncAttr a;
+		int guard: 0;
+		while (Attribute: data end_at p a)
+			guard++;
+			if guard > 200 break;
+			ptr<u8> name: addr a.name;
+			if (Same: name 'http-equiv')
+				if seen_equiv
+					continue;
+				;;
+				seen_equiv is true;
+				if (Same: addr a.value 'content-type')
+					got_pragma is true;
+				;;
+			;;
+			elif (Same: name 'content')
+				if seen_content
+					continue;
+				;;
+				seen_content is true;
+				if charset < 0 and not failed
+					int from_content: (FromContent: addr a.value a.value_len);
+					if from_content >= 0
+						charset is from_content;
+						need_pragma is 1;
+					;;
+				;;
+			;;
+			elif (Same: name 'charset')
+				if seen_charset
+					continue;
+				;;
+				seen_charset is true;
+				charset is (Label: addr a.value a.value_len);
+				failed is (charset < 0);
+				need_pragma is 0;
+			;;
+		;;
+		if need_pragma < 0 or (need_pragma is 1 and not got_pragma) or charset < 0 return -1;
+		if charset is UTF16BE or charset is UTF16LE return UTF8;
+		if charset is X_USER_DEFINED return WINDOWS_1252;
+	[end: charset]
+
+	# the encoding a content="text/html; charset=..." names: -1 if none
+	[FromContent: ptr<u8> v: 0; int n: 0;]
+		int p: 0;
+		while p + 7 <= n
+			if not (StartsLower: v n as u32 p as u32 'charset')
+				p++;
+				continue;
+			;;
+			p++ 7;
+			while p < n and (Space: v:p)
+				p++;
+			;;
+			if p >= n or v:p is not '='
+				continue;
+			;;
+			p++;
+			while p < n and (Space: v:p)
+				p++;
+			;;
+			if p >= n return -1;
+			if v:p is '"' or v:p is 39
+				int quote: v:p;
+				int q: p + 1;
+				while q < n and v:q is not quote
+					q++;
+				;;
+				if q >= n return -1;
+				return (Label: v + p + 1 q - p - 1);
+			;;
+			int q: p;
+			while q < n and not (Space: v:q) and v:q is not ';'
+				q++;
+			;;
+			return (Label: v + p q - p);
+		;;
+	[end: -1]
+
+	# HTML's "get an attribute": its name and value (lowercased, as the prescan has them) into a,
+	# p moved past it; false at the tag's end or the data's
+	[Attribute: ptr<u8> data: 0; u32 end_at: 0; ptr<u32> p: 0; EncAttr a;]
+		a.name_len is 0;
+		a.value_len is 0;
+		a.name:0 is 0;
+		a.value:0 is 0;
+		u32 i: p:0;
+		while i < end_at and ((Space: data:i) or data:i is '/')
+			i++;
+		;;
+		if i >= end_at or data:i is '>'
+			p:0 is i;
+			return false;
+		;;
+		# the name
+		while i < end_at
+			int c: data:i;
+			if c is '=' and a.name_len > 0
+				i++;
+				call ReadValue: data end_at addr i a;
+				p:0 is i;
+				return true;
+			;;
+			if (Space: c)
+				# spaces, then an = or not
+				while i < end_at and (Space: data:i)
+					i++;
+				;;
+				if i < end_at and data:i is '='
+					i++;
+					call ReadValue: data end_at addr i a;
+				;;
+				p:0 is i;
+				return true;
+			;;
+			if c is '/' or c is '>'
+				p:0 is i;
+				return true;
+			;;
+			call a.AddName: (Lower: c);
+			i++;
+		;;
+		p:0 is i;
+	[end: a.name_len > 0]
+
+	[ReadValue: ptr<u8> data: 0; u32 end_at: 0; ptr<u32> p: 0; EncAttr a;]
+		u32 i: p:0;
+		while i < end_at and (Space: data:i)
+			i++;
+		;;
+		if i >= end_at
+			p:0 is i;
+			return;
+		;;
+		int c: data:i;
+		if c is '"' or c is 39
+			i++;
+			while i < end_at and data:i is not c
+				call a.AddValue: (Lower: data:i);
+				i++;
+			;;
+			p:0 is i + 1;
+			return;
+		;;
+		if c is '>'
+			p:0 is i;
+			return;
+		;;
+		while i < end_at and not (Space: data:i) and data:i is not '>'
+			call a.AddValue: (Lower: data:i);
+			i++;
+		;;
+		p:0 is i;
+	[end]
+
+	[Lower: int c: 0;]
+		if c >= 'A' and c <= 'Z' return c + 32;
+	[end: c]
+
+	[Letter: int c: 0;]
+	[end: (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')]
+
+	[Starts: ptr<u8> data: 0; u32 end_at: 0; u32 p: 0; ptr<u8> word: 0;]
+		int i: 0;
+		while word:i is not 0
+			if p + i as u32 >= end_at or data:(p + i as u32) is not word:i return false;
+			i++;
+		;;
+	[end: true]
+
+	[StartsLower: ptr<u8> data: 0; u32 end_at: 0; u32 p: 0; ptr<u8> word: 0;]
+		int i: 0;
+		while word:i is not 0
+			if p + i as u32 >= end_at or (Lower: data:(p + i as u32)) is not word:i return false;
+			i++;
+		;;
+	[end: true]
+
+	[Same: ptr<u8> a: 0; ptr<u8> b: 0;]
+		int i: 0;
+		while a:i is b:i
+			if a:i is 0 return true;
+			i++;
+		;;
+	[end: false]
+}
+
+# an attribute the prescan found: its name and value, cut at 63 and 127 bytes
+struct.EncAttr
+{
+	u8 name[64];
+	u8 value[128];
+	int name_len;
+	int value_len;
+
+	[AddName: int c: 0;]
+		if name_len < 63
+			name:name_len is c as u8;
+			name_len++;
+			name:name_len is 0;
+		;;
+	[end]
+
+	[AddValue: int c: 0;]
+		if value_len < 127
+			value:value_len is c as u8;
+			value_len++;
+			value:value_len is 0;
+		;;
+	[end]
+}

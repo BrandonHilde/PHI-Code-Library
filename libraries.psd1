@@ -8,5 +8,6 @@
 		@{ Name = 'fontlib'; Folder = 'libs\font'; Uses = @('corelib') }
 		@{ Name = 'editlib'; Folder = 'libs\edit'; Uses = @() }
 		@{ Name = 'vectorlib'; Folder = 'libs\vector'; Uses = @() }
+		@{ Name = 'encodinglib'; Folder = 'libs\encoding'; Uses = @() }
 	)
 }
