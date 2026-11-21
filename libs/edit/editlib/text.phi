@@ -1,0 +1,990 @@
+# editlib's EdText: text being edited. It holds the bytes, a caret and what's selected, and
+# what was done to them so it can be undone. It draws nothing and knows no keys: a program
+# turns its keys and clicks into the calls below, and draws the text however it likes.
+#
+#   ptr<EdText> t: (Ed.New: 262144);          # at most 256 KB of text (0: Ed.MOST)
+#   call t.Set: bytes length;                 # what a file had: the caret at the start
+#   call t.Typed: 'a';                        # a character, by its number, at the caret
+#   call t.Right: true;                       # the caret one character right, selecting
+#   call t.Backspace: false;                  # what's selected goes (or the character before)
+#   call t.Undo;
+#   ptr<u8> all: (t.Contents);                # all of it in one piece, a zero after it
+#   call Ed.Free: t;
+#
+# Text is UTF-8, and every position is a byte's: 0 is before the first byte and (Length) after
+# the last. The caret only moves by whole characters, and a column counts characters, not bytes.
+# A line ends at a '\n', which belongs to the line it ends.
+#
+# How it's kept: a gap buffer, the text before the caret at the start of buf and the text after
+# it at the end, with the room between. Typing adds to the gap's start, so it costs the same
+# however long the text is; moving the caret far moves the bytes between.
+#
+# What's done is kept as steps, each a run of bytes put in or taken out, and the steps of one
+# action share a group, which Undo takes back whole. Characters typed one after another are one
+# group to each word, and so are deletions one after another, so Undo takes back a word at a time.
+
+use memory.mem;
+use user.math;
+
+struct.EdText
+{
+	ptr<u8> buf;
+	int room;                   # bytes buf has
+	int gap;                    # where the gap starts: the text before it is buf's first gap bytes
+	int gap_end;                # where the text after it starts, which runs to room
+	int most;                   # the most bytes the text may be
+	int caret;
+	int anchor;                 # where what's selected begins; the caret is where it ends
+	int goal;                   # the column moving up and down keeps to: -1 until one does
+	int newlines;               # how many '\n' there are
+	bln one_line;               # a line of text to type in: no new lines, and pasted ones are spaces
+	bln changed;                # changed since Set or Saved
+	int seen_pos;               # LineOf's last answer, kept for the next: line seen_line starts
+	int seen_line;              # at or before seen_pos
+	# what was done, for Undo and Redo: Ed.STEP numbers a step (Ed's step fields), in steps
+	ptr<int> steps;
+	int step_room;              # how many steps there's room for
+	int step_count;
+	int done;                   # how many of them are done: the rest are for Redo
+	ptr<u8> store;              # the bytes each step put in or took out
+	int store_room;
+	int store_used;
+	int group;                  # the group of the action being done
+	int merging;                # what the last action was, if the next can join it (Ed.TYPING and so on)
+	int before_caret;           # where the caret and the anchor were before the group began
+	int before_anchor;
+	int undo_most;              # the most bytes of history kept: the oldest goes past it (0: none)
+
+	# ---- what's there
+
+	# how many bytes the text is
+	[Length]
+	[end: room - (gap_end - gap)]
+
+	# the byte at pos; 0 outside the text
+	[At: int pos: 0; : int]
+		if pos < 0 or pos >= room - (gap_end - gap) return 0;
+		if pos < gap return buf:pos;
+	[end: buf:(pos + gap_end - gap)]
+
+	# all of the text in one piece, with a zero after it: good until the text next changes
+	[Contents: : ptr<u8>]
+		call MoveGap: (Length);
+		buf:gap is 0;                               # (the gap always has a byte)
+	[end: buf]
+
+	# n bytes from from into dest (which has room for them)
+	[CopyOut: int from: 0; int n: 0; ptr<u8> dest: 0;]
+		if n <= 0 return;
+		int first: 0;
+		if from < gap
+			first is gap - from;
+			if first > n
+				first is n;
+			;;
+			call Mem.Copy: dest buf + from first;
+		;;
+		if n > first
+			call Mem.Copy: dest + first buf + gap_end + (from + first - gap) n - first;
+		;;
+	[end]
+
+	# ---- what's selected
+
+	[HasSelection]
+	[end: anchor is not caret]
+
+	[SelectionStart]
+		if anchor < caret return anchor;
+	[end: caret]
+
+	[SelectionEnd]
+		if anchor > caret return anchor;
+	[end: caret]
+
+	# how many bytes are selected
+	[Selected]
+	[end: (SelectionEnd) - (SelectionStart)]
+
+	# what's selected into dest, as much as size bytes hold: how many bytes that was
+	[CopySelection: ptr<u8> dest: 0; int size: 0;]
+		int n: (Selected);
+		if n > size
+			n is size;
+			while n > 0 and ((At: (SelectionStart) + n) & 0xC0) is 0x80
+				n--;
+			;;
+		;;
+		call CopyOut: (SelectionStart) n dest;
+	[end: n]
+
+	# from anchor to caret (each kept to the text)
+	[Select: int from: 0; int to: 0;]
+		anchor is (Inside: from);
+		caret is (Inside: to);
+		call Moved;
+	[end]
+
+	[SelectAll]
+		anchor is 0;
+		caret is (Length);
+		call Moved;
+	[end]
+
+	# the word pos is in (or the character, where there's no word), as a double click selects it
+	[SelectWord: int pos: 0;]
+		pos is (Inside: pos);
+		int length: (Length);
+		if pos >= length and pos > 0
+			pos is (CharBefore: pos);
+		;;
+		if not (Ed.IsWord: (At: pos))
+			anchor is pos;
+			caret is (CharAfter: pos);
+			call Moved;
+			return;
+		;;
+		int from: pos;
+		while from > 0 and (Ed.IsWord: (At: from - 1))
+			from--;
+		;;
+		int to: pos;
+		while to < length and (Ed.IsWord: (At: to))
+			to++;
+		;;
+		anchor is from;
+		caret is to;
+		call Moved;
+	[end]
+
+	# the line pos is in, with its '\n', as a triple click selects it
+	[SelectLine: int pos: 0;]
+		pos is (Inside: pos);
+		anchor is (LineStart: pos);
+		caret is (LineEnd: pos);
+		if caret < (Length)
+			caret++;
+		;;
+		call Moved;
+	[end]
+
+	# ---- moving the caret: with extend true what's selected grows or shrinks to it, and with
+	# extend false nothing is selected after
+
+	[MoveTo: int pos: 0; bln extend: false;]
+		caret is (Inside: pos);
+		if not extend
+			anchor is caret;
+		;;
+		call Moved;
+	[end]
+
+	# a character left; with something selected and not extending, to its start
+	[Left: bln extend: false;]
+		if not extend and anchor is not caret
+			call MoveTo: (SelectionStart);
+			return;
+		;;
+		call MoveTo: (CharBefore: caret) extend;
+	[end]
+
+	[Right: bln extend: false;]
+		if not extend and anchor is not caret
+			call MoveTo: (SelectionEnd);
+			return;
+		;;
+		call MoveTo: (CharAfter: caret) extend;
+	[end]
+
+	# to the start of this word, or of the one before
+	[WordLeft: bln extend: false;]
+		call MoveTo: (WordBefore: caret) extend;
+	[end]
+
+	# past this word and the spaces after it
+	[WordRight: bln extend: false;]
+		call MoveTo: (WordAfter: caret) extend;
+	[end]
+
+	[ToLineStart: bln extend: false;]
+		call MoveTo: (LineStart: caret) extend;
+	[end]
+
+	[ToLineEnd: bln extend: false;]
+		call MoveTo: (LineEnd: caret) extend;
+	[end]
+
+	[ToStart: bln extend: false;]
+		call MoveTo: 0 extend;
+	[end]
+
+	[ToEnd: bln extend: false;]
+		call MoveTo: (Length) extend;
+	[end]
+
+	# rows lines down (up, if it's below 0), keeping to the column it was in before it began
+	# moving up and down, where the line is long enough
+	[Vertical: int rows: 0; bln extend: false;]
+		int keep: goal;
+		if keep < 0
+			keep is (Column: caret);
+		;;
+		int line: (LineOf: caret) + rows;
+		if line < 0
+			line is 0;
+		;;
+		if line > newlines
+			line is newlines;
+		;;
+		call MoveTo: (PosAt: line keep) extend;
+		goal is keep;
+	[end]
+
+	# ---- changing it. Each is one action for Undo, and false when it did nothing (or, for
+	# Insert, couldn't put all of it in)
+
+	# bytes in place of what's selected, at the caret, which goes after them
+	[Insert: ptr<u8> bytes: 0; int n: 0;]
+		call Begin: 0;
+		bln whole: (PutIn: bytes n);
+		merging is 0;
+	[end: whole]
+
+	# a character, by its number ('a', or 0x3C6 for phi), in place of what's selected: what's
+	# typed one character after another joins one action until a new word begins
+	[Typed: int code: 0;]
+		u8 bytes[4];
+		int n: (Ed.Encode: code addr bytes);
+		if n is 0 return false;
+		if one_line and code < 32 return false;
+		int how: Ed.TYPING;
+		if anchor is not caret
+			how is 0;
+		;;
+		elif (Ed.IsWord: code) and caret > 0 and not (Ed.IsWord: (At: caret - 1))
+			merging is 0;                           # a new word: a new action
+		;;
+		call Begin: how;
+		bln whole: (PutIn: addr bytes n);
+		merging is Ed.TYPING;                   # (what's typed next joins it)
+	[end: whole]
+
+	# what's selected goes; with nothing selected, the character before the caret, or with word
+	# true, back to the start of the word
+	[Backspace: bln word: false;]
+		if anchor is not caret return (DeleteSelection);
+		if caret is 0 return false;
+		int from: (CharBefore: caret);
+		int how: Ed.BACK;
+		if word
+			from is (WordBefore: caret);
+			how is 0;
+		;;
+		call Begin: how;
+		call Remove: from caret - from;
+		caret is from;
+		anchor is from;
+		call Edited: how;
+	[end: true]
+
+	# what's selected goes; with nothing selected, the character after the caret, or with word
+	# true, to the end of the word and the spaces after it
+	[Delete: bln word: false;]
+		if anchor is not caret return (DeleteSelection);
+		int to: (CharAfter: caret);
+		int how: Ed.FORWARD;
+		if word
+			to is (WordAfter: caret);
+			how is 0;
+		;;
+		if to <= caret return false;
+		call Begin: how;
+		call Remove: caret to - caret;
+		anchor is caret;
+		call Edited: how;
+	[end: true]
+
+	[DeleteSelection]
+		if anchor is caret return false;
+		call Begin: 0;
+		int from: (SelectionStart);
+		call Remove: from (Selected);
+		caret is from;
+		anchor is from;
+		call Edited: 0;
+	[end: true]
+
+	# The whole text from bytes (as much as fits), with the caret at the start, nothing to undo,
+	# and not changed: what a file had, opened. False if it didn't all fit.
+	[Set: ptr<u8> bytes: 0; int n: 0;]
+		gap is 0;
+		gap_end is room;
+		newlines is 0;
+		caret is 0;
+		anchor is 0;
+		call Forget: true;
+		bln whole: (Clean: bytes n false);
+		caret is 0;
+		anchor is 0;
+		goal is -1;
+		seen_pos is 0;
+		seen_line is 0;
+		changed is false;
+	[end: whole]
+
+	# what's there now is what's saved: changed is false
+	[Saved]
+		changed is false;
+	[end]
+
+	# ---- undoing
+
+	[CanUndo]
+	[end: done > 0]
+
+	[CanRedo]
+	[end: done < step_count]
+
+	# the last action taken back: false if there's none
+	[Undo]
+		if done is 0 return false;
+		int which: steps:((done - 1) * Ed.STEP + Ed.S_GROUP);
+		int back_caret: caret;
+		int back_anchor: anchor;
+		while done > 0 and steps:((done - 1) * Ed.STEP + Ed.S_GROUP) is which
+			done--;
+			int s: done * Ed.STEP;
+			if steps:(s + Ed.S_KIND) is Ed.PUT
+				call Take: steps:(s + Ed.S_POS) steps:(s + Ed.S_LEN);
+			;;
+			else
+				call Put: steps:(s + Ed.S_POS) store + steps:(s + Ed.S_DATA) steps:(s + Ed.S_LEN);
+			;;
+			back_caret is steps:(s + Ed.S_CARET);
+			back_anchor is steps:(s + Ed.S_ANCHOR);
+		;;
+		caret is (Inside: back_caret);
+		anchor is (Inside: back_anchor);
+		merging is 0;
+		goal is -1;
+		changed is true;
+	[end: true]
+
+	# the last action undone, done again: false if there's none
+	[Redo]
+		if done >= step_count return false;
+		int which: steps:(done * Ed.STEP + Ed.S_GROUP);
+		int land: caret;
+		while done < step_count and steps:(done * Ed.STEP + Ed.S_GROUP) is which
+			int s: done * Ed.STEP;
+			int pos: steps:(s + Ed.S_POS);
+			int len: steps:(s + Ed.S_LEN);
+			if steps:(s + Ed.S_KIND) is Ed.PUT
+				call Put: pos store + steps:(s + Ed.S_DATA) len;
+				land is pos + len;
+			;;
+			else
+				call Take: pos len;
+				land is pos;
+			;;
+			done++;
+		;;
+		caret is land;
+		anchor is land;
+		merging is 0;
+		goal is -1;
+		changed is true;
+	[end: true]
+
+	# The next change is an action of its own, not part of the one before: for a program that
+	# moves the caret itself, or wants a pause in typing to end an action.
+	[Break]
+		merging is 0;
+	[end]
+
+	# ---- lines and columns
+
+	# where the line pos is in starts
+	[LineStart: int pos: 0;]
+		pos is (Inside: pos);
+		while pos > 0 and (At: pos - 1) is not 10
+			pos--;
+		;;
+	[end: pos]
+
+	# where it ends: at its '\n', or at the end of the text
+	[LineEnd: int pos: 0;]
+		pos is (Inside: pos);
+		int length: (Length);
+		while pos < length and (At: pos) is not 10
+			pos++;
+		;;
+	[end: pos]
+
+	# how many lines there are: one more than the '\n's
+	[Lines]
+	[end: newlines + 1]
+
+	# which line pos is in, the first being 0
+	[LineOf: int pos: 0;]
+		pos is (Inside: pos);
+		# from the last answer, which is usually near
+		int from: seen_pos;
+		int line: seen_line;
+		if pos < from
+			if from - pos > pos
+				from is 0;
+				line is 0;
+			;;
+			else
+				while from > pos
+					from--;
+					if (At: from) is 10
+						line--;
+					;;
+				;;
+			;;
+		;;
+		while from < pos
+			if (At: from) is 10
+				line++;
+			;;
+			from++;
+		;;
+		seen_pos is pos;
+		seen_line is line;
+	[end: line]
+
+	# where line n starts; -1 if there's no such line
+	[StartOf: int n: 0;]
+		if n < 0 or n > newlines return -1;
+		if n is 0 return 0;
+		# from the last answer of LineOf, when it's on the way
+		int pos: 0;
+		int line: 0;
+		if seen_line <= n
+			pos is (LineStart: seen_pos);
+			line is seen_line;
+		;;
+		int length: (Length);
+		while line < n and pos < length
+			if (At: pos) is 10
+				line++;
+			;;
+			pos++;
+		;;
+	[end: pos]
+
+	# how many characters there are between the start of pos's line and pos
+	[Column: int pos: 0;]
+		pos is (Inside: pos);
+		int col: 0;
+		int p: (LineStart: pos);
+		while p < pos
+			if ((At: p) & 0xC0) is not 0x80
+				col++;
+			;;
+			p++;
+		;;
+	[end: col]
+
+	# where column col of line is: the line's end if it's shorter
+	[PosAt: int line: 0; int col: 0;]
+		int pos: (StartOf: line);
+		if pos < 0
+			return (Length);
+		;;
+		int stop: (LineEnd: pos);
+		while col > 0 and pos < stop
+			pos is (CharAfter: pos);
+			col--;
+		;;
+	[end: pos]
+
+	# ---- finding
+
+	# where n bytes of what's at needle next come, at from or after it: -1 if they don't. With
+	# any_case true, ASCII letters match in either case.
+	[Find: ptr<u8> needle: 0; int n: 0; int from: 0; bln any_case: false;]
+		if n <= 0 return -1;
+		ptr<u8> all: (Contents);
+		int last: (Length) - n;
+		while int pos: (Math.Max: from 0); pos <= last; pos++;
+			if (Ed.Same: all + pos needle n any_case) return pos;
+		;;
+	[end: -1]
+
+	# where they last come, starting before before: -1 if they don't
+	[FindBack: ptr<u8> needle: 0; int n: 0; int before: 0; bln any_case: false;]
+		if n <= 0 return -1;
+		ptr<u8> all: (Contents);
+		int pos: (Math.Min: before (Length)) - n;
+		while pos >= 0
+			if (Ed.Same: all + pos needle n any_case) return pos;
+			pos--;
+		;;
+	[end: -1]
+
+	# ---- how it works
+
+	# pos kept within the text
+	[Inside: int pos: 0;]
+		if pos < 0 return 0;
+		int length: room - (gap_end - gap);
+		if pos > length return length;
+	[end: pos]
+
+	# where the character before pos starts
+	[CharBefore: int pos: 0;]
+		if pos <= 0 return 0;
+		int p: pos - 1;
+		while p > 0 and pos - p < 4 and ((At: p) & 0xC0) is 0x80
+			p--;
+		;;
+	[end: p]
+
+	# where the character after the one at pos starts
+	[CharAfter: int pos: 0;]
+		int length: (Length);
+		if pos >= length return length;
+		int p: pos + 1;
+		while p < length and p - pos < 4 and ((At: p) & 0xC0) is 0x80
+			p++;
+		;;
+	[end: p]
+
+	# the start of the word before pos (past any spaces and marks first)
+	[WordBefore: int pos: 0;]
+		int p: pos;
+		while p > 0 and not (Ed.IsWord: (At: p - 1))
+			p--;
+		;;
+		while p > 0 and (Ed.IsWord: (At: p - 1))
+			p--;
+		;;
+	[end: p]
+
+	# past the word at pos and what isn't a word after it, up to the end of the line; a
+	# character on, at the end of one
+	[WordAfter: int pos: 0;]
+		int length: (Length);
+		int p: pos;
+		while p < length and (Ed.IsWord: (At: p))
+			p++;
+		;;
+		while p < length and not (Ed.IsWord: (At: p)) and (At: p) is not 10
+			p++;
+		;;
+		if p is pos and p < length
+			p is (CharAfter: p);
+		;;
+	[end: p]
+
+	# the caret moved: nothing typed after joins what was typed before
+	[Moved]
+		merging is 0;
+		goal is -1;
+	[end]
+
+	# A new action begins, unless it's how the last one was (Ed.TYPING and the rest) and carries
+	# on where that one left off: then it joins it.
+	[Begin: int how: 0;]
+		if how is not 0 and how is merging and done is step_count and done > 0
+			int s: (done - 1) * Ed.STEP;
+			if steps:(s + Ed.S_GROUP) is group
+				int kind: steps:(s + Ed.S_KIND);
+				int pos: steps:(s + Ed.S_POS);
+				if how is Ed.TYPING and kind is Ed.PUT and pos + steps:(s + Ed.S_LEN) is caret return;
+				if how is Ed.BACK and kind is Ed.TAKE and pos is caret return;
+				if how is Ed.FORWARD and kind is Ed.TAKE and pos is caret return;
+			;;
+		;;
+		group++;
+		before_caret is caret;
+		before_anchor is anchor;
+	[end]
+
+	# a change was made
+	[Edited: int how: 0;]
+		merging is how;
+		goal is -1;
+		changed is true;
+	[end]
+
+	# what's selected goes, and bytes go in at the caret, as many as there's room for: false if
+	# that wasn't all of them
+	[PutIn: ptr<u8> bytes: 0; int n: 0;]
+		if anchor is not caret
+			int from: (SelectionStart);
+			call Remove: from (Selected);
+			caret is from;
+			anchor is from;
+		;;
+		bln whole: (Clean: bytes n true);
+		anchor is caret;
+		goal is -1;
+		changed is true;
+	[end: whole]
+
+	# Bytes in at the caret, which goes after them, kept as a step when keep is true. On one line
+	# what would start a new one is a space (a '\r' and a '\n' after it are one), and the rest of
+	# what's below 32 too. Only as many as fit under most go in, ending on a whole character:
+	# false if that wasn't all of them.
+	[Clean: ptr<u8> bytes: 0; int n: 0; bln keep: false;]
+		if n <= 0 or bytes is 0 return true;
+		ptr<u8> from: bytes;
+		ptr<u8> made: 0;
+		if one_line
+			made is new u8[n];
+			if made is 0 return false;
+			int k: 0;
+			while int i: 0; i < n; i++;
+				int b: bytes:i;
+				if b is 13 and i + 1 < n and bytes:(i + 1) is 10
+					continue;
+				;;
+				if b < 32
+					b is 32;
+				;;
+				made:k is b as u8;
+				k++;
+			;;
+			n is k;
+			from is made;
+		;;
+		bln whole: true;
+		int fit: most - (Length);
+		if fit < 0
+			fit is 0;
+		;;
+		if n > fit
+			whole is false;
+			n is fit;
+			while n > 0 and (from:n & 0xC0) is 0x80
+				n--;
+			;;
+		;;
+		if n > 0 and (Room: n)
+			call Put: caret from n;
+			if keep
+				call Record: Ed.PUT caret n;
+			;;
+			caret++ n;
+		;;
+		elif n > 0
+			whole is false;
+		;;
+		if made is not 0
+			free made;
+		;;
+	[end: whole]
+
+	# n bytes from pos go, kept as a step
+	[Remove: int pos: 0; int n: 0;]
+		if n <= 0 return;
+		call Record: Ed.TAKE pos n;
+		call Take: pos n;
+	[end]
+
+	# n bytes from bytes go in at pos (there's room: Room was asked)
+	[Put: int pos: 0; ptr<u8> bytes: 0; int n: 0;]
+		if not (Room: n) return;
+		call MoveGap: pos;
+		call Mem.Copy: buf + gap bytes n;
+		while int i: 0; i < n; i++;
+			if bytes:i is 10
+				newlines++;
+			;;
+		;;
+		gap++ n;
+		call Unseen: pos;
+	[end]
+
+	# n bytes from pos go
+	[Take: int pos: 0; int n: 0;]
+		call MoveGap: pos;
+		while int i: 0; i < n; i++;
+			if buf:(gap_end + i) is 10
+				newlines--;
+			;;
+		;;
+		gap_end++ n;
+		call Unseen: pos;
+	[end]
+
+	# LineOf's last answer is wrong after a change before it
+	[Unseen: int pos: 0;]
+		if pos < seen_pos
+			seen_pos is 0;
+			seen_line is 0;
+		;;
+	[end]
+
+	# the gap to pos
+	[MoveGap: int pos: 0;]
+		if pos < gap
+			int back: gap - pos;
+			call Mem.Move: buf + gap_end - back buf + pos back;
+			gap is pos;
+			gap_end-- back;
+		;;
+		elif pos > gap
+			int on: pos - gap;
+			call Mem.Move: buf + gap buf + gap_end on;
+			gap++ on;
+			gap_end++ on;
+		;;
+	[end]
+
+	# room in the gap for need bytes and the one it always keeps: false if there's no memory
+	[Room: int need: 0;]
+		if gap_end - gap > need return true;
+		int length: (Length);
+		int fresh: room * 2;
+		if fresh < length + need + 256
+			fresh is length + need + 256;
+		;;
+		ptr<u8> bigger: new u8[fresh];
+		if bigger is 0 return false;
+		int after: room - gap_end;
+		if gap > 0
+			call Mem.Copy: bigger buf gap;
+		;;
+		if after > 0
+			call Mem.Copy: bigger + fresh - after buf + gap_end after;
+		;;
+		if buf is not 0
+			free buf;
+		;;
+		buf is bigger;
+		gap_end is fresh - after;
+		room is fresh;
+	[end: true]
+
+	# A step: n bytes put in at pos (kind Ed.PUT, recorded after they're in) or about to be taken
+	# out from it (Ed.TAKE). What could be redone can't be any more. When there's no memory for
+	# it, the history goes, and the change is made all the same.
+	[Record: int kind: 0; int pos: 0; int n: 0;]
+		if undo_most <= 0 or n <= 0 return;
+		if done < step_count
+			store_used is steps:(done * Ed.STEP + Ed.S_DATA);
+			step_count is done;
+		;;
+		if not (StepRoom: n)
+			call Forget: true;
+			return;
+		;;
+		int s: step_count * Ed.STEP;
+		steps:(s + Ed.S_KIND) is kind;
+		steps:(s + Ed.S_POS) is pos;
+		steps:(s + Ed.S_LEN) is n;
+		steps:(s + Ed.S_DATA) is store_used;
+		steps:(s + Ed.S_GROUP) is group;
+		steps:(s + Ed.S_CARET) is before_caret;
+		steps:(s + Ed.S_ANCHOR) is before_anchor;
+		call CopyOut: pos n store + store_used;
+		store_used++ n;
+		step_count++;
+		done++;
+		if store_used > undo_most
+			call Forget: false;
+		;;
+	[end]
+
+	# room for one more step of n bytes
+	[StepRoom: int n: 0;]
+		if step_count >= step_room
+			int more: step_room * 2;
+			if more < 64
+				more is 64;
+			;;
+			ptr<int> bigger: new int[more * Ed.STEP];
+			if bigger is 0 return false;
+			if steps is not 0
+				call Mem.Copy: bigger steps step_count * Ed.STEP * 4;
+				free steps;
+			;;
+			steps is bigger;
+			step_room is more;
+		;;
+		if store_used + n > store_room
+			int fresh: store_room * 2;
+			if fresh < store_used + n + 1024
+				fresh is store_used + n + 1024;
+			;;
+			ptr<u8> grown: new u8[fresh];
+			if grown is 0 return false;
+			if store is not 0
+				call Mem.Copy: grown store store_used;
+				free store;
+			;;
+			store is grown;
+			store_room is fresh;
+		;;
+	[end: true]
+
+	# With all true, the whole history goes. Otherwise the oldest actions go until what's kept is
+	# no more than undo_most bytes, but never the action being done.
+	[Forget: bln all: false;]
+		if all
+			step_count is 0;
+			done is 0;
+			store_used is 0;
+			merging is 0;
+			return;
+		;;
+		while store_used > undo_most and step_count > 0
+			int oldest: steps:Ed.S_GROUP;
+			if oldest is group return;
+			int k: 0;
+			while k < step_count and steps:(k * Ed.STEP + Ed.S_GROUP) is oldest
+				k++;
+			;;
+			int cut: store_used;
+			if k < step_count
+				cut is steps:(k * Ed.STEP + Ed.S_DATA);
+			;;
+			if store_used > cut
+				call Mem.Move: store store + cut store_used - cut;
+			;;
+			store_used-- cut;
+			if step_count > k
+				call Mem.Move: steps steps + k * Ed.STEP * 4 (step_count - k) * Ed.STEP * 4;
+			;;
+			step_count-- k;
+			done-- k;
+			if done < 0
+				done is 0;
+			;;
+			while int i: 0; i < step_count; i++;
+				steps:(i * Ed.STEP + Ed.S_DATA)-- cut;
+			;;
+		;;
+	[end]
+}
+
+phi.Ed:Library
+{
+	const int MOST: 64 * 1024 * 1024;   # the most text New allows when it's given 0
+	const int UNDO_MOST: 1024 * 1024;   # bytes of history kept, unless undo_most is set
+	# what an action was, for the next to join it
+	const int TYPING: 1;
+	const int BACK: 2;                  # Backspace, one character at a time
+	const int FORWARD: 3;               # Delete
+	# a step's kind
+	const int PUT: 1;
+	const int TAKE: 2;
+	# a step's numbers, in steps
+	const int STEP: 8;
+	const int S_KIND: 0;
+	const int S_POS: 1;
+	const int S_LEN: 2;
+	const int S_DATA: 3;                # where its bytes are in store
+	const int S_GROUP: 4;
+	const int S_CARET: 5;               # where the caret was before its action
+	const int S_ANCHOR: 6;
+
+	str error: [79];
+
+	# Text to edit, empty, which may grow to most bytes (0: MOST): 0 if there's no memory, with
+	# the reason in error. Ed.Free gives it back.
+	[New: int most: 0; : ptr<EdText>]
+		error is '';
+		if most <= 0 or most > MOST
+			most is MOST;
+		;;
+		ptr<EdText> t: new EdText;
+		if t is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		call Mem.Fill: t 0 sizeof EdText;
+		t.buf is new u8[256];
+		if t.buf is 0
+			free t;
+			error is 'out of memory';
+			return 0;
+		;;
+		t.room is 256;
+		t.gap_end is 256;
+		t.most is most;
+		t.goal is -1;
+		t.undo_most is UNDO_MOST;
+	[end: t]
+
+	# One line of text to type in (a name, a password, an address): a new line can't be typed,
+	# and in what's put in, each is a space.
+	[NewLine: int most: 0; : ptr<EdText>]
+		ptr<EdText> t: (New: most);
+		if t is not 0
+			t.one_line is true;
+		;;
+	[end: t]
+
+	# gives back what New made (0 is allowed, and does nothing)
+	[Free: ptr<EdText> t: 0;]
+		if t is 0 return;
+		if t.buf is not 0
+			free t.buf;
+		;;
+		if t.steps is not 0
+			free t.steps;
+		;;
+		if t.store is not 0
+			free t.store;
+		;;
+		free t;
+	[end]
+
+	# Whether the character (or a byte of one) is part of a word: a letter, a digit, '_', or any
+	# character past ASCII, since that's most often a letter of another alphabet.
+	[IsWord: int c: 0;]
+		if c >= 'a' and c <= 'z' return true;
+		if c >= 'A' and c <= 'Z' return true;
+		if c >= '0' and c <= '9' return true;
+	[end: c is '_' or c >= 128]
+
+	# the character with that number into bytes, as UTF-8: how many bytes it is (1 to 4), or 0
+	# for a number that's no character
+	[Encode: int code: 0; ptr<u8> bytes: 0;]
+		if code < 0 or code > 0x10FFFF or (code >= 0xD800 and code <= 0xDFFF) return 0;
+		if code < 0x80
+			bytes:0 is code as u8;
+			return 1;
+		;;
+		if code < 0x800
+			bytes:0 is (0xC0 | (code >> 6)) as u8;
+			bytes:1 is (0x80 | (code & 0x3F)) as u8;
+			return 2;
+		;;
+		if code < 0x10000
+			bytes:0 is (0xE0 | (code >> 12)) as u8;
+			bytes:1 is (0x80 | ((code >> 6) & 0x3F)) as u8;
+			bytes:2 is (0x80 | (code & 0x3F)) as u8;
+			return 3;
+		;;
+		bytes:0 is (0xF0 | (code >> 18)) as u8;
+		bytes:1 is (0x80 | ((code >> 12) & 0x3F)) as u8;
+		bytes:2 is (0x80 | ((code >> 6) & 0x3F)) as u8;
+		bytes:3 is (0x80 | (code & 0x3F)) as u8;
+	[end: 4]
+
+	# whether n bytes at a and b are the same (ASCII letters in either case, with any_case)
+	[Same: ptr<u8> a: 0; ptr<u8> b: 0; int n: 0; bln any_case: false;]
+		while int i: 0; i < n; i++;
+			int x: a:i;
+			int y: b:i;
+			if x is y
+				continue;
+			;;
+			if not any_case return false;
+			if x >= 'A' and x <= 'Z'
+				x++ 32;
+			;;
+			if y >= 'A' and y <= 'Z'
+				y++ 32;
+			;;
+			if x is not y return false;
+		;;
+	[end: true]
+}

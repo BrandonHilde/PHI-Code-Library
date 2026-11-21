@@ -1,0 +1,20 @@
+# editlib: text being edited, for any program with somewhere to type. The caret, what's
+# selected, moving by characters, words and lines, typing and deleting, undo and redo, and
+# finding, on text of any length, in UTF-8. It draws nothing and reads no keys: the program
+# using it does both, and turns its keys and clicks into EdText's calls.
+#
+#   phi build editlib.phi --library      # editlib.philib, which a program includes with `use editlib;`
+#
+# README.md says which names are its API.
+
+use editlib.text;
+
+phi.EditLib:Library
+{
+	const int VERSION: 1;
+
+	# Call this once, before anything else in the library. There's nothing to set up yet, but a
+	# program that calls it keeps working when there is.
+	[Start]
+	[end]
+}

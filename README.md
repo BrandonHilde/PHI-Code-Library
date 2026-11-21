@@ -12,6 +12,7 @@ the program, so there's nothing extra to ship.
 | `imagelib` | Image files in, pixels out | Reads BMP, PNG, JPEG (baseline and progressive) and GIF (animations too), and scales, in [libs/image](libs/image) |
 | `fontlib` | Font files in; metrics and smooth glyph bitmaps out | Reads TrueType, CFF (`.otf`) and WOFF fonts (faces, outlines, metrics, characters), makes FreeType's glyph bitmaps, and measures, kerns and draws text, in [libs/font](libs/font) |
 | `corelib` | Checked byte reading and inflate, shared by `imagelib` and `fontlib` | Built and tested, in [libs/core](libs/core) |
+| `editlib` | Text being edited: the caret, selecting, moving by words and lines, undo and redo, finding | Built and tested, in [libs/edit](libs/edit); PHI OS's text fields and Notes use it |
 
 [plan.md](plan.md) has the roadmap. None has had its first release yet.
 

@@ -1,0 +1,215 @@
+# editlib's EdText, through its source: each part of it once, and the text as it stands after.
+# A line shows the text between [ and ], with | for the caret and { } around what's selected.
+use editlib;
+
+phi.TestEdit:Program
+{
+	call EditLib.Start;
+	ptr<EdText> t: (Ed.New: 0);
+
+	log '-- typing\n';
+	call Type: 'hello world';
+	call Show: 'typed';
+	log 'lines ' (t.Lines) ', length ' (t.Length) ', changed ' t.changed '\n';
+
+	log '-- moving\n';
+	call t.ToLineStart;
+	call t.WordRight;
+	call Show: 'word right';
+	call t.WordRight;
+	call Show: 'word right again';
+	call t.WordLeft;
+	call Show: 'word left';
+	call t.Left;
+	call t.Left;
+	call Show: 'left twice';
+	call t.Right: true;
+	call t.Right: true;
+	call Show: 'two selected';
+	call t.Left;
+	call Show: 'left ends the selection at its start';
+	call t.ToEnd;
+	call Show: 'to the end';
+
+	log '-- undo, a word at a time\n';
+	call t.Undo;
+	call Show: 'undo';
+	call t.Undo;
+	call Show: 'undo';
+	log 'can undo ' (t.CanUndo) ', can redo ' (t.CanRedo) '\n';
+	call t.Redo;
+	call Show: 'redo';
+	call t.Redo;
+	call Show: 'redo';
+	log 'redo again: ' (t.Redo) '\n';
+
+	log '-- deleting\n';
+	call t.Backspace;
+	call t.Backspace;
+	call Show: 'two backspaces';
+	call t.Undo;
+	call Show: 'one undo puts both back';
+	call t.Backspace: true;
+	call Show: 'a word back';
+	call t.ToStart;
+	call t.Delete: true;
+	call Show: 'a word forward';
+	call t.Undo;
+	call t.Undo;
+	call Show: 'both undone';
+
+	log '-- typing over what is selected\n';
+	call t.SelectWord: 8;
+	call Show: 'the word at 8';
+	call Type: 'there';
+	call Show: 'typed over it';
+	call t.Undo;
+	call Show: 'undo';
+	call t.SelectAll;
+	u8 copied[64];
+	int n: (t.CopySelection: addr copied 63);
+	copied:n is 0;
+	log 'copied ' n ' bytes: ' (addr copied as ptr<u8>) '\n';
+	call t.Insert: 'pasted' 6;
+	call Show: 'pasted over all of it';
+	call t.Undo;
+	call Show: 'undo';
+
+	log '-- lines\n';
+	call t.Set: 'one\ntwo\nthree\n\nfive' 19;
+	call Show: 'set';
+	log 'lines ' (t.Lines) ', changed ' t.changed ', can undo ' (t.CanUndo) '\n';
+	call t.MoveTo: 6;
+	log 'at 6: line ' (t.LineOf: 6) ', column ' (t.Column: 6) '\n';
+	call t.Vertical: 1;
+	call Show: 'down';
+	call t.Vertical: 1;
+	call Show: 'down: the empty line';
+	call t.Vertical: 1;
+	call Show: 'down: the column is kept';
+	call t.Vertical: -3;
+	call Show: 'up three';
+	call t.Vertical: 10;
+	call Show: 'down past the end';
+	log 'starts: ' (t.StartOf: 0) ' ' (t.StartOf: 1) ' ' (t.StartOf: 2) ' ' (t.StartOf: 3) ' ' (t.StartOf: 4) ' ' (t.StartOf: 5) '\n';
+	log 'line of each: ';
+	while int p: 0; p <= (t.Length); p++;
+		log (t.LineOf: p);
+	;;
+	log '\n';
+	log 'pos at line 2, column 9: ' (t.PosAt: 2 9) '\n';
+	call t.SelectLine: 9;
+	call Show: 'the line at 9';
+	call t.Typed: 10;
+	call Show: 'a new line typed over it';
+	log 'lines ' (t.Lines) '\n';
+
+	log '-- finding\n';
+	call t.Set: 'Abc abc ABC abc' 15;
+	log 'abc from 0: ' (t.Find: 'abc' 3 0) ', from 5: ' (t.Find: 'abc' 3 5) ', any case from 5: ' (t.Find: 'abc' 3 5 true) '\n';
+	log 'back from the end: ' (t.FindBack: 'abc' 3 15) ', before 12: ' (t.FindBack: 'abc' 3 12) ', none: ' (t.Find: 'xyz' 3 0) '\n';
+
+	log '-- UTF-8\n';
+	call t.Set: '' 0;
+	call t.Typed: 'a';
+	call t.Typed: 0x3C6;
+	call t.Typed: 0x1F600;
+	call t.Typed: 'b';
+	log 'length ' (t.Length) ', column ' (t.Column: t.caret) '\n';
+	call t.Left;
+	call t.Left;
+	log 'two left: caret ' t.caret ', column ' (t.Column: t.caret) '\n';
+	call t.Backspace;
+	log 'backspace takes phi: length ' (t.Length) ', caret ' t.caret '\n';
+	log 'not a character: ' (t.Typed: 0xD800) '\n';
+
+	log '-- one line\n';
+	ptr<EdText> line: (Ed.NewLine: 10);
+	call line.Insert: 'ab\r\ncd\tef' 9;
+	call ShowOf: line 'pasted on one line';
+	log 'a new line typed: ' (line.Typed: 10) '\n';
+	log 'past most: ' (line.Insert: 'ghijk' 5) '\n';
+	call ShowOf: line 'as much as fits';
+	call line.ToStart;
+	log 'past most, cut on a character: ' (line.Insert: 'é' 2) ' length ' (line.Length) '\n';
+	call Ed.Free: line;
+
+	log '-- a long text\n';
+	call t.Set: '' 0;
+	while int i: 0; i < 20000; i++;
+		call t.Typed: 'a' + i % 26;
+		if i % 50 is 49
+			call t.Typed: 10;
+		;;
+	;;
+	log 'length ' (t.Length) ', lines ' (t.Lines) ', line of the caret ' (t.LineOf: t.caret) '\n';
+	call t.MoveTo: 1000;
+	call t.Typed: 'X';
+	ptr<u8> all: (t.Contents);
+	log 'around 1000: ' all:998 as chr all:999 as chr all:1000 as chr all:1001 as chr '\n';
+	int undos: 0;
+	while (t.Undo)
+		undos++;
+	;;
+	log 'undone in ' undos ' actions: length ' (t.Length) '\n';
+
+	log '-- history kept short\n';
+	t.undo_most is 64;
+	call t.Set: '' 0;
+	while int i: 0; i < 40; i++;
+		call t.Typed: ' ';
+		call t.Typed: 'w';
+		call t.Typed: 'o';
+	;;
+	int kept: 0;
+	while (t.Undo)
+		kept++;
+	;;
+	log 'kept ' kept ' actions of 40 words: length ' (t.Length) '\n';
+
+	call Ed.Free: t;
+	exit 0;
+
+	[Type: ptr<u8> text: 0;]
+		while text:0 is not 0
+			call t.Typed: text:0;
+			text++;
+		;;
+	[end]
+
+	[Show: ptr<u8> what: 0;]
+		call ShowOf: t what;
+	[end]
+
+	[ShowOf: ptr<EdText> e: 0; ptr<u8> what: 0;]
+		log what ': [';
+		ptr<u8> all: (e.Contents);
+		int length: (e.Length);
+		int from: (e.SelectionStart);
+		int to: (e.SelectionEnd);
+		while int i: 0; i <= length; i++;
+			if from is not to and i is from
+				log '{';
+			;;
+			if i is e.caret
+				log '|';
+			;;
+			if from is not to and i is to
+				log '}';
+			;;
+			if i < length
+				int c: all:i;
+				if c is 10
+					log '/';
+				;;
+				elif c >= 32 and c < 127
+					log c as chr;
+				;;
+				else
+					log '~';
+				;;
+			;;
+		;;
+		log ']\n';
+	[end]
+}

@@ -70,3 +70,22 @@ index ought to be zero-extended.
 reaches before the pointer. Checked 2026-11-11 in the code for `p:(i * 3 + 1)` with `i` a `u32` and
 an `int`.
 
+
+## PHI 1.0 (2026-11-20)
+
+From here the libraries are built and tested with the released compiler, `phi 1.0.0 (9aeb805)`, and
+PHI isn't changed from this work: what's found is written here for PHI to take up.
+
+**A kernel that uses any compiled library gets a line table for all of itself.** PHI OS's kernel went
+from 352 KB to 504 KB when its text field started using `editlib.philib`, and editlib's own code is
+about 15 KB of that. The rest is `phi_lines`, the table that lets an error name its line: in the x86
+code generator, `Catches` is true for a 32-bit unit with any compiled library
+(`unit.CompiledLibraries.Count > 0`), and `MarksLines` follows it, so every line of the kernel is
+marked, not only the library's. A program always has the table, so only kernels see the jump. It's
+within the kernel's limit (about 1 MB) and its errors now say their line, so PHI OS lives with it; a
+kernel with less room would want the library's lines alone marked, or a switch.
+
+**Tests slower than their limit under emulation aren't failures of the code.** On a Mac, the 64-bit
+Linux runs go through Lima's x86 emulation: imagelib's `test_png_fuzz` printed exactly its expected
+output and was still cut off at 300 s. Give the emulated runs a longer `-Timeout` before reading a
+timeout as a bug.

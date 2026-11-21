@@ -1,0 +1,66 @@
+-- typing
+typed: [hello world|]
+lines 1, length 11, changed 1
+-- moving
+word right: [hello |world]
+word right again: [hello world|]
+word left: [hello |world]
+left twice: [hell|o world]
+two selected: [hell{o |}world]
+left ends the selection at its start: [hell|o world]
+to the end: [hello world|]
+-- undo, a word at a time
+undo: [hello |]
+undo: [|]
+can undo 0, can redo 1
+redo: [hello |]
+redo: [hello world|]
+redo again: 0
+-- deleting
+two backspaces: [hello wor|]
+one undo puts both back: [hello world|]
+a word back: [hello |]
+a word forward: [|]
+both undone: [hello world|]
+-- typing over what is selected
+the word at 8: [hello {world|}]
+typed over it: [hello there|]
+undo: [hello {world|}]
+copied 11 bytes: hello world
+pasted over all of it: [pasted|]
+undo: [{hello world|}]
+-- lines
+set: [|one/two/three//five]
+lines 5, changed 0, can undo 0
+at 6: line 1, column 2
+down: [one/two/th|ree//five]
+down: the empty line: [one/two/three/|/five]
+down: the column is kept: [one/two/three//fi|ve]
+up three: [one/tw|o/three//five]
+down past the end: [one/two/three//fi|ve]
+starts: 0 4 8 14 15 -1
+line of each: 00001111222222344444
+pos at line 2, column 9: 13
+the line at 9: [one/two/{three/|}/five]
+a new line typed over it: [one/two//|/five]
+lines 5
+-- finding
+abc from 0: 4, from 5: 12, any case from 5: 8
+back from the end: 12, before 12: 4, none: -1
+-- UTF-8
+length 8, column 4
+two left: caret 3, column 2
+backspace takes phi: length 6, caret 1
+not a character: 0
+-- one line
+pasted on one line: [ab cd ef|]
+a new line typed: 0
+past most: 0
+as much as fits: [ab cd efgh|]
+past most, cut on a character: 0 length 10
+-- a long text
+length 20400, lines 401, line of the caret 400
+around 1000: rsXt
+undone in 401 actions: length 0
+-- history kept short
+kept 21 actions of 40 words: length 58

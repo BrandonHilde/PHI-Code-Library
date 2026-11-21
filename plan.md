@@ -15,6 +15,7 @@ baseline JPEG (milestones 3.1 to 3.3), and its compiled test uses corelib throug
 | Image | `imagelib.philib` | Image files in, pixels out | Nothing |
 | Font | `fontlib.philib` | Font files in; metrics and smooth glyph bitmaps out | Nothing |
 | Core | `corelib.philib` | Shared by Image and Font: checked byte reading and inflate | Nothing |
+| Edit | `editlib.philib` | Text being edited: caret, selection, undo, finding (added 2026-11-20, Phase 6) | What PHI OS's Notes and text field did each on their own |
 
 ## Goals
 
@@ -120,6 +121,7 @@ imagelib ──┐
 fontlib ───┘
 
 weblib      (depends on none of them)
+editlib     (nor this)
 ```
 
 **weblib stays independent.** Its job ends at a DOM and computed styles, and drawing belongs to whoever
@@ -472,6 +474,25 @@ Picked up when there's a reason to. Taken from weblib's list of what it doesn't 
 | Canvas | `<canvas>` | Becomes possible once Image and Font exist, through hooks |
 | CSS | Nesting, `@container`, running animations and transitions | |
 | Memory | Nodes aren't freed until their document is | Matters for long-lived pages |
+
+### Phase 6: what PHI OS needs (2026-11-20)
+
+PHI 1.0 is out, and PHI OS is the first big program built on it. The owner, 2026-11-20: "add anything
+to the library that you would need for the os if its reusable and useful". So each library here is
+something the OS had written for itself, or needed and didn't have, that any PHI program could use too.
+The rules don't change: bytes in and data out, nothing tied to one system, hooks for the rest. Both
+projects build with the released `phi` 1.0 (`PHI/dist/phi-1.0.0-macos-arm64/phi` as `PHI_EXE`), and
+what 1.0 does wrong goes in [phi-notes.md](docs/phi-notes.md), not into PHI.
+
+| Library | What it is | What it replaces or makes possible in PHI OS |
+|---|---|---|
+| `editlib` ✓ | Text being edited: caret, selection, words, lines, undo and redo, finding | The text field's and Notes' own editing; selecting, copy and paste, undo, everywhere text is typed |
+
+**editlib, done 2026-11-20,** in [libs/edit](libs/edit): a gap buffer, UTF-8 throughout, undo a word at
+a time. There's no outside suite for how an editor behaves, so `test_edit` writes out the text, the caret
+and what's selected after each action, and every line of it was worked out by hand. It passes as 32 and
+64-bit Linux programs and on macOS. PHI OS's `ui/edit.phi` turns keys into its calls, and its text field
+(the kernel's sign-in screen too) and Notes use it.
 
 ## Order, and what can run at once
 

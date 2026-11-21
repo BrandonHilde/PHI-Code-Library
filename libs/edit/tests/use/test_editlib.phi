@@ -1,0 +1,22 @@
+# editlib through editlib.philib alone, as a program using it has it: no source beside this, so a
+# test here proves the compiled library works (one beside the source would test the source).
+use editlib;
+
+phi.TestEditlib:Program
+{
+	call EditLib.Start;
+	log 'version: ' EditLib.VERSION '\n';
+	ptr<EdText> t: (Ed.New: 0);
+	call t.Insert: 'compiled text' 13;
+	call t.WordLeft: true;
+	u8 got[16];
+	int n: (t.CopySelection: addr got 15);
+	got:n is 0;
+	log 'selected: ' (addr got as ptr<u8>) '\n';
+	call t.Typed: 'x';
+	log 'typed over it: ' (t.Contents) '\n';
+	call t.Undo;
+	log 'undone: ' (t.Contents) ', lines ' (t.Lines) '\n';
+	call Ed.Free: t;
+	exit 0;
+}
