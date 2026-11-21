@@ -493,7 +493,18 @@ what 1.0 does wrong goes in [phi-notes.md](docs/phi-notes.md), not into PHI.
 | fontlib's WOFF2 ✓ | WOFF2 fonts, glyf and hmtx transforms included | The web fonts most sites send now, in the browser |
 | corelib's Brotli ✓ | Brotli (RFC 7932), its dictionary given by the program | WOFF2 fonts (next, in fontlib), and `Content-Encoding: br` |
 | imagelib's WebP ✓ | Lossless and lossy WebP, read exactly as libwebp reads them | Pictures on today's web, which are more and more WebP, in the browser |
+| netlib ✓ | HTTP/1.1 for a client, cookies, TLS 1.2 | Cookies (sites keep you signed in), packed answers (pages come several times smaller), and the servers that only speak TLS 1.2 (xkcd.com) |
 | imagelib's PNG writer ✓ | An image to a PNG file, the smallest kind that loses nothing | Paint's pictures at about a fiftieth of a BMP's size on a disk with 3 MB to spare |
+
+**netlib, done 2026-11-21,** in [libs/net](libs/net): the owner asked for "servers, compression and
+javascript". PHI's `net.web` can't be told to send cookies on each redirect, to ask for packed answers,
+or to fall back to TLS 1.2, and PHI isn't being changed, so a client's HTTP, cookies and TLS 1.2 are here,
+as bytes in and bytes out, and PHI OS moves the bytes. TLS 1.2 is built on PHI's `crypto` modules (they
+are computation only: no system in them) and offers what they have: ECDHE on X25519, P-256 or P-384,
+AES-128-GCM or ChaCha20-Poly1305. Checked against OpenSSL's server, 16 of 16, and those exchanges
+replayed every day; HTTP against Python's zlib and gzip and Google's brotli; cookies by cases from the
+RFCs. In PHI OS: xkcd.com (TLS 1.2 only) shows, Wikipedia's cookies come back and are kept between
+runs, and GitHub's front page comes 7.9 times smaller than it unpacks.
 
 **editlib, done 2026-11-20,** in [libs/edit](libs/edit): a gap buffer, UTF-8 throughout, undo a word at
 a time. There's no outside suite for how an editor behaves, so `test_edit` writes out the text, the caret

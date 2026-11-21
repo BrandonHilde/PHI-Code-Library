@@ -1,0 +1,1050 @@
+# netlib's TLS 1.2 client (RFC 5246), for the servers that don't speak TLS 1.3 yet. It works as
+# PHI's net.tls13 does, as an engine that does no input or output itself: each connection is a
+# WireTlsSession, given what arrived from the server and holding what to send it.
+#
+#   WireTls.random is addr MyProgram.Fill;                # (a method<ptr<u8> u32>): random bytes are the program's to give
+#   ptr<WireTlsSession> s: new WireTlsSession;
+#   bln ok: (WireTls.Client: s 'xkcd.com' true);         # true: TLS 1.3 was tried first, and refused
+#   while not s.connected and not s.failed
+#       ... send (WireTls.Pending: s) bytes from (WireTls.Outgoing: s), then: call WireTls.Sent: s sent;
+#       ... read up to s.room bytes into (WireTls.Room: s), then: call WireTls.Received: s got;
+#   ;;
+#   int taken: (WireTls.Write: s data length);           # queued to send (as records)
+#   int got: (WireTls.Read: s buffer max);               # data that has arrived: 0 if none yet, -1 once closed
+#   call WireTls.Close: s;                               # close_notify, to send
+#   call WireTls.Free: s;
+#
+# What it offers is what PHI's crypto has: keys agreed with ECDHE on X25519, P-256 or P-384; records
+# sealed with AES-128-GCM or ChaCha20-Poly1305, SHA-256 throughout (the four suites
+# TLS_ECDHE_{ECDSA,RSA}_WITH_{AES_128_GCM_SHA256,CHACHA20_POLY1305_SHA256}, which nearly every
+# TLS 1.2 server has); the server's key signed with ECDSA (P-256, P-384), RSA-PSS or RSA PKCS #1
+# (SHA-256 or SHA-384). The server's certificate is checked by crypto.x509 against the roots the
+# program trusts (X509.Trust), as net.tls13's are. The extended master secret (RFC 7627) is used
+# when the server has it, and the renegotiation_info extension (RFC 5746) is sent; a server's
+# request to renegotiate is ignored, as a client may. No RSA key exchange, CBC ciphers, session
+# resumption or client certificates (a server that asks is sent none).
+#
+# A client that tried TLS 1.3 first says so (Client's fallback): a server that answers TLS 1.2 to
+# it but marks its random as one that speaks TLS 1.3 (RFC 8446 4.1.3) is refused, as something
+# between the two must have stopped TLS 1.3.
+#
+# PHI's crypto has one HMAC and one GCM in progress at a time, so one thread at a time works in
+# here and in net.tls13 (PHI's net.tlslink holds Secure.crypto around net.tls13: take that lock).
+# Each session has its own buffers on the heap (about 135 KB while it shakes hands, 70 KB after).
+
+use crypto.bytes;
+use crypto.sha256;
+use crypto.sha512;
+use crypto.hmac;
+use crypto.aesgcm;
+use crypto.chachapoly;
+use crypto.x25519;
+use crypto.bignum;
+use crypto.ec;
+use crypto.p256;
+use crypto.p384;
+use crypto.rsa;
+use crypto.x509;
+
+# one connection to a server
+struct.WireTlsSession
+{
+	bln connected;              # the handshake is done: data can go both ways
+	bln failed;                 # it can't go on (error says why)
+	bln closed;                 # the server sent close_notify
+	bln verified;               # the server's certificate checked out
+	bln fallback;               # TLS 1.3 was tried first
+	bln ems;                    # the extended master secret is in use
+	bln asked;                  # the server asked for a client certificate
+	str error: [120];
+	u32 alert;                  # the alert the server sent, if it sent one
+	u32 suite;                  # the cipher suite agreed
+	u32 group;                  # the curve the keys were agreed on
+	u32 stage;
+	bln encrypting;             # our records are sealed
+	bln decrypting;             # theirs are
+
+	ptr<u8> input;              # what arrived: whole records first, then part of one
+	u32 input_length;
+	u32 room;                   # bytes Room has space for
+	u32 app_at;                 # data waiting to be read, in the first record of input
+	u32 app_left;
+	u32 app_record;             # that record's size, dropped once its data is read
+	ptr<u8> output;             # records to send
+	u32 output_length;
+	ptr<u8> messages;           # handshake messages waiting to be whole (only while shaking hands)
+	u32 messages_length;
+
+	Sha256State transcript;
+	u8 client_random[32];
+	u8 server_random[32];
+	u8 master[48];
+	u32 key_length;
+	u32 iv_length;
+	u8 write_key[32];
+	u8 write_iv[12];
+	u64 write_sequence;
+	u8 read_key[32];
+	u8 read_iv[12];
+	u64 read_sequence;
+	u8 peer[97];                # the server's key for this connection
+	u32 peer_length;
+
+	str host: [255];            # who the server must be
+	Certificate chain[6];       # the server's certificates, its own first
+	u32 chain_count;
+	ptr<u8> chain_der;          # a copy of its Certificate message, which chain points into
+}
+
+phi.WireTls:Library
+{
+	const u32 HEADER: 5;
+	const u32 PLAIN_MAX: 16384;
+	const u32 RECORD_MAX: 18432;          # the most a record's body may be: 2^14 + 2048
+	const u32 INPUT_MAX: 36874;           # two whole records
+	const u32 OUTPUT_MAX: 33290;
+	const u32 MESSAGES_MAX: 65536;        # the largest handshake message taken (certificate chains)
+	const u32 CHAIN_MAX: 6;
+	const u32 SEAL_MAX: 24;               # what sealing adds to a record: an 8-byte nonce and a 16-byte tag
+
+	const u32 TYPE_CHANGE_CIPHER_SPEC: 20;
+	const u32 TYPE_ALERT: 21;
+	const u32 TYPE_HANDSHAKE: 22;
+	const u32 TYPE_APPLICATION: 23;
+
+	const u32 HELLO_REQUEST: 0;
+	const u32 CLIENT_HELLO: 1;
+	const u32 SERVER_HELLO: 2;
+	const u32 CERTIFICATE: 11;
+	const u32 SERVER_KEY_EXCHANGE: 12;
+	const u32 CERTIFICATE_REQUEST: 13;
+	const u32 SERVER_HELLO_DONE: 14;
+	const u32 CLIENT_KEY_EXCHANGE: 16;
+	const u32 FINISHED: 20;
+
+	const u32 ECDHE_ECDSA_AES_128_GCM: 0xC02B;
+	const u32 ECDHE_RSA_AES_128_GCM: 0xC02F;
+	const u32 ECDHE_RSA_CHACHA20: 0xCCA8;
+	const u32 ECDHE_ECDSA_CHACHA20: 0xCCA9;
+	const u32 X25519_GROUP: 0x001D;
+	const u32 P256_GROUP: 0x0017;
+	const u32 P384_GROUP: 0x0018;
+	const u32 ECDSA_P256_SHA256: 0x0403;
+	const u32 ECDSA_P384_SHA384: 0x0503;
+	const u32 RSA_PSS_SHA256: 0x0804;
+	const u32 RSA_PKCS1_SHA256: 0x0401;
+	const u32 RSA_PKCS1_SHA384: 0x0501;
+
+	# a session's stage: what it waits for
+	const u32 WAIT_HELLO: 0;
+	const u32 WAIT_CERTIFICATE: 1;
+	const u32 WAIT_KEY: 2;
+	const u32 WAIT_DONE: 3;
+	const u32 WAIT_CHANGE: 4;
+	const u32 WAIT_FINISHED: 5;
+	const u32 OPEN: 6;
+
+	const u32 ALERT_UNEXPECTED_MESSAGE: 10;
+	const u32 ALERT_BAD_MAC: 20;
+	const u32 ALERT_RECORD_OVERFLOW: 22;
+	const u32 ALERT_HANDSHAKE_FAILURE: 40;
+	const u32 ALERT_BAD_CERTIFICATE: 42;
+	const u32 ALERT_ILLEGAL_PARAMETER: 47;
+	const u32 ALERT_DECODE_ERROR: 50;
+	const u32 ALERT_DECRYPT_ERROR: 51;
+	const u32 ALERT_PROTOCOL_VERSION: 70;
+	const u32 ALERT_INTERNAL_ERROR: 80;
+
+	# random bytes (buffer, how many): the program's to give, from its system's generator
+	method<ptr<u8> u32> random;
+
+	# shared by every session: each call finishes with them before it returns
+	u8 build[600];                        # a handshake message being made
+	u8 small[8];
+	u8 nonce[12];
+	u8 aad[13];
+	u8 digest[64];
+	u8 signed[200];
+	u8 private[48];
+	u8 public[97];
+	u8 shared[48];
+	u8 xy[96];
+	u8 block[88];
+	u8 verify[12];
+	u8 prf_a[32];
+	u8 prf_out[32];
+	u32 opened_at: 0;
+	Sha256State snapshot;
+	u8 downgrade: 0x44 0x4F 0x57 0x4E 0x47 0x52 0x44 0x01;      # "DOWNGRD" 1
+
+	# ---- starting and ending
+
+	# s, a client of host (the name the certificate must be for: a DNS name or an IPv4
+	# address), with its ClientHello ready to send; fallback: TLS 1.3 was tried first. False if
+	# there's no memory for it, or no random numbers (WireTls.random)
+	[Client: ptr<WireTlsSession> s: 0; ptr<u8> host: 0; bln fallback: false;]
+		if not (Begin: s) return false;
+		s.fallback is fallback;
+		if (Length: host) > s.host.max return (Fail: s 'the host name is too long' ALERT_INTERNAL_ERROR);
+		s.host is host;
+		if random is 0 return (Fail: s 'no random numbers: the program must set WireTls.random' ALERT_INTERNAL_ERROR);
+		s.chain_der is new u8[MESSAGES_MAX];
+		if s.chain_der is 0 return (Fail: s 'not enough memory for TLS' ALERT_INTERNAL_ERROR);
+		call SendClientHello: s;
+	[end: not s.failed]
+
+	[Begin: ptr<WireTlsSession> s: 0;]
+		call Bytes.Zero: s as ptr<u8> sizeof WireTlsSession;
+		s.error is '';
+		s.input is new u8[INPUT_MAX];
+		s.output is new u8[OUTPUT_MAX];
+		s.messages is new u8[MESSAGES_MAX];
+		s.room is INPUT_MAX;
+		s.stage is WAIT_HELLO;
+		call Sha256.Init: addr s.transcript;
+		if s.input is 0 or s.output is 0 or s.messages is 0
+			s.failed is true;
+			s.error is 'not enough memory for TLS';
+			return false;
+		;;
+	[end: true]
+
+	# give back s's buffers and forget its keys
+	[Free: ptr<WireTlsSession> s: 0;]
+		call FreeHandshake: s;
+		if s.input is not 0
+			free s.input;
+		;;
+		if s.output is not 0
+			free s.output;
+		;;
+		s.input is 0;
+		s.output is 0;
+		call Bytes.Zero: addr s.write_key 32;
+		call Bytes.Zero: addr s.read_key 32;
+		call Bytes.Zero: addr s.master 48;
+	[end]
+
+	# what only the handshake needed
+	[FreeHandshake: ptr<WireTlsSession> s: 0;]
+		if s.messages is not 0
+			free s.messages;
+			s.messages is 0;
+		;;
+		if s.chain_der is not 0
+			free s.chain_der;
+			s.chain_der is 0;
+		;;
+		s.chain_count is 0;
+	[end]
+
+	# ---- what goes in and out (as net.tls13's)
+
+	# where what arrives goes: s.room bytes there
+	[Room: ptr<WireTlsSession> s: 0;]
+	[end: s.input + s.input_length]
+
+	# count bytes arrived at Room: the records they complete are handled; false if s failed
+	[Received: ptr<WireTlsSession> s: 0; u32 count: 0;]
+		if s.failed return false;
+		if count > s.room return (Fail: s 'more arrived than there was room for' ALERT_INTERNAL_ERROR);
+		s.input_length++ count;
+		s.room is INPUT_MAX - s.input_length;
+		call Process: s;
+	[end: not s.failed]
+
+	# bytes waiting to be sent
+	[Pending: ptr<WireTlsSession> s: 0;]
+	[end: s.output_length]
+
+	# where they are
+	[Outgoing: ptr<WireTlsSession> s: 0;]
+	[end: s.output]
+
+	# count of them were sent
+	[Sent: ptr<WireTlsSession> s: 0; u32 count: 0;]
+		if count > s.output_length
+			count is s.output_length;
+		;;
+		u32 left: s.output_length - count;
+		call Bytes.Copy: s.output s.output + count left;
+		s.output_length is left;
+	[end]
+
+	# data that has arrived (up to max bytes): how many; 0 if none has yet, -1 once the server
+	# has closed (or s failed) and everything is read
+	[Read: ptr<WireTlsSession> s: 0; ptr<u8> buffer: 0; u32 max: 0;]
+		if s.app_left is 0
+			if s.closed or s.failed return -1;
+			return 0;
+		;;
+		int n: s.app_left;
+		if n > max
+			n is max;
+		;;
+		call Bytes.Copy: buffer s.input + s.app_at n;
+		s.app_at++ n;
+		s.app_left-- n;
+		if s.app_left is 0
+			call Drop: s s.app_record;
+			call Process: s;
+		;;
+	[end: n]
+
+	# queue data to send, as records: how much of it there was room for; -1 if s isn't connected
+	[Write: ptr<WireTlsSession> s: 0; ptr<u8> data: 0; u32 length: 0;]
+		if not s.connected or s.failed return -1;
+		u32 done: 0;
+		while done < length
+			u32 n: length - done;
+			if n > PLAIN_MAX
+				n is PLAIN_MAX;
+			;;
+			if s.output_length + HEADER + n + SEAL_MAX > OUTPUT_MAX
+				return done as int;
+			;;
+			call SendRecord: s TYPE_APPLICATION data + done n;
+			done++ n;
+		;;
+	[end: done as int]
+
+	# queue close_notify: we'll send no more
+	[Close: ptr<WireTlsSession> s: 0;]
+		if s.connected and not s.failed
+			small:0 is 1;
+			small:1 is 0;
+			call SendRecord: s TYPE_ALERT addr small 2;
+		;;
+		s.connected is false;
+	[end]
+
+	# ---- records
+
+	# handle each whole record in input, until there's data waiting to be read
+	[Process: ptr<WireTlsSession> s: 0;]
+		while not s.failed and s.app_left is 0 and s.input_length >= HEADER
+			ptr<u8> r: s.input;
+			u32 type: r:0;
+			u32 length: (Get16: r + 3);
+			if length > RECORD_MAX
+				call Fail: s 'a record that is too long' ALERT_RECORD_OVERFLOW;
+				return;
+			;;
+			if s.input_length < HEADER + length break;
+			u32 size: HEADER + length;
+			bln keep: false;
+			u32 start: HEADER;
+			u32 plain: length;
+			if s.decrypting and type is not TYPE_CHANGE_CIPHER_SPEC
+				plain is (OpenRecord: s r type length);
+				start is opened_at;
+			;;
+			if s.failed return;
+			if type is TYPE_CHANGE_CIPHER_SPEC
+				call ReadChange: s r + HEADER length;
+			;;
+			elif type is TYPE_ALERT
+				call ReadAlert: s r + start plain;
+			;;
+			elif type is TYPE_HANDSHAKE
+				call AddMessages: s r + start plain;
+			;;
+			elif type is TYPE_APPLICATION
+				if not s.connected
+					call Fail: s 'data before the handshake finished' ALERT_UNEXPECTED_MESSAGE;
+				;;
+				elif plain > 0
+					s.app_at is start;
+					s.app_left is plain;
+					s.app_record is size;
+					keep is true;
+				;;
+			;;
+			else
+				call Fail: s 'a record of a kind TLS doesn\'t have' ALERT_UNEXPECTED_MESSAGE;
+			;;
+			if not keep
+				call Drop: s size;
+			;;
+		;;
+	[end]
+
+	# the first size bytes of input are done with
+	[Drop: ptr<WireTlsSession> s: 0; u32 size: 0;]
+		u32 left: s.input_length - size;
+		call Bytes.Copy: s.input s.input + size left;
+		s.input_length is left;
+		s.room is INPUT_MAX - left;
+	[end]
+
+	# whether s's suite is AES-GCM (else ChaCha20-Poly1305)
+	[Gcm: ptr<WireTlsSession> s: 0;]
+	[end: s.suite is ECDHE_ECDSA_AES_128_GCM or s.suite is ECDHE_RSA_AES_128_GCM]
+
+	# open the sealed record at r (length bytes after its header) in place: the length of what it
+	# holds, which starts opened_at bytes into the record (s fails if it doesn't check out)
+	[OpenRecord: ptr<WireTlsSession> s: 0; ptr<u8> r: 0; u32 type: 0; u32 length: 0;]
+		u32 explicit: 0;
+		if (Gcm: s)
+			explicit is 8;
+		;;
+		if length < explicit + 16
+			call Fail: s 'a record too short to be sealed' ALERT_BAD_MAC;
+			return 0;
+		;;
+		u32 sealed: length - explicit - 16;
+		ptr<u8> body: r + HEADER + explicit;
+		call MakeNonce: s addr s.read_iv s.read_sequence r + HEADER;
+		call MakeAad: s.read_sequence type sealed;
+		bln good: false;
+		if explicit > 0
+			good is (AesGcm.Open: addr s.read_key addr nonce addr aad 13 body sealed body + sealed);
+		;;
+		else
+			good is (ChaChaPoly.Open: addr s.read_key addr nonce addr aad 13 body sealed body + sealed);
+		;;
+		s.read_sequence++;
+		if not good
+			call Fail: s 'a record failed its integrity check' ALERT_BAD_MAC;
+			return 0;
+		;;
+		opened_at is HEADER + explicit;
+	[end: sealed]
+
+	# queue a record: as it is until our keys are set, sealed after
+	[SendRecord: ptr<WireTlsSession> s: 0; u32 type: 0; ptr<u8> data: 0; u32 length: 0;]
+		if s.output_length + HEADER + length + SEAL_MAX > OUTPUT_MAX
+			s.failed is true;
+			s.error is 'too much waiting to be sent';
+			return;
+		;;
+		ptr<u8> r: s.output + s.output_length;
+		r:0 is type;
+		r:1 is 3;
+		r:2 is 3;
+		if not s.encrypting
+			if type is TYPE_HANDSHAKE and s.stage is WAIT_HELLO
+				r:2 is 1;                         # the ClientHello's record says TLS 1.0, as usual
+			;;
+			call Put16: r + 3 length;
+			call Bytes.Copy: r + HEADER data length;
+			s.output_length++ HEADER + length;
+			return;
+		;;
+		u32 explicit: 0;
+		if (Gcm: s)
+			explicit is 8;
+			call PutSequence: r + HEADER s.write_sequence;   # the nonce's own part: the sequence number
+		;;
+		call MakeNonce: s addr s.write_iv s.write_sequence r + HEADER;
+		ptr<u8> body: r + HEADER + explicit;
+		call Bytes.Copy: body data length;
+		call MakeAad: s.write_sequence type length;
+		if explicit > 0
+			call AesGcm.Seal: addr s.write_key addr nonce addr aad 13 body length body + length;
+		;;
+		else
+			call ChaChaPoly.Seal: addr s.write_key addr nonce addr aad 13 body length body + length;
+		;;
+		call Put16: r + 3 explicit + length + 16;
+		s.write_sequence++;
+		s.output_length++ HEADER + explicit + length + 16;
+	[end]
+
+	# the nonce for a record: AES-GCM's is the key's 4 bytes and the record's own 8 (explicit);
+	# ChaCha20-Poly1305's is the key's 12 xored with the sequence number (RFC 7905)
+	[MakeNonce: ptr<WireTlsSession> s: 0; ptr<u8> iv: 0; u64 sequence: 0; ptr<u8> explicit: 0;]
+		ptr<u8> n: addr nonce;
+		if (Gcm: s)
+			call Bytes.Copy: n iv 4;
+			call Bytes.Copy: n + 4 explicit 8;
+			return;
+		;;
+		call Bytes.Copy: n iv 12;
+		call PutSequence: addr xy sequence;
+		while u32 i: 0; i < 8; i++;
+			n:(4 + i) is n:(4 + i) ^ xy:i;
+		;;
+	[end]
+
+	# what a record's seal covers besides its bytes: its sequence number, type, version and length
+	[MakeAad: u64 sequence: 0; u32 type: 0; u32 length: 0;]
+		call PutSequence: addr aad sequence;
+		aad:8 is type;
+		aad:9 is 3;
+		aad:10 is 3;
+		aad:11 is length >> 8;
+		aad:12 is length & 255;
+	[end]
+
+	[PutSequence: ptr<u8> p: 0; u64 sequence: 0;]
+		while u32 i: 0; i < 8; i++;
+			p:i is ((sequence >> ((7 - i) * 8)) & 255) as u8;
+		;;
+	[end]
+
+	# the server's ChangeCipherSpec: its records are sealed from here
+	[ReadChange: ptr<WireTlsSession> s: 0; ptr<u8> body: 0; u32 length: 0;]
+		if length is not 1 or body:0 is not 1
+			call Fail: s 'a ChangeCipherSpec that can\'t be read' ALERT_DECODE_ERROR;
+			return;
+		;;
+		if s.stage is not WAIT_CHANGE or s.messages_length is not 0
+			call Fail: s 'a ChangeCipherSpec out of place' ALERT_UNEXPECTED_MESSAGE;
+			return;
+		;;
+		s.decrypting is true;
+		s.read_sequence is 0;
+		s.stage is WAIT_FINISHED;
+	[end]
+
+	# an alert from the server: close_notify ends the connection; a warning is passed over; anything else fails it
+	[ReadAlert: ptr<WireTlsSession> s: 0; ptr<u8> body: 0; u32 length: 0;]
+		if length < 2
+			call Fail: s 'an alert that can\'t be read' ALERT_DECODE_ERROR;
+			return;
+		;;
+		u32 what: body:1;
+		if what is 0
+			s.closed is true;
+			if not s.connected
+				s.failed is true;
+				s.error is 'the server closed the connection during the handshake';
+			;;
+			return;
+		;;
+		if body:0 is 1 and what is not 70 and what is not 40 return;
+		s.alert is what;
+		s.failed is true;
+		s.connected is false;
+		if what is 40
+			s.error is 'the server refused the handshake: no cipher or key in common (alert 40)';
+		;;
+		elif what >= 42 and what <= 46
+			s.error is ('the server refused something about the certificates (alert ' what ')');
+		;;
+		elif what is 70
+			s.error is 'the server doesn\'t speak TLS 1.2 (alert 70)';
+		;;
+		elif what is 112
+			s.error is 'the server doesn\'t know that host name (alert 112)';
+		;;
+		else
+			s.error is ('the server sent alert ' what);
+		;;
+	[end]
+
+	# s fails: error = why, and the server is sent an alert saying so; false
+	[Fail: ptr<WireTlsSession> s: 0; ptr<u8> why: 0; u32 alert: 0;]
+		if s.failed return false;
+		s.error is why;
+		if s.output is not 0
+			small:0 is 2;
+			small:1 is alert;
+			call SendRecord: s TYPE_ALERT addr small 2;
+		;;
+		s.failed is true;
+		s.connected is false;
+	[end: false]
+
+	# ---- handshake messages
+
+	# add handshake bytes, and handle each message that is now whole
+	[AddMessages: ptr<WireTlsSession> s: 0; ptr<u8> data: 0; u32 length: 0;]
+		if s.messages is 0
+			# after the handshake: a HelloRequest, to renegotiate, which a client may ignore
+			if length >= 4 and data:0 is HELLO_REQUEST return;
+			call Fail: s 'a handshake message after the handshake' ALERT_UNEXPECTED_MESSAGE;
+			return;
+		;;
+		if s.messages_length + length > MESSAGES_MAX
+			call Fail: s 'a handshake message that is too big' ALERT_DECODE_ERROR;
+			return;
+		;;
+		call Bytes.Copy: s.messages + s.messages_length data length;
+		s.messages_length++ length;
+		while not s.failed and s.messages is not 0 and s.messages_length >= 4
+			u32 size: 4 + (Get24: s.messages + 1);
+			if size > MESSAGES_MAX
+				call Fail: s 'a handshake message that is too big' ALERT_DECODE_ERROR;
+				return;
+			;;
+			if size > s.messages_length return;
+			call HandleMessage: s s.messages size;
+			if s.messages is not 0
+				u32 left: s.messages_length - size;
+				call Bytes.Copy: s.messages s.messages + size left;
+				s.messages_length is left;
+			;;
+		;;
+	[end]
+
+	[HandleMessage: ptr<WireTlsSession> s: 0; ptr<u8> message: 0; u32 size: 0;]
+		u32 type: message:0;
+		ptr<u8> body: message + 4;
+		u32 length: size - 4;
+		if type is HELLO_REQUEST return true;     # (not in the transcript)
+		u32 stage: s.stage;
+		if stage is WAIT_HELLO
+			if type is not SERVER_HELLO return (Fail: s 'the server sent something other than a ServerHello' ALERT_UNEXPECTED_MESSAGE);
+			call Sha256.Update: addr s.transcript message size;
+			if (ReadServerHello: s body length)
+				s.stage is WAIT_CERTIFICATE;
+			;;
+		;;
+		elif stage is WAIT_CERTIFICATE
+			if type is not CERTIFICATE return (Fail: s 'the server sent no certificate' ALERT_UNEXPECTED_MESSAGE);
+			call Sha256.Update: addr s.transcript message size;
+			if (ReadCertificate: s message size)
+				s.stage is WAIT_KEY;
+			;;
+		;;
+		elif stage is WAIT_KEY
+			if type is not SERVER_KEY_EXCHANGE return (Fail: s 'the server sent no key to agree on' ALERT_UNEXPECTED_MESSAGE);
+			call Sha256.Update: addr s.transcript message size;
+			if (ReadKeyExchange: s body length)
+				s.stage is WAIT_DONE;
+			;;
+		;;
+		elif stage is WAIT_DONE
+			if type is CERTIFICATE_REQUEST
+				call Sha256.Update: addr s.transcript message size;
+				s.asked is true;
+			;;
+			elif type is SERVER_HELLO_DONE
+				call Sha256.Update: addr s.transcript message size;
+				call Answer: s;
+			;;
+			else
+				call Fail: s 'the server sent an unexpected handshake message' ALERT_UNEXPECTED_MESSAGE;
+			;;
+		;;
+		elif stage is WAIT_FINISHED
+			if type is not FINISHED return (Fail: s 'the server sent something other than its Finished' ALERT_UNEXPECTED_MESSAGE);
+			call ReadFinished: s message size;
+		;;
+		else
+			call Fail: s 'a handshake message out of place' ALERT_UNEXPECTED_MESSAGE;
+		;;
+	[end: not s.failed]
+
+	[SendClientHello: ptr<WireTlsSession> s: 0;]
+		call random: addr s.client_random 32;
+		ptr<u8> h: addr build;
+		h:4 is 3;                             # TLS 1.2
+		h:5 is 3;
+		call Bytes.Copy: h + 6 addr s.client_random 32;
+		h:38 is 0;                            # no session to resume
+		u32 pos: 39;
+		u32 suites: ECDHE_ECDSA_AES_128_GCM ECDHE_RSA_AES_128_GCM ECDHE_ECDSA_CHACHA20 ECDHE_RSA_CHACHA20;
+		call Put16: h + pos suites.len * 2;
+		pos++ 2;
+		while u32 i: 0; i < suites.len; i++;
+			call Put16: h + pos suites:i;
+			pos++ 2;
+		;;
+		h:pos is 1;                           # compression: none
+		h:(pos + 1) is 0;
+		pos++ 2;
+
+		u32 extensions: pos;
+		pos++ 2;
+		# server_name, for a name (not an address)
+		u32 host_length: (Length: addr s.host);
+		if host_length > 0 and not (X509.ReadAddress: addr s.host)
+			call Put16: h + pos 0;
+			call Put16: h + pos + 2 host_length + 5;
+			call Put16: h + pos + 4 host_length + 3;
+			h:(pos + 6) is 0;
+			call Put16: h + pos + 7 host_length;
+			call Bytes.Copy: h + pos + 9 addr s.host host_length;
+			pos++ 9 + host_length;
+		;;
+		# supported_groups: X25519, P-256, P-384 (in TLS 1.2 these are also the curves the
+		# server's certificate may be on)
+		call Put16: h + pos 10;
+		call Put16: h + pos + 2 8;
+		call Put16: h + pos + 4 6;
+		call Put16: h + pos + 6 X25519_GROUP;
+		call Put16: h + pos + 8 P256_GROUP;
+		call Put16: h + pos + 10 P384_GROUP;
+		pos++ 12;
+		# ec_point_formats: uncompressed
+		call Put16: h + pos 11;
+		call Put16: h + pos + 2 2;
+		h:(pos + 4) is 1;
+		h:(pos + 5) is 0;
+		pos++ 6;
+		# signature_algorithms: the ones crypto.x509 and crypto.rsa check
+		u32 algorithms: ECDSA_P256_SHA256 ECDSA_P384_SHA384 RSA_PSS_SHA256 RSA_PKCS1_SHA256 RSA_PKCS1_SHA384;
+		call Put16: h + pos 13;
+		call Put16: h + pos + 2 2 + algorithms.len * 2;
+		call Put16: h + pos + 4 algorithms.len * 2;
+		pos++ 6;
+		while u32 k: 0; k < algorithms.len; k++;
+			call Put16: h + pos algorithms:k;
+			pos++ 2;
+		;;
+		# extended_master_secret
+		call Put16: h + pos 23;
+		call Put16: h + pos + 2 0;
+		pos++ 4;
+		# renegotiation_info: a first handshake
+		call Put16: h + pos 0xFF01;
+		call Put16: h + pos + 2 1;
+		h:(pos + 4) is 0;
+		pos++ 5;
+		call Put16: h + extensions pos - extensions - 2;
+
+		h:0 is CLIENT_HELLO;
+		call Put24: h + 1 pos - 4;
+		call SendMessage: s h pos;
+	[end]
+
+	[ReadServerHello: ptr<WireTlsSession> s: 0; ptr<u8> body: 0; u32 length: 0;]
+		if length < 38 return (Fail: s 'a ServerHello that can\'t be read' ALERT_DECODE_ERROR);
+		if (Get16: body) is not 0x0303 return (Fail: s 'the server wants a TLS older than 1.2' ALERT_PROTOCOL_VERSION);
+		call Bytes.Copy: addr s.server_random body + 2 32;
+		if s.fallback and (Bytes.Equal: addr s.server_random:24 addr downgrade 8)
+			return (Fail: s 'the server speaks TLS 1.3, but something between stopped it: not going on with TLS 1.2' ALERT_ILLEGAL_PARAMETER);
+		;;
+		u32 pos: 35 + body:34;                # after the session id
+		if pos + 3 > length return (Fail: s 'a ServerHello that can\'t be read' ALERT_DECODE_ERROR);
+		s.suite is (Get16: body + pos);
+		if not (Gcm: s) and s.suite is not ECDHE_ECDSA_CHACHA20 and s.suite is not ECDHE_RSA_CHACHA20
+			return (Fail: s 'the server chose a cipher PHI didn\'t offer' ALERT_ILLEGAL_PARAMETER);
+		;;
+		if body:(pos + 2) is not 0 return (Fail: s 'the server chose compression, which wasn\'t offered' ALERT_ILLEGAL_PARAMETER);
+		pos++ 3;
+		if pos + 2 <= length
+			u32 stop: pos + 2 + (Get16: body + pos);
+			pos++ 2;
+			if stop > length return (Fail: s 'a ServerHello that can\'t be read' ALERT_DECODE_ERROR);
+			while pos + 4 <= stop
+				u32 type: (Get16: body + pos);
+				u32 size: (Get16: body + pos + 2);
+				pos++ 4;
+				if pos + size > stop return (Fail: s 'a ServerHello that can\'t be read' ALERT_DECODE_ERROR);
+				if type is 23
+					s.ems is true;
+				;;
+				if type is 0xFF01 and (size is not 1 or body:pos is not 0)
+					return (Fail: s 'the server\'s renegotiation_info is for another handshake' ALERT_HANDSHAKE_FAILURE);
+				;;
+				pos++ size;
+			;;
+		;;
+		if (Gcm: s)
+			s.key_length is 16;
+			s.iv_length is 4;
+		;;
+		else
+			s.key_length is 32;
+			s.iv_length is 12;
+		;;
+	[end: true]
+
+	# the server's certificates (a Certificate message: 3 bytes of length, then each certificate,
+	# 3 bytes of length and its DER, its own first), checked: for the host, and back to a root
+	[ReadCertificate: ptr<WireTlsSession> s: 0; ptr<u8> message: 0; u32 size: 0;]
+		call Bytes.Copy: s.chain_der message size;
+		ptr<u8> p: s.chain_der + 4;
+		u32 left: size - 4;
+		if left < 3 return (Fail: s 'a Certificate message that can\'t be read' ALERT_DECODE_ERROR);
+		u32 list: (Get24: p);
+		p is p + 3;
+		left is left - 3;
+		if list > left return (Fail: s 'a Certificate message that can\'t be read' ALERT_DECODE_ERROR);
+		s.chain_count is 0;
+		while list >= 3 and s.chain_count < CHAIN_MAX
+			u32 length: (Get24: p);
+			if 3 + length > list return (Fail: s 'a Certificate message that can\'t be read' ALERT_DECODE_ERROR);
+			if not (X509.Parse: addr s.chain:(s.chain_count) p + 3 length)
+				return (Fail: s ('the server\'s certificate: ' X509.error) ALERT_BAD_CERTIFICATE);
+			;;
+			s.chain_count++;
+			p is p + 3 + length;
+			list is list - 3 - length;
+		;;
+		if s.chain_count is 0 return (Fail: s 'the server sent no certificate' ALERT_BAD_CERTIFICATE);
+		u32 kind: s.chain:0.key_kind;
+		bln ecdsa: s.suite is ECDHE_ECDSA_AES_128_GCM or s.suite is ECDHE_ECDSA_CHACHA20;
+		if ecdsa and kind is not X509.P256 and kind is not X509.P384
+			return (Fail: s 'the server\'s certificate has no ECDSA key, for the cipher it chose' ALERT_ILLEGAL_PARAMETER);
+		;;
+		if not ecdsa and kind is not X509.RSA
+			return (Fail: s 'the server\'s certificate has no RSA key, for the cipher it chose' ALERT_ILLEGAL_PARAMETER);
+		;;
+		if not (X509.Chain: addr s.chain:0 s.chain_count addr s.host)
+			return (Fail: s ('the server\'s certificate: ' X509.error) ALERT_BAD_CERTIFICATE);
+		;;
+		s.verified is true;
+	[end: true]
+
+	# the server's key for this connection (ServerKeyExchange: a named curve, its point, and the
+	# server's signature of both randoms and those), checked with its certificate's key
+	[ReadKeyExchange: ptr<WireTlsSession> s: 0; ptr<u8> body: 0; u32 length: 0;]
+		if length < 4 or body:0 is not 3 return (Fail: s 'a ServerKeyExchange that can\'t be read' ALERT_DECODE_ERROR);
+		s.group is (Get16: body + 1);
+		u32 point: body:3;
+		if 4 + point + 4 > length return (Fail: s 'a ServerKeyExchange that can\'t be read' ALERT_DECODE_ERROR);
+		if s.group is X25519_GROUP
+			if point is not 32 return (Fail: s 'an X25519 key of the wrong size' ALERT_ILLEGAL_PARAMETER);
+		;;
+		elif s.group is P256_GROUP
+			if point is not 65 or body:4 is not 4 return (Fail: s 'a P-256 key that isn\'t a whole point' ALERT_ILLEGAL_PARAMETER);
+		;;
+		elif s.group is P384_GROUP
+			if point is not 97 or body:4 is not 4 return (Fail: s 'a P-384 key that isn\'t a whole point' ALERT_ILLEGAL_PARAMETER);
+		;;
+		else
+			return (Fail: s 'the server chose a curve PHI didn\'t offer' ALERT_ILLEGAL_PARAMETER);
+		;;
+		call Bytes.Copy: addr s.peer body + 4 point;
+		s.peer_length is point;
+		u32 params: 4 + point;
+		u32 scheme: (Get16: body + params);
+		u32 signature_length: (Get16: body + params + 2);
+		if params + 4 + signature_length > length return (Fail: s 'a ServerKeyExchange that can\'t be read' ALERT_DECODE_ERROR);
+		call Bytes.Copy: addr signed addr s.client_random 32;
+		call Bytes.Copy: addr signed:32 addr s.server_random 32;
+		call Bytes.Copy: addr signed:64 body params;
+		if not (Signed: s scheme body + params + 4 signature_length 64 + params)
+			return (Fail: s 'the server\'s signature of its key doesn\'t check out' ALERT_DECRYPT_ERROR);
+		;;
+	[end: true]
+
+	# whether the server's own certificate's key made signature, by scheme, of signed (length bytes)
+	[Signed: ptr<WireTlsSession> s: 0; u32 scheme: 0; ptr<u8> signature: 0; u32 signature_length: 0; u32 length: 0;]
+		ptr<Certificate> own: addr s.chain:0;
+		u32 digest_length: 32;
+		if scheme is ECDSA_P384_SHA384 or scheme is RSA_PKCS1_SHA384
+			Sha512State state;
+			call Sha512.Init384: addr state;
+			call Sha512.Update: addr state addr signed length;
+			call Sha512.Final: addr state addr digest;
+			digest_length is 48;
+		;;
+		else
+			call Sha256.Hash: addr signed length addr digest;
+		;;
+		bln good: false;
+		if scheme is ECDSA_P256_SHA256 or scheme is ECDSA_P384_SHA384
+			if own.key_kind is X509.P256
+				if (X509.ReadEcdsa: signature signature_length 32)
+					good is (P256.VerifyDigest: own.point addr digest digest_length addr X509.x509_r addr X509.x509_s);
+				;;
+			;;
+			elif own.key_kind is X509.P384
+				if (X509.ReadEcdsa: signature signature_length 48)
+					good is (P384.VerifyDigest: own.point addr digest digest_length addr X509.x509_r addr X509.x509_s);
+				;;
+			;;
+		;;
+		elif own.key_kind is X509.RSA
+			if scheme is RSA_PSS_SHA256
+				good is (Rsa.VerifyPss: own.modulus own.modulus_length own.exponent own.exponent_length
+				                        addr digest signature signature_length);
+			;;
+			elif scheme is RSA_PKCS1_SHA256 or scheme is RSA_PKCS1_SHA384
+				good is (Rsa.VerifyPkcs1: own.modulus own.modulus_length own.exponent own.exponent_length
+				                          addr digest signature signature_length digest_length);
+			;;
+		;;
+	[end: good]
+
+	# after the ServerHelloDone: our certificate if it was asked for (none), our key, the
+	# secrets, a ChangeCipherSpec and our Finished
+	[Answer: ptr<WireTlsSession> s: 0;]
+		if s.asked
+			ptr<u8> c: addr build;
+			c:0 is CERTIFICATE;
+			call Put24: c + 1 3;
+			call Put24: c + 4 0;
+			call SendMessage: s c 7;
+		;;
+		u32 public_length: 32;
+		u32 shared_length: 32;
+		if s.group is X25519_GROUP
+			call random: addr private 32;
+			call X25519.Base: addr public addr private;
+			call X25519.ScalarMult: addr shared addr private addr s.peer;
+			u32 any: 0;
+			while u32 i: 0; i < 32; i++;
+				any is any | shared:i;
+			;;
+			if any is 0 return (Fail: s 'the server\'s X25519 key is one that agrees on nothing' ALERT_ILLEGAL_PARAMETER);
+		;;
+		else
+			if not (SharedEc: s) return false;
+			public_length is 1 + 2 * Ec.ec.bytes;
+			shared_length is Ec.ec.bytes;
+		;;
+		ptr<u8> m: addr build;
+		m:0 is CLIENT_KEY_EXCHANGE;
+		call Put24: m + 1 1 + public_length;
+		m:4 is public_length;
+		call Bytes.Copy: m + 5 addr public public_length;
+		call SendMessage: s m 5 + public_length;
+
+		if s.ems
+			call Sha256.Copy: addr s.transcript addr snapshot;
+			call Sha256.Final: addr snapshot addr digest;
+			call Prf: addr shared shared_length 'extended master secret' addr digest 32 0 0 addr s.master 48;
+		;;
+		else
+			call Prf: addr shared shared_length 'master secret' addr s.client_random 32 addr s.server_random 32 addr s.master 48;
+		;;
+		call Bytes.Zero: addr shared 48;
+		call Bytes.Zero: addr private 48;
+
+		u32 k: s.key_length;
+		u32 v: s.iv_length;
+		call Prf: addr s.master 48 'key expansion' addr s.server_random 32 addr s.client_random 32 addr block 2 * (k + v);
+		call Bytes.Copy: addr s.write_key addr block k;
+		call Bytes.Copy: addr s.read_key addr block:k k;
+		call Bytes.Copy: addr s.write_iv addr block:(2 * k) v;
+		call Bytes.Copy: addr s.read_iv addr block:(2 * k + v) v;
+		call Bytes.Zero: addr block 88;
+
+		small:0 is 1;
+		call SendRecord: s TYPE_CHANGE_CIPHER_SPEC addr small 1;
+		s.encrypting is true;
+		s.write_sequence is 0;
+		call Finished: s 'client finished';
+		ptr<u8> f: addr build;
+		f:0 is FINISHED;
+		call Put24: f + 1 12;
+		call Bytes.Copy: f + 4 addr verify 12;
+		call SendMessage: s f 16;
+		s.stage is WAIT_CHANGE;
+	[end: not s.failed]
+
+	# public = our key on the server's curve (P-256 or P-384), shared = the x of our key times the
+	# server's; Ec.ec is the curve after
+	[SharedEc: ptr<WireTlsSession> s: 0;]
+		bln made: false;
+		u32 size: 32;
+		if s.group is P384_GROUP
+			size is 48;
+			call P384.Ready;
+		;;
+		else
+			call P256.Ready;
+		;;
+		while u32 tries: 0; tries < 8 and not made; tries++;
+			call random: addr private size;
+			if size is 48
+				made is (P384.PublicFrom: addr public addr private);
+			;;
+			else
+				made is (P256.PublicFrom: addr public addr private);
+			;;
+		;;
+		if not made return (Fail: s 'no key on the curve could be made' ALERT_INTERNAL_ERROR);
+		if size is 48
+			Ec.ec is addr P384.curve;
+		;;
+		else
+			Ec.ec is addr P256.curve;
+		;;
+		bln read: (Ec.ReadScalar: addr Ec.ec_d addr private);
+		if not (Ec.Load: addr Ec.ec_q addr s.peer:1)
+			return (Fail: s 'the server\'s key isn\'t on the curve' ALERT_ILLEGAL_PARAMETER);
+		;;
+		call Ec.ScalarMult: addr Ec.ec_point addr Ec.ec_d addr Ec.ec_q;
+		if (Big.IsZero: addr Ec.ec_point.z Ec.ec.limbs)
+			return (Fail: s 'the server\'s key agrees on nothing' ALERT_ILLEGAL_PARAMETER);
+		;;
+		call Ec.Affine: addr xy addr Ec.ec_point;
+		call Bytes.Copy: addr shared addr xy size;
+		call Bytes.Zero: addr xy 96;
+		call Bytes.Zero: addr private 32;
+	[end: read]
+
+	# the server's Finished: its 12 bytes must be what the transcript so far says
+	[ReadFinished: ptr<WireTlsSession> s: 0; ptr<u8> message: 0; u32 size: 0;]
+		if size is not 16 return (Fail: s 'a Finished that can\'t be read' ALERT_DECODE_ERROR);
+		call Finished: s 'server finished';
+		if not (Bytes.Equal: addr verify message + 4 12)
+			return (Fail: s 'the server\'s Finished doesn\'t match: the handshake was tampered with' ALERT_DECRYPT_ERROR);
+		;;
+		s.connected is true;
+		s.stage is OPEN;
+		call FreeHandshake: s;
+	[end: true]
+
+	# verify = the Finished for label, from the transcript so far
+	[Finished: ptr<WireTlsSession> s: 0; ptr<u8> label: 0;]
+		call Sha256.Copy: addr s.transcript addr snapshot;
+		call Sha256.Final: addr snapshot addr digest;
+		call Prf: addr s.master 48 label addr digest 32 0 0 addr verify 12;
+	[end]
+
+	# queue a handshake message and add it to the transcript
+	[SendMessage: ptr<WireTlsSession> s: 0; ptr<u8> message: 0; u32 length: 0;]
+		call Sha256.Update: addr s.transcript message length;
+		call SendRecord: s TYPE_HANDSHAKE message length;
+	[end]
+
+	# ---- TLS 1.2's PRF, with SHA-256 (RFC 5246 5): output = P_SHA256(secret, label + a + b)
+	[Prf: ptr<u8> secret: 0; u32 secret_length: 0; ptr<u8> label: 0; ptr<u8> a: 0; u32 a_length: 0;
+	      ptr<u8> b: 0; u32 b_length: 0; ptr<u8> output: 0; u32 length: 0;]
+		u32 label_length: (Length: label);
+		# A(1) = HMAC(secret, seed)
+		call Hmac.Start: secret secret_length;
+		call Hmac.Update: label label_length;
+		call Hmac.Update: a a_length;
+		if b_length > 0
+			call Hmac.Update: b b_length;
+		;;
+		call Hmac.Finish: addr prf_a;
+		u32 done: 0;
+		while done < length
+			call Hmac.Start: secret secret_length;
+			call Hmac.Update: addr prf_a 32;
+			call Hmac.Update: label label_length;
+			call Hmac.Update: a a_length;
+			if b_length > 0
+				call Hmac.Update: b b_length;
+			;;
+			call Hmac.Finish: addr prf_out;
+			u32 n: length - done;
+			if n > 32
+				n is 32;
+			;;
+			call Bytes.Copy: output + done addr prf_out n;
+			done++ n;
+			call Hmac.Start: secret secret_length;
+			call Hmac.Update: addr prf_a 32;
+			call Hmac.Finish: addr prf_a;
+		;;
+		call Bytes.Zero: addr prf_out 32;
+	[end]
+
+	# ---- bytes
+
+	[Length: ptr<u8> text: 0;]
+		u32 n: 0;
+		while text:n is not 0 and n < 4096
+			n++;
+		;;
+	[end: n]
+
+	[Put16: ptr<u8> p: 0; u32 value: 0;]
+		p:0 is value >> 8;
+		p:1 is value & 255;
+	[end]
+
+	[Get16: ptr<u8> p: 0;]
+	[end: (p:0 << 8) | p:1]
+
+	[Put24: ptr<u8> p: 0; u32 value: 0;]
+		p:0 is value >> 16;
+		p:1 is (value >> 8) & 255;
+		p:2 is value & 255;
+	[end]
+
+	[Get24: ptr<u8> p: 0;]
+	[end: (p:0 << 16) | (p:1 << 8) | p:2]
+}

@@ -14,6 +14,7 @@ the program, so there's nothing extra to ship.
 | `corelib` | Checked byte reading; inflate, deflate and Brotli; shared by `imagelib` and `fontlib` | Built and tested, in [libs/core](libs/core) |
 | `vectorlib` | Shapes drawn smooth onto pixels: paths, SVG path data, transforms, gradients, outlines, dashes, clipping | Built and tested, in [libs/vector](libs/vector); checked against Quartz |
 | `encodinglib` | Text in the web's encodings made UTF-8, and an HTML page's encoding found as browsers find it | Built and tested, in [libs/encoding](libs/encoding): UTF-8, UTF-16 and the 28 single-byte encodings |
+| `netlib` | HTTP/1.1 messages for a client (requests, answers, gzip, deflate and Brotli bodies), cookies as browsers keep them, and TLS 1.2 for servers without 1.3 | Built and tested, in [libs/net](libs/net): checked against OpenSSL's server, and in PHI OS's browser |
 | `editlib` | Text being edited: the caret, selecting, moving by words and lines, undo and redo, finding | Built and tested, in [libs/edit](libs/edit); PHI OS's text fields and Notes use it |
 
 [plan.md](plan.md) has the roadmap. None has had its first release yet.

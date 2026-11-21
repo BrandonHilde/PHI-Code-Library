@@ -1,0 +1,262 @@
+# netlib's HTTP, every day: addresses split; Location headers made whole, with RFC 3986's own
+# examples (5.4); a request's head; answers fed a byte at a time and all at once (sized, chunked
+# with an extension and a trailer, running to the end, after a 100 Continue, with no body), and the
+# ones that must fail; headers found; and bodies unpacked (tests/http/bodies.bin, made by
+# tools/net/make_http_tests.py with Python's zlib and gzip and Google's brotli).
+use netlib;
+use memory.mem;
+
+phi.TestHttp:Program
+{
+	int right: 0;
+	int count: 0;
+	u8 buffer[4096];
+
+	[Check: ptr<u8> name: 0; bln good: false; ptr<u8> got: 0;]
+		count++;
+		if good
+			right++;
+		;;
+		else
+			log 'WRONG ' name ': ' got '\n';
+		;;
+	[end]
+
+	[U32: ptr<u8> p: 0; : u32]
+	[end: (p:0 as u32) | ((p:1 as u32) << 8) | ((p:2 as u32) << 16) | ((p:3 as u32) << 24)]
+
+	[Equal: ptr<u8> a: 0; ptr<u8> b: 0;]
+		u32 i: 0;
+		while a:i is b:i
+			if a:i is 0 return true;
+			i++;
+		;;
+	[end: false]
+
+	# ---- addresses
+
+	[Split: ptr<u8> url: 0; bln ok: false; bln secure: false; ptr<u8> host: 0; u32 port: 0; ptr<u8> path: 0;]
+		ptr<WireTarget> t: new WireTarget;
+		bln split: (WireHttp.Split: url t);
+		bln good: split is ok;
+		if ok and split
+			good is t.secure is secure and (Equal: addr t.host:0 host) and t.port is port and (Equal: addr t.path:0 path);
+		;;
+		str said: (url ' -> ' split ' ' t.secure ' ' t.host ' ' t.port ' ' t.path);
+		call Check: url good addr said:0;
+		free t;
+	[end]
+
+	[Resolve: ptr<u8> location: 0; ptr<u8> want: 0;]
+		int n: (WireHttp.Resolve: 'http://a/b/c/d;p?q' location addr buffer 4096);
+		str said: ('"' location '" -> ' addr buffer ', not ' want);
+		call Check: location n >= 0 and (Equal: addr buffer want) addr said:0;
+	[end]
+
+	# ---- answers
+
+	# feed text to a new answer (all at once, or a byte at a time), then end the connection if close
+	[Feed: ptr<WireAnswer> a: 0; ptr<u8> text: 0; bln bytewise: false; bln close: false; bln head: false; u32 most: 1000;]
+		call WireHttp.Begin: a head most;
+		u32 length: (WireHttp.Count: text);
+		u32 used: 0;
+		if bytewise
+			while used < length and not a.done and not a.failed
+				used++ (WireHttp.Take: a text + used 1);
+			;;
+		;;
+		else
+			used is (WireHttp.Take: a text length);
+		;;
+		if close
+			call WireHttp.Ended: a;
+		;;
+	[end: used]
+
+	[Answer: ptr<u8> name: 0; ptr<u8> text: 0; bln close: false; bln head: false; int status: 0; ptr<u8> body: 0; bln keep: false;]
+		WireAnswer a;
+		call Mem.Fill: addr a as ptr<u8> 0 sizeof WireAnswer;
+		while int way: 0; way < 2; way++;
+			u32 used: (Feed: addr a text way is 1 close head 1000);
+			bln good: a.done and not a.failed and a.status is status and a.keep is keep;
+			str got: '';
+			if a.body_length > 0
+				got is a.body;
+			;;
+			good is good and (Equal: addr got:0 body);
+			str said: ('status ' a.status ' done ' a.done ' failed ' a.failed ' ' addr a.error ' keep ' a.keep ' body "' got '"');
+			str label: (name ' (all at once)');
+			if way is 1
+				label is (name ' (a byte at a time)');
+			;;
+			call Check: addr label:0 good addr said:0;
+		;;
+		call WireHttp.Free: addr a;
+	[end]
+
+	[Fails: ptr<u8> name: 0; ptr<u8> text: 0; bln close: false; u32 most: 1000;]
+		WireAnswer a;
+		call Mem.Fill: addr a as ptr<u8> 0 sizeof WireAnswer;
+		u32 used: (Feed: addr a text false close false most);
+		str said: ('done ' a.done ' failed ' a.failed ' status ' a.status);
+		call Check: name a.failed and not a.done addr said:0;
+		call WireHttp.Free: addr a;
+	[end]
+
+	call NetLib.Start;
+
+	call Split: 'https://Example.COM/a?b#c' true true 'example.com' 443 '/a?b';
+	call Split: 'http://h:8080' true false 'h' 8080 '/';
+	call Split: 'HTTP://h?q' true false 'h' 80 '/?q';
+	call Split: 'http://[::1]:81/x' true false '::1' 81 '/x';
+	call Split: 'http://user:pw@h/p' true false 'h' 80 '/p';
+	call Split: 'ftp://x/' false false '' 0 '';
+	call Split: 'http:///p' false false '' 0 '';
+	call Split: 'http://h:99999/' false false '' 0 '';
+
+	# RFC 3986 5.4.1 and 5.4.2, against http://a/b/c/d;p?q
+	call Resolve: 'g:h' 'g:h';
+	call Resolve: 'g' 'http://a/b/c/g';
+	call Resolve: './g' 'http://a/b/c/g';
+	call Resolve: 'g/' 'http://a/b/c/g/';
+	call Resolve: '/g' 'http://a/g';
+	call Resolve: '//g' 'http://g';
+	call Resolve: '?y' 'http://a/b/c/d;p?y';
+	call Resolve: 'g?y' 'http://a/b/c/g?y';
+	call Resolve: '#s' 'http://a/b/c/d;p?q#s';
+	call Resolve: 'g#s' 'http://a/b/c/g#s';
+	call Resolve: 'g?y#s' 'http://a/b/c/g?y#s';
+	call Resolve: ';x' 'http://a/b/c/;x';
+	call Resolve: 'g;x' 'http://a/b/c/g;x';
+	call Resolve: 'g;x?y#s' 'http://a/b/c/g;x?y#s';
+	call Resolve: '' 'http://a/b/c/d;p?q';
+	call Resolve: '.' 'http://a/b/c/';
+	call Resolve: './' 'http://a/b/c/';
+	call Resolve: '..' 'http://a/b/';
+	call Resolve: '../' 'http://a/b/';
+	call Resolve: '../g' 'http://a/b/g';
+	call Resolve: '../..' 'http://a/';
+	call Resolve: '../../' 'http://a/';
+	call Resolve: '../../g' 'http://a/g';
+	call Resolve: '../../../g' 'http://a/g';
+	call Resolve: '../../../../g' 'http://a/g';
+	call Resolve: '/./g' 'http://a/g';
+	call Resolve: '/../g' 'http://a/g';
+	call Resolve: 'g.' 'http://a/b/c/g.';
+	call Resolve: '.g' 'http://a/b/c/.g';
+	call Resolve: 'g..' 'http://a/b/c/g..';
+	call Resolve: '..g' 'http://a/b/c/..g';
+	call Resolve: './../g' 'http://a/b/g';
+	call Resolve: './g/.' 'http://a/b/c/g/';
+	call Resolve: 'g/./h' 'http://a/b/c/g/h';
+	call Resolve: 'g/../h' 'http://a/b/c/h';
+	call Resolve: 'g;x=1/./y' 'http://a/b/c/g;x=1/y';
+	call Resolve: 'g;x=1/../y' 'http://a/b/c/y';
+	call Resolve: 'g?y/./x' 'http://a/b/c/g?y/./x';
+	call Resolve: 'g?y/../x' 'http://a/b/c/g?y/../x';
+	call Resolve: 'g#s/./x' 'http://a/b/c/g#s/./x';
+	call Resolve: 'g#s/../x' 'http://a/b/c/g#s/../x';
+	call Resolve: 'http:g' 'http:g';
+
+	# a request
+	ptr<WireTarget> t: new WireTarget;
+	bln split: (WireHttp.Split: 'http://example.com:8080/a/b?c=d' t);
+	int n: (WireHttp.Request: addr buffer 4096 'GET' t 'Cookie: x=1\r\n' 0 false);
+	call Check: 'a GET' (Equal: addr buffer 'GET /a/b?c=d HTTP/1.1\r\nHost: example.com:8080\r\nUser-Agent: PHI\r\nAccept-Encoding: gzip, deflate\r\nConnection: keep-alive\r\nCookie: x=1\r\n\r\n') addr buffer;
+	split is (WireHttp.Split: 'https://[::1]/' t);
+	WireHttp.brotli is true;
+	n is (WireHttp.Request: addr buffer 4096 'POST' t 0 5 false);
+	WireHttp.brotli is false;
+	call Check: 'a POST' (Equal: addr buffer 'POST / HTTP/1.1\r\nHost: [::1]\r\nUser-Agent: PHI\r\nAccept-Encoding: gzip, deflate, br\r\nConnection: keep-alive\r\nContent-Length: 5\r\n\r\n') addr buffer;
+	call Check: 'a head too big for its room' (WireHttp.Request: addr buffer 20 'GET' t 0 0 false) is -1 'it fit';
+	free t;
+
+	# answers
+	call Answer: 'sized' 'HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello' false false 200 'hello' true;
+	call Answer: 'chunked' 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;name=value\r\nhello\r\n6\r\n world\r\n0\r\nTrailer: z\r\n\r\n' false false 200 'hello world' true;
+	call Answer: 'chunk sizes in capitals' 'HTTP/1.1 200 OK\r\ntransfer-encoding: gzip, Chunked\r\n\r\nA\r\n0123456789\r\n0\r\n\r\n' false false 200 '0123456789' true;
+	call Answer: 'after 100 Continue' 'HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\nok' false false 201 'ok' true;
+	call Answer: 'to the end (HTTP/1.0)' 'HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nall of it' true false 200 'all of it' false;
+	call Answer: 'HTTP/1.0 keep-alive' 'HTTP/1.0 200 OK\r\nConnection: Keep-Alive\r\nContent-Length: 1\r\n\r\nx' false false 200 'x' true;
+	call Answer: 'Connection: close' 'HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\nabc' false false 200 'abc' false;
+	call Answer: '304' 'HTTP/1.1 304 Not Modified\r\nContent-Length: 50\r\n\r\n' false false 304 '' true;
+	call Answer: 'a HEAD' 'HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\n' false true 200 '' true;
+	call Answer: 'Content-Lengths that agree' 'HTTP/1.1 200 OK\r\nContent-Length: 3, 3\r\nContent-Length: 3\r\n\r\nabc' false false 200 'abc' true;
+	call Answer: 'bare newlines' 'HTTP/1.1 404 Not Found\nContent-Length: 4\n\nnope' false false 404 'nope' true;
+	call Answer: 'no reason phrase' 'HTTP/1.1 204\r\n\r\n' false false 204 '' true;
+	call Fails: 'Content-Lengths that disagree' 'HTTP/1.1 200 OK\r\nContent-Length: 5, 6\r\n\r\nhello' false 1000;
+	call Fails: 'a chunk size that isn\'t hex' 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nhello\r\n' false 1000;
+	call Fails: 'a chunk longer than its size' 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhello\r\n' false 1000;
+	call Fails: 'cut short' 'HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhell' true 1000;
+	call Fails: 'a body past the most' 'HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n' false 50;
+	call Fails: 'a chunked body past the most' 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFF\r\n' false 50;
+	call Fails: 'not HTTP' 'SSH-2.0-OpenSSH\r\n\r\n' false 1000;
+	call Fails: 'a Content-Length that isn\'t a number' 'HTTP/1.1 200 OK\r\nContent-Length: 1e3\r\n\r\n' false 1000;
+
+	# what comes after an answer isn't its
+	WireAnswer a;
+	call Mem.Fill: addr a as ptr<u8> 0 sizeof WireAnswer;
+	u32 used: (Feed: addr a 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokHTTP/1.1' false false false 1000);
+	call Check: 'bytes after the answer left' used is 40 'they were taken';
+
+	# headers
+	used is (Feed: addr a 'HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nset-cookie:  b=2 \r\nX-Empty:\r\nContent-Length: 0\r\n\r\n' false false false 1000);
+	u8 value[64];
+	int got1: (WireHttp.HeaderAt: addr a 'Set-Cookie' 0 addr value 64);
+	call Check: 'the first Set-Cookie' got1 is 3 and (Equal: addr value 'a=1') addr value;
+	int got2: (WireHttp.HeaderAt: addr a 'SET-COOKIE' 1 addr value 64);
+	call Check: 'the second, trimmed' got2 is 3 and (Equal: addr value 'b=2') addr value;
+	call Check: 'no third' (WireHttp.HeaderAt: addr a 'Set-Cookie' 2 addr value 64) is -1 'there was one';
+	call Check: 'an empty one' (WireHttp.Header: addr a 'X-Empty' addr value 64) is 0 'it wasn\'t empty';
+	call Check: 'one that isn\'t there' (WireHttp.Header: addr a 'Content' addr value 64) is -1 'it was found';
+	call Check: 'cut to its room' (WireHttp.Header: addr a 'Set-Cookie' addr value 3) is 2 'it wasn\'t cut';
+
+	# bodies unpacked
+	int dict_size: (OS.FileSize: '../core/brotli/dictionary.bin');
+	ptr<u8> dict: new u8[dict_size];
+	int dict_read: (OS.ReadFile: '../core/brotli/dictionary.bin' dict dict_size);
+	bln given: (CoreBrotli.Dictionary: dict dict_size as u32);
+	int size: (OS.FileSize: 'tests/http/bodies.bin');
+	ptr<u8> all: new u8[size];
+	int read: (OS.ReadFile: 'tests/http/bodies.bin' all size);
+	u32 at_byte: 0;
+	u32 items: (U32: all);
+	u32 text_length: (U32: all + 4);
+	ptr<u8> text: all + 8;
+	at_byte is 8 + text_length;
+	while u32 i: 0; i < items; i++;
+		str name: '';
+		u32 nl: all:at_byte;
+		while u32 k: 0; k < nl; k++;
+			name++ all:(at_byte + 1 + k) as chr;
+		;;
+		at_byte++ 1 + nl;
+		str coding: '';
+		u32 cl: all:at_byte;
+		while u32 k2: 0; k2 < cl; k2++;
+			coding++ all:(at_byte + 1 + k2) as chr;
+		;;
+		at_byte++ 1 + cl;
+		u32 length: (U32: all + at_byte);
+		ptr<u8> data: all + at_byte + 4;
+		at_byte++ 4 + length;
+		str head: ('HTTP/1.1 200 OK\r\nContent-Encoding: ' coding '\r\nContent-Length: ' length '\r\n\r\n');
+		call WireHttp.Begin: addr a false 10000000;
+		used is (WireHttp.Take: addr a addr head:0 head.len as u32);
+		used is (WireHttp.Take: addr a data length);
+		bln unpacked: (WireHttp.Unpack: addr a);
+		str label: ('unpacked: ' name);
+		if (Equal: addr name:0 'gzip, cut short')
+			str said: ('it unpacked to ' a.body_length ' bytes');
+			call Check: addr label:0 not unpacked and a.body_length is length addr said:0;
+		;;
+		else
+			bln same: unpacked and a.body_length is text_length and (Mem.Equal: a.body text text_length);
+			str said2: (unpacked ' ' a.body_length ' bytes; ' addr a.error);
+			call Check: addr label:0 same addr said2:0;
+		;;
+	;;
+	call WireHttp.Free: addr a;
+
+	log right ' of ' count ' as they should be\n';
+}

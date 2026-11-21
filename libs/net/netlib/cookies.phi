@@ -1,0 +1,1093 @@
+# netlib's cookies (RFC 6265, with the changes of its successor draft, 6265bis, that browsers have
+# made): a jar that takes Set-Cookie headers, gives the Cookie header for a request, and keeps what
+# outlasts a session as text for the program to save.
+#
+#   WireJar jar;
+#   bln kept: (WireCookies.Take: addr jar addr target header now false);   # a Set-Cookie's value; now: seconds since 1970
+#   int n: (WireCookies.Header: addr jar addr target now WireCookies.SAME_SITE false buffer size);
+#   # buffer is "a=1; b=2" (n bytes; 0 if none go): send it as Cookie: when n > 0
+#   int saved: (WireCookies.Save: addr jar now buffer size);   # what outlasts the session, as text
+#   int count: (WireCookies.Load: addr jar data length now);
+#   call WireCookies.Free: addr jar;
+#
+# A target is a WireTarget (WireHttp.Split): its host, path and whether it's https. Script's
+# document.cookie is Header and Take with from_script true: HttpOnly cookies are neither shown to it
+# nor changed by it.
+#
+# What's kept is as browsers keep it: a Secure cookie only from https and only sent there, and a
+# cookie from http can't replace one; Domain must be the host or above it, and not a public suffix
+# (co.uk, github.io); SameSite=None needs Secure; the __Secure- and __Host- prefixes are held to;
+# an expiry is at most 400 days away; at most 4,096 bytes of name and value, 180 cookies a domain
+# (the least recently sent go first) and 3,000 in all. A request's context says which SameSite
+# cookies go: SAME_SITE (the page and the request's host are the same site), CROSS_TOP (a
+# navigation of the whole window from another site, with a safe method: Lax and unset go, Strict
+# doesn't) or CROSS (anything else from another site: only SameSite=None).
+#
+# Public suffixes come from the Public Suffix List (publicsuffix.org) when the program gives it
+# (WireCookies.Suffixes: the list's text, kept by the jar's code, not copied); until then from a short
+# list of the common ones, which errs towards not keeping a cookie for a domain it can't place.
+
+use netlib.http;
+
+# one cookie
+struct.WireCookie
+{
+	ptr<u8> data;               # its name, then its value, then its path, on the heap
+	u32 name_length;
+	u32 value_length;
+	u32 path_length;
+	str domain: [255];
+	u64 expires;                # seconds since 1970; 0: when the session ends
+	u64 created;                # seconds since 1970
+	u64 order;                  # in order of creation, for ties
+	u64 used;                   # when it was last sent (order of use)
+	bln host_only;
+	bln secure;
+	bln http_only;
+	u32 same_site;              # WireCookies.UNSET, NONE, LAX or STRICT
+}
+
+# every cookie
+struct.WireJar
+{
+	ptr<WireCookie> list;
+	u32 count;
+	u32 room;
+	u64 order;
+}
+
+phi.WireCookies:Library
+{
+	const u32 UNSET: 0;
+	const u32 NONE: 1;
+	const u32 LAX: 2;
+	const u32 STRICT: 3;
+
+	const u32 SAME_SITE: 0;
+	const u32 CROSS_TOP: 1;
+	const u32 CROSS: 2;
+
+	const u32 MOST: 3000;
+	const u32 MOST_A_DOMAIN: 180;
+	const u32 SIZE_MAX: 4096;
+	const u32 PATH_MAX: 1024;
+	const u32 LONGEST: 34560000;          # 400 days, in seconds
+
+	# what Take found in the last header (for its callers' logs)
+	str why: [80];
+
+	# the public suffixes: rules (lines of the list, or the short one), hashed
+	ptr<u8> rules: 0;
+	u32 rules_length: 0;
+	ptr<u32> table: 0;                    # each slot: where a rule starts in rules, plus 1 (0: empty)
+	u32 table_size: 0;
+	bln short_list: false;
+
+	# the attributes of the header being taken
+	u64 a_expires: 0;
+	bln a_has_expiry: false;
+	bln a_max_age: false;
+	u32 a_domain_at: 0;
+	u32 a_domain_length: 0;
+	u32 a_path_at: 0;
+	u32 a_path_length: 0;
+	bln a_secure: false;
+	bln a_http_only: false;
+	u32 a_same_site: 0;
+	u8 lowered[256];
+	u8 default_path[1025];
+	u32 default_length: 0;
+
+	# ---- taking a Set-Cookie
+
+	# take header (a Set-Cookie's value) from the answer to a request for t; false if it isn't
+	# kept (why says why), or it was one that deletes a cookie
+	[Take: ptr<WireJar> jar: 0; ptr<WireTarget> t: 0; ptr<u8> header: 0; u64 now: 0; bln from_script: false;]
+		why is '';
+		u32 length: (WireHttp.Count: header);
+		# name=value, up to the first ;
+		u32 pair_end: 0;
+		while pair_end < length and header:pair_end is not ';'
+			pair_end++;
+		;;
+		u32 name_at: 0;
+		u32 name_length: 0;
+		u32 value_at: 0;
+		u32 value_length: 0;
+		u32 equals: 0;
+		while equals < pair_end and header:equals is not '='
+			equals++;
+		;;
+		if equals < pair_end
+			call Trim: header 0 equals;
+			name_at is trim_at;
+			name_length is trim_length;
+			call Trim: header equals + 1 pair_end;
+			value_at is trim_at;
+			value_length is trim_length;
+		;;
+		else
+			call Trim: header 0 pair_end;
+			value_at is trim_at;
+			value_length is trim_length;
+		;;
+		if name_length + value_length is 0 return (No: 'no name or value');
+		if name_length + value_length > SIZE_MAX return (No: 'more than 4,096 bytes');
+		while u32 i: 0; i < pair_end; i++;
+			u32 c: header:i;
+			if (c < 32 and c is not 9) or c is 127 return (No: 'a control character');
+		;;
+		while u32 k: name_at; k < name_at + name_length; k++;
+			if header:k is 9 return (No: 'a tab in the name');
+		;;
+
+		call Attributes: header pair_end length now;
+		if a_secure and not t.secure return (No: 'Secure, from a page that isn\'t https');
+		if a_same_site is NONE and not a_secure return (No: 'SameSite=None without Secure');
+		if from_script and a_http_only return (No: 'HttpOnly, from script');
+
+		# the domain: the host's own, or one above it that isn't a public suffix
+		bln host_only: true;
+		str domain: [255];
+		domain is t.host;
+		if a_domain_length > 0
+			if a_domain_length > 255 return (No: 'a Domain that is too long');
+			while u32 d: 0; d < a_domain_length; d++;
+				lowered:d is (WireHttp.Lower: header:(a_domain_at + d));
+			;;
+			lowered:a_domain_length is 0;
+			if (IsSuffix: addr lowered a_domain_length)
+				if not (Same: addr lowered addr t.host) return (No: 'a Domain that is a public suffix');
+			;;
+			else
+				if not (DomainMatch: addr t.host addr lowered) return (No: 'a Domain that isn\'t the host or above it');
+				host_only is false;
+				domain is addr lowered;
+			;;
+		;;
+
+		# the path
+		ptr<u8> path: addr default_path;
+		u32 path_length: default_length;
+		call DefaultPath: t;
+		path_length is default_length;
+		bln tab: false;
+		while u32 pt: 0; pt < a_path_length; pt++;
+			if header:(a_path_at + pt) is 9
+				tab is true;
+			;;
+		;;
+		if a_path_length > 0 and header:a_path_at is '/' and not tab
+			if a_path_length > PATH_MAX return (No: 'a Path that is too long');
+			path is header + a_path_at;
+			path_length is a_path_length;
+		;;
+
+		# the prefixes
+		if name_length >= 9 and (WireHttp.SameNoCase: header + name_at '__Secure-' 9) and not a_secure
+			return (No: '__Secure- without Secure');
+		;;
+		if name_length >= 7 and (WireHttp.SameNoCase: header + name_at '__Host-' 7)
+			if not a_secure or not host_only or path_length is not 1 or path:0 is not '/'
+				return (No: '__Host- that isn\'t Secure, for the host, with Path=/');
+			;;
+		;;
+
+		# a cookie from http doesn't replace or shadow a Secure one
+		if not t.secure and not a_secure
+			while u32 s: 0; s < jar.count; s++;
+				ptr<WireCookie> c: addr jar.list:s;
+				if c.secure and c.name_length is name_length and (Mem.Equal: c.data header + name_at name_length)
+					bln domains: (DomainMatch: addr c.domain addr domain) or (DomainMatch: addr domain addr c.domain);
+					if domains and (PathMatch: path path_length c.data + name_length + c.value_length c.path_length)
+						return (No: 'it would replace a Secure cookie, from http');
+					;;
+				;;
+			;;
+		;;
+
+		u64 created: now;
+		u64 kept_order: 0;
+		int old: (Find: jar header + name_at name_length addr domain host_only path path_length);
+		if old >= 0
+			ptr<WireCookie> was: addr jar.list:old;
+			if from_script and was.http_only return (No: 'it would replace an HttpOnly cookie, from script');
+			created is was.created;
+			kept_order is was.order;
+			call Remove: jar old as u32;
+		;;
+		u64 expires: 0;
+		if a_has_expiry
+			expires is a_expires;
+			if expires <= now return (No: 'it has expired (so it deletes)');
+			if expires - now > (LONGEST as u64)
+				expires is now + (LONGEST as u64);
+			;;
+		;;
+
+		if jar.count >= jar.room
+			u32 bigger: jar.room * 2;
+			if bigger < 32
+				bigger is 32;
+			;;
+			ptr<WireCookie> grown: new WireCookie[bigger];
+			if grown is 0 return (No: 'out of memory');
+			if jar.list is not 0
+				call Mem.Copy: grown as ptr<u8> jar.list as ptr<u8> jar.count * sizeof WireCookie;
+				free jar.list;
+			;;
+			jar.list is grown;
+			jar.room is bigger;
+		;;
+		ptr<u8> data: new u8[name_length + value_length + path_length + 1];
+		if data is 0 return (No: 'out of memory');
+		call Mem.Copy: data header + name_at name_length;
+		call Mem.Copy: data + name_length header + value_at value_length;
+		call Mem.Copy: data + name_length + value_length path path_length;
+		ptr<WireCookie> c2: addr jar.list:(jar.count);
+		call Mem.Fill: c2 as ptr<u8> 0 sizeof WireCookie;
+		c2.data is data;
+		c2.name_length is name_length;
+		c2.value_length is value_length;
+		c2.path_length is path_length;
+		c2.domain is domain;
+		c2.expires is expires;
+		c2.created is created;
+		jar.order++;
+		c2.order is jar.order;
+		if kept_order > 0
+			c2.order is kept_order;
+		;;
+		c2.used is jar.order;
+		c2.host_only is host_only;
+		c2.secure is a_secure;
+		c2.http_only is a_http_only;
+		c2.same_site is a_same_site;
+		jar.count++;
+		call Limit: jar addr domain now;
+	[end: true]
+
+	[No: ptr<u8> reason: 0;]
+		why is reason;
+	[end: false]
+
+	# the attributes after the name and value (from at to length)
+	[Attributes: ptr<u8> header: 0; u32 at_byte: 0; u32 length: 0; u64 now: 0;]
+		a_expires is 0;
+		a_has_expiry is false;
+		a_max_age is false;
+		a_domain_at is 0;
+		a_domain_length is 0;
+		a_path_at is 0;
+		a_path_length is 0;
+		a_secure is false;
+		a_http_only is false;
+		a_same_site is UNSET;
+		u32 i: at_byte;
+		while i < length
+			i++;                              # the ;
+			u32 start: i;
+			while i < length and header:i is not ';'
+				i++;
+			;;
+			u32 stop: i;
+			u32 equals: start;
+			while equals < stop and header:equals is not '='
+				equals++;
+			;;
+			call Trim: header start equals;
+			u32 key_at: trim_at;
+			u32 key_length: trim_length;
+			u32 value_at: stop;
+			u32 value_length: 0;
+			if equals < stop
+				call Trim: header equals + 1 stop;
+				value_at is trim_at;
+				value_length is trim_length;
+			;;
+			ptr<u8> key: header + key_at;
+			ptr<u8> value: header + value_at;
+			if key_length is 7 and (WireHttp.SameNoCase: key 'expires' 7)
+				if not a_max_age
+					u64 moment: (Date: value value_length);
+					if date_ok
+						a_expires is moment;
+						a_has_expiry is true;
+					;;
+				;;
+			;;
+			elif key_length is 7 and (WireHttp.SameNoCase: key 'max-age' 7)
+				bln negative: value_length > 0 and value:0 is '-';
+				u32 d: 0;
+				if negative
+					d is 1;
+				;;
+				bln digits: d < value_length;
+				u64 seconds: 0;
+				while d < value_length
+					if value:d < '0' or value:d > '9'
+						digits is false;
+						break;
+					;;
+					if seconds < 1000000000000
+						seconds is seconds * 10 + (value:d - '0') as u64;
+					;;
+					d++;
+				;;
+				if digits
+					a_max_age is true;
+					a_has_expiry is true;
+					if negative or seconds is 0
+						a_expires is 1;
+					;;
+					else
+						if seconds > (LONGEST as u64)
+							seconds is (LONGEST as u64);
+						;;
+						a_expires is now + seconds;
+					;;
+				;;
+			;;
+			elif key_length is 6 and (WireHttp.SameNoCase: key 'domain' 6)
+				if value_length > 0
+					if value:0 is '.'
+						value_at++;
+						value_length--;
+					;;
+					a_domain_at is value_at;
+					a_domain_length is value_length;
+				;;
+			;;
+			elif key_length is 4 and (WireHttp.SameNoCase: key 'path' 4)
+				a_path_at is value_at;
+				a_path_length is value_length;
+			;;
+			elif key_length is 6 and (WireHttp.SameNoCase: key 'secure' 6)
+				a_secure is true;
+			;;
+			elif key_length is 8 and (WireHttp.SameNoCase: key 'httponly' 8)
+				a_http_only is true;
+			;;
+			elif key_length is 8 and (WireHttp.SameNoCase: key 'samesite' 8)
+				if value_length is 4 and (WireHttp.SameNoCase: value 'none' 4)
+					a_same_site is NONE;
+				;;
+				elif value_length is 3 and (WireHttp.SameNoCase: value 'lax' 3)
+					a_same_site is LAX;
+				;;
+				elif value_length is 6 and (WireHttp.SameNoCase: value 'strict' 6)
+					a_same_site is STRICT;
+				;;
+				else
+					a_same_site is UNSET;
+				;;
+			;;
+		;;
+	[end]
+
+	# default_path = the directory of t's path (RFC 6265 5.1.4)
+	[DefaultPath: ptr<WireTarget> t: 0;]
+		u32 end_at: 0;
+		while end_at < t.path.len and t.path:end_at is not '?'
+			end_at++;
+		;;
+		u32 last: 0;
+		while u32 i: 0; i < end_at; i++;
+			if t.path:i is '/'
+				last is i;
+			;;
+		;;
+		if end_at is 0 or t.path:0 is not '/' or last is 0 or last > PATH_MAX
+			default_path:0 is '/';
+			default_length is 1;
+			return;
+		;;
+		while u32 k: 0; k < last; k++;
+			default_path:k is t.path:k;
+		;;
+		default_length is last;
+	[end]
+
+	# keep the jar within its limits after a cookie for domain came: the least recently sent go first
+	[Limit: ptr<WireJar> jar: 0; ptr<u8> domain: 0; u64 now: 0;]
+		call Expire: jar now;
+		u32 mine: 0;
+		while u32 i: 0; i < jar.count; i++;
+			if (Same: addr jar.list:i.domain domain)
+				mine++;
+			;;
+		;;
+		while mine > MOST_A_DOMAIN
+			int oldest: -1;
+			while u32 k: 0; k < jar.count; k++;
+				if (Same: addr jar.list:k.domain domain)
+					if oldest < 0 or jar.list:k.used < jar.list:(oldest).used
+						oldest is k as int;
+					;;
+				;;
+			;;
+			call Remove: jar oldest as u32;
+			mine--;
+		;;
+		while jar.count > MOST
+			u32 least: 0;
+			while u32 j: 1; j < jar.count; j++;
+				if jar.list:j.used < jar.list:least.used
+					least is j;
+				;;
+			;;
+			call Remove: jar least;
+		;;
+	[end]
+
+	# take out the cookies that have expired
+	[Expire: ptr<WireJar> jar: 0; u64 now: 0;]
+		u32 i: 0;
+		while i < jar.count
+			u64 e: jar.list:i.expires;
+			if e is not 0 and e <= now
+				call Remove: jar i;
+			;;
+			else
+				i++;
+			;;
+		;;
+	[end]
+
+	[Remove: ptr<WireJar> jar: 0; u32 i: 0;]
+		if i >= jar.count return;
+		free jar.list:i.data;
+		u32 last: jar.count - 1;
+		if i < last
+			call Mem.Move: addr jar.list:i as ptr<u8> addr jar.list:(i + 1) as ptr<u8> (last - i) * sizeof WireCookie;
+		;;
+		jar.count--;
+	[end]
+
+	# the cookie called name for domain (host only or not) and path: its place, or -1
+	[Find: ptr<WireJar> jar: 0; ptr<u8> name: 0; u32 name_length: 0; ptr<u8> domain: 0; bln host_only: false; ptr<u8> path: 0; u32 path_length: 0;]
+		while u32 i: 0; i < jar.count; i++;
+			ptr<WireCookie> c: addr jar.list:i;
+			if c.name_length is name_length and c.path_length is path_length and c.host_only is host_only
+				if (Mem.Equal: c.data name name_length) and (Mem.Equal: c.data + c.name_length + c.value_length path path_length)
+					if (Same: addr c.domain domain) return i as int;
+				;;
+			;;
+		;;
+	[end: -1]
+
+	# forget every cookie
+	[Clear: ptr<WireJar> jar: 0;]
+		while jar.count > 0
+			call Remove: jar jar.count - 1;
+		;;
+	[end]
+
+	# forget the cookies that last only as long as the session
+	[EndSession: ptr<WireJar> jar: 0;]
+		u32 i: 0;
+		while i < jar.count
+			if jar.list:i.expires is 0
+				call Remove: jar i;
+			;;
+			else
+				i++;
+			;;
+		;;
+	[end]
+
+	[Free: ptr<WireJar> jar: 0;]
+		call Clear: jar;
+		if jar.list is not 0
+			free jar.list;
+		;;
+		jar.list is 0;
+		jar.room is 0;
+	[end]
+
+	# ---- the Cookie header
+
+	# target (size bytes, with a zero after) = the cookies that go with a request for t, in the
+	# context given (SAME_SITE, CROSS_TOP or CROSS), as a Cookie header's value: its length (0 if none go)
+	[Header: ptr<WireJar> jar: 0; ptr<WireTarget> t: 0; u64 now: 0; u32 context: 0; bln from_script: false; ptr<u8> target: 0; int size: 0;]
+		if size <= 0 return 0;
+		target:0 is 0;
+		call Expire: jar now;
+		u32 path_end: 0;
+		while path_end < t.path.len and t.path:path_end is not '?'
+			path_end++;
+		;;
+		ptr<u8> request_path: addr t.path:0;
+		u32 chosen[180];
+		u32 count: 0;
+		while u32 i: 0; i < jar.count and count < 180; i++;
+			ptr<WireCookie> c: addr jar.list:i;
+			bln domain_ok: false;
+			if c.host_only
+				domain_ok is (Same: addr t.host addr c.domain);
+			;;
+			else
+				domain_ok is (DomainMatch: addr t.host addr c.domain);
+			;;
+			if not domain_ok continue;
+			if not (PathMatch: request_path path_end c.data + c.name_length + c.value_length c.path_length) continue;
+			if c.secure and not t.secure continue;
+			if c.http_only and from_script continue;
+			if not from_script
+				if c.same_site is STRICT and context is not SAME_SITE continue;
+				if (c.same_site is LAX or c.same_site is UNSET) and context is CROSS continue;
+			;;
+			# in order: longer paths first, then the older
+			u32 place: count;
+			while place > 0
+				ptr<WireCookie> before: addr jar.list:(chosen:(place - 1));
+				bln after: before.path_length > c.path_length or (before.path_length is c.path_length and before.order < c.order);
+				if after break;
+				chosen:place is chosen:(place - 1);
+				place--;
+			;;
+			chosen:place is i;
+			count++;
+		;;
+		int n: 0;
+		while u32 k: 0; k < count; k++;
+			ptr<WireCookie> c2: addr jar.list:(chosen:k);
+			int need: (c2.name_length + c2.value_length + 3) as int;
+			if n + need >= size break;
+			if k > 0
+				target:n is ';';
+				target:(n + 1) is ' ';
+				n++ 2;
+			;;
+			if c2.name_length > 0
+				call Mem.Copy: target + n c2.data c2.name_length;
+				n++ c2.name_length as int;
+				target:n is '=';
+				n++;
+			;;
+			call Mem.Copy: target + n c2.data + c2.name_length c2.value_length;
+			n++ c2.value_length as int;
+			jar.order++;
+			c2.used is jar.order;
+		;;
+		target:n is 0;
+	[end: n]
+
+	# ---- matching
+
+	# whether host is domain, or is under it (and isn't an IP address)
+	[DomainMatch: ptr<u8> host: 0; ptr<u8> domain: 0;]
+		u32 h: (WireHttp.Count: host);
+		u32 d: (WireHttp.Count: domain);
+		if h is d return (Mem.Equal: host domain h);
+		if h <= d or d is 0 return false;
+		if host:(h - d - 1) is not '.' return false;
+		if not (Mem.Equal: host + h - d domain d) return false;
+	[end: not (Address: host)]
+
+	# whether a request's path (length bytes) is under a cookie's path
+	[PathMatch: ptr<u8> request: 0; u32 length: 0; ptr<u8> path: 0; u32 path_length: 0;]
+		if path_length > length return false;
+		if not (Mem.Equal: request path path_length) return false;
+		if path_length is length return true;
+		if path:(path_length - 1) is '/' return true;
+	[end: request:path_length is '/']
+
+	# whether host is an IPv4 or IPv6 address
+	[Address: ptr<u8> host: 0;]
+		bln any: false;
+		u32 i: 0;
+		while host:i is not 0
+			u32 c: host:i;
+			if c is ':' return true;
+			if (c < '0' or c > '9') and c is not '.' return false;
+			any is true;
+			i++;
+		;;
+	[end: any]
+
+	[Same: ptr<u8> a: 0; ptr<u8> b: 0;]
+		u32 i: 0;
+		while a:i is b:i
+			if a:i is 0 return true;
+			i++;
+		;;
+	[end: false]
+
+	u32 trim_at: 0;
+	u32 trim_length: 0;
+
+	# trim_at and trim_length = from to stop, without the spaces and tabs at either end
+	[Trim: ptr<u8> text: 0; u32 from: 0; u32 stop: 0;]
+		while from < stop and (text:from is ' ' or text:from is 9)
+			from++;
+		;;
+		while stop > from and (text:(stop - 1) is ' ' or text:(stop - 1) is 9)
+			stop--;
+		;;
+		trim_at is from;
+		trim_length is stop - from;
+	[end]
+
+	# ---- dates (RFC 6265 5.1.1): Expires's, in any of the forms servers write
+
+	bln date_ok: false;
+	u32 d_value: 0;
+	u32 d_digits: 0;
+
+	# the time text (length bytes) says, as seconds since 1970 (1 for any time before); date_ok
+	# says whether it's a date
+	[Date: ptr<u8> text: 0; u32 length: 0; : u64]
+		date_ok is false;
+		bln have_time: false;
+		bln have_day: false;
+		bln have_month: false;
+		bln have_year: false;
+		u32 hour: 0;
+		u32 minute: 0;
+		u32 second: 0;
+		u32 day: 0;
+		u32 month: 0;
+		u32 year: 0;
+		u32 i: 0;
+		while i < length
+			while i < length and (Delimiter: text:i)
+				i++;
+			;;
+			u32 start: i;
+			while i < length and not (Delimiter: text:i)
+				i++;
+			;;
+			u32 n: i - start;
+			if n is 0 continue;
+			ptr<u8> word: text + start;
+			if not have_time and (Clock: word n)
+				have_time is true;
+				hour is c_hour;
+				minute is c_minute;
+				second is c_second;
+				continue;
+			;;
+			call Leading: word n;
+			if not have_day and d_digits >= 1 and d_digits <= 2
+				have_day is true;
+				day is d_value;
+				continue;
+			;;
+			if not have_month and n >= 3
+				u32 m: (MonthOf: word);
+				if m > 0
+					have_month is true;
+					month is m;
+					continue;
+				;;
+			;;
+			if not have_year and d_digits >= 2 and d_digits <= 4
+				have_year is true;
+				year is d_value;
+				if year >= 70 and year <= 99
+					year++ 1900;
+				;;
+				elif year <= 69
+					year++ 2000;
+				;;
+				continue;
+			;;
+		;;
+		if not (have_time and have_day and have_month and have_year) return 0;
+		if day < 1 or day > 31 or year < 1601 or hour > 23 or minute > 59 or second > 59 return 0;
+		u32 days_in: 31;
+		if month is 4 or month is 6 or month is 9 or month is 11
+			days_in is 30;
+		;;
+		if month is 2
+			days_in is 28;
+			if (year % 4 is 0 and year % 100 is not 0) or year % 400 is 0
+				days_in is 29;
+			;;
+		;;
+		if day > days_in return 0;
+		date_ok is true;
+		if year < 1970 return 1;
+		# days since 1970 (Howard Hinnant's days_from_civil)
+		u64 y: year;
+		if month <= 2
+			y--;
+		;;
+		u64 era: y / 400;
+		u64 yoe: y - era * 400;
+		u64 shifted: month + 9;
+		if month > 2
+			shifted is month - 3;
+		;;
+		u64 doy: (153 * shifted + 2) / 5 + day - 1;
+		u64 doe: yoe * 365 + yoe / 4 - yoe / 100 + doy;
+		u64 days: era * 146097 + doe - 719468;
+		u64 moment: days * 86400 + hour * 3600 + minute * 60 + second;
+		if moment is 0
+			moment is 1;
+		;;
+	[end: moment]
+
+	[Delimiter: u32 c: 0;]
+	[end: c is 9 or (c >= 0x20 and c <= 0x2F) or (c >= 0x3B and c <= 0x40) or (c >= 0x5B and c <= 0x60) or (c >= 0x7B and c <= 0x7E)]
+
+	# d_value, d_digits = the digits word starts with, if what follows them isn't a digit (at most 4)
+	[Leading: ptr<u8> word: 0; u32 n: 0;]
+		d_value is 0;
+		d_digits is 0;
+		while d_digits < n and word:d_digits >= '0' and word:d_digits <= '9'
+			if d_digits >= 4
+				d_digits is 0;
+				return;
+			;;
+			d_value is d_value * 10 + word:d_digits - '0';
+			d_digits++;
+		;;
+	[end]
+
+	u32 c_hour: 0;
+	u32 c_minute: 0;
+	u32 c_second: 0;
+
+	# whether word is a time: 1 or 2 digits, :, 1 or 2, :, 1 or 2 (then anything not a digit)
+	[Clock: ptr<u8> word: 0; u32 n: 0;]
+		u32 i: 0;
+		u32 parts[3];
+		while u32 p: 0; p < 3; p++;
+			u32 value: 0;
+			u32 digits: 0;
+			while i < n and word:i >= '0' and word:i <= '9' and digits < 3
+				value is value * 10 + word:i - '0';
+				digits++;
+				i++;
+			;;
+			if digits < 1 or digits > 2 return false;
+			parts:p is value;
+			if p < 2
+				if i >= n or word:i is not ':' return false;
+				i++;
+			;;
+		;;
+		if i < n and word:i >= '0' and word:i <= '9' return false;
+		c_hour is parts:0;
+		c_minute is parts:1;
+		c_second is parts:2;
+	[end: true]
+
+	# 1 to 12 if word starts with a month's first three letters, else 0
+	[MonthOf: ptr<u8> word: 0;]
+		str names: 'janfebmaraprmayjunjulaugsepoctnovdec';
+		while u32 m: 0; m < 12; m++;
+			if (WireHttp.Lower: word:0) is names:(m * 3) as u32 and (WireHttp.Lower: word:1) is names:(m * 3 + 1) as u32 and (WireHttp.Lower: word:2) is names:(m * 3 + 2) as u32
+				return m + 1;
+			;;
+		;;
+	[end: 0]
+
+	# ---- keeping them
+
+	# target (size bytes) = the cookies that outlast the session, as text: its length, or -1 if it
+	# doesn't fit. Each is a line: domain, host only, path, Secure, HttpOnly, SameSite, expiry,
+	# creation, name and value, tab between, the value last (it may hold a tab)
+	[Save: ptr<WireJar> jar: 0; u64 now: 0; ptr<u8> target: 0; int size: 0;]
+		call Expire: jar now;
+		str top: '# netlib cookies 1\n';
+		int n: 0;
+		if top.len >= size return -1;
+		while int t: 0; t < top.len; t++;
+			target:t is top:t;
+		;;
+		n is top.len;
+		while u32 i: 0; i < jar.count; i++;
+			ptr<WireCookie> c: addr jar.list:i;
+			if c.expires is 0 continue;
+			str line: c.domain;
+			line++ '\t';
+			line++ c.host_only as int;
+			line++ '\t';
+			while u32 p: 0; p < c.path_length; p++;
+				line++ (c.data:(c.name_length + c.value_length + p)) as chr;
+			;;
+			line++ '\t';
+			line++ c.secure as int;
+			line++ '\t';
+			line++ c.http_only as int;
+			line++ '\t';
+			line++ c.same_site;
+			line++ '\t';
+			line++ c.expires;
+			line++ '\t';
+			line++ c.created;
+			line++ '\t';
+			while u32 k: 0; k < c.name_length; k++;
+				line++ c.data:k as chr;
+			;;
+			line++ '\t';
+			while u32 v: 0; v < c.value_length; v++;
+				line++ c.data:(c.name_length + v) as chr;
+			;;
+			line++ '\n';
+			if n + line.len >= size return -1;
+			while int b: 0; b < line.len; b++;
+				target:(n + b) is line:b;
+			;;
+			n++ line.len;
+		;;
+		target:n is 0;
+	[end: n]
+
+	# take back what Save made (length bytes): how many cookies came back (the expired ones don't)
+	[Load: ptr<WireJar> jar: 0; ptr<u8> data: 0; u32 length: 0; u64 now: 0;]
+		u32 loaded: 0;
+		u32 at_byte: 0;
+		while at_byte < length
+			u32 start: at_byte;
+			while at_byte < length and data:at_byte is not 10
+				at_byte++;
+			;;
+			u32 stop: at_byte;
+			at_byte++;
+			if stop is start or data:start is '#' continue;
+			# the ten fields: field_at, field_length
+			u32 f: 0;
+			u32 i: start;
+			while f < 10 and i <= stop
+				field_at:f is i;
+				if f is 9
+					i is stop;
+				;;
+				else
+					while i < stop and data:i is not 9
+						i++;
+					;;
+				;;
+				field_length:f is i - field_at:f;
+				f++;
+				i++;
+			;;
+			if f < 10 continue;
+			if field_length:0 is 0 or field_length:0 > 255 or field_length:2 > PATH_MAX or field_length:8 + field_length:9 > SIZE_MAX continue;
+			u64 expires: (Number: data 6);
+			if expires <= now continue;
+			if jar.count >= jar.room
+				u32 bigger: jar.room * 2;
+				if bigger < 32
+					bigger is 32;
+				;;
+				ptr<WireCookie> grown: new WireCookie[bigger];
+				if grown is 0 return loaded;
+				if jar.list is not 0
+					call Mem.Copy: grown as ptr<u8> jar.list as ptr<u8> jar.count * sizeof WireCookie;
+					free jar.list;
+				;;
+				jar.list is grown;
+				jar.room is bigger;
+			;;
+			u32 nl: field_length:8;
+			u32 vl: field_length:9;
+			u32 pl: field_length:2;
+			ptr<u8> made: new u8[nl + vl + pl + 1];
+			if made is 0 return loaded;
+			call Mem.Copy: made data + field_at:8 nl;
+			call Mem.Copy: made + nl data + field_at:9 vl;
+			call Mem.Copy: made + nl + vl data + field_at:2 pl;
+			ptr<WireCookie> c: addr jar.list:(jar.count);
+			call Mem.Fill: c as ptr<u8> 0 sizeof WireCookie;
+			c.data is made;
+			c.name_length is nl;
+			c.value_length is vl;
+			c.path_length is pl;
+			c.domain is '';
+			while u32 d: 0; d < field_length:0; d++;
+				c.domain++ (WireHttp.Lower: data:(field_at:0 + d)) as chr;
+			;;
+			c.host_only is ((Number: data 1) is 1);
+			c.secure is ((Number: data 3) is 1);
+			c.http_only is ((Number: data 4) is 1);
+			c.same_site is (Number: data 5) as u32;
+			if c.same_site > STRICT
+				c.same_site is UNSET;
+			;;
+			c.expires is expires;
+			if c.expires - now > (LONGEST as u64)
+				c.expires is now + (LONGEST as u64);
+			;;
+			c.created is (Number: data 7);
+			jar.order++;
+			c.order is jar.order;
+			c.used is jar.order;
+			jar.count++;
+			loaded++;
+			# a later line for the same cookie replaces an earlier one
+			int old: (Find: jar made nl addr c.domain c.host_only made + nl + vl pl);
+			if old >= 0 and old as u32 < jar.count - 1
+				call Remove: jar old as u32;
+				loaded--;
+			;;
+		;;
+		call Limit: jar '' now;
+	[end: loaded]
+
+	u32 field_at[10];
+	u32 field_length[10];
+
+	# field f of the line being loaded, as a number
+	[Number: ptr<u8> data: 0; u32 f: 0; : u64]
+		u64 value: 0;
+		while u32 i: 0; i < field_length:f and i < 20; i++;
+			u32 c: data:(field_at:f + i);
+			if c < '0' or c > '9' return 0;
+			value is value * 10 + (c - '0') as u64;
+		;;
+	[end: value]
+
+	# ---- sites and public suffixes
+
+	# give the Public Suffix List (its text, which must stay where it is): false if it can't be used
+	[Suffixes: ptr<u8> list: 0; u32 length: 0;]
+		call Index: list length false;
+	[end: table is not 0]
+
+	# whether two hosts are the same site: the same registrable domain (or the same address)
+	[SameSite: ptr<u8> a: 0; ptr<u8> b: 0;]
+		if (Address: a) or (Address: b) return (Same: a b);
+		u32 a_length: (WireHttp.Count: a);
+		u32 b_length: (WireHttp.Count: b);
+		u32 a_site: (SiteAt: a a_length);
+		u32 b_site: (SiteAt: b b_length);
+		if a_length - a_site is not b_length - b_site return false;
+	[end: (Mem.Equal: a + a_site b + b_site a_length - a_site)]
+
+	# where host's registrable domain starts (the public suffix and the label before it; all of
+	# host if it is no more than a suffix)
+	[SiteAt: ptr<u8> host: 0; u32 length: 0;]
+		u32 suffix: (SuffixAt: host length);
+		if suffix is 0 return 0;
+		u32 i: suffix - 1;                    # the dot before the suffix
+		while i > 0 and host:(i - 1) is not '.'
+			i--;
+		;;
+	[end: i]
+
+	# whether domain (length bytes) is a public suffix
+	[IsSuffix: ptr<u8> domain: 0; u32 length: 0;]
+	[end: (SuffixAt: domain length) is 0]
+
+	# where domain's public suffix starts: the longest rule that matches, an exception rule's
+	# suffix being the rule without its first label, and a host no rule matches having its last
+	# label as its suffix
+	[SuffixAt: ptr<u8> domain: 0; u32 length: 0;]
+		if table is 0
+			call Index: 0 0 true;
+		;;
+		u32 p: 0;
+		while p < length
+			# domain from p: an exception, a rule, or under a wildcard
+			if (Has: '!' domain + p length - p)
+				u32 next: p;
+				while next < length and domain:next is not '.'
+					next++;
+				;;
+				return next + 1;
+			;;
+			if (Has: '' domain + p length - p) return p;
+			u32 dot: p;
+			while dot < length and domain:dot is not '.'
+				dot++;
+			;;
+			if dot < length and (Has: '*.' domain + dot + 1 length - dot - 1) return p;
+			p is dot + 1;
+		;;
+		# the last label
+		u32 last: length;
+		while last > 0 and domain:(last - 1) is not '.'
+			last--;
+		;;
+	[end: last]
+
+	# whether prefix then text (length bytes) is a rule
+	[Has: ptr<u8> prefix: 0; ptr<u8> text: 0; u32 length: 0;]
+		if table is 0 or table_size is 0 return false;
+		u32 prefix_length: (WireHttp.Count: prefix);
+		u32 h: (Hash: prefix prefix_length text length);
+		u32 slot: h & (table_size - 1);
+		while u32 tries: 0; tries < table_size; tries++;
+			u32 entry: table:slot;
+			if entry is 0 return false;
+			ptr<u8> rule: rules + entry - 1;
+			u32 r: 0;
+			while rule:r is not 10 and rule:r is not 13 and rule:r is not 0 and rule:r is not ' ' and rule:r is not 9 and r < 256
+				r++;
+			;;
+			if r is prefix_length + length and (Mem.Equal: rule prefix prefix_length) and (Mem.Equal: rule + prefix_length text length)
+				return true;
+			;;
+			slot is (slot + 1) & (table_size - 1);
+		;;
+	[end: false]
+
+	# FNV-1a of prefix then text
+	[Hash: ptr<u8> prefix: 0; u32 prefix_length: 0; ptr<u8> text: 0; u32 length: 0;]
+		u32 h: 2166136261;
+		while u32 i: 0; i < prefix_length; i++;
+			h is (h ^ prefix:i) * 16777619;
+		;;
+		while u32 k: 0; k < length; k++;
+			h is (h ^ text:k) * 16777619;
+		;;
+	[end: h]
+
+	# the rules hashed: from list (the Public Suffix List's text), or the short list
+	[Index: ptr<u8> list: 0; u32 length: 0; bln short: false;]
+		if short
+			list is addr short_rules:0;
+			length is (WireHttp.Count: list);
+		;;
+		# a table twice the number of lines, a power of two
+		u32 lines: 1;
+		while u32 i: 0; i < length; i++;
+			if list:i is 10
+				lines++;
+			;;
+		;;
+		u32 size: 64;
+		while size < lines * 2
+			size is size * 2;
+		;;
+		ptr<u32> made: new u32[size];
+		if made is 0 return;
+		call Mem.Fill: made as ptr<u8> 0 size * 4;
+		if table is not 0
+			free table;
+		;;
+		table is made;
+		table_size is size;
+		rules is list;
+		rules_length is length;
+		short_list is short;
+		u32 at_byte: 0;
+		while at_byte < length
+			u32 start: at_byte;
+			while at_byte < length and list:at_byte is not 10
+				at_byte++;
+			;;
+			u32 stop: start;
+			while stop < at_byte and list:stop is not 13 and list:stop is not ' ' and list:stop is not 9
+				stop++;
+			;;
+			at_byte++;
+			if stop is start or list:start is '/' continue;    # (blank lines and comments)
+			u32 h: (Hash: 0 0 list + start stop - start);
+			u32 slot: h & (size - 1);
+			while table:slot is not 0
+				slot is (slot + 1) & (size - 1);
+			;;
+			table:slot is start + 1;
+		;;
+	[end]
+
+	# the short list: the commonest suffixes under a country's own (co.uk), and services that give
+	# each of their users a name of their own (github.io)
+	str short_rules: 'co.uk\norg.uk\nme.uk\nac.uk\ngov.uk\nltd.uk\nplc.uk\nnet.uk\nsch.uk\nnhs.uk\ncom.au\nnet.au\norg.au\nedu.au\ngov.au\nasn.au\nid.au\nco.nz\norg.nz\nnet.nz\ngovt.nz\nac.nz\ngeek.nz\nco.jp\nne.jp\nor.jp\nac.jp\ngo.jp\nco.kr\nor.kr\nne.kr\ngo.kr\nac.kr\ncom.cn\nnet.cn\norg.cn\ngov.cn\nedu.cn\ncom.tw\norg.tw\nnet.tw\nedu.tw\ngov.tw\ncom.hk\norg.hk\nnet.hk\nedu.hk\ngov.hk\ncom.sg\nedu.sg\norg.sg\ngov.sg\nco.in\nnet.in\norg.in\ngov.in\nac.in\nco.za\norg.za\ngov.za\nac.za\ncom.br\nnet.br\norg.br\ngov.br\ncom.mx\norg.mx\ngob.mx\ncom.ar\ngob.ar\ncom.tr\ngov.tr\nco.il\norg.il\nac.il\ncom.my\ncom.ph\nco.id\nco.th\ncom.vn\ncom.ua\ncom.pl\ncom.es\nco.at\nor.at\ncom.sa\ncom.eg\ncom.pk\ncom.ng\nco.ke\ngithub.io\ngitlab.io\nblogspot.com\nherokuapp.com\nappspot.com\nnetlify.app\nvercel.app\npages.dev\nworkers.dev\nweb.app\nfirebaseapp.com\nazurewebsites.net\ncloudfront.net\ns3.amazonaws.com\nfly.dev\nonrender.com\nglitch.me\nneocities.org\nreadthedocs.io\n';
+}

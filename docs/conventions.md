@@ -32,6 +32,7 @@ Add each new prefix here. It must not collide with a standard library name such 
 | editlib | `EditLib` | `Ed` |
 | vectorlib | `VectorLib` | `Vg` |
 | encodinglib | `EncodingLib` | `Enc` |
+| netlib | `NetLib` | `Wire` (`Net` is taken: PHI's `NetCalls`, `NetSystem`) |
 
 `Cores` is already a standard library class, so don't use that exact name in corelib.
 

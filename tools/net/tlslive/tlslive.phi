@@ -1,0 +1,150 @@
+# For check_tls.py: netlib's TLS 1.2 client against a real server.
+#   tlslive ADDRESS PORT NAME ROOT.DER RANDOM.BIN FALLBACK RECORD [PATH]
+# connects to ADDRESS (dotted) PORT, shakes hands for NAME, trusting the root ROOT.DER, with random
+# bytes taken in turn from RANDOM.BIN; FALLBACK is 1 when TLS 1.3 was tried first. Then it asks
+# for PATH (/ unless it's given) and reads the answer to its end. It prints what came of it, and writes every byte it sent
+# to RECORD.sent and every byte it got to RECORD.got, for test_tls's cases.
+use netlib;
+use net.sockets;
+use user.text;
+use crypto.x509;
+use data.crc32;
+
+phi.TlsLive:Program
+{
+	ptr<u8> pool: 0;
+	int pool_size: 0;
+	int pool_at: 0;
+	ptr<u8> sent: 0;
+	int sent_length: 0;
+	ptr<u8> got: 0;
+	int got_length: 0;
+	ptr<u8> answer: 0;
+	int answer_length: 0;
+	const int ANSWER_MAX: 4000000;
+
+	# the random hook: bytes from RANDOM.BIN, in turn
+	[Fill: ptr<u8> buffer: 0; u32 length: 0;]
+		while u32 i: 0; i < length; i++;
+			buffer:i is pool:(pool_at % pool_size);
+			pool_at++;
+		;;
+	[end]
+
+	# send what s has; false if the connection broke
+	[Flush: int c: 0; ptr<WireTlsSession> s: 0;]
+		u32 n: (WireTls.Pending: s);
+		if n is 0 return true;
+		call Mem: sent sent_length (WireTls.Outgoing: s) n;
+		sent_length++ n;
+		if (Tcp.Write: c (WireTls.Outgoing: s) n) is not n as int return false;
+		call WireTls.Sent: s n;
+	[end: true]
+
+	# take what comes from the server; false once nothing more does
+	[Take: int c: 0; ptr<WireTlsSession> s: 0;]
+		int n: (Tcp.Read: c (WireTls.Room: s) s.room);
+		if n <= 0 return false;
+		call Mem: got got_length (WireTls.Room: s) n as u32;
+		got_length++ n;
+		bln going: (WireTls.Received: s n as u32);
+	[end: true]
+
+	[Mem: ptr<u8> to: 0; int at_byte: 0; ptr<u8> from: 0; u32 n: 0;]
+		while u32 i: 0; i < n; i++;
+			to:(at_byte + i) is from:i;
+		;;
+	[end]
+
+	str words[atmost 8];
+
+	[Args]
+		ptr<u8> a: (OS.Arguments);
+		str word: '';
+		int i: 0;
+		while true
+			chr ch: a:i as chr;
+			if ch is 0 or ch is ' '
+				if word.len > 0 and words.len < 8
+					words++ word;
+				;;
+				word is '';
+				if ch is 0 break;
+			;;
+			else
+				word++ ch;
+			;;
+			i++;
+		;;
+	[end]
+
+	call Args;
+	if words.len < 7
+		log 'tlslive ADDRESS PORT NAME ROOT.DER RANDOM.BIN FALLBACK RECORD\n';
+		exit 1;
+	;;
+	int root_size: (OS.FileSize: words:3);
+	ptr<u8> root: new u8[root_size];
+	int read_root: (OS.ReadFile: words:3 root root_size);
+	call X509.Trust: root root_size as u32;
+	pool_size is (OS.FileSize: words:4);
+	pool is new u8[pool_size];
+	int read_pool: (OS.ReadFile: words:4 pool pool_size);
+	sent is new u8[100000];
+	got is new u8[5000000];
+	answer is new u8[ANSWER_MAX + 1];
+	WireTls.random is addr Fill;
+
+	int c: (Tcp.Connect: (Net.ParseIp: words:0) (Text.ToNumber: words:1) as u32);
+	if c < 0
+		log 'could not connect\n';
+		exit 1;
+	;;
+	ptr<WireTlsSession> s: new WireTlsSession;
+	bln started: (WireTls.Client: s words:2 (Text.ToNumber: words:5) is 1);
+	while not s.connected and not s.failed
+		if not (Flush: c s) break;
+		if s.connected or s.failed break;
+		if not (Take: c s) break;
+	;;
+	bln flushed: (Flush: c s);
+	if not s.connected
+		log 'failed: ' addr s.error '\n';
+	;;
+	else
+		str path: '/';
+		if words.len > 7
+			path is words:7;
+		;;
+		str request: ('GET ' path ' HTTP/1.0\r\nHost: ' words:2 '\r\n\r\n');
+		int queued: (WireTls.Write: s addr request:0 request.len as u32);
+		flushed is (Flush: c s);
+		while true
+			int n: (WireTls.Read: s answer + answer_length (ANSWER_MAX - answer_length) as u32);
+			if n < 0 break;
+			if n is 0
+				if not (Take: c s) break;
+				flushed is (Flush: c s);
+			;;
+			answer_length++ n;
+			if answer_length >= ANSWER_MAX break;
+		;;
+		answer:answer_length is 0;
+		u32 crc: (Crc32.Of: answer answer_length as u32);
+		int w0: (OS.WriteFile: (words:6 '.answer') answer answer_length as u32);
+		int line: 0;
+		while line < answer_length and answer:line is not 13
+			line++;
+		;;
+		answer:line is 0;
+		log 'connected: suite ' s.suite ' group ' s.group ' ems ' s.ems '; ' answer ' (' answer_length ' bytes, crc ' crc ')\n';
+		if s.failed
+			log 'then failed: ' addr s.error '\n';
+		;;
+	;;
+	str prefix: words:6;
+	int w1: (OS.WriteFile: (prefix '.sent') sent sent_length as u32);
+	int w2: (OS.WriteFile: (prefix '.got') got got_length as u32);
+
+	exit 0;
+}

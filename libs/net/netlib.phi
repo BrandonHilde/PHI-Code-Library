@@ -1,0 +1,21 @@
+# netlib: what a web client needs between its connections and its pages: HTTP/1.1 messages
+# (requests made, answers read, bodies unpacked), cookies, and TLS 1.2 for servers without 1.3.
+# It opens no connections itself: the program moves the bytes (conventions.md).
+#
+#   phi build netlib.phi --library     # netlib.philib, with corelib.philib beside it
+#
+# README.md says which names are its API.
+
+use corelib;
+use netlib.tls;
+use netlib.http;
+use netlib.cookies;
+
+phi.NetLib:Library
+{
+	const int VERSION: 1;
+
+	# Call this once, before anything else in the library.
+	[Start]
+	[end]
+}

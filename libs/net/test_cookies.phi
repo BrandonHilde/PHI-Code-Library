@@ -1,0 +1,206 @@
+# netlib's cookies, every day: each rule of RFC 6265 (and 6265bis, as browsers have it) that the
+# jar holds to, each by a case worked out from the standard: paths and domains, public suffixes,
+# Secure, HttpOnly, SameSite, the prefixes, expiry by Max-Age and Expires (with the date forms
+# servers write, their times from Python's calendar.timegm), order, saving and loading, the limits.
+use netlib;
+use memory.mem;
+
+phi.TestCookies:Program
+{
+	int right: 0;
+	int count: 0;
+	u8 buffer[8192];
+	WireJar jar;
+	u64 now: 1763700000;                  # 2025-11-21
+
+	[Check: ptr<u8> name: 0; bln good: false; ptr<u8> got: 0;]
+		count++;
+		if good
+			right++;
+		;;
+		else
+			log 'WRONG ' name ': ' got '\n';
+		;;
+	[end]
+
+	[Equal: ptr<u8> a: 0; ptr<u8> b: 0;]
+		u32 i: 0;
+		while a:i is b:i
+			if a:i is 0 return true;
+			i++;
+		;;
+	[end: false]
+
+	# take header from url's answer; it should be kept or not
+	[Set: ptr<u8> url: 0; ptr<u8> header: 0; bln keep: true; bln script: false;]
+		ptr<WireTarget> t: new WireTarget;
+		bln split: (WireHttp.Split: url t);
+		bln kept: (WireCookies.Take: addr jar t header now script);
+		str said: ('kept ' kept ': ' WireCookies.why);
+		str name: (url ' Set-Cookie: ' header);
+		if script
+			name is (url ' document.cookie = ' header);
+		;;
+		call Check: addr name:0 kept is keep addr said:0;
+		free t;
+	[end]
+
+	# the Cookie header for url should be want
+	[Get: ptr<u8> url: 0; u32 context: 0; ptr<u8> want: 0; bln script: false;]
+		ptr<WireTarget> t: new WireTarget;
+		bln split: (WireHttp.Split: url t);
+		int n: (WireCookies.Header: addr jar t now context script addr buffer 8192);
+		str name: ('Cookie for ' url ' (' context ')');
+		if script
+			name is ('document.cookie for ' url);
+		;;
+		str said: ('"' addr buffer '", not "' want '"');
+		call Check: addr name:0 (Equal: addr buffer want) addr said:0;
+		free t;
+	[end]
+
+	[Date: ptr<u8> text: 0; bln ok: false; u64 want: 0;]
+		u64 got: (WireCookies.Date: text (WireHttp.Count: text));
+		str said: (WireCookies.date_ok ' ' got);
+		call Check: text WireCookies.date_ok is ok and (not ok or got is want) addr said:0;
+	[end]
+
+	[Sites: ptr<u8> a: 0; ptr<u8> b: 0; bln same: false;]
+		str name: (a ' and ' b ' are the same site: ' same);
+		call Check: addr name:0 (WireCookies.SameSite: a b) is same 'not so';
+	[end]
+
+	call NetLib.Start;
+	call Mem.Fill: addr jar as ptr<u8> 0 sizeof WireJar;
+	u32 SAME: WireCookies.SAME_SITE;
+	u32 TOP: WireCookies.CROSS_TOP;
+	u32 CROSS: WireCookies.CROSS;
+
+	# paths
+	call Set: 'https://example.com/a/b' 'a=1' true false;
+	call Get: 'https://example.com/a/b' SAME 'a=1' false;
+	call Get: 'https://example.com/a' SAME 'a=1' false;
+	call Get: 'https://example.com/' SAME '' false;
+	call Get: 'https://example.com/ab' SAME '' false;
+	call Set: 'https://example.com/a/b' 'b=2; Path=/' true false;
+	call Get: 'https://example.com/a/x?q=1' SAME 'a=1; b=2' false;
+	call Get: 'https://sub.example.com/' SAME '' false;
+
+	# domains
+	call Set: 'https://www.example.com/' 'c=3; Domain=example.com' true false;
+	call Get: 'https://sub.example.com/' SAME 'c=3' false;
+	call Get: 'https://example.com/' SAME 'b=2; c=3' false;
+	call Set: 'https://www.example.com/' 'd=4; domain=.EXAMPLE.com' true false;
+	call Get: 'https://x.example.com/' SAME 'c=3; d=4' false;
+	call Set: 'https://www.example.com/' 'e=5; Domain=other.com' false false;
+	call Set: 'https://www.example.com/' 'f=6; Domain=com' false false;
+	call Set: 'https://shop.foo.co.uk/' 'g=7; Domain=co.uk' false false;
+	call Set: 'https://shop.foo.co.uk/' 'g=7; Domain=foo.co.uk' true false;
+	call Get: 'https://www.foo.co.uk/' SAME 'g=7' false;
+	call Set: 'https://a.github.io/' 'h=8; Domain=github.io' false false;
+	call Set: 'https://1.2.3.4/' 'ip=1; Domain=2.3.4' false false;
+	call Set: 'https://1.2.3.4/' 'ip=1' true false;
+	call Get: 'https://1.2.3.4/' SAME 'ip=1' false;
+
+	# Secure and HttpOnly
+	call Set: 'http://plain.test/' 's=1; Secure' false false;
+	call Set: 'https://plain.test/' 's=1; Secure' true false;
+	call Get: 'http://plain.test/' SAME '' false;
+	call Get: 'https://plain.test/' SAME 's=1' false;
+	call Set: 'http://plain.test/' 's=2' false false;
+	call Set: 'https://plain.test/' 'h=1; HttpOnly' true false;
+	call Get: 'https://plain.test/' SAME 's=1; h=1' false;
+	call Get: 'https://plain.test/' SAME 's=1' true;
+	call Set: 'https://plain.test/' 'h=2' false true;
+	call Set: 'https://plain.test/' 'j=3; HttpOnly' false true;
+	call Set: 'https://plain.test/' 'k=4' true true;
+	call Get: 'https://plain.test/' SAME 's=1; k=4' true;
+	call Set: 'https://plain.test/' 'k=4; Max-Age=0' false false;
+	call Get: 'https://plain.test/' SAME 's=1' true;
+
+	# expiry
+	call Set: 'https://dates.test/' 'old=1; Expires=Wed, 21 Oct 2015 07:28:00 GMT' false false;
+	call Set: 'https://dates.test/' 'new=1; Expires=Fri, 01 Jan 2027 00:00:00 GMT' true false;
+	call Set: 'https://dates.test/' 'both=1; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Max-Age=100' true false;
+	call Set: 'https://dates.test/' 'gone=1; Max-Age=-5' false false;
+	call Set: 'https://dates.test/' 'odd=1; Max-Age=12x' true false;
+	call Get: 'https://dates.test/' SAME 'new=1; both=1; odd=1' false;
+	call Date: 'Sun, 06 Nov 1994 08:49:37 GMT' true 784111777;
+	call Date: 'Sunday, 06-Nov-94 08:49:37 GMT' true 784111777;
+	call Date: 'Sun Nov  6 08:49:37 1994' true 784111777;
+	call Date: 'Sat, 29 Feb 2020 23:59:59 GMT' true 1583020799;
+	call Date: 'Thu, 01 Jan 1970 00:00:00 GMT' true 1;
+	call Date: 'Mon, 01 Jan 1601 00:00:00 GMT' true 1;
+	call Date: 'Mon, 30 Feb 2026 10:00:00 GMT' false 0;
+	call Date: 'Mon, 01 Jan 1600 10:00:00 GMT' false 0;
+	call Date: '01 Jan 2026' false 0;
+	call Date: 'Fri, 01 Jan 2027 24:00:00 GMT' false 0;
+
+	# SameSite
+	call Set: 'https://site.test/' 'st=1; SameSite=Strict' true false;
+	call Set: 'https://site.test/' 'lx=2; SameSite=Lax' true false;
+	call Set: 'https://site.test/' 'un=3' true false;
+	call Set: 'https://site.test/' 'no=4; SameSite=None; Secure' true false;
+	call Set: 'https://site.test/' 'nn=5; SameSite=None' false false;
+	call Get: 'https://site.test/' SAME 'st=1; lx=2; un=3; no=4' false;
+	call Get: 'https://site.test/' TOP 'lx=2; un=3; no=4' false;
+	call Get: 'https://site.test/' CROSS 'no=4' false;
+	call Sites: 'www.example.co.uk' 'shop.example.co.uk' true;
+	call Sites: 'a.github.io' 'b.github.io' false;
+	call Sites: 'example.com' 'www.example.com' true;
+	call Sites: 'example.com' 'example.org' false;
+	call Sites: '1.2.3.4' '1.2.3.4' true;
+	call Sites: '1.2.3.4' '1.2.3.5' false;
+
+	# prefixes
+	call Set: 'https://pre.test/' '__Secure-a=1' false false;
+	call Set: 'https://pre.test/' '__Secure-a=1; Secure' true false;
+	call Set: 'http://pre.test/' '__Secure-e=1; Secure' false false;
+	call Set: 'https://pre.test/' '__Host-b=1; Secure; Path=/' true false;
+	call Set: 'https://pre.test/' '__Host-c=1; Secure; Path=/; Domain=pre.test' false false;
+	call Set: 'https://pre.test/x/y' '__Host-d=1; Secure' false false;
+
+	# order, and names
+	call Set: 'https://order.test/' 'a=1' true false;
+	call Set: 'https://order.test/' 'b=2' true false;
+	call Set: 'https://order.test/' 'a=3' true false;
+	call Set: 'https://order.test/' 'justvalue' true false;
+	call Set: 'https://order.test/' ' = ' false false;
+	call Get: 'https://order.test/' SAME 'a=3; b=2; justvalue' false;
+
+	# saving and loading: only what outlasts the session comes back
+	int saved: (WireCookies.Save: addr jar now addr buffer 8192);
+	ptr<u8> kept: new u8[saved + 1];
+	call Mem.Copy: kept addr buffer saved as u32;
+	call WireCookies.Free: addr jar;
+	call Mem.Fill: addr jar as ptr<u8> 0 sizeof WireJar;
+	u32 loaded: (WireCookies.Load: addr jar kept saved as u32 now);
+	str said: ('loaded ' loaded);
+	call Check: 'cookies loaded (not the session ones)' loaded is 2 addr said:0;
+	call Get: 'https://dates.test/' SAME 'new=1; both=1' false;
+	call Get: 'https://example.com/' SAME '' false;
+	call Set: 'https://dates.test/' 'session=1' true false;
+	call Get: 'https://dates.test/' SAME 'new=1; both=1; session=1' false;
+	call WireCookies.EndSession: addr jar;
+	call Get: 'https://dates.test/' SAME 'new=1; both=1' false;
+
+	# the limit a domain: the least recently sent go
+	while int i: 0; i < 200; i++;
+		str one: ('n' i '=' i);
+		ptr<WireTarget> t: new WireTarget;
+		bln split: (WireHttp.Split: 'https://many.test/' t);
+		bln took: (WireCookies.Take: addr jar t addr one:0 now false);
+		free t;
+	;;
+	str counted: ('the jar holds ' jar.count);
+	call Check: 'at most 180 a domain' jar.count is 182 addr counted:0;
+	ptr<WireTarget> m: new WireTarget;
+	bln split2: (WireHttp.Split: 'https://many.test/' m);
+	int n: (WireCookies.Header: addr jar m now SAME false addr buffer 8192);
+	str first: ('"' addr buffer:0 '"');
+	call Check: 'the oldest went first' (Mem.Equal: addr buffer 'n20=20; n21=21; ' 16) addr first:0;
+	free m;
+
+	log right ' of ' count ' as they should be\n';
+	call WireCookies.Free: addr jar;
+}

@@ -1,0 +1,180 @@
+# netlib's TLS 1.2 client, every day, with no network: the exchanges in tests/tls/cases.bin, each
+# recorded by tools/net/check_tls.py between this client and OpenSSL's server (every suite and curve,
+# each kind of signature, with and without the extended master secret, a server asking for a
+# client certificate; and the wrong name, an untrusted root, a TLS 1.3-only server and TLS 1.3's
+# downgrade mark). Given the same random bytes, the client must send exactly what it sent then, and
+# the server's bytes, fed in pieces of 1,000, must give the same answer, or fail the same way.
+use netlib;
+use crypto.x509;
+use data.crc32;
+
+phi.TestTls:Program
+{
+	ptr<u8> all: 0;
+	u32 at_byte: 0;
+	ptr<u8> pool: 0;
+	u32 pool_size: 0;
+	u32 pool_at: 0;
+	ptr<u8> made: 0;            # what the client sent this time
+	u32 made_length: 0;
+	ptr<u8> answer: 0;
+	u32 answer_length: 0;
+
+	[Fill: ptr<u8> buffer: 0; u32 length: 0;]
+		while u32 i: 0; i < length; i++;
+			buffer:i is pool:(pool_at % pool_size);
+			pool_at++;
+		;;
+	[end]
+
+	[U32: : u32]
+		u32 v: (all:at_byte as u32) | ((all:(at_byte + 1) as u32) << 8) | ((all:(at_byte + 2) as u32) << 16) | ((all:(at_byte + 3) as u32) << 24);
+		at_byte++ 4;
+	[end: v]
+
+	[Byte: : u32]
+		u32 v: all:at_byte;
+		at_byte++;
+	[end: v]
+
+	[Text: : str]
+		str t: '';
+		u32 n: (Byte);
+		while u32 i: 0; i < n; i++;
+			t++ all:(at_byte + i) as chr;
+		;;
+		at_byte++ n;
+	[end: t]
+
+	[Flush: ptr<WireTlsSession> s: 0;]
+		u32 n: (WireTls.Pending: s);
+		if n > 0 and made_length + n <= 200000
+			ptr<u8> from: (WireTls.Outgoing: s);
+			while u32 i: 0; i < n; i++;
+				made:(made_length + i) is from:i;
+			;;
+			made_length++ n;
+		;;
+		call WireTls.Sent: s n;
+	[end]
+
+	[Drain: ptr<WireTlsSession> s: 0;]
+		while answer_length < 100000
+			int n: (WireTls.Read: s answer + answer_length 100000 - answer_length);
+			if n <= 0 break;
+			answer_length++ n as u32;
+		;;
+	[end]
+
+	call NetLib.Start;
+	int size: (OS.FileSize: 'tests/tls/cases.bin');
+	all is new u8[size];
+	int read: (OS.ReadFile: 'tests/tls/cases.bin' all size);
+	made is new u8[200000];
+	answer is new u8[100001];
+	WireTls.random is addr Fill;
+	u32 count: (U32);
+	pool_size is (U32);
+	pool is all + at_byte;
+	at_byte++ pool_size;
+	int right: 0;
+	while u32 c: 0; c < count; c++;
+		str name: (Text);
+		str host: (Text);
+		bln fallback: (Byte) is 1;
+		X509.now is (U32);
+		u32 root_length: (U32);
+		ptr<u8> root: all + at_byte;
+		at_byte++ root_length;
+		u32 sent_length: (U32);
+		ptr<u8> sent: all + at_byte;
+		at_byte++ sent_length;
+		u32 got_length: (U32);
+		ptr<u8> got: all + at_byte;
+		at_byte++ got_length;
+		bln connects: (Byte) is 1;
+		u32 want_length: (U32);
+		u32 want_crc: (U32);
+		str error: (Text);
+
+		call X509.Untrust;
+		bln trusted: (X509.Trust: root root_length);
+		pool_at is 0;
+		made_length is 0;
+		answer_length is 0;
+		ptr<WireTlsSession> s: new WireTlsSession;
+		bln started: (WireTls.Client: s addr host:0 fallback);
+		bln asked: false;
+		u32 fed: 0;
+		while not s.failed
+			call Flush: s;
+			if s.connected and not asked
+				str request: ('GET / HTTP/1.0\r\nHost: ' host '\r\n\r\n');
+				int queued: (WireTls.Write: s addr request:0 request.len as u32);
+				call Flush: s;
+				asked is true;
+			;;
+			call Drain: s;
+			if fed >= got_length break;
+			u32 n: got_length - fed;
+			if n > 1000
+				n is 1000;
+			;;
+			if n > s.room
+				n is s.room;
+			;;
+			ptr<u8> room: (WireTls.Room: s);
+			while u32 i: 0; i < n; i++;
+				room:i is got:(fed + i);
+			;;
+			fed++ n;
+			bln going: (WireTls.Received: s n);
+		;;
+		call Flush: s;
+		call Drain: s;
+		bln same_sent: made_length is sent_length;
+		if same_sent
+			while u32 k: 0; k < sent_length; k++;
+				if made:k is not sent:k
+					same_sent is false;
+					break;
+				;;
+			;;
+		;;
+		bln good: false;
+		str how: '';
+		if connects
+			u32 crc: (Crc32.Of: answer answer_length);
+			good is same_sent and asked and answer_length is want_length and crc is want_crc;
+			how is ('connected, ' answer_length ' bytes of answer');
+		;;
+		else
+			str why: addr s.error;
+			good is same_sent and s.failed and (Starts: why error);
+			how is ('refused: ' error);
+		;;
+		if not same_sent
+			how++ (' (but sent ' made_length ' bytes, not the ' sent_length ' it sent before)');
+		;;
+		if not good
+			how++ (' -- got: connected ' s.connected ' failed ' s.failed ' ' addr s.error ', ' answer_length ' bytes');
+		;;
+		if good
+			right++;
+			log name ': ' how '\n';
+		;;
+		else
+			log 'WRONG ' name ': ' how '\n';
+		;;
+		call WireTls.Free: s;
+		free s;
+	;;
+	log right ' of ' count ' exchanges as before\n';
+
+	[Starts: str text: ''; str start: '';]
+		if text.len < start.len return false;
+		while int i: 0; i < start.len; i++;
+			if text:i is not start:i return false;
+		;;
+	[end: true]
+}

@@ -1,0 +1,929 @@
+# netlib's HTTP/1.1 (RFC 9110, 9112) for a client: an address split into where to connect and
+# what to ask, a request's head written, an answer read as its bytes come (the status, the headers,
+# a body sized, chunked or ending when the connection does), and its body unpacked (gzip, deflate,
+# Brotli). It moves no bytes itself: the program connects, sends, and hands over what comes back.
+#
+#   WireTarget t;                                        # (about 2.3 KB: new one, in a method)
+#   if (WireHttp.Split: 'https://example.com/a?b' addr t)  # t.secure, t.host, t.port, t.path
+#       int n: (WireHttp.Request: buffer 4096 'GET' addr t extra 0);   # the head to send: n bytes
+#   ;;
+#   WireAnswer a;
+#   call WireHttp.Begin: addr a false 8000000;           # false: not a HEAD; the most a body may be
+#   while not a.done and not a.failed
+#       ... got bytes from the connection: u32 used: (WireHttp.Take: addr a bytes got);
+#       ... or it closed: call WireHttp.Ended: addr a;
+#   ;;
+#   # a.status; (WireHttp.Header: addr a 'Content-Type' target size); a.keep: the connection may be used again
+#   bln ok: (WireHttp.Unpack: addr a);                   # the body as it was before Content-Encoding
+#   # a.body, a.body_length
+#   call WireHttp.Free: addr a;
+#
+# An answer's 1xx answers before it (100 Continue, 103 Early Hints) are passed over. A body is
+# chunked (Transfer-Encoding), or as long as Content-Length says, or runs to the end of the
+# connection; HEAD, 204 and 304 have none. Lengths that disagree, a chunk size that isn't hex, a
+# body past the most it may be, headers of more than 64 KB, or an answer cut short make it fail,
+# with a.error saying why. Unpack takes gzip (x-gzip), deflate (zlib, or bare DEFLATE as some servers
+# send), br (once the program has given corelib Brotli's dictionary: WireHttp.brotli says so, and
+# Request only offers br then), and identity, several in a row as Content-Encoding lists them.
+#
+# Resolve makes a Location header's address whole, against the one asked for (RFC 3986 5.2).
+
+use corelib;
+use memory.mem;
+
+# where an address says to go
+struct.WireTarget
+{
+	bln secure;                 # https
+	u32 port;
+	str host: [255];            # lower case; an IPv6 address without its brackets
+	str path: [2047];           # the path and query, / at least (no fragment)
+}
+
+# an answer, as it comes
+struct.WireAnswer
+{
+	int status;
+	bln head_done;              # the status line and headers have come
+	bln done;                   # the whole answer has
+	bln failed;
+	str error: [120];
+	bln keep;                   # the connection may carry another request after this answer
+	bln no_body;                # a HEAD's answer (Begin's head)
+	bln http10;                 # the server speaks HTTP/1.0
+	int framing;                # WireHttp.SIZED, CHUNKED or TO_END
+	u64 left;                   # what's left of the length, or of this chunk
+	int chunk;                  # where in a chunked body: WireHttp.CHUNK_SIZE, CHUNK_DATA, CHUNK_END, TRAILER
+	u32 chunk_line;             # bytes of the chunk-size or trailer line so far
+	bln chunk_digits;           # the size has had a digit
+	bln chunk_extension;        # past the size, in an extension (;...)
+	ptr<u8> head;               # the status line and headers as they came, with a zero after
+	u32 head_length;
+	u32 head_room;
+	ptr<u8> body;               # the body (before Unpack, as it came)
+	u32 body_length;
+	u32 body_room;
+	u32 body_max;               # the most it may be
+}
+
+phi.WireHttp:Library
+{
+	const int SIZED: 1;
+	const int CHUNKED: 2;
+	const int TO_END: 3;
+
+	const int CHUNK_SIZE: 0;
+	const int CHUNK_DATA: 1;
+	const int CHUNK_END: 2;
+	const int TRAILER: 3;
+
+	const u32 HEAD_MAX: 65536;
+	const u32 UNPACK_MAX: 67108864;       # the most a body may unpack to: 64 MB
+
+	bln brotli: false;                    # corelib has Brotli's dictionary: br may be offered
+	str agent: 'PHI';                     # what User-Agent says
+
+	# ---- addresses
+
+	# t = where url goes; false if it isn't http:// or https:// with a host, or doesn't fit
+	[Split: ptr<u8> url: 0; ptr<WireTarget> t: 0;]
+		u32 i: 0;
+		if (StartsNoCase: url 'https://')
+			t.secure is true;
+			t.port is 443;
+			i is 8;
+		;;
+		elif (StartsNoCase: url 'http://')
+			t.secure is false;
+			t.port is 80;
+			i is 7;
+		;;
+		else
+			return false;
+		;;
+		# user:password@ is passed over (an address shouldn't have it, and nothing is sent of it)
+		u32 end_at: i;
+		while url:end_at is not 0 and url:end_at is not '/' and url:end_at is not '?' and url:end_at is not '#'
+			end_at++;
+		;;
+		u32 k: i;
+		while k < end_at
+			if url:k is '@'
+				i is k + 1;
+			;;
+			k++;
+		;;
+		t.host is '';
+		if url:i is '['
+			i++;
+			while i < end_at and url:i is not ']'
+				if t.host.len >= t.host.max return false;
+				t.host++ (Lower: url:i) as chr;
+				i++;
+			;;
+			if i >= end_at return false;
+			i++;
+		;;
+		else
+			while i < end_at and url:i is not ':'
+				if t.host.len >= t.host.max return false;
+				t.host++ (Lower: url:i) as chr;
+				i++;
+			;;
+		;;
+		if t.host.len is 0 return false;
+		if i < end_at and url:i is ':'
+			i++;
+			u32 port: 0;
+			bln digits: false;
+			while i < end_at
+				if url:i < '0' or url:i > '9' return false;
+				port is port * 10 + url:i - '0';
+				if port > 65535 return false;
+				digits is true;
+				i++;
+			;;
+			if digits
+				t.port is port;
+			;;
+		;;
+		t.path is '';
+		if url:i is not '/'
+			t.path is '/';
+		;;
+		while url:i is not 0 and url:i is not '#'
+			if t.path.len >= t.path.max return false;
+			t.path++ url:i as chr;
+			i++;
+		;;
+	[end: true]
+
+	# target (max bytes, with a zero after) = location made whole against base, the address it
+	# came from: its length, or -1 if it doesn't fit
+	[Resolve: ptr<u8> base: 0; ptr<u8> location: 0; ptr<u8> target: 0; u32 max: 0;]
+		# a scheme: letters, digits, + - . then a colon, before any / ? #
+		u32 i: 0;
+		bln scheme: false;
+		while location:i is not 0
+			u32 c: location:i;
+			if c is ':'
+				scheme is i > 0;
+				break;
+			;;
+			if not ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (i > 0 and ((c >= '0' and c <= '9') or c is '+' or c is '-' or c is '.')))
+				break;
+			;;
+			i++;
+		;;
+		if scheme
+			return (Clean: location 0 target max);
+		;;
+		# the base's scheme (up to its colon), and where its authority ends
+		u32 colon: 0;
+		while base:colon is not 0 and base:colon is not ':'
+			colon++;
+		;;
+		if base:colon is 0 return -1;
+		if location:0 is '/' and location:1 is '/'
+			return (Join: base colon + 1 location '' target max);
+		;;
+		u32 path_at: colon + 1;
+		if base:path_at is '/' and base:(path_at + 1) is '/'
+			path_at++ 2;
+			while base:path_at is not 0 and base:path_at is not '/' and base:path_at is not '?' and base:path_at is not '#'
+				path_at++;
+			;;
+		;;
+		if location:0 is '/'
+			return (Join: base path_at location '' target max);
+		;;
+		# the base without its fragment, and without its query if location has a path
+		u32 query_at: path_at;
+		while base:query_at is not 0 and base:query_at is not '?' and base:query_at is not '#'
+			query_at++;
+		;;
+		if location:0 is 0
+			u32 whole: query_at;
+			while base:whole is not 0 and base:whole is not '#'
+				whole++;
+			;;
+			return (Join: base whole '' '' target max);
+		;;
+		if location:0 is '#'
+			u32 whole2: query_at;
+			while base:whole2 is not 0 and base:whole2 is not '#'
+				whole2++;
+			;;
+			return (Join: base whole2 location '' target max);
+		;;
+		if location:0 is '?'
+			return (Join: base query_at location '' target max);
+		;;
+		# beside the base's path: up to its last /
+		u32 last: path_at;
+		bln slash: false;
+		while u32 k: path_at; k < query_at; k++;
+			if base:k is '/'
+				last is k + 1;
+				slash is true;
+			;;
+		;;
+		if not slash
+			return (Join: base path_at '/' location target max);
+		;;
+	[end: (Join: base last location '' target max)]
+
+	# target = the first keep bytes of base, then more and rest, with its dot segments taken out
+	[Join: ptr<u8> base: 0; u32 keep: 0; ptr<u8> more: 0; ptr<u8> rest: 0; ptr<u8> target: 0; u32 max: 0;]
+		if keep + (Count: more) + (Count: rest) + 1 > max return -1;
+		u32 n: 0;
+		while n < keep
+			target:n is base:n;
+			n++;
+		;;
+		u32 i: 0;
+		while more:i is not 0
+			target:n is more:i;
+			n++;
+			i++;
+		;;
+		i is 0;
+		while rest:i is not 0
+			target:n is rest:i;
+			n++;
+			i++;
+		;;
+		target:n is 0;
+	[end: (Clean: target 1 target max)]
+
+	# target = url with the dot segments of its path taken out (RFC 3986 5.2.4); url may be target
+	# (whole is 1 then, and it's done in place)
+	[Clean: ptr<u8> url: 0; u32 whole: 0; ptr<u8> target: 0; u32 max: 0;]
+		u32 length: (Count: url);
+		if length + 1 > max return -1;
+		# where the path starts and ends
+		u32 path_at: 0;
+		while path_at < length and url:path_at is not ':'
+			path_at++;
+		;;
+		if path_at >= length
+			path_at is 0;
+		;;
+		else
+			path_at++;
+		;;
+		if url:path_at is '/' and url:(path_at + 1) is '/'
+			path_at++ 2;
+			while path_at < length and url:path_at is not '/' and url:path_at is not '?' and url:path_at is not '#'
+				path_at++;
+			;;
+		;;
+		u32 path_end: path_at;
+		while path_end < length and url:path_end is not '?' and url:path_end is not '#'
+			path_end++;
+		;;
+		# the result's path is built as segments go: n is its length
+		u32 n: path_at;
+		if whole is 0
+			while u32 k: 0; k < path_at; k++;
+				target:k is url:k;
+			;;
+		;;
+		u32 i: path_at;
+		while i < path_end
+			# a segment: from i (at a / or the start) to the next /
+			u32 next: i;
+			if url:next is '/'
+				next++;
+			;;
+			while next < path_end and url:next is not '/'
+				next++;
+			;;
+			u32 from: i;
+			if url:from is '/'
+				from++;
+			;;
+			u32 size: next - from;
+			bln last: next >= path_end;
+			if size is 1 and url:from is '.'
+				if last
+					target:n is '/';
+					n++;
+				;;
+			;;
+			elif size is 2 and url:from is '.' and url:(from + 1) is '.'
+				# up one: the last segment and the / before it go
+				while n > path_at and target:(n - 1) is not '/'
+					n--;
+				;;
+				if n > path_at
+					n--;
+				;;
+				if last
+					target:n is '/';
+					n++;
+				;;
+			;;
+			else
+				while u32 k2: i; k2 < next; k2++;
+					target:n is url:k2;
+					n++;
+				;;
+			;;
+			i is next;
+		;;
+		while u32 k3: path_end; k3 < length; k3++;
+			target:n is url:k3;
+			n++;
+		;;
+		target:n is 0;
+	[end: n as int]
+
+	# ---- a request
+
+	# target = a request's head (verb t.path HTTP/1.1, Host, User-Agent, Accept-Encoding, Connection,
+	# Content-Length when length isn't 0, then extra, which is whole header lines, each with \r\n,
+	# or 0, then the blank line): its length, or -1 if it doesn't fit in max bytes
+	[Request: ptr<u8> target: 0; u32 max: 0; ptr<u8> verb: 0; ptr<WireTarget> t: 0; ptr<u8> extra: 0; u32 length: 0; bln send_length: false;]
+		str head: (verb ' ' t.path ' HTTP/1.1\r\nHost: ');
+		bln v6: false;
+		while int i: 0; i < t.host.len; i++;
+			if t.host:i is ':'
+				v6 is true;
+			;;
+		;;
+		if v6
+			head++ '[';
+		;;
+		head++ t.host;
+		if v6
+			head++ ']';
+		;;
+		if (t.secure and t.port is not 443) or (not t.secure and t.port is not 80)
+			head++ ':';
+			head++ t.port;
+		;;
+		head++ '\r\nUser-Agent: ';
+		head++ agent;
+		head++ '\r\nAccept-Encoding: gzip, deflate';
+		if brotli
+			head++ ', br';
+		;;
+		head++ '\r\nConnection: keep-alive\r\n';
+		if length > 0 or send_length
+			head++ 'Content-Length: ';
+			head++ length;
+			head++ '\r\n';
+		;;
+		u32 n: head.len;
+		u32 more: (Count: extra);
+		if n + more + 3 > max return -1;
+		while u32 k: 0; k < n; k++;
+			target:k is head:k;
+		;;
+		while u32 k2: 0; k2 < more; k2++;
+			target:(n + k2) is extra:k2;
+		;;
+		n++ more;
+		target:n is 13;
+		target:(n + 1) is 10;
+		target:(n + 2) is 0;
+	[end: (n + 2) as int]
+
+	# ---- an answer
+
+	# a made ready for an answer; no_body: it's to a HEAD; most: the most its body may be
+	[Begin: ptr<WireAnswer> a: 0; bln no_body: false; u32 most: 8000000;]
+		ptr<u8> old_head: a.head;
+		u32 old_room: a.head_room;
+		ptr<u8> old_body: a.body;
+		u32 old_body_room: a.body_room;
+		call Mem.Fill: a as ptr<u8> 0 sizeof WireAnswer;
+		a.head is old_head;
+		a.head_room is old_room;
+		a.body is old_body;
+		a.body_room is old_body_room;
+		a.no_body is no_body;
+		a.body_max is most;
+		a.error is '';
+		if a.head is 0
+			a.head is new u8[1024];
+			a.head_room is 1024;
+		;;
+		if a.head is 0
+			call Fail: a 'out of memory';
+			return;
+		;;
+		a.head:0 is 0;
+	[end]
+
+	# give back a's memory
+	[Free: ptr<WireAnswer> a: 0;]
+		if a.head is not 0
+			free a.head;
+		;;
+		if a.body is not 0
+			free a.body;
+		;;
+		a.head is 0;
+		a.body is 0;
+		a.head_room is 0;
+		a.body_room is 0;
+		a.body_length is 0;
+		a.head_length is 0;
+	[end]
+
+	# take length bytes that came: how many of them were a's (the rest came after its end)
+	[Take: ptr<WireAnswer> a: 0; ptr<u8> data: 0; u32 length: 0; : u32]
+		u32 used: 0;
+		while used < length and not a.done and not a.failed
+			if not a.head_done
+				used++ (TakeHead: a data + used length - used);
+			;;
+			elif a.framing is CHUNKED
+				used++ (TakeChunked: a data + used length - used);
+			;;
+			else
+				u32 n: length - used;
+				if a.framing is SIZED and n as u64 > a.left
+					n is a.left as u32;
+				;;
+				if not (Keep: a data + used n) return used;
+				used++ n;
+				if a.framing is SIZED
+					a.left is a.left - n;
+					if a.left is 0
+						a.done is true;
+					;;
+				;;
+			;;
+		;;
+	[end: used]
+
+	# the connection closed: that ends a body that runs to its end; anything else is cut short
+	[Ended: ptr<WireAnswer> a: 0;]
+		if a.done or a.failed return;
+		if a.head_done and a.framing is TO_END
+			a.done is true;
+			a.keep is false;
+			return;
+		;;
+		call Fail: a 'the connection closed before the answer ended';
+	[end]
+
+	# the head's bytes, until the blank line after the headers
+	[TakeHead: ptr<WireAnswer> a: 0; ptr<u8> data: 0; u32 length: 0; : u32]
+		u32 used: 0;
+		while used < length
+			if a.head_length + 2 > a.head_room
+				if a.head_room >= HEAD_MAX
+					call Fail: a 'headers of more than 64 KB';
+					return used;
+				;;
+				u32 bigger: a.head_room * 2;
+				ptr<u8> grown: new u8[bigger];
+				if grown is 0
+					call Fail: a 'out of memory';
+					return used;
+				;;
+				call Mem.Copy: grown a.head a.head_length;
+				free a.head;
+				a.head is grown;
+				a.head_room is bigger;
+			;;
+			u32 c: data:used;
+			used++;
+			a.head:(a.head_length) is c;
+			a.head_length++;
+			a.head:(a.head_length) is 0;
+			if c is 10
+				# a blank line ends the head (\n\n or \r\n\r\n; a bare \n is taken as a line's end)
+				u32 h: a.head_length;
+				bln blank: (h >= 2 and a.head:(h - 2) is 10) or (h >= 3 and a.head:(h - 2) is 13 and a.head:(h - 3) is 10);
+				if blank
+					call HeadDone: a;
+					return used;
+				;;
+			;;
+		;;
+	[end: used]
+
+	# the head has all come: read the status, and how the body comes
+	[HeadDone: ptr<WireAnswer> a: 0;]
+		ptr<u8> h: a.head;
+		if not (StartsNoCase: h 'HTTP/1.')
+			call Fail: a 'not an HTTP answer';
+			return;
+		;;
+		a.http10 is (h:7 is '0');
+		u32 i: 8;
+		while h:i is ' '
+			i++;
+		;;
+		int status: 0;
+		u32 digits: 0;
+		while h:i >= '0' and h:i <= '9' and digits < 3
+			status is status * 10 + h:i - '0';
+			digits++;
+			i++;
+		;;
+		if digits is not 3
+			call Fail: a 'an answer with no status';
+			return;
+		;;
+		if status < 200
+			# 100 Continue, 103 Early Hints: the real answer follows
+			a.head_length is 0;
+			a.head:0 is 0;
+			return;
+		;;
+		a.status is status;
+		a.head_done is true;
+		# whether the connection may be used again
+		a.keep is not a.http10;
+		if (HasToken: a 'Connection' 'close')
+			a.keep is false;
+		;;
+		if a.http10 and (HasToken: a 'Connection' 'keep-alive')
+			a.keep is true;
+		;;
+		if a.no_body or status is 204 or status is 304
+			a.done is true;
+			return;
+		;;
+		u8 value[64];
+		if (Header: a 'Transfer-Encoding' addr value 64) >= 0
+			if (HasToken: a 'Transfer-Encoding' 'chunked')
+				a.framing is CHUNKED;
+				a.chunk is CHUNK_SIZE;
+				return;
+			;;
+			# a coding without chunked: the body runs to the end
+			a.framing is TO_END;
+			a.keep is false;
+			return;
+		;;
+		# Content-Length: every one must say the same
+		int count: 0;
+		u64 size: 0;
+		while int k: 0; k < 16; k++;
+			int n: (HeaderAt: a 'Content-Length' k addr value 64);
+			if n < 0 break;
+			# a list of them, as a proxy joins them: each must say the same
+			int j: 0;
+			while j < n
+				while j < n and (value:j is ' ' or value:j is 9)
+					j++;
+				;;
+				u64 this: 0;
+				bln any: false;
+				while j < n and value:j >= '0' and value:j <= '9'
+					this is this * 10 + (value:j - '0') as u64;
+					any is true;
+					if this > 0xFFFFFFFF
+						call Fail: a 'a Content-Length too big to take';
+						return;
+					;;
+					j++;
+				;;
+				while j < n and (value:j is ' ' or value:j is 9)
+					j++;
+				;;
+				if not any or (j < n and value:j is not ',')
+					call Fail: a 'a Content-Length that isn\'t a number';
+					return;
+				;;
+				j++;
+				if count > 0 and this is not size
+					call Fail: a 'Content-Lengths that disagree';
+					return;
+				;;
+				size is this;
+				count++;
+			;;
+		;;
+		if count > 0
+			if size > a.body_max as u64
+				call Fail: a 'a body bigger than the most that may be taken';
+				return;
+			;;
+			a.framing is SIZED;
+			a.left is size;
+			if size is 0
+				a.done is true;
+			;;
+			return;
+		;;
+		a.framing is TO_END;
+		a.keep is false;
+	[end]
+
+	# a chunked body's bytes
+	[TakeChunked: ptr<WireAnswer> a: 0; ptr<u8> data: 0; u32 length: 0; : u32]
+		u32 used: 0;
+		while used < length and not a.done and not a.failed
+			u32 c: data:used;
+			if a.chunk is CHUNK_DATA
+				u32 n: length - used;
+				if n as u64 > a.left
+					n is a.left as u32;
+				;;
+				if not (Keep: a data + used n) return used;
+				used++ n;
+				a.left is a.left - n;
+				if a.left is 0
+					a.chunk is CHUNK_END;
+					a.chunk_line is 0;
+				;;
+				continue;
+			;;
+			used++;
+			if a.chunk is CHUNK_SIZE
+				if c is 10
+					if not a.chunk_digits
+						call Fail: a 'a chunk with no size';
+						return used;
+					;;
+					a.chunk_digits is false;
+					a.chunk_extension is false;
+					if a.left is 0
+						a.chunk is TRAILER;
+						a.chunk_line is 0;
+					;;
+					else
+						a.chunk is CHUNK_DATA;
+					;;
+				;;
+				elif a.chunk_extension or c is 13
+				;;
+				elif c is ';' or c is ' ' or c is 9
+					a.chunk_extension is true;
+				;;
+				else
+					int digit: (Hex: c);
+					if digit < 0
+						call Fail: a 'a chunk size that isn\'t hex';
+						return used;
+					;;
+					a.left is a.left * 16 + digit as u64;
+					a.chunk_digits is true;
+					if a.left > a.body_max as u64
+						call Fail: a 'a body bigger than the most that may be taken';
+						return used;
+					;;
+				;;
+			;;
+			elif a.chunk is CHUNK_END
+				# the \r\n after a chunk's data
+				if c is 10
+					a.chunk is CHUNK_SIZE;
+					a.left is 0;
+				;;
+				elif c is not 13
+					call Fail: a 'a chunk longer than its size';
+					return used;
+				;;
+			;;
+			else
+				# trailer lines, until a blank one
+				if c is 10
+					if a.chunk_line is 0
+						a.done is true;
+					;;
+					a.chunk_line is 0;
+				;;
+				elif c is not 13
+					a.chunk_line++;
+				;;
+			;;
+		;;
+	[end: used]
+
+	# add n bytes to a's body; false if that's past the most it may be, or there's no memory
+	[Keep: ptr<WireAnswer> a: 0; ptr<u8> data: 0; u32 n: 0;]
+		if n is 0 return true;
+		if a.body_length + n > a.body_max return (Fail: a 'a body bigger than the most that may be taken');
+		if a.body_length + n + 1 > a.body_room
+			u32 bigger: a.body_room * 2;
+			if bigger < a.body_length + n + 1
+				bigger is a.body_length + n + 1;
+			;;
+			if bigger < 65536
+				bigger is 65536;
+			;;
+			ptr<u8> grown: new u8[bigger];
+			if grown is 0 return (Fail: a 'out of memory');
+			if a.body is not 0
+				call Mem.Copy: grown a.body a.body_length;
+				free a.body;
+			;;
+			a.body is grown;
+			a.body_room is bigger;
+		;;
+		call Mem.Copy: a.body + a.body_length data n;
+		a.body_length++ n;
+		a.body:(a.body_length) is 0;
+	[end: true]
+
+	[Fail: ptr<WireAnswer> a: 0; ptr<u8> why: 0;]
+		if a.failed return false;
+		a.failed is true;
+		a.keep is false;
+		a.error is why;
+	[end: false]
+
+	# ---- headers
+
+	# the first value of the header name (any case) into target (size bytes, with a zero after):
+	# its length, or -1 if there's no such header
+	[Header: ptr<WireAnswer> a: 0; ptr<u8> name: 0; ptr<u8> target: 0; int size: 0;]
+	[end: (HeaderAt: a name 0 target size)]
+
+	# the index'th value of the header name (Set-Cookie comes many times), as Header
+	[HeaderAt: ptr<WireAnswer> a: 0; ptr<u8> name: 0; int index: 0; ptr<u8> target: 0; int size: 0;]
+		if a.head is 0 or size <= 0 return -1;
+		ptr<u8> h: a.head;
+		u32 length: a.head_length;
+		u32 name_length: (Count: name);
+		# past the status line
+		u32 i: 0;
+		while i < length and h:i is not 10
+			i++;
+		;;
+		i++;
+		int found: 0;
+		while i < length
+			u32 line: i;
+			while i < length and h:i is not 10
+				i++;
+			;;
+			u32 stop: i;
+			i++;
+			if stop > line and h:(stop - 1) is 13
+				stop--;
+			;;
+			if stop - line > name_length and h:(line + name_length) is ':' and (SameNoCase: h + line name name_length)
+				if found is index
+					u32 from: line + name_length + 1;
+					while from < stop and (h:from is ' ' or h:from is 9)
+						from++;
+					;;
+					while stop > from and (h:(stop - 1) is ' ' or h:(stop - 1) is 9)
+						stop--;
+					;;
+					int n: 0;
+					while from + n < stop and n < size - 1
+						target:n is h:(from + n);
+						n++;
+					;;
+					target:n is 0;
+					return n;
+				;;
+				found++;
+			;;
+		;;
+	[end: -1]
+
+	# whether any of the headers called name lists token (comma-separated, any case)
+	[HasToken: ptr<WireAnswer> a: 0; ptr<u8> name: 0; ptr<u8> token: 0;]
+		u8 value[256];
+		u32 token_length: (Count: token);
+		while int k: 0; k < 16; k++;
+			int n: (HeaderAt: a name k addr value 256);
+			if n < 0 return false;
+			int i: 0;
+			while i < n
+				while i < n and (value:i is ' ' or value:i is ',' or value:i is 9)
+					i++;
+				;;
+				int start: i;
+				while i < n and value:i is not ','
+					i++;
+				;;
+				int stop: i;
+				while stop > start and (value:(stop - 1) is ' ' or value:(stop - 1) is 9)
+					stop--;
+				;;
+				if (stop - start) as u32 is token_length and (SameNoCase: addr value:start token token_length)
+					return true;
+				;;
+			;;
+		;;
+	[end: false]
+
+	# ---- unpacking
+
+	# the body made what it was before its Content-Encoding (each coding listed, last first); false
+	# if one isn't known, or the body doesn't unpack (a.error says why), when the body is left as it was
+	[Unpack: ptr<WireAnswer> a: 0;]
+		u8 codings[256];
+		int n: (Header: a 'Content-Encoding' addr codings 256);
+		if n <= 0 or a.body_length is 0 return true;
+		# the codings from the last back
+		int stop: n;
+		while stop > 0
+			int start: stop;
+			while start > 0 and codings:(start - 1) is not ','
+				start--;
+			;;
+			int from: start;
+			while from < stop and (codings:from is ' ' or codings:from is 9)
+				from++;
+			;;
+			int to: stop;
+			while to > from and (codings:(to - 1) is ' ' or codings:(to - 1) is 9)
+				to--;
+			;;
+			u32 size: (to - from) as u32;
+			ptr<u8> c: addr codings:from;
+			if size > 0 and not (Undo: a c size) return false;
+			stop is start - 1;
+		;;
+	[end: true]
+
+	# undo one coding (size bytes at c) on a's body
+	[Undo: ptr<WireAnswer> a: 0; ptr<u8> c: 0; u32 size: 0;]
+		u32 made: 0;
+		ptr<u8> output: 0;
+		if (size is 4 and (SameNoCase: c 'gzip' 4)) or (size is 6 and (SameNoCase: c 'x-gzip' 6))
+			output is (CoreInflate.Gzip: a.body a.body_length UNPACK_MAX addr made);
+			if output is 0 return (Unfailed: a 'the gzip body doesn\'t unpack: ' CoreInflate.error);
+		;;
+		elif size is 7 and (SameNoCase: c 'deflate' 7)
+			# zlib, as the standard says; bare DEFLATE, as some servers send
+			output is (CoreInflate.Zlib: a.body a.body_length UNPACK_MAX addr made);
+			if output is 0
+				output is (CoreInflate.Raw: a.body a.body_length UNPACK_MAX addr made);
+			;;
+			if output is 0 return (Unfailed: a 'the deflate body doesn\'t unpack: ' CoreInflate.error);
+		;;
+		elif size is 2 and (SameNoCase: c 'br' 2)
+			output is (CoreBrotli.Decode: a.body a.body_length UNPACK_MAX addr made);
+			if output is 0 return (Unfailed: a 'the Brotli body doesn\'t unpack: ' CoreBrotli.error);
+		;;
+		elif size is 8 and (SameNoCase: c 'identity' 8)
+			return true;
+		;;
+		else
+			return (Unfailed: a 'a Content-Encoding that isn\'t known: ' '');
+		;;
+		# (one more byte, for the zero after it)
+		ptr<u8> room: new u8[made + 1];
+		if room is 0
+			free output;
+			return (Unfailed: a 'output of memory' '');
+		;;
+		call Mem.Copy: room output made;
+		room:made is 0;
+		free output;
+		free a.body;
+		a.body is room;
+		a.body_length is made;
+		a.body_room is made + 1;
+	[end: true]
+
+	# a.error = why and more (the answer itself came whole: a.failed stays as it was); false
+	[Unfailed: ptr<WireAnswer> a: 0; ptr<u8> why: 0; ptr<u8> more: 0;]
+		a.error is '';
+		while u32 i: 0; why:i is not 0 and a.error.len < a.error.max; i++;
+			a.error++ why:i as chr;
+		;;
+		while u32 k: 0; more:k is not 0 and a.error.len < a.error.max; k++;
+			a.error++ more:k as chr;
+		;;
+	[end: false]
+
+	# ---- text
+
+	[Count: ptr<u8> text: 0;]
+		if text is 0 return 0;
+		u32 n: 0;
+		while text:n is not 0
+			n++;
+		;;
+	[end: n]
+
+	[Lower: u32 c: 0;]
+		if c >= 'A' and c <= 'Z' return c + 32;
+	[end: c]
+
+	[Hex: u32 c: 0;]
+		if c >= '0' and c <= '9' return (c - '0') as int;
+		if c >= 'a' and c <= 'f' return (c - 'a' + 10) as int;
+		if c >= 'A' and c <= 'F' return (c - 'A' + 10) as int;
+	[end: -1]
+
+	[SameNoCase: ptr<u8> a: 0; ptr<u8> b: 0; u32 n: 0;]
+		while u32 i: 0; i < n; i++;
+			if (Lower: a:i) is not (Lower: b:i) return false;
+		;;
+	[end: true]
+
+	[StartsNoCase: ptr<u8> text: 0; ptr<u8> start: 0;]
+		u32 i: 0;
+		while start:i is not 0
+			if (Lower: text:i) is not (Lower: start:i) return false;
+			i++;
+		;;
+	[end: true]
+}
