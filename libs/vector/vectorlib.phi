@@ -1,0 +1,23 @@
+# vectorlib: shapes drawn smooth onto pixels. Paths of lines, curves and arcs (and SVG's path
+# data), moved, turned and scaled by a matrix; filled by either rule, or outlined with joins,
+# caps and dashes; with a color, a gradient or an image; kept within a box or another shape. It
+# draws onto pixels the program gives it, 0xAARRGGBB, and touches nothing else.
+#
+#   phi build vectorlib.phi --library      # vectorlib.philib, which a program includes with `use vectorlib;`
+#
+# README.md says which names are its API.
+
+use vectorlib.geometry;
+use vectorlib.path;
+use vectorlib.paint;
+use vectorlib.canvas;
+
+phi.VectorLib:Library
+{
+	const int VERSION: 1;
+
+	# Call this once, before anything else in the library. There's nothing to set up yet, but a
+	# program that calls it keeps working when there is.
+	[Start]
+	[end]
+}

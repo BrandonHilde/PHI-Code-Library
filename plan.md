@@ -488,6 +488,7 @@ what 1.0 does wrong goes in [phi-notes.md](docs/phi-notes.md), not into PHI.
 |---|---|---|
 | `editlib` ✓ | Text being edited: caret, selection, words, lines, undo and redo, finding | The text field's and Notes' own editing; selecting, copy and paste, undo, everywhere text is typed |
 | corelib's deflate ✓ | DEFLATE, zlib and gzip, written | What a PNG file needs; and gzip for anyone |
+| vectorlib ✓ | Shapes drawn smooth: paths, SVG path data, transforms, gradients, outlines, dashes, clipping | SVG gradients, clipping and transforms in the browser, CSS transforms, a `<canvas>`, Paint's smooth shapes, the desktop's round corners |
 | imagelib's PNG writer ✓ | An image to a PNG file, the smallest kind that loses nothing | Paint's pictures at about a fiftieth of a BMP's size on a disk with 3 MB to spare |
 
 **editlib, done 2026-11-20,** in [libs/edit](libs/edit): a gap buffer, UTF-8 throughout, undo a word at
@@ -495,6 +496,11 @@ a time. There's no outside suite for how an editor behaves, so `test_edit` write
 and what's selected after each action, and every line of it was worked out by hand. It passes as 32 and
 64-bit Linux programs and on macOS. PHI OS's `ui/edit.phi` turns keys into its calls, and its text field
 (the kernel's sign-in screen too) and Notes use it.
+
+**vectorlib, done 2026-11-20,** in [libs/vector](libs/vector): exact-area coverage (font-rs's
+accumulation), outlines made as FreeType's stroker makes them, gradients premultiplied. Checked
+against macOS's Quartz on 15 scenes (`tools/vector/check_svg.py`): at most 2 pixels in 4,096 differ by
+more than a quarter, the mean by at most 1.2 of 255. Next: PHI OS's browser draws SVG with it.
 
 **Deflate and the PNG writer, done 2026-11-20,** in [libs/core](libs/core) and [libs/image](libs/image):
 every block written the smallest of three ways. zlib reads back everything corelib packs, at every level

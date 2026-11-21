@@ -1,0 +1,240 @@
+# vectorlib's VgPaint: what a shape is filled or outlined with. A color, a gradient (along a line, or
+# out from a point), or an image laid down as a pattern.
+#
+#   VgPaint p;
+#   call p.Solid: 0xFF2F6FE4;                    # 0xAARRGGBB, straight alpha
+#   call p.Linear: 0 0 100 0;                    # from (0, 0) to (100, 0), in the drawing's units
+#   call p.Stop: 0.0 0xFFFFFFFF;
+#   call p.Stop: 1.0 0xFF000000;
+#   call p.Radial: 50 50 40;                     # out from (50, 50) to a radius of 40
+#   call p.Focus: 40 40;                         # (starting from another point, if it's given)
+#   call p.Image: pixels w h w;                  # an image, its top left at (0, 0), a pixel a unit
+#   p.spread is Vg.REPEAT;                       # past the ends: PAD (the default), REPEAT, REFLECT,
+#                                                # and for an image NONE (nothing outside it)
+#   p.opacity is 0.5;
+#   call p.m.Translate: 10 0;                    # where its own units are in the drawing's
+#                                                # (SVG's gradientTransform, patternTransform)
+#
+# A gradient's colors are mixed premultiplied, as CSS and a canvas mix them, so a color fading
+# to transparent doesn't go gray on the way. Its offsets are kept within 0 to 1, and each at
+# least the one before, as SVG keeps them. A gradient with no stops paints nothing; with one, that
+# color. An image is drawn smooth (bilinear) unless smooth is false.
+
+use user.math;
+use vectorlib.geometry;
+
+struct.VgPaint
+{
+	int kind;                   # Vg.SOLID, LINEAR, RADIAL or IMAGE
+	u32 color;
+	f64 x0;                     # LINEAR: from; RADIAL: the center
+	f64 y0;
+	f64 x1;                     # LINEAR: to; RADIAL: the focus
+	f64 y1;
+	f64 r;                      # RADIAL: the radius
+	f64 offsets[16];
+	u32 colors[16];
+	int stops;
+	int spread;
+	f64 opacity;
+	VgMatrix m;
+	ptr<u32> image;             # IMAGE: its pixels, 0xAARRGGBB straight
+	int image_w;
+	int image_h;
+	int image_stride;           # in pixels
+	bln smooth;
+	u32 table[256];             # a gradient's colors at each of 256 steps, premultiplied (Ready)
+
+	[Reset: int how: 0;]
+		kind is how;
+		stops is 0;
+		spread is Vg.PAD;
+		opacity is 1.0;
+		smooth is true;
+		call m.Identity;
+	[end]
+
+	[Solid: u32 c: 0;]
+		call Reset: Vg.SOLID;
+		color is c;
+	[end]
+
+	[Linear: f64 fx: 0.0; f64 fy: 0.0; f64 tx: 0.0; f64 ty: 0.0;]
+		call Reset: Vg.LINEAR;
+		x0 is fx;
+		y0 is fy;
+		x1 is tx;
+		y1 is ty;
+	[end]
+
+	[Radial: f64 cx: 0.0; f64 cy: 0.0; f64 radius: 0.0;]
+		call Reset: Vg.RADIAL;
+		x0 is cx;
+		y0 is cy;
+		x1 is cx;
+		y1 is cy;
+		r is radius;
+	[end]
+
+	# where a radial gradient starts from (SVG's fx and fy): kept just inside the circle
+	[Focus: f64 fx: 0.0; f64 fy: 0.0;]
+		f64 dx: fx - x0;
+		f64 dy: fy - y0;
+		f64 far: (Float.Sqrt: dx * dx + dy * dy);
+		if far > r * 0.99 and far > 0.0
+			dx is dx * r * 0.99 / far;
+			dy is dy * r * 0.99 / far;
+		;;
+		x1 is x0 + dx;
+		y1 is y0 + dy;
+	[end]
+
+	# a stop: at offset (0 to 1) along the gradient, this color (16 at most)
+	[Stop: f64 offset: 0.0; u32 c: 0;]
+		if stops >= 16 return;
+		if offset < 0.0
+			offset is 0.0;
+		;;
+		if offset > 1.0
+			offset is 1.0;
+		;;
+		if stops > 0 and offset < offsets:(stops - 1)
+			offset is offsets:(stops - 1);
+		;;
+		offsets:stops is offset;
+		colors:stops is c;
+		stops++;
+	[end]
+
+	[Image: ptr<u32> pixels: 0; int w: 0; int h: 0; int stride: 0;]
+		call Reset: Vg.IMAGE;
+		image is pixels;
+		image_w is w;
+		image_h is h;
+		image_stride is stride;
+		if image_stride <= 0
+			image_stride is w;
+		;;
+	[end]
+
+	# whether it paints anything at all
+	[Shows]
+		if opacity <= 0.0 return false;
+		if kind is Vg.SOLID return (color >> 24) is not 0;
+		if kind is Vg.IMAGE return image is not 0 and image_w > 0 and image_h > 0;
+		if kind is Vg.RADIAL and r <= 0.0 return stops > 0;
+	[end: stops > 0]
+
+	# the gradient's table, made from its stops and opacity
+	[Ready]
+		if kind is not Vg.LINEAR and kind is not Vg.RADIAL return;
+		int k: 0;
+		while int i: 0; i < 256; i++;
+			f64 t: i / 255.0;
+			while k + 1 < stops and offsets:(k + 1) < t
+				k++;
+			;;
+			u32 c: colors:k;
+			if stops is 1 or t <= offsets:0
+				table:i is (Vg.Premultiply: colors:0 opacity);
+				continue;
+			;;
+			if k + 1 >= stops
+				table:i is (Vg.Premultiply: colors:(stops - 1) opacity);
+				continue;
+			;;
+			f64 span: offsets:(k + 1) - offsets:k;
+			f64 w: 1.0;
+			if span > 0.0
+				w is (t - offsets:k) / span;
+			;;
+			u32 a: (Vg.Premultiply: colors:k opacity);
+			u32 b: (Vg.Premultiply: colors:(k + 1) opacity);
+			table:i is (Vg.Mix: a b (w * 256.0 + 0.5) as int);
+		;;
+	[end]
+
+	# how far along the gradient t is, past its ends as spread has it: 0 to 255
+	[Step: f64 t: 0.0;]
+		if spread is Vg.REPEAT
+			t is t - (Float.Floor: t);
+		;;
+		elif spread is Vg.REFLECT
+			t is t - 2.0 * (Float.Floor: t / 2.0);
+			if t > 1.0
+				t is 2.0 - t;
+			;;
+		;;
+		if t <= 0.0 return 0;
+		if t >= 1.0 return 255;
+	[end: (t * 255.0 + 0.5) as int]
+
+	# the color, premultiplied, at (px, py) in its own units
+	[At: f64 px: 0.0; f64 py: 0.0; : u32]
+		if kind is Vg.LINEAR
+			f64 dx: x1 - x0;
+			f64 dy: y1 - y0;
+			f64 len2: dx * dx + dy * dy;
+			if len2 <= 0.0 return table:255;
+			return table:(Step: ((px - x0) * dx + (py - y0) * dy) / len2);
+		;;
+		if kind is Vg.RADIAL
+			if r <= 0.0 return table:255;
+			# t, where (px, py) is on the circle about focus + t (center - focus) of radius t r
+			f64 cdx: x0 - x1;
+			f64 cdy: y0 - y1;
+			f64 pdx: px - x1;
+			f64 pdy: py - y1;
+			f64 qa: cdx * cdx + cdy * cdy - r * r;
+			f64 qb: pdx * cdx + pdy * cdy;
+			f64 qc: pdx * pdx + pdy * pdy;
+			f64 disc: qb * qb - qa * qc;
+			if disc < 0.0
+				disc is 0.0;
+			;;
+			return table:(Step: (qb - (Float.Sqrt: disc)) / qa);
+		;;
+		if kind is Vg.IMAGE
+			return (Texel: px py);
+		;;
+	[end: (Vg.Premultiply: color opacity)]
+
+	# the image at (u, v), premultiplied, by spread past its edges: the nearest pixel, or the four
+	# around it mixed
+	[Texel: f64 u: 0.0; f64 v: 0.0; : u32]
+		if not smooth
+			int ix: (Float.Floor: u) as int;
+			int iy: (Float.Floor: v) as int;
+			if not (Place: addr ix addr iy) return 0;
+			return (Vg.Premultiply: image:(iy * image_stride + ix) opacity);
+		;;
+		f64 fu: u - 0.5;
+		f64 fv: v - 0.5;
+		f64 bu: (Float.Floor: fu);
+		f64 bv: (Float.Floor: fv);
+		int wx: ((fu - bu) * 256.0) as int;
+		int wy: ((fv - bv) * 256.0) as int;
+		int ax: bu as int;
+		int ay: bv as int;
+		u32 top: (Vg.Mix: (Pixel: ax ay) (Pixel: ax + 1 ay) wx);
+		u32 bottom: (Vg.Mix: (Pixel: ax ay + 1) (Pixel: ax + 1 ay + 1) wx);
+	[end: (Vg.Mix: top bottom wy)]
+
+	[Pixel: int ix: 0; int iy: 0; : u32]
+		if not (Place: addr ix addr iy) return 0;
+	[end: (Vg.Premultiply: image:(iy * image_stride + ix) opacity)]
+
+	# a pixel's place in the image as spread has it: false if it's outside and nothing's there
+	[Place: ptr<int> ix: 0; ptr<int> iy: 0;]
+		if spread is Vg.REPEAT
+			ix:0 is ((ix:0 % image_w) + image_w) % image_w;
+			iy:0 is ((iy:0 % image_h) + image_h) % image_h;
+			return true;
+		;;
+		if spread is Vg.PAD
+			ix:0 is (Math.Clamp: ix:0 0 image_w - 1);
+			iy:0 is (Math.Clamp: iy:0 0 image_h - 1);
+			return true;
+		;;
+	[end: ix:0 >= 0 and iy:0 >= 0 and ix:0 < image_w and iy:0 < image_h]
+}

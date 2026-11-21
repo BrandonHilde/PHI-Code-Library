@@ -1,0 +1,26 @@
+# vectorlib through vectorlib.philib alone, as a program using it has it: no source beside this, so a
+# test here proves the compiled library works (one beside the source would test the source).
+use vectorlib;
+
+phi.TestVectorlib:Program
+{
+	call VectorLib.Start;
+	log 'version: ' VectorLib.VERSION '\n';
+	ptr<u32> px: new u32[16 * 16];
+	VgCanvas c;
+	call c.Start: px 16 16 16;
+	VgPaint paint;
+	call paint.Solid: 0xFF000000;
+	ptr<VgPath> p: (Vg.NewPath);
+	bln whole: (p.Svg: 'M2 2 h12 v12 h-12 z M8 4 a4 4 0 0 1 0 8 a4 4 0 0 1 0 -8 z');
+	bln drew: (c.Fill: p paint Vg.EVEN_ODD);
+	int sum: 0;
+	while int i: 0; i < 256; i++;
+		sum++ (px:i >> 24) as int;
+	;;
+	log 'a square with a round hole: ' whole ' ' drew ', ' sum / 255 ' pixels of 93.7\n';
+	call Vg.FreePath: p;
+	call c.Done;
+	free px;
+	exit 0;
+}

@@ -30,6 +30,7 @@ Add each new prefix here. It must not collide with a standard library name such 
 | fontlib | `FontLib` | `Fnt` |
 | weblib | `Weblib` | `Wl`, `Dom`, `Html`, `Css`, `Js`, `Page` |
 | editlib | `EditLib` | `Ed` |
+| vectorlib | `VectorLib` | `Vg` |
 
 `Cores` is already a standard library class, so don't use that exact name in corelib.
 
@@ -115,6 +116,7 @@ for a library whose everyday tests together take longer:
 | imagelib | `.\build.ps1 image -Test` | about 30 s |
 | fontlib | `.\build.ps1 font -Test` | about 15 s |
 | editlib | `.\build.ps1 edit -Test` | about 10 s (2026-11-20, on a Mac) |
+| vectorlib | `.\build.ps1 vector -Test` | about 10 s (2026-11-20, on a Mac) |
 | weblib | `.\build.ps1 web -Test -Only test_css` | about 90 s |
 | | `.\build.ps1 web -Test -Only test_html,test_page,test_core,test_weblib` | about 100 s |
 | | `.\build.ps1 web -Test -Only test_js` | about 90 s |

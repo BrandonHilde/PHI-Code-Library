@@ -1,0 +1,1041 @@
+# vectorlib's VgCanvas: shapes filled and outlined onto pixels the program owns.
+#
+#   VgCanvas c;
+#   call c.Start: pixels w h stride;             # 0xAARRGGBB, straight alpha; stride in pixels
+#   call c.m.Translate: 20 10;                   # where the drawing's units land (VgMatrix)
+#   bln ok: (c.Fill: path paint Vg.NONZERO);     # or Vg.EVEN_ODD
+#   ok is (c.Stroke: path paint 3.0 Vg.ROUND Vg.ROUND 4.0);   # width, join, cap, miter limit
+#   call c.SetDash: addr dashes 2 0.0;           # outlines dashed from here on (0 dashes: solid)
+#   call c.ClipBox: 0 0 200 100;                 # in pixels: drawn only inside
+#   ok is (c.ClipPath: shape Vg.NONZERO);        # and only inside this too (with smooth edges)
+#   call c.Picture: image iw ih iw 10 10 64 64 true;   # an image into a box, smooth or not
+#   call c.Done;                                 # gives back what it took to work with
+#
+# Every call answers false when there's no memory (and draws nothing more than it had); a shape
+# with nothing to draw is true.
+#
+# How a shape becomes pixels: it's cut into straight edges, curves into as many as keep within
+# tolerance of a pixel (0.05) of the curve, in pixels after the matrix. Each edge adds, to each pixel
+# it passes through, how much of that pixel's area lies to its right, signed by which way it goes;
+# summed along a row from the left, that's how much of each pixel is inside, exactly, wherever no
+# two edges cross in one pixel (the method of font-rs, and FreeType's before it). The nonzero rule
+# takes that as at most 1; even-odd folds it back every 2. An outline is made into a shape first,
+# going along one side of the line and back along the other, with the joins and caps asked for,
+# and filled by the nonzero rule.
+#
+# Pixels are blended over what's there, source over, with straight alpha both sides: where what's
+# there is opaque it stays opaque, as a screen is.
+
+use memory.mem;
+use user.math;
+use vectorlib.geometry;
+use vectorlib.path;
+use vectorlib.paint;
+
+struct.VgCanvas
+{
+	ptr<u32> pixels;
+	int w;
+	int h;
+	int stride;
+	VgMatrix m;
+	f64 alpha;                  # how much shows of everything drawn: 0 to 1
+	f64 tolerance;              # how far an edge may stray from a curve, in pixels (0.05)
+	int clip_x0;                # drawn only inside this box of pixels
+	int clip_y0;
+	int clip_x1;
+	int clip_y1;
+	ptr<u8> mask;               # w by h: how much of each pixel ClipPath lets through (0: all of every one)
+	# a shape's coverage: its box in pixels, and a number for each pixel of it (2 more a row)
+	ptr<f32> acc;
+	int acc_room;
+	int box_x;
+	int box_y;
+	int box_w;
+	int box_h;
+	# the shape being drawn, as edges in pixels: x0 y0 x1 y1 each
+	ptr<f64> edges;
+	int edge_count;
+	int edge_room;
+	f64 min_x;
+	f64 min_y;
+	f64 max_x;
+	f64 max_y;
+	# a shape as lines in its own units, for outlining: points (x y), and its parts, each its
+	# first point, how many and whether it's closed
+	ptr<f64> points;
+	int point_count;
+	int point_room;
+	ptr<int> parts;
+	int part_count;
+	int part_room;
+	ptr<VgPath> outline;        # what an outline is made into
+	f64 stroke_tol;             # the tolerance in the drawing's own units, while outlining
+	f64 dashes[16];
+	int dash_count;
+	f64 dash_offset;
+	bln failed;                 # memory ran out
+
+	[Start: ptr<u32> p: 0; int pw: 0; int ph: 0; int ps: 0;]
+		pixels is p;
+		w is pw;
+		h is ph;
+		stride is ps;
+		if stride <= 0
+			stride is w;
+		;;
+		call m.Identity;
+		alpha is 1.0;
+		tolerance is 0.05;
+		call NoClip;
+		dash_count is 0;
+		failed is false;
+	[end]
+
+	# gives back what it took to work with (the pixels are the program's)
+	[Done]
+		if mask is not 0
+			free mask;
+		;;
+		if acc is not 0
+			free acc;
+		;;
+		if edges is not 0
+			free edges;
+		;;
+		if points is not 0
+			free points;
+		;;
+		if parts is not 0
+			free parts;
+		;;
+		call Vg.FreePath: outline;
+		mask is 0;
+		acc is 0;
+		edges is 0;
+		points is 0;
+		parts is 0;
+		outline is 0;
+		acc_room is 0;
+		edge_room is 0;
+		point_room is 0;
+		part_room is 0;
+	[end]
+
+	# ---- where it draws
+
+	[NoClip]
+		clip_x0 is 0;
+		clip_y0 is 0;
+		clip_x1 is w;
+		clip_y1 is h;
+		if mask is not 0
+			free mask;
+		;;
+		mask is 0;
+	[end]
+
+	# only inside the box from (x0, y0) to (x1, y1), in pixels, and inside what it was already kept to
+	[ClipBox: int x0: 0; int y0: 0; int x1: 0; int y1: 0;]
+		clip_x0 is (Math.Max: clip_x0 x0);
+		clip_y0 is (Math.Max: clip_y0 y0);
+		clip_x1 is (Math.Min: clip_x1 x1);
+		clip_y1 is (Math.Min: clip_y1 y1);
+	[end]
+
+	# only inside a shape too (as the matrix puts it), its edges smooth: false if there's no memory
+	[ClipPath: ptr<VgPath> path: 0; int rule: 0;]
+		if mask is 0
+			mask is new u8[w * h];
+			if mask is 0 return false;
+			call Mem.Fill: mask 255 w * h;
+		;;
+		bln some: (Shape: path rule);
+		if failed return false;
+		# everything outside its box is shut out, and inside it, all but what it covers
+		while int y: 0; y < h; y++;
+			ptr<u8> row: mask + y * w;
+			if not some or y < box_y or y >= box_y + box_h
+				call Mem.Fill: row 0 w;
+				continue;
+			;;
+			if box_x > 0
+				call Mem.Fill: row 0 box_x;
+			;;
+			if box_x + box_w < w
+				call Mem.Fill: row + box_x + box_w 0 w - box_x - box_w;
+			;;
+			ptr<f32> line: acc + (y - box_y) * (box_w + 2) * 4;
+			f64 sum: 0.0;
+			while int x: 0; x < box_w; x++;
+				sum++ line:x;
+				line:x is 0.0;
+				int cover: (Cover: sum rule);
+				row:(box_x + x) is ((row:(box_x + x) * cover + 127) / 255) as u8;
+			;;
+			line:box_w is 0.0;
+			line:(box_w + 1) is 0.0;
+		;;
+	[end: true]
+
+	# ---- filling
+
+	[Fill: ptr<VgPath> path: 0; VgPaint paint; int rule: 0;]
+		if path is 0 or not (paint.Shows) or alpha <= 0.0 return true;
+		if not (Shape: path rule) return not failed;
+		call Spread: paint rule;
+	[end: not failed]
+
+	# A shape's coverage into acc, over its box (within the clip and the pixels): false if there's
+	# nothing to draw, or no memory.
+	[Shape: ptr<VgPath> path: 0; int rule: 0;]
+		edge_count is 0;
+		min_x is 1e300;
+		min_y is 1e300;
+		max_x is -1e300;
+		max_y is -1e300;
+		call Flatten: path m (Vg.Max: tolerance 0.01) true;
+		if failed or edge_count is 0 return false;
+		int x0: (Math.Max: ((Float.Floor: min_x) as int) clip_x0);
+		int y0: (Math.Max: ((Float.Floor: min_y) as int) clip_y0);
+		int x1: (Math.Min: ((Float.Ceil: max_x) as int) + 1 clip_x1);
+		int y1: (Math.Min: ((Float.Ceil: max_y) as int) + 1 clip_y1);
+		x0 is (Math.Max: x0 0);
+		y0 is (Math.Max: y0 0);
+		x1 is (Math.Min: x1 w);
+		y1 is (Math.Min: y1 h);
+		if x1 <= x0 or y1 <= y0 return false;
+		box_x is x0;
+		box_y is y0;
+		box_w is x1 - x0;
+		box_h is y1 - y0;
+		int need: (box_w + 2) * box_h;
+		if need > acc_room
+			if acc is not 0
+				free acc;
+			;;
+			acc is new f32[need];
+			if acc is 0
+				acc_room is 0;
+				failed is true;
+				return false;
+			;;
+			acc_room is need;
+			call Mem.Fill: acc as ptr<u8> 0 need * 4;
+		;;
+		f64 ox: box_x;
+		f64 oy: box_y;
+		while int i: 0; i < edge_count; i++;
+			ptr<f64> e: edges + i * 32;
+			call Clipped: e:0 - ox e:1 - oy e:2 - ox e:3 - oy;
+		;;
+	[end: true]
+
+	# acc's coverage painted onto the pixels, and acc left clear
+	[Spread: VgPaint paint; int rule: 0;]
+		call paint.Ready;
+		bln solid: paint.kind is Vg.SOLID;
+		u32 fixed: (Vg.Premultiply: paint.color paint.opacity);
+		# from pixels back to the paint's own units
+		VgMatrix whole;
+		call whole.Copy: m;
+		call whole.Multiply: paint.m;
+		VgMatrix back;
+		bln seen: (whole.Invert: back);
+		int fade: (alpha * 255.0 + 0.5) as int;
+		while int y: 0; y < box_h; y++;
+			ptr<f32> line: acc + y * (box_w + 2) * 4;
+			ptr<u32> row: pixels + ((box_y + y) * stride + box_x) * 4;
+			ptr<u8> through: 0;
+			if mask is not 0
+				through is mask + (box_y + y) * w + box_x;
+			;;
+			f64 sum: 0.0;
+			f64 cy: box_y + y + 0.5;
+			while int x: 0; x < box_w; x++;
+				sum++ line:x;
+				line:x is 0.0;
+				int cover: (Cover: sum rule);
+				if cover is 0
+					continue;
+				;;
+				if through is not 0
+					cover is (cover * through:x + 127) / 255;
+				;;
+				if fade < 255
+					cover is (cover * fade + 127) / 255;
+				;;
+				if cover is 0
+					continue;
+				;;
+				u32 color: fixed;
+				if not solid
+					if not seen
+						continue;
+					;;
+					f64 cx: box_x + x + 0.5;
+					color is (paint.At: (back.X: cx cy) (back.Y: cx cy));
+				;;
+				call Over: row + x * 4 color cover;
+			;;
+			line:box_w is 0.0;
+			line:(box_w + 1) is 0.0;
+		;;
+	[end]
+
+	# how much of a pixel is inside, 0 to 255, from its summed area by the rule
+	[Cover: f64 sum: 0.0; int rule: 0;]
+		f64 v: (Float.Abs: sum);
+		if rule is Vg.EVEN_ODD
+			v is v - 2.0 * (Float.Floor: v / 2.0);
+			if v > 1.0
+				v is 2.0 - v;
+			;;
+		;;
+		elif v > 1.0
+			v is 1.0;
+		;;
+	[end: (v * 255.0 + 0.5) as int]
+
+	# a premultiplied color over the pixel at p, cover (0 to 255) of it
+	[Over: ptr<u32> p: 0; u32 color: 0; int cover: 0;]
+		u32 k: cover as u32;
+		u32 sa: (((color >> 24) * k + 127) / 255);
+		if sa is 0 return;
+		u32 sr: ((((color >> 16) & 255) * k + 127) / 255);
+		u32 sg: ((((color >> 8) & 255) * k + 127) / 255);
+		u32 sb: (((color & 255) * k + 127) / 255);
+		u32 d: p:0;
+		u32 da: d >> 24;
+		u32 keep: 255 - sa;
+		if da is 255
+			u32 r: sr + ((((d >> 16) & 255) * keep + 127) / 255);
+			u32 g: sg + ((((d >> 8) & 255) * keep + 127) / 255);
+			u32 b: sb + (((d & 255) * keep + 127) / 255);
+			p:0 is 0xFF000000 | ((Math.Min: r 255) << 16) as u32 | ((Math.Min: g 255) << 8) as u32 | (Math.Min: b 255) as u32;
+			return;
+		;;
+		# what's there premultiplied too, the two added, and the result straight again
+		u32 da2: (da * keep + 127) / 255;
+		u32 oa: sa + da2;
+		if oa is 0
+			p:0 is 0;
+			return;
+		;;
+		u32 pr: sr + (((d >> 16) & 255) * da2 + 127) / 255;
+		u32 pg: sg + (((d >> 8) & 255) * da2 + 127) / 255;
+		u32 pb: sb + ((d & 255) * da2 + 127) / 255;
+		u32 r2: (Math.Min: ((pr * 255 + oa / 2) / oa) 255) as u32;
+		u32 g2: (Math.Min: ((pg * 255 + oa / 2) / oa) 255) as u32;
+		u32 b2: (Math.Min: ((pb * 255 + oa / 2) / oa) 255) as u32;
+		p:0 is ((Math.Min: oa 255) << 24) as u32 | (r2 << 16) | (g2 << 8) | b2;
+	[end]
+
+	# ---- an image
+
+	# an image (straight alpha) into the box at (x, y), bw by bh in the drawing's units, under the
+	# matrix: smooth (bilinear) or not
+	[Picture: ptr<u32> image: 0; int iw: 0; int ih: 0; int istride: 0; f64 x: 0.0; f64 y: 0.0; f64 bw: 0.0; f64 bh: 0.0; bln smooth: true;]
+		if image is 0 or iw <= 0 or ih <= 0 or bw <= 0.0 or bh <= 0.0 return true;
+		VgPaint p;
+		call p.Image: image iw ih istride;
+		p.smooth is smooth;
+		call p.m.Translate: x y;
+		call p.m.Scale: bw / iw bh / ih;
+		ptr<VgPath> box: (Vg.NewPath);
+		if box is 0 return false;
+		call box.Rect: x y bw bh;
+		bln ok: (Fill: box p Vg.NONZERO);
+		call Vg.FreePath: box;
+	[end: ok]
+
+	# ---- outlining
+
+	# dashes from here on: n lengths, on and off in turn (an odd number is read twice, as SVG
+	# reads it), starting offset along them; no lengths (or none above 0) is a solid line again
+	[SetDash: ptr<f64> lengths: 0; int n: 0; f64 offset: 0.0;]
+		dash_count is 0;
+		f64 total: 0.0;
+		int k: 0;
+		while k < n and k < 8
+			if lengths:k < 0.0 return;
+			total++ lengths:k;
+			k++;
+		;;
+		if total <= 0.0 return;
+		while int i: 0; i < k; i++;
+			dashes:i is lengths:i;
+		;;
+		dash_count is k;
+		if k % 2 is 1
+			while int i: 0; i < k; i++;
+				dashes:(k + i) is lengths:i;
+			;;
+			dash_count is k * 2;
+		;;
+		dash_offset is offset;
+	[end]
+
+	# The path outlined width wide, in its own units (so the matrix shapes the line as it shapes
+	# the path), with joins and caps of the kinds given (Vg.MITER, ROUND, BEVEL; Vg.BUTT, ROUND,
+	# SQUARE): a miter longer than limit times the width is a bevel, as SVG has it.
+	[Stroke: ptr<VgPath> path: 0; VgPaint paint; f64 width: 1.0; int join: 0; int cap: 0; f64 limit: 4.0;]
+		if path is 0 or width <= 0.0 or not (paint.Shows) or alpha <= 0.0 return true;
+		if outline is 0
+			outline is (Vg.NewPath);
+			if outline is 0 return false;
+		;;
+		call outline.Clear;
+		f64 scale: (m.Scaling);
+		if scale <= 0.0 return true;
+		point_count is 0;
+		part_count is 0;
+		VgMatrix none;
+		call none.Identity;
+		stroke_tol is (Vg.Max: tolerance 0.01) / scale;
+		call Flatten: path none stroke_tol false;
+		if failed return false;
+		if dash_count > 0
+			call Dash;
+			if failed return false;
+		;;
+		f64 hw: width / 2.0;
+		while int p: 0; p < part_count; p++;
+			call Line: parts:(p * 3) parts:(p * 3 + 1) parts:(p * 3 + 2) is 1 hw join cap limit;
+		;;
+		if outline.failed
+			failed is true;
+			return false;
+		;;
+		if not (Shape: outline Vg.NONZERO) return not failed;
+		call Spread: paint Vg.NONZERO;
+	[end: not failed]
+
+	# One part's outline, as one shape in outline (two for a closed part, its two sides): along
+	# one side of its count points from first, round the end, and back along the other side. At a
+	# corner the outer side has the join, and the inner side goes through the corner itself, as
+	# FreeType's stroker does, so the two sides' overlap there is the same way round as the rest.
+	[Line: int first: 0; int count: 0; bln closed: false; f64 hw: 0.0; int join: 0; int cap: 0; f64 limit: 4.0;]
+		# the points, without any that's where the one before it is
+		int n: 0;
+		int to: first;
+		while int i: 0; i < count; i++;
+			f64 px: points:((first + i) * 2);
+			f64 py: points:((first + i) * 2 + 1);
+			if n > 0 and (Float.Abs: px - points:((to - 1) * 2)) < 1e-9 and (Float.Abs: py - points:((to - 1) * 2 + 1)) < 1e-9
+				continue;
+			;;
+			points:(to * 2) is px;
+			points:(to * 2 + 1) is py;
+			to++;
+			n++;
+		;;
+		if closed and n > 1 and (Float.Abs: points:(first * 2) - points:((first + n - 1) * 2)) < 1e-9 and (Float.Abs: points:(first * 2 + 1) - points:((first + n - 1) * 2 + 1)) < 1e-9
+			n--;
+		;;
+		if n is 0 return;
+		f64 x0: points:(first * 2);
+		f64 y0: points:(first * 2 + 1);
+		if n is 1
+			# a part with no length: a dot, if its ends are round or square
+			if cap is Vg.ROUND
+				call outline.Circle: x0 y0 hw;
+			;;
+			elif cap is Vg.SQUARE
+				call outline.Rect: x0 - hw y0 - hw hw * 2.0 hw * 2.0;
+			;;
+			return;
+		;;
+		if closed and n < 3
+			closed is false;
+		;;
+		if closed
+			# one side going forward, the other going back
+			while int i: 0; i < n; i++;
+				call Corner: first n (i + n - 1) % n i (i + 1) % n hw join limit i is 0;
+			;;
+			call outline.Close;
+			int k: n - 1;
+			while k >= 0
+				call Corner: first n (k + 1) % n k (k + n - 1) % n hw join limit k is n - 1;
+				k--;
+			;;
+			call outline.Close;
+			return;
+		;;
+		# one side forward, the end, the other side back, the start
+		f64 ux: 0.0;
+		f64 uy: 0.0;
+		call Unit: first 0 1 addr ux addr uy;
+		call outline.MoveTo: x0 - uy * hw y0 + ux * hw;
+		while int i: 1; i < n - 1; i++;
+			call Corner: first n i - 1 i i + 1 hw join limit false;
+		;;
+		call End: first n - 2 n - 1 hw cap;
+		int k: n - 2;
+		while k >= 1
+			call Corner: first n k + 1 k k - 1 hw join limit false;
+			k--;
+		;;
+		call End: first 1 0 hw cap;
+		call outline.Close;
+	[end]
+
+	# the unit direction from point a to point b of the part at first, into ux and uy
+	[Unit: int first: 0; int a: 0; int b: 0; ptr<f64> ux: 0; ptr<f64> uy: 0;]
+		f64 dx: points:((first + b) * 2) - points:((first + a) * 2);
+		f64 dy: points:((first + b) * 2 + 1) - points:((first + a) * 2 + 1);
+		f64 len: (Float.Sqrt: dx * dx + dy * dy);
+		if len <= 0.0
+			len is 1.0;
+		;;
+		ux:0 is dx / len;
+		uy:0 is dy / len;
+	[end]
+
+	# The left side of the corner at point b, coming from a and going to c (left of the way the
+	# line goes: (-dy, dx) a unit across). With start true it begins the shape there.
+	[Corner: int first: 0; int n: 0; int a: 0; int b: 0; int c: 0; f64 hw: 0.0; int join: 0; f64 limit: 4.0; bln start: false;]
+		f64 ux: 0.0;
+		f64 uy: 0.0;
+		f64 vx: 0.0;
+		f64 vy: 0.0;
+		call Unit: first a b addr ux addr uy;
+		call Unit: first b c addr vx addr vy;
+		f64 px: points:((first + b) * 2);
+		f64 py: points:((first + b) * 2 + 1);
+		# where each piece's left side ends and begins at the corner
+		f64 ax: px - uy * hw;
+		f64 ay: py + ux * hw;
+		f64 bx: px - vy * hw;
+		f64 by: py + vx * hw;
+		if start
+			call outline.MoveTo: ax ay;
+		;;
+		else
+			call outline.LineTo: ax ay;
+		;;
+		f64 cross: ux * vy - uy * vx;
+		f64 dot: ux * vx + uy * vy;
+		if (Float.Abs: cross) < 1e-12 and dot > 0.0 return;            # straight on
+		if cross > 0.0
+			# the left side is the inside of the turn: through the corner itself
+			call outline.LineTo: px py;
+			call outline.LineTo: bx by;
+			return;
+		;;
+		if join is Vg.ROUND
+			call Round: px py hw (Vg.Atan2: ay - py ax - px) (Vg.Atan2: by - py bx - px);
+			return;
+		;;
+		# a miter's tip, where the two outer edges meet: its length over the width is
+		# 1 / sin(half the angle between the pieces), which is sqrt(2 / (1 + dot))
+		if join is Vg.MITER and 1.0 + dot > 1e-12 and (Float.Sqrt: 2.0 / (1.0 + dot)) <= limit
+			f64 k: hw / (1.0 + dot);
+			call outline.LineTo: px + (0.0 - uy - vy) * k py + (ux + vx) * k;
+		;;
+		call outline.LineTo: bx by;
+	[end]
+
+	# how the line ends at point b, coming from a: from its left side round to its right
+	[End: int first: 0; int a: 0; int b: 0; f64 hw: 0.0; int cap: 0;]
+		f64 ux: 0.0;
+		f64 uy: 0.0;
+		call Unit: first a b addr ux addr uy;
+		f64 px: points:((first + b) * 2);
+		f64 py: points:((first + b) * 2 + 1);
+		f64 lx: px - uy * hw;
+		f64 ly: py + ux * hw;
+		f64 rx: px + uy * hw;
+		f64 ry: py - ux * hw;
+		call outline.LineTo: lx ly;
+		if cap is Vg.SQUARE
+			call outline.LineTo: lx + ux * hw ly + uy * hw;
+			call outline.LineTo: rx + ux * hw ry + uy * hw;
+		;;
+		elif cap is Vg.ROUND
+			call Round: px py hw (Vg.Atan2: ly - py lx - px) (Vg.Atan2: ry - py rx - px);
+			return;
+		;;
+		call outline.LineTo: rx ry;
+	[end]
+
+	# Points round (cx, cy) at radius r from angle a0 to a1, the short way (a half turn, as an end's
+	# is, going round the front of a line from its left side), close enough together to be within
+	# tolerance of the circle; the last is at a1. The first, at a0, is there already.
+	[Round: f64 cx: 0.0; f64 cy: 0.0; f64 r: 0.0; f64 a0: 0.0; f64 a1: 0.0;]
+		f64 sweep: a1 - a0;
+		while sweep > Vg.PI + 1e-9
+			sweep-- 2.0 * Vg.PI;
+		;;
+		while sweep < 0.0 - Vg.PI - 1e-9
+			sweep++ 2.0 * Vg.PI;
+		;;
+		if (Float.Abs: (Float.Abs: sweep) - Vg.PI) < 1e-9
+			sweep is 0.0 - Vg.PI;                   # (an end: round its front, from its left side)
+		;;
+		# the angle a chord may span: 2 acos(1 - tolerance / r)
+		f64 most: 0.5;
+		if r > stroke_tol
+			f64 cosine: 1.0 - stroke_tol / r;
+			most is 2.0 * (Vg.Atan2: (Float.Sqrt: 1.0 - cosine * cosine) cosine);
+		;;
+		int steps: ((Float.Ceil: (Float.Abs: sweep) / most)) as int;
+		if steps < 1
+			steps is 1;
+		;;
+		if steps > 256
+			steps is 256;
+		;;
+		while int i: 1; i <= steps; i++;
+			f64 t: a0 + sweep * i / steps;
+			call outline.LineTo: cx + r * (Float.Cos: t) cy + r * (Float.Sin: t);
+		;;
+	[end]
+
+	# the parts cut into dashes, which are parts of their own, open
+	[Dash]
+		f64 cycle: 0.0;
+		while int i: 0; i < dash_count; i++;
+			cycle++ dashes:i;
+		;;
+		int old_parts: part_count;
+		int old_points: point_count;
+		while int p: 0; p < old_parts; p++;
+			int first: parts:(p * 3);
+			int count: parts:(p * 3 + 1);
+			bln closed: parts:(p * 3 + 2) is 1;
+			# where the pattern is at the part's start
+			f64 into_cycle: dash_offset - cycle * (Float.Floor: dash_offset / cycle);
+			int k: 0;
+			while into_cycle >= dashes:k
+				into_cycle-- dashes:k;
+				k is (k + 1) % dash_count;
+			;;
+			f64 left: dashes:k - into_cycle;     # of the dash (or gap) now
+			bln on: k % 2 is 0;
+			bln open: false;
+			int pieces: count - 1;
+			if closed
+				pieces is count;
+			;;
+			while int i: 0; i < pieces; i++;
+				f64 ax: points:((first + i) * 2);
+				f64 ay: points:((first + i) * 2 + 1);
+				int j: first + (i + 1) % count;
+				f64 bx: points:(j * 2);
+				f64 by: points:(j * 2 + 1);
+				f64 len: (Float.Sqrt: (bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+				f64 done_len: 0.0;
+				if on and not open
+					call Begin: ax ay;
+					open is true;
+				;;
+				while len - done_len > left
+					done_len++ left;
+					f64 t: done_len / len;
+					f64 qx: ax + (bx - ax) * t;
+					f64 qy: ay + (by - ay) * t;
+					if on
+						call Point: qx qy;
+						call EndPart: false;
+						open is false;
+					;;
+					else
+						call Begin: qx qy;
+						open is true;
+					;;
+					on is not on;
+					k is (k + 1) % dash_count;
+					left is dashes:k;
+				;;
+				left-- len - done_len;
+				if on
+					call Point: bx by;
+				;;
+			;;
+			if open
+				call EndPart: false;
+				open is false;
+			;;
+		;;
+		# the dashes take the place of the parts they came from
+		int new_parts: part_count - old_parts;
+		int moved: point_count - old_points;
+		if moved > 0
+			call Mem.Move: points points + old_points * 16 moved * 16;
+		;;
+		while int p: 0; p < new_parts; p++;
+			parts:(p * 3) is parts:((old_parts + p) * 3) - old_points;
+			parts:(p * 3 + 1) is parts:((old_parts + p) * 3 + 1);
+			parts:(p * 3 + 2) is 0;
+		;;
+		part_count is new_parts;
+		point_count is moved;
+	[end]
+
+	# ---- cutting a path into straight lines
+
+	# With edges true, into edges in pixels through tm (every part closed, as filling has it);
+	# otherwise into points and parts, through tm too, open parts left open.
+	[Flatten: ptr<VgPath> path: 0; VgMatrix tm; f64 tol: 0.2; bln as_edges: true;]
+		ptr<f64> d: path.data;
+		int i: 0;
+		f64 cx: 0.0;                            # the pen, after tm
+		f64 cy: 0.0;
+		f64 sx: 0.0;                            # where the part began
+		f64 sy: 0.0;
+		bln going: false;                       # a part is open
+		while i < path.used
+			int kind: d:i as int;
+			if kind is Vg.MOVE
+				if going
+					call Finish: as_edges cx cy sx sy false;
+				;;
+				cx is (tm.X: d:(i + 1) d:(i + 2));
+				cy is (tm.Y: d:(i + 1) d:(i + 2));
+				sx is cx;
+				sy is cy;
+				going is true;
+				if not as_edges
+					call Begin: cx cy;
+				;;
+				i++ 3;
+				continue;
+			;;
+			if kind is Vg.CLOSE
+				if going
+					call Finish: as_edges cx cy sx sy true;
+				;;
+				cx is sx;
+				cy is sy;
+				going is false;
+				i++ 1;
+				continue;
+			;;
+			if not going
+				# a step after a close starts a part where the last one began
+				going is true;
+				sx is cx;
+				sy is cy;
+				if not as_edges
+					call Begin: cx cy;
+				;;
+			;;
+			if kind is Vg.LINE
+				f64 lx: (tm.X: d:(i + 1) d:(i + 2));
+				f64 ly: (tm.Y: d:(i + 1) d:(i + 2));
+				call To: as_edges cx cy lx ly;
+				cx is lx;
+				cy is ly;
+				i++ 3;
+				continue;
+			;;
+			if kind is Vg.QUAD
+				f64 qx: (tm.X: d:(i + 1) d:(i + 2));
+				f64 qy: (tm.Y: d:(i + 1) d:(i + 2));
+				f64 ex: (tm.X: d:(i + 3) d:(i + 4));
+				f64 ey: (tm.Y: d:(i + 3) d:(i + 4));
+				# a quadratic strays from n chords by at most |p0 - 2c + p1| / (8 n^2)
+				f64 ddx: cx - 2.0 * qx + ex;
+				f64 ddy: cy - 2.0 * qy + ey;
+				int n: (Pieces: (Float.Sqrt: ddx * ddx + ddy * ddy) / (8.0 * tol));
+				f64 px: cx;
+				f64 py: cy;
+				while int k: 1; k <= n; k++;
+					f64 t: k / (n + 0.0);
+					f64 u: 1.0 - t;
+					f64 nx: u * u * cx + 2.0 * u * t * qx + t * t * ex;
+					f64 ny: u * u * cy + 2.0 * u * t * qy + t * t * ey;
+					if k is n
+						nx is ex;
+						ny is ey;
+					;;
+					call To: as_edges px py nx ny;
+					px is nx;
+					py is ny;
+				;;
+				cx is ex;
+				cy is ey;
+				i++ 5;
+				continue;
+			;;
+			if kind is Vg.CUBIC
+				f64 ax: (tm.X: d:(i + 1) d:(i + 2));
+				f64 ay: (tm.Y: d:(i + 1) d:(i + 2));
+				f64 bx: (tm.X: d:(i + 3) d:(i + 4));
+				f64 by: (tm.Y: d:(i + 3) d:(i + 4));
+				f64 ex: (tm.X: d:(i + 5) d:(i + 6));
+				f64 ey: (tm.Y: d:(i + 5) d:(i + 6));
+				# a cubic strays from n chords by at most 3/4 of its largest second difference / n^2
+				f64 d1x: cx - 2.0 * ax + bx;
+				f64 d1y: cy - 2.0 * ay + by;
+				f64 d2x: ax - 2.0 * bx + ex;
+				f64 d2y: ay - 2.0 * by + ey;
+				f64 dd: (Float.Sqrt: d1x * d1x + d1y * d1y);
+				f64 dd2: (Float.Sqrt: d2x * d2x + d2y * d2y);
+				if dd2 > dd
+					dd is dd2;
+				;;
+				int n: (Pieces: 0.75 * dd / tol);
+				f64 px: cx;
+				f64 py: cy;
+				while int k: 1; k <= n; k++;
+					f64 t: k / (n + 0.0);
+					f64 u: 1.0 - t;
+					f64 nx: u * u * u * cx + 3.0 * u * u * t * ax + 3.0 * u * t * t * bx + t * t * t * ex;
+					f64 ny: u * u * u * cy + 3.0 * u * u * t * ay + 3.0 * u * t * t * by + t * t * t * ey;
+					if k is n
+						nx is ex;
+						ny is ey;
+					;;
+					call To: as_edges px py nx ny;
+					px is nx;
+					py is ny;
+				;;
+				cx is ex;
+				cy is ey;
+				i++ 7;
+				continue;
+			;;
+			i++;                                # (a step this doesn't know: never made)
+		;;
+		if going
+			call Finish: as_edges cx cy sx sy false;
+		;;
+	[end]
+
+	# how many chords a curve needs, from how far over the tolerance it bends (its square root)
+	[Pieces: f64 bend: 0.0;]
+		if bend <= 1.0 return 1;
+		f64 n: (Float.Ceil: (Float.Sqrt: bend));
+		if n > 1000.0 return 1000;
+	[end: n as int]
+
+	[To: bln as_edges: true; f64 x0: 0.0; f64 y0: 0.0; f64 x1: 0.0; f64 y1: 0.0;]
+		if as_edges
+			call Edge: x0 y0 x1 y1;
+		;;
+		else
+			call Point: x1 y1;
+		;;
+	[end]
+
+	# the end of a part: closed back to where it began, for filling or because it says so
+	[Finish: bln as_edges: true; f64 cx: 0.0; f64 cy: 0.0; f64 sx: 0.0; f64 sy: 0.0; bln closed: false;]
+		if as_edges
+			call Edge: cx cy sx sy;
+		;;
+		else
+			call EndPart: closed;
+		;;
+	[end]
+
+	[Edge: f64 x0: 0.0; f64 y0: 0.0; f64 x1: 0.0; f64 y1: 0.0;]
+		if y0 is y1 return;                     # (level: it adds nothing)
+		if edge_count >= edge_room
+			int more: (Math.Max: edge_room * 2 256);
+			ptr<f64> bigger: new f64[more * 4];
+			if bigger is 0
+				failed is true;
+				return;
+			;;
+			if edges is not 0
+				call Mem.Copy: bigger edges edge_count * 32;
+				free edges;
+			;;
+			edges is bigger;
+			edge_room is more;
+		;;
+		ptr<f64> e: edges + edge_count * 32;
+		e:0 is x0;
+		e:1 is y0;
+		e:2 is x1;
+		e:3 is y1;
+		edge_count++;
+		min_x is (Vg.Min: min_x (Vg.Min: x0 x1));
+		min_y is (Vg.Min: min_y (Vg.Min: y0 y1));
+		max_x is (Vg.Max: max_x (Vg.Max: x0 x1));
+		max_y is (Vg.Max: max_y (Vg.Max: y0 y1));
+	[end]
+
+	[Begin: f64 x: 0.0; f64 y: 0.0;]
+		if part_count >= part_room
+			int more: (Math.Max: part_room * 2 64);
+			ptr<int> bigger: new int[more * 3];
+			if bigger is 0
+				failed is true;
+				return;
+			;;
+			if parts is not 0
+				call Mem.Copy: bigger parts part_count * 12;
+				free parts;
+			;;
+			parts is bigger;
+			part_room is more;
+		;;
+		parts:(part_count * 3) is point_count;
+		parts:(part_count * 3 + 1) is 0;
+		parts:(part_count * 3 + 2) is 0;
+		part_count++;
+		call Point: x y;
+	[end]
+
+	[Point: f64 x: 0.0; f64 y: 0.0;]
+		if failed or part_count is 0 return;
+		if point_count >= point_room
+			int more: (Math.Max: point_room * 2 256);
+			ptr<f64> bigger: new f64[more * 2];
+			if bigger is 0
+				failed is true;
+				return;
+			;;
+			if points is not 0
+				call Mem.Copy: bigger points point_count * 16;
+				free points;
+			;;
+			points is bigger;
+			point_room is more;
+		;;
+		points:(point_count * 2) is x;
+		points:(point_count * 2 + 1) is y;
+		point_count++;
+		parts:((part_count - 1) * 3 + 1)++;
+	[end]
+
+	[EndPart: bln closed: false;]
+		if part_count is 0 return;
+		if closed
+			parts:((part_count - 1) * 3 + 2) is 1;
+		;;
+	[end]
+
+	# ---- the coverage of one edge
+
+	# an edge within the shape's box (in its pixels): what's left of 0 is a line down x = 0, as
+	# it covers everything right of it, and what's right of the box adds nothing to see
+	[Clipped: f64 x0: 0.0; f64 y0: 0.0; f64 x1: 0.0; f64 y1: 0.0;]
+		f64 right: box_w;
+		if x0 <= 0.0 and x1 <= 0.0
+			call Cell: 0.0 y0 0.0 y1;
+			return;
+		;;
+		if x0 >= right and x1 >= right return;
+		# where it crosses x = 0, and the right side
+		if x0 < 0.0 or x1 < 0.0
+			f64 ym: y0 + (y1 - y0) * (0.0 - x0) / (x1 - x0);
+			if x0 < 0.0
+				call Cell: 0.0 y0 0.0 ym;
+				x0 is 0.0;
+				y0 is ym;
+			;;
+			else
+				call Cell: 0.0 ym 0.0 y1;
+				x1 is 0.0;
+				y1 is ym;
+			;;
+		;;
+		if x0 > right or x1 > right
+			f64 yr: y0 + (y1 - y0) * (right - x0) / (x1 - x0);
+			if x0 > right
+				x0 is right;
+				y0 is yr;
+			;;
+			else
+				x1 is right;
+				y1 is yr;
+			;;
+		;;
+		call Cell: x0 y0 x1 y1;
+	[end]
+
+	# Adds an edge from (x0, y0) to (x1, y1), its x within 0 to box_w, to acc: for each row it
+	# crosses, how much of it is inside each pixel, signed by its way up or down (font-rs's
+	# accumulation, by Raph Levien, under the Apache license).
+	[Cell: f64 x0: 0.0; f64 y0: 0.0; f64 x1: 0.0; f64 y1: 0.0;]
+		if y0 is y1 return;
+		f64 way: 1.0;
+		if y0 > y1
+			way is -1.0;
+			f64 tx: x0;
+			x0 is x1;
+			x1 is tx;
+			f64 ty: y0;
+			y0 is y1;
+			y1 is ty;
+		;;
+		if y1 <= 0.0 or y0 >= box_h return;
+		f64 dxdy: (x1 - x0) / (y1 - y0);
+		f64 x: x0;
+		int first: (Float.Floor: y0) as int;
+		if y0 < 0.0
+			x is x0 - y0 * dxdy;
+			first is 0;
+		;;
+		int last: (Float.Ceil: y1) as int;
+		if last > box_h
+			last is box_h;
+		;;
+		int row_len: box_w + 2;
+		f64 right: box_w;
+		while int y: first; y < last; y++;
+			ptr<f32> row: acc + y * row_len * 4;
+			f64 top: (Vg.Max: y + 0.0 y0);
+			f64 bottom: (Vg.Min: y + 1.0 y1);
+			f64 dy: bottom - top;
+			f64 xnext: x + dxdy * dy;
+			# (kept to the box: stepping down the rows can stray past it by a rounding)
+			if x < 0.0
+				x is 0.0;
+			;;
+			if x > right
+				x is right;
+			;;
+			if xnext < 0.0
+				xnext is 0.0;
+			;;
+			if xnext > right
+				xnext is right;
+			;;
+			f64 d: dy * way;
+			f64 xa: x;
+			f64 xb: xnext;
+			if xa > xb
+				xa is xnext;
+				xb is x;
+			;;
+			f64 xa_floor: (Float.Floor: xa);
+			int xa_i: xa_floor as int;
+			f64 xb_ceil: (Float.Ceil: xb);
+			int xb_i: xb_ceil as int;
+			if xb_i <= xa_i + 1
+				# within one pixel: split between it and the next by where its middle is
+				f64 xmf: 0.5 * (x + xnext) - xa_floor;
+				row:xa_i is row:xa_i + d - d * xmf;
+				row:(xa_i + 1) is row:(xa_i + 1) + d * xmf;
+			;;
+			else
+				f64 s: 1.0 / (xb - xa);
+				f64 xa_f: xa - xa_floor;
+				f64 a0: 0.5 * s * (1.0 - xa_f) * (1.0 - xa_f);
+				f64 xb_f: xb - xb_ceil + 1.0;
+				f64 am: 0.5 * s * xb_f * xb_f;
+				row:xa_i is row:xa_i + d * a0;
+				if xb_i is xa_i + 2
+					row:(xa_i + 1) is row:(xa_i + 1) + d * (1.0 - a0 - am);
+				;;
+				else
+					f64 a1: s * (1.5 - xa_f);
+					row:(xa_i + 1) is row:(xa_i + 1) + d * (a1 - a0);
+					while int xi: xa_i + 2; xi < xb_i - 1; xi++;
+						row:xi is row:xi + d * s;
+					;;
+					f64 a2: a1 + (xb_i - xa_i - 3) * s;
+					row:(xb_i - 1) is row:(xb_i - 1) + d * (1.0 - a2 - am);
+				;;
+				row:xb_i is row:xb_i + d * am;
+			;;
+			x is xnext;
+		;;
+	[end]
+}

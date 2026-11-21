@@ -1,0 +1,242 @@
+# vectorlib's geometry: where a drawing's own units land on the pixels (VgMatrix), and the little
+# trigonometry PHI's Float doesn't have.
+#
+#   VgMatrix m;
+#   call m.Identity;
+#   call m.Translate: 100 50;           # each of these acts before what's already there, as a
+#   call m.Rotate: (Vg.Radians: 30);    # canvas's and SVG's transforms do: the drawing is turned,
+#   call m.Scale: 2 2;                  # then moved
+#   f64 px: (m.X: x y);
+#   f64 py: (m.Y: x y);
+
+use memory.mem;
+
+# x' = a x + c y + e and y' = b x + d y + f, as SVG's matrix(a b c d e f) is
+struct.VgMatrix
+{
+	f64 a;
+	f64 b;
+	f64 c;
+	f64 d;
+	f64 e;
+	f64 f;
+
+	[Identity]
+		a is 1.0;
+		b is 0.0;
+		c is 0.0;
+		d is 1.0;
+		e is 0.0;
+		f is 0.0;
+	[end]
+
+	[Set: f64 na: 1.0; f64 nb: 0.0; f64 nc: 0.0; f64 nd: 1.0; f64 ne: 0.0; f64 nf: 0.0;]
+		a is na;
+		b is nb;
+		c is nc;
+		d is nd;
+		e is ne;
+		f is nf;
+	[end]
+
+	[Copy: VgMatrix from;]
+		a is from.a;
+		b is from.b;
+		c is from.c;
+		d is from.d;
+		e is from.e;
+		f is from.f;
+	[end]
+
+	# this matrix, then: the given one acts first (it's this times it)
+	[Then: f64 ta: 1.0; f64 tb: 0.0; f64 tc: 0.0; f64 td: 1.0; f64 te: 0.0; f64 tf: 0.0;]
+		f64 na: a * ta + c * tb;
+		f64 nb: b * ta + d * tb;
+		f64 nc: a * tc + c * td;
+		f64 nd: b * tc + d * td;
+		f64 ne: a * te + c * tf + e;
+		f64 nf: b * te + d * tf + f;
+		a is na;
+		b is nb;
+		c is nc;
+		d is nd;
+		e is ne;
+		f is nf;
+	[end]
+
+	[Multiply: VgMatrix m;]
+		call Then: m.a m.b m.c m.d m.e m.f;
+	[end]
+
+	[Translate: f64 tx: 0.0; f64 ty: 0.0;]
+		call Then: 1.0 0.0 0.0 1.0 tx ty;
+	[end]
+
+	[Scale: f64 sx: 1.0; f64 sy: 1.0;]
+		call Then: sx 0.0 0.0 sy 0.0 0.0;
+	[end]
+
+	# turned by angle radians: clockwise on a screen, where y grows downward
+	[Rotate: f64 angle: 0.0;]
+		f64 cs: (Float.Cos: angle);
+		f64 sn: (Float.Sin: angle);
+		call Then: cs sn 0.0 - sn cs 0.0 0.0;
+	[end]
+
+	# slanted: x by the tangent of ax, y by the tangent of ay (SVG's skewX and skewY)
+	[Skew: f64 ax: 0.0; f64 ay: 0.0;]
+		call Then: 1.0 (Vg.Tan: ay) (Vg.Tan: ax) 1.0 0.0 0.0;
+	[end]
+
+	[X: f64 x: 0.0; f64 y: 0.0;]
+	[end: a * x + c * y + e]
+
+	[Y: f64 x: 0.0; f64 y: 0.0;]
+	[end: b * x + d * y + f]
+
+	# the matrix that undoes this one, into inverse: false if there's none (it flattens everything)
+	[Invert: VgMatrix inverse;]
+		f64 det: a * d - b * c;
+		if det is 0.0 or (Float.Abs: det) < 1e-300 return false;
+		f64 r: 1.0 / det;
+		call inverse.Set: d * r 0.0 - b * r 0.0 - c * r a * r (c * f - d * e) * r (b * e - a * f) * r;
+	[end: true]
+
+	# how many pixels a unit comes to, about (for how finely a curve is cut, and how thin a line)
+	[Scaling: : f64]
+		f64 det: (Float.Abs: a * d - b * c);
+	[end: (Float.Sqrt: det)]
+}
+
+phi.Vg:Library
+{
+	const f64 PI: 3.14159265358979323846;
+
+	# a path's steps
+	const int MOVE: 1;
+	const int LINE: 2;
+	const int QUAD: 3;
+	const int CUBIC: 4;
+	const int CLOSE: 5;
+	# kinds of paint
+	const int SOLID: 0;
+	const int LINEAR: 1;
+	const int RADIAL: 2;
+	const int IMAGE: 3;
+	# past a gradient's ends, or an image's edges
+	const int PAD: 0;
+	const int REPEAT: 1;
+	const int REFLECT: 2;
+	const int NONE: 3;
+	# fill rules
+	const int NONZERO: 0;
+	const int EVEN_ODD: 1;
+	# where lines meet
+	const int MITER: 0;
+	const int ROUND: 1;
+	const int BEVEL: 2;
+	# how open lines end
+	const int BUTT: 0;
+	const int SQUARE: 2;
+
+	str error: [127];
+
+	# a new, empty path (Vg.FreePath gives it back): 0 if there's no memory
+	[NewPath: : ptr<VgPath>]
+		ptr<VgPath> p: new VgPath;
+		if p is 0 return 0;
+		call Mem.Fill: p 0 sizeof VgPath;
+	[end: p]
+
+	[FreePath: ptr<VgPath> p: 0;]
+		if p is 0 return;
+		if p.data is not 0
+			free p.data;
+		;;
+		free p;
+	[end]
+
+	# a straight-alpha color as premultiplied, made opacity (0 to 1) as see-through again
+	[Premultiply: u32 c: 0; f64 opacity: 1.0; : u32]
+		u32 a: c >> 24;
+		if opacity < 1.0
+			if opacity <= 0.0 return 0;
+			a is ((a * 255.0 * opacity) / 255.0 + 0.5) as u32;
+		;;
+		if a is 0 return 0;
+		if a is 255 return c;
+		u32 r: (((c >> 16) & 255) * a + 127) / 255;
+		u32 g: (((c >> 8) & 255) * a + 127) / 255;
+		u32 b: ((c & 255) * a + 127) / 255;
+	[end: (a << 24) | (r << 16) | (g << 8) | b]
+
+	# two premultiplied colors mixed: w (0 to 256) of the way from a to b
+	[Mix: u32 a: 0; u32 b: 0; int w: 0; : u32]
+		if w <= 0 return a;
+		if w >= 256 return b;
+		u32 wb: w as u32;
+		u32 wa: 256 - wb;
+		u32 rb: (((a & 0xFF00FF) * wa + (b & 0xFF00FF) * wb + 0x800080) >> 8) & 0xFF00FF;
+		u32 ag: ((((a >> 8) & 0xFF00FF) * wa + ((b >> 8) & 0xFF00FF) * wb + 0x800080) >> 8) & 0xFF00FF;
+	[end: rb | (ag << 8)]
+
+	[Min: f64 a: 0.0; f64 b: 0.0;]
+		if a < b return a;
+	[end: b]
+
+	[Max: f64 a: 0.0; f64 b: 0.0;]
+		if a > b return a;
+	[end: b]
+
+	[Radians: f64 degrees: 0.0;]
+	[end: degrees * PI / 180.0]
+
+	[Tan: f64 angle: 0.0;]
+		f64 cs: (Float.Cos: angle);
+		if cs is 0.0 return 1e300;
+	[end: (Float.Sin: angle) / cs]
+
+	# the angle of (x, y) from the x axis, -PI to PI
+	[Atan2: f64 y: 0.0; f64 x: 0.0;]
+		if x is 0.0
+			if y > 0.0 return PI / 2.0;
+			if y < 0.0 return 0.0 - PI / 2.0;
+			return 0.0;
+		;;
+		f64 angle: (Atan: y / x);
+		if x < 0.0
+			if y >= 0.0
+				angle++ PI;
+			;;
+			else
+				angle-- PI;
+			;;
+		;;
+	[end: angle]
+
+	# The arctangent: halved twice by atan(v) = 2 atan(v / (1 + sqrt(1 + v * v))) to below a
+	# quarter, then its series, which is good to the last digits there.
+	[Atan: f64 v: 0.0;]
+		bln turned: false;
+		if v > 1.0 or v < -1.0
+			v is 1.0 / v;
+			turned is true;
+		;;
+		f64 h: v / (1.0 + (Float.Sqrt: 1.0 + v * v));
+		h is h / (1.0 + (Float.Sqrt: 1.0 + h * h));
+		f64 h2: h * h;
+		f64 term: h;
+		f64 sum: 0.0;
+		while int k: 0; k < 14; k++;
+			sum++ term / (2 * k + 1);
+			term is 0.0 - term * h2;
+		;;
+		f64 angle: sum * 4.0;
+		if turned
+			if angle > 0.0
+				return PI / 2.0 - angle;
+			;;
+			return 0.0 - PI / 2.0 - angle;
+		;;
+	[end: angle]
+}

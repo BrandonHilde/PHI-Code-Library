@@ -1,0 +1,179 @@
+# For check_svg.py: draws a scene with vectorlib and writes its pixels.
+#   scene SCENE OUT        OUT gets W * H pixels as red, green, blue, alpha bytes, on white
+#
+# A scene is lines, each a command and its numbers (colors as 0xAARRGGBB):
+#   size W H
+#   matrix a b c d e f             (the canvas's, from here on)
+#   path D                         (SVG path data: the rest of the line)
+#   color C                        (the paint, from here on: a color)
+#   linear X0 Y0 X1 Y1 SPREAD      (or a gradient: its stops follow)
+#   radial CX CY R FX FY SPREAD
+#   stop OFFSET C
+#   fill RULE                      (0 nonzero, 1 even-odd)
+#   stroke WIDTH JOIN CAP LIMIT    (join 0 miter, 1 round, 2 bevel; cap 0 butt, 1 round, 2 square)
+#   dash OFFSET L1 L2 ...
+use vectorlib;
+use memory.mem;
+
+phi.Scene:Program
+{
+	call VectorLib.Start;
+	str args: (OS.Arguments);
+	str input: '';
+	str output: '';
+	int part: 0;
+	while int i: 0; i < args.len; i++;
+		if args:i is ' '
+			if input.len > 0
+				part is 1;
+			;;
+			continue;
+		;;
+		if part is 0
+			input++ args:i;
+		;;
+		else
+			output++ args:i;
+		;;
+	;;
+	int size: (OS.FileSize: input);
+	if size <= 0
+		log 'no scene ' input '\n';
+		exit 1;
+	;;
+	ptr<u8> text: new u8[size + 1];
+	int got: (OS.ReadFile: input text size);
+	text:got is 0;
+	int w: 64;
+	int h: 64;
+	ptr<u32> px: 0;
+	VgCanvas c;
+	VgPaint paint;
+	call paint.Solid: 0xFF000000;
+	ptr<VgPath> p: (Vg.NewPath);
+	VgScan s;
+	s.text is text;
+	s.pos is 0;
+	while text:(s.pos) is not 0
+		# the line on its own, so that reading its numbers stops at its end
+		int line_end: s.pos;
+		while text:line_end is not 10 and text:line_end is not 0
+			line_end++;
+		;;
+		u8 ending: text:line_end;
+		text:line_end is 0;
+		# the command
+		str word: '';
+		while text:(s.pos) is ' '
+			s.pos++;
+		;;
+		while text:(s.pos) > ' '
+			word++ text:(s.pos) as chr;
+			s.pos++;
+		;;
+		f64 n: 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0;
+		if word is 'size'
+			call Numbers: s addr n 2;
+			w is n:0 as int;
+			h is n:1 as int;
+			px is new u32[w * h];
+			call Mem.Fill32: px 0xFFFFFFFF w * h;
+			call c.Start: px w h w;
+		;;
+		elif word is 'matrix'
+			call Numbers: s addr n 6;
+			call c.m.Set: n:0 n:1 n:2 n:3 n:4 n:5;
+		;;
+		elif word is 'path'
+			call p.Clear;
+			bln whole: (p.Svg: text + s.pos);
+		;;
+		elif word is 'color'
+			call paint.Solid: (Hex: s);
+		;;
+		elif word is 'linear'
+			call Numbers: s addr n 5;
+			call paint.Linear: n:0 n:1 n:2 n:3;
+			paint.spread is n:4 as int;
+		;;
+		elif word is 'radial'
+			call Numbers: s addr n 6;
+			call paint.Radial: n:0 n:1 n:2;
+			call paint.Focus: n:3 n:4;
+			paint.spread is n:5 as int;
+		;;
+		elif word is 'stop'
+			call Numbers: s addr n 1;
+			call paint.Stop: n:0 (Hex: s);
+		;;
+		elif word is 'fill'
+			call Numbers: s addr n 1;
+			bln drew: (c.Fill: p paint n:0 as int);
+		;;
+		elif word is 'stroke'
+			call Numbers: s addr n 4;
+			bln drew: (c.Stroke: p paint n:0 n:1 as int n:2 as int n:3);
+		;;
+		elif word is 'dash'
+			f64 lengths[16];
+			f64 offset: 0.0;
+			bln any: (s.Number: addr offset);
+			int k: 0;
+			while k < 16 and (s.Number: addr lengths:k)
+				k++;
+			;;
+			call c.SetDash: addr lengths k offset;
+		;;
+		# to the next line
+		text:line_end is ending;
+		s.pos is line_end;
+		if ending is 10
+			s.pos++;
+		;;
+	;;
+	if px is 0
+		exit 1;
+	;;
+	ptr<u8> rgba: new u8[w * h * 4];
+	while int i: 0; i < w * h; i++;
+		u32 v: px:i;
+		rgba:(i * 4) is ((v >> 16) & 255) as u8;
+		rgba:(i * 4 + 1) is ((v >> 8) & 255) as u8;
+		rgba:(i * 4 + 2) is (v & 255) as u8;
+		rgba:(i * 4 + 3) is (v >> 24) as u8;
+	;;
+	if (OS.WriteFile: output rgba w * h * 4) <= 0
+		exit 1;
+	;;
+	exit 0;
+
+	[Numbers: VgScan s; ptr<f64> target: 0; int count: 0;]
+		while int i: 0; i < count; i++;
+			if not (s.Number: target + i * 8)
+				target:i is 0.0;
+			;;
+		;;
+	[end]
+
+	# a color written 0xAARRGGBB
+	[Hex: VgScan s; : u32]
+		call s.Space;
+		if s.text:(s.pos) is '0' and (s.text:(s.pos + 1) | 32) is 'x'
+			s.pos++ 2;
+		;;
+		u32 v: 0;
+		while true
+			int ch: s.text:(s.pos) | 32;
+			if ch >= '0' and ch <= '9'
+				v is (v << 4) | (ch - '0') as u32;
+			;;
+			elif ch >= 'a' and ch <= 'f'
+				v is (v << 4) | (ch - 'a' + 10) as u32;
+			;;
+			else
+				break;
+			;;
+			s.pos++;
+		;;
+	[end: v]
+}

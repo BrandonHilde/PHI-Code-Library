@@ -1,0 +1,285 @@
+# vectorlib, every day: each part once. A shape filled black onto a clear canvas leaves its coverage
+# in the alpha, so its total is its area: each case prints the total (in 255ths of a pixel) beside
+# the true area, and small shapes are printed as pictures, a character a pixel from ' ' (nothing) to
+# '@' (all), to be looked at.
+use vectorlib;
+use memory.mem;
+
+phi.TestVector:Program
+{
+	call VectorLib.Start;
+	const int W: 24;
+	const int H: 16;
+	ptr<u32> px: new u32[W * H];
+	VgCanvas c;
+	call c.Start: px W H W;
+	VgPaint black;
+	call black.Solid: 0xFF000000;
+	ptr<VgPath> p: (Vg.NewPath);
+
+	log '-- areas\n';
+	call p.Rect: 2.5 1.5 4.75 3.25;
+	call Area: 'a rectangle 4.75 by 3.25' 15.4375 Vg.NONZERO;
+	call p.Clear;
+	call p.Circle: 12 8 6;
+	call Area: 'a circle of radius 6' 113.0973 Vg.NONZERO;
+	call p.Clear;
+	call p.MoveTo: 2 14;
+	call p.LineTo: 12 1.5;
+	call p.LineTo: 22 14;
+	call p.Close;
+	call Area: 'a triangle 20 wide, 12.5 high' 125.0 Vg.NONZERO;
+	call Picture;
+	call p.Clear;
+	call p.Rect: -10 -10 30 12;
+	call Area: 'a rectangle partly off the canvas (20 by 2 shows)' 40.0 Vg.NONZERO;
+
+	log '-- the two rules: a square inside a square, both the same way round\n';
+	call p.Clear;
+	call p.Rect: 2 2 20 12;
+	call p.Rect: 7 5 10 6;
+	call Area: 'nonzero: all of the outer' 240.0 Vg.NONZERO;
+	call Area: 'even-odd: a frame' 180.0 Vg.EVEN_ODD;
+	call Picture;
+
+	log '-- a matrix\n';
+	call p.Clear;
+	call p.Rect: -4 -4 8 8;
+	call c.m.Translate: 12 8;
+	call c.m.Rotate: (Vg.Radians: 45);
+	call Area: 'a square of 8 turned 45 degrees' 64.0 Vg.NONZERO;
+	call Picture;
+	call c.m.Scale: 0.5 1.5;
+	call Area: 'and scaled by a half and one and a half' 48.0 Vg.NONZERO;
+	call c.m.Identity;
+
+	log '-- curves and arcs\n';
+	call p.Clear;
+	call p.MoveTo: 2 14;
+	call p.QuadTo: 12 -6 22 14;
+	call p.Close;
+	call Area: 'under a quadratic, 20 wide and 10 high' 133.3333 Vg.NONZERO;
+	call p.Clear;
+	call p.MoveTo: 2 14;
+	call p.CubicTo: 2 0 22 0 22 14;
+	call p.Close;
+	call Area: 'under a cubic 20 wide, controls 14 up' 168.0 Vg.NONZERO;
+	call p.Clear;
+	call p.MoveTo: 12 8;
+	call p.Arc: 12 8 7 0 (Vg.Radians: 90);
+	call p.Close;
+	call Area: 'a quarter of a circle of 7 (canvas arc)' 38.4845 Vg.NONZERO;
+	call p.Clear;
+	call p.RoundRect: 2 2 20 12 4 4;
+	call Area: 'a rectangle 20 by 12 with corners of 4' 226.2655 Vg.NONZERO;
+	call Picture;
+
+	log '-- SVG path data\n';
+	call Svg: 'M2 2 h20 v12 h-20 z' 240.0;
+	call Svg: 'm2,2 20,0 0,12 -20,0z' 240.0;
+	call Svg: 'M12 2 A6 6 0 0 1 12 14 A6 6 0 0 1 12 2 Z' 113.0973;
+	call Svg: 'M12 2a6 6 0 1 0 .001 0z' 113.0973;
+	call Svg: 'M2 8 C2 2 12 2 12 8 S22 14 22 8 L22 14 H2 Z' 120.0;
+	call Svg: 'M2 9 Q7 -1 12 9 T22 9 Z' 66.6667;
+	call Svg: 'M2 2 L22 2 L22 14 L2 14 Z M7 5 L17 5 x 12 11' 240.0;
+	call Svg: 'M1e1 2 l1.2e1-0 0 1.2E1 -12 0z' 144.0;
+	call Svg: 'M12 2 A3 3 0 0 1 12 14 Z' 56.5487;
+
+	log '-- outlines\n';
+	call p.Clear;
+	call p.MoveTo: 4 8;
+	call p.LineTo: 20 8;
+	call Stroke: 'a line 16 long, 4 wide, butt ends' 4.0 Vg.MITER Vg.BUTT 64.0;
+	call Stroke: 'square ends' 4.0 Vg.MITER Vg.SQUARE 80.0;
+	call Stroke: 'round ends' 4.0 Vg.MITER Vg.ROUND 76.5664;
+	call p.Clear;
+	call p.MoveTo: 3 13;
+	call p.LineTo: 12 3;
+	call p.LineTo: 21 13;
+	call Stroke: 'a miter' 3.0 Vg.MITER Vg.BUTT 0.0;
+	call Picture;
+	call Stroke: 'a bevel' 3.0 Vg.BEVEL Vg.BUTT 0.0;
+	call Picture;
+	call Stroke: 'round' 3.0 Vg.ROUND Vg.BUTT 0.0;
+	call Picture;
+	call p.Clear;
+	call p.Rect: 4 4 16 8;
+	call Stroke: 'a closed rectangle 16 by 8, 2 wide, mitered' 2.0 Vg.MITER Vg.BUTT 96.0;
+	f64 dashes: 4.0 2.0;
+	call c.SetDash: addr dashes 2 0.0;
+	call p.Clear;
+	call p.MoveTo: 2 8;
+	call p.LineTo: 22 8;
+	call Stroke: 'dashed 4 on and 2 off along 20, 2 wide: dashes of 4, 4, 4 and 2' 2.0 Vg.MITER Vg.BUTT 28.0;
+	call Picture;
+	f64 dash_one: 3.0;
+	call c.SetDash: addr dash_one 1 1.0;
+	call Stroke: 'dashed 3 (an odd list), from 1 along: dashes of 2, 3, 3 and 3' 2.0 Vg.MITER Vg.BUTT 22.0;
+	call Picture;
+	call c.SetDash: 0 0 0.0;
+
+	log '-- paint\n';
+	call Mem.Fill32: px 0xFFFFFFFF W * H;
+	VgPaint half;
+	call half.Solid: 0x80FF0000;
+	call p.Clear;
+	call p.Rect: 0 0 4 1;
+	bln drew: (c.Fill: p half Vg.NONZERO);
+	log 'half see-through red over white: ' (Hex: px:0) '\n';
+	call Mem.Fill: px 0 W * H * 4;
+	drew is (c.Fill: p half Vg.NONZERO);
+	log 'over nothing: ' (Hex: px:0) ', and again: ';
+	drew is (c.Fill: p half Vg.NONZERO);
+	log (Hex: px:0) '\n';
+	VgPaint g;
+	call g.Linear: 0 0 8 0;
+	call g.Stop: 0.0 0xFF000000;
+	call g.Stop: 1.0 0xFFFFFFFF;
+	call Row: 'a gradient black to white across 8' g 8;
+	call g.Linear: 0 0 8 0;
+	call g.Stop: 0.0 0xFFFF0000;
+	call g.Stop: 1.0 0x000000FF;
+	call Row: 'red to clear blue (premultiplied: never gray)' g 8;
+	call g.Linear: 0 0 2 0;
+	call g.Stop: 0.0 0xFF000000;
+	call g.Stop: 1.0 0xFFFFFFFF;
+	g.spread is Vg.REPEAT;
+	call Row: 'black to white over 2, repeated' g 8;
+	g.spread is Vg.REFLECT;
+	call Row: 'and reflected' g 8;
+	call g.Radial: 4 0 4;
+	call g.Stop: 0.0 0xFFFFFFFF;
+	call g.Stop: 1.0 0xFF000000;
+	call Row: 'white out to black, radius 4 from the middle' g 8;
+	call g.Focus: 1 0;
+	call Row: 'and from a point 3 to the left' g 8;
+	u32 tiny: 0xFFFF0000 0xFF00FF00 0xFF0000FF 0xFFFFFFFF;
+	call Mem.Fill: px 0 W * H * 4;
+	drew is (c.Picture: addr tiny 2 2 2 0 0 4 4 false);
+	log 'a 2 by 2 image into 4 by 4, not smooth:\n';
+	call Pixels: 4 4;
+	call Mem.Fill: px 0 W * H * 4;
+	drew is (c.Picture: addr tiny 2 2 2 0 0 4 4 true);
+	log 'smooth:\n';
+	call Pixels: 4 4;
+	VgPaint tiles;
+	call tiles.Image: addr tiny 2 2 2;
+	tiles.spread is Vg.REPEAT;
+	tiles.smooth is false;
+	call Row: 'as a repeated pattern' tiles 8;
+
+	log '-- clipping\n';
+	call c.ClipBox: 4 4 20 12;
+	call p.Clear;
+	call p.Rect: 0 0 24 16;
+	call Area: 'everything, inside a box 16 by 8' 128.0 Vg.NONZERO;
+	call c.NoClip;
+	ptr<VgPath> hole: (Vg.NewPath);
+	call hole.Circle: 12 8 6;
+	drew is (c.ClipPath: hole Vg.NONZERO);
+	call Area: 'everything, inside a circle of 6' 113.0973 Vg.NONZERO;
+	call Picture;
+	call hole.Clear;
+	call hole.Rect: 0 0 12 16;
+	drew is (c.ClipPath: hole Vg.NONZERO);
+	call Area: 'and inside the left half too' 56.5487 Vg.NONZERO;
+	call c.NoClip;
+	c.alpha is 0.5;
+	call Area: 'everything, at half' 192.0 Vg.NONZERO;
+	c.alpha is 1.0;
+
+	log '-- angles\n';
+	log 'atan2: ' (Vg.Atan2: 1 1) ' ' (Vg.Atan2: 1 -1) ' ' (Vg.Atan2: -1 -1) ' ' (Vg.Atan2: -2 0) ' ' (Vg.Atan2: 0.5 2) '\n';
+
+	call Vg.FreePath: p;
+	call Vg.FreePath: hole;
+	call c.Done;
+	free px;
+	exit 0;
+
+	# p filled black onto a clear canvas: its coverage, beside the true area, both in 255ths
+	[Area: ptr<u8> name: 0; f64 area: 0.0; int rule: 0;]
+		call Mem.Fill: px 0 W * H * 4;
+		if not (c.Fill: p black rule)
+			log name ': failed\n';
+			return;
+		;;
+		call Total: name area;
+	[end]
+
+	[Total: ptr<u8> name: 0; f64 area: 0.0;]
+		int sum: 0;
+		while int i: 0; i < W * H; i++;
+			sum++ (px:i >> 24) as int;
+		;;
+		int want: (Float.Round: area * 255.0) as int;
+		log name ': ' sum ', true ' want ', off by ' (Math.Abs: sum - want) '\n';
+	[end]
+
+	[Svg: ptr<u8> d: 0; f64 area: 0.0;]
+		call p.Clear;
+		bln whole: (p.Svg: d);
+		call Mem.Fill: px 0 W * H * 4;
+		bln drew: (c.Fill: p black Vg.NONZERO);
+		str name: ('\'' d '\' (whole: ' whole ')');
+		call Total: name area;
+	[end]
+
+	[Stroke: ptr<u8> name: 0; f64 width: 1.0; int join: 0; int cap: 0; f64 area: 0.0;]
+		call Mem.Fill: px 0 W * H * 4;
+		if not (c.Stroke: p black width join cap 4.0)
+			log name ': failed\n';
+			return;
+		;;
+		if area > 0.0
+			call Total: name area;
+		;;
+		else
+			log name ':\n';
+		;;
+	[end]
+
+	# the first n pixels of a row filled with paint
+	[Row: ptr<u8> name: 0; VgPaint paint; int n: 0;]
+		call Mem.Fill: px 0 W * H * 4;
+		call p.Clear;
+		call p.Rect: 0 0 n 1;
+		bln drew: (c.Fill: p paint Vg.NONZERO);
+		log name ':';
+		while int i: 0; i < n; i++;
+			log ' ' (Hex: px:i);
+		;;
+		log '\n';
+	[end]
+
+	[Pixels: int pw: 0; int ph: 0;]
+		while int y: 0; y < ph; y++;
+			log ' ';
+			while int x: 0; x < pw; x++;
+				log ' ' (Hex: px:(y * W + x));
+			;;
+			log '\n';
+		;;
+	[end]
+
+	# the canvas's alpha as a picture
+	[Picture]
+		str shades: ' .:-=+*#%@';
+		while int y: 0; y < H; y++;
+			str line: '  |';
+			while int x: 0; x < W; x++;
+				int a: (px:(y * W + x) >> 24) as int;
+				line++ shades:((a * 9 + 127) / 255);
+			;;
+			log line '|\n';
+		;;
+	[end]
+
+	[Hex: u32 v: 0;]
+		str digits: '0123456789ABCDEF';
+		str s: '';
+		while int i: 7; i >= 0; i--;
+			s++ digits:((v >> (i * 4)) & 15);
+		;;
+	[end: s]
+}

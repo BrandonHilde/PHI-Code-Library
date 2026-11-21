@@ -1,0 +1,223 @@
+-- areas
+a rectangle 4.75 by 3.25: 3940, true 3937, off by 3
+a circle of radius 6: 28600, true 28840, off by 240
+a triangle 20 wide, 12.5 high: 31880, true 31875, off by 5
+  |                        |
+  |           ..           |
+  |           ##           |
+  |          +@@+          |
+  |         =@@@@=         |
+  |        :@@@@@@:        |
+  |       .%@@@@@@%.       |
+  |       #@@@@@@@@#       |
+  |      +@@@@@@@@@@+      |
+  |     =@@@@@@@@@@@@=     |
+  |    :@@@@@@@@@@@@@@:    |
+  |   .%@@@@@@@@@@@@@@%.   |
+  |   #@@@@@@@@@@@@@@@@#   |
+  |  +@@@@@@@@@@@@@@@@@@+  |
+  |                        |
+  |                        |
+a rectangle partly off the canvas (20 by 2 shows): 10200, true 10200, off by 0
+-- the two rules: a square inside a square, both the same way round
+nonzero: all of the outer: 61200, true 61200, off by 0
+even-odd: a frame: 45900, true 45900, off by 0
+  |                        |
+  |                        |
+  |  @@@@@@@@@@@@@@@@@@@@  |
+  |  @@@@@@@@@@@@@@@@@@@@  |
+  |  @@@@@@@@@@@@@@@@@@@@  |
+  |  @@@@@          @@@@@  |
+  |  @@@@@          @@@@@  |
+  |  @@@@@          @@@@@  |
+  |  @@@@@          @@@@@  |
+  |  @@@@@          @@@@@  |
+  |  @@@@@          @@@@@  |
+  |  @@@@@@@@@@@@@@@@@@@@  |
+  |  @@@@@@@@@@@@@@@@@@@@  |
+  |  @@@@@@@@@@@@@@@@@@@@  |
+  |                        |
+  |                        |
+-- a matrix
+a square of 8 turned 45 degrees: 16320, true 16320, off by 0
+  |                        |
+  |                        |
+  |           ::           |
+  |          :%%:          |
+  |         :%@@%:         |
+  |        :%@@@@%:        |
+  |       :%@@@@@@%:       |
+  |      :%@@@@@@@@%:      |
+  |      :%@@@@@@@@%:      |
+  |       :%@@@@@@%:       |
+  |        :%@@@@%:        |
+  |         :%@@%:         |
+  |          :%%:          |
+  |           ::           |
+  |                        |
+  |                        |
+and scaled by a half and one and a half: 12242, true 12240, off by 2
+-- curves and arcs
+under a quadratic, 20 wide and 10 high: 33661, true 34000, off by 339
+under a cubic 20 wide, controls 14 up: 42664, true 42840, off by 176
+a quarter of a circle of 7 (canvas arc): 9732, true 9814, off by 82
+a rectangle 20 by 12 with corners of 4: 57552, true 57698, off by 146
+  |                        |
+  |                        |
+  |   .*%@@@@@@@@@@@@%*.   |
+  |  .%@@@@@@@@@@@@@@@@%.  |
+  |  *@@@@@@@@@@@@@@@@@@*  |
+  |  %@@@@@@@@@@@@@@@@@@%  |
+  |  @@@@@@@@@@@@@@@@@@@@  |
+  |  @@@@@@@@@@@@@@@@@@@@  |
+  |  @@@@@@@@@@@@@@@@@@@@  |
+  |  @@@@@@@@@@@@@@@@@@@@  |
+  |  %@@@@@@@@@@@@@@@@@@%  |
+  |  *@@@@@@@@@@@@@@@@@@*  |
+  |  .%@@@@@@@@@@@@@@@@%.  |
+  |   .*%@@@@@@@@@@@@%*.   |
+  |                        |
+  |                        |
+-- SVG path data
+'M2 2 h20 v12 h-20 z' (whole: 1): 61200, true 61200, off by 0
+'m2,2 20,0 0,12 -20,0z' (whole: 1): 61200, true 61200, off by 0
+'M12 2 A6 6 0 0 1 12 14 A6 6 0 0 1 12 2 Z' (whole: 1): 28600, true 28840, off by 240
+'M12 2a6 6 0 1 0 .001 0z' (whole: 1): 28604, true 28840, off by 236
+'M2 8 C2 2 12 2 12 8 S22 14 22 8 L22 14 H2 Z' (whole: 1): 30600, true 30600, off by 0
+'M2 9 Q7 -1 12 9 T22 9 Z' (whole: 1): 16736, true 17000, off by 264
+'M2 2 L22 2 L22 14 L2 14 Z M7 5 L17 5 x 12 11' (whole: 0): 61200, true 61200, off by 0
+'M1e1 2 l1.2e1-0 0 1.2E1 -12 0z' (whole: 1): 36720, true 36720, off by 0
+'M12 2 A3 3 0 0 1 12 14 Z' (whole: 1): 14300, true 14420, off by 120
+-- outlines
+a line 16 long, 4 wide, butt ends: 16320, true 16320, off by 0
+square ends: 20400, true 20400, off by 0
+round ends: 19440, true 19524, off by 84
+a miter:
+  |                        |
+  |           **           |
+  |          +@@+          |
+  |         =@@@@=         |
+  |        -@@@@@@-        |
+  |       -@@@##@@@-       |
+  |      :@@@#  #@@@:      |
+  |     .%@@%.  .%@@%.     |
+  |    .%@@%.    .%@@%.    |
+  |    #@@@:      :@@@#    |
+  |   #@@@-        -@@@#   |
+  |  *@@@-          -@@@*  |
+  |  +@@=            =@@+  |
+  |   =+              +=   |
+  |                        |
+  |                        |
+a bevel:
+  |                        |
+  |                        |
+  |          +@@+          |
+  |         =@@@@=         |
+  |        -@@@@@@-        |
+  |       -@@@##@@@-       |
+  |      :@@@#  #@@@:      |
+  |     .%@@%.  .%@@%.     |
+  |    .%@@%.    .%@@%.    |
+  |    #@@@:      :@@@#    |
+  |   #@@@-        -@@@#   |
+  |  *@@@-          -@@@*  |
+  |  +@@=            =@@+  |
+  |   =+              +=   |
+  |                        |
+  |                        |
+round:
+  |                        |
+  |           --           |
+  |          +@@+          |
+  |         =@@@@=         |
+  |        -@@@@@@-        |
+  |       -@@@##@@@-       |
+  |      :@@@#  #@@@:      |
+  |     .%@@%.  .%@@%.     |
+  |    .%@@%.    .%@@%.    |
+  |    #@@@:      :@@@#    |
+  |   #@@@-        -@@@#   |
+  |  *@@@-          -@@@*  |
+  |  +@@=            =@@+  |
+  |   =+              +=   |
+  |                        |
+  |                        |
+a closed rectangle 16 by 8, 2 wide, mitered: 24480, true 24480, off by 0
+dashed 4 on and 2 off along 20, 2 wide: dashes of 4, 4, 4 and 2: 7140, true 7140, off by 0
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |  @@@@  @@@@  @@@@  @@  |
+  |  @@@@  @@@@  @@@@  @@  |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+dashed 3 (an odd list), from 1 along: dashes of 2, 3, 3 and 3: 5610, true 5610, off by 0
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |  @@   @@@   @@@   @@@  |
+  |  @@   @@@   @@@   @@@  |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+  |                        |
+-- paint
+half see-through red over white: FFFF7F7F
+over nothing: 80FF0000, and again: C0FF0000
+a gradient black to white across 8: FF101010 FF303030 FF505050 FF707070 FF8F8F8F FFAFAFAF FFCFCFCF FFEFEFEF
+red to clear blue (premultiplied: never gray): EFFF0000 CFFF0000 AFFF0000 8FFF0000 70FF0000 50FF0000 30FF0000 10FF0000
+black to white over 2, repeated: FF404040 FFBFBFBF FF404040 FFBFBFBF FF404040 FFBFBFBF FF404040 FFBFBFBF
+and reflected: FF404040 FFBFBFBF FFBFBFBF FF404040 FF404040 FFBFBFBF FFBFBFBF FF404040
+white out to black, radius 4 from the middle: FF1E1E1E FF5C5C5C FF9A9A9A FFD2D2D2 FFD2D2D2 FF9A9A9A FF5C5C5C FF1E1E1E
+and from a point 3 to the left: FF717171 FFDEDEDE FFC3C3C3 FFA1A1A1 FF7D7D7D FF595959 FF353535 FF111111
+a 2 by 2 image into 4 by 4, not smooth:
+  FFFF0000 FFFF0000 FF00FF00 FF00FF00
+  FFFF0000 FFFF0000 FF00FF00 FF00FF00
+  FF0000FF FF0000FF FFFFFFFF FFFFFFFF
+  FF0000FF FF0000FF FFFFFFFF FFFFFFFF
+smooth:
+  FFFF0000 FFBF4000 FF40BF00 FF00FF00
+  FFBF0040 FF9F4040 FF60BF40 FF40FF40
+  FF4000BF FF6040BF FF9FBFBF FFBFFFBF
+  FF0000FF FF4040FF FFBFBFFF FFFFFFFF
+as a repeated pattern: FFFF0000 FF00FF00 FFFF0000 FF00FF00 FFFF0000 FF00FF00 FFFF0000 FF00FF00
+-- clipping
+everything, inside a box 16 by 8: 32640, true 32640, off by 0
+everything, inside a circle of 6: 28600, true 28840, off by 240
+  |                        |
+  |                        |
+  |         =#%%#=         |
+  |       .#@@@@@@#.       |
+  |       #@@@@@@@@#       |
+  |      =@@@@@@@@@@=      |
+  |      #@@@@@@@@@@#      |
+  |      %@@@@@@@@@@%      |
+  |      %@@@@@@@@@@%      |
+  |      #@@@@@@@@@@#      |
+  |      =@@@@@@@@@@=      |
+  |       #@@@@@@@@#       |
+  |       .#@@@@@@#.       |
+  |         =#%%#=         |
+  |                        |
+  |                        |
+and inside the left half too: 14300, true 14420, off by 120
+everything, at half: 49152, true 48960, off by 192
+-- angles
+atan2: 0.785398 2.356194 -2.356194 -1.570796 0.244979
