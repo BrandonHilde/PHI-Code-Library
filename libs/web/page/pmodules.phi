@@ -1,0 +1,127 @@
+# Module scripts in a page (<script type=module>, and import() from any script): js/modules.phi
+# keeps the modules and runs them; this fetches them through the host (as SCRIPT requests with no
+# script element) and runs a page's module scripts in the order they come in the document once it
+# has been parsed (an async one as soon as everything it imports is here), as the HTML standard
+# has it. A classic script marked nomodule doesn't run, as a browser with modules doesn't run it.
+
+phi.PageModules:Library
+{
+	const int MARK: 7101;                # a request's a, for a module's fetch
+
+	# a <script type=module> met: inline, its text is the module; with src, that's fetched
+	[Script: ptr<Page> p: 0; ptr<DomNode> s: 0;]
+		call Hooks;
+		if p.mod_nodes.len >= p.mod_nodes.max return;
+		WlBuf url;
+		ptr<u8> src: (Dom.AttrValue: s 'src');
+		if src is not 0
+			call Page.Resolve: p src (WlText.LenZ: src) addr url;
+			u64 rec: (JsModules.Want: url.data);
+		;;
+		else
+			# an inline module is the page's address with a fragment of its own
+			call url.AddZ: p.url;
+			call url.AddZ: '#module-';
+			call url.AddInt: p.mod_nodes.len as int;
+			WlBuf text;
+			call Dom.TextContent: s text;
+			call JsModules.Arrived: url.data text.data text.len;
+			call text.Free;
+		;;
+		p.mod_nodes++ s;
+		p.mod_urls++ (url.Take);
+		p.mod_async++ ((Dom.AttrValue: s 'async') is not 0);
+		call Pump: p;
+	[end]
+
+	[Hooks]
+		JsModules.load is addr Load;
+		JsModules.resolve is addr Resolve;
+	[end]
+
+	# JsModules asks for a module: the host fetches it
+	[Load: ptr<u8> url: 0;]
+		ptr<Page> p: Page.current;
+		if p is 0
+			call JsModules.Failed: url;
+			return;
+		;;
+		u32 id: (Page.Request: p url (WlText.LenZ: url) PageLoad.SCRIPT 0 as ptr<DomNode> (JsV.Int: MARK) JsV.UNDEF);
+	[end]
+
+	# a specifier against the module (or script) that names it; a script with no address of its own
+	# (an inline one) is the page's
+	[Resolve: ptr<u8> base: 0; ptr<u8> spec: 0; u32 n: 0; ptr<WlBuf> target: 0;]
+		ptr<Page> p: Page.current;
+		ptr<u8> from: base;
+		bln has_scheme: false;
+		u32 i: 0;
+		while from:i is not 0 and from:i is not '/' and from:i is not ' '
+			if from:i is ':'
+				has_scheme is true;
+				break;
+			;;
+			i++;
+		;;
+		if not has_scheme and p is not 0
+			from is p.url;
+		;;
+		call CssUrl.Join: from spec n target;
+	[end]
+
+	# a module's fetch came back (Page.DeliverNow, for a SCRIPT request with no element)
+	[Arrived: ptr<Page> p: 0; ptr<u8> url: 0; bln ok: false; ptr<u8> bytes: 0; u32 n: 0;]
+		if ok
+			call JsModules.Arrived: url bytes n;
+		;;
+		else
+			call JsModules.Failed: url;
+		;;
+		call Pump: p;
+	[end]
+
+	# run what can run now: import()s whose modules are all here, then the module scripts in order
+	[Pump: ptr<Page> p: 0;]
+		call Page.Use: p;
+		p.nest++;
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		if call JsModules.Settle throws err
+			Js.exception is (Js.TryCatchAll: addr t err);
+			call Page.ReportException: p;
+		;;
+		p.nest--;
+		while p.mod_next < p.mod_nodes.len
+			u32 i: p.mod_next;
+			if not p.parse_done and not p.mod_async:i break;
+			u64 rec: (JsModules.Find: p.mod_urls:i);
+			int here: (JsModules.Here: rec);
+			if here is 0 break;
+			p.mod_next++;
+			ptr<DomNode> s: p.mod_nodes:i;
+			if here < 0
+				Js.exception is JsModules.fail_error;
+				call Page.ReportException: p;
+				call Page.FireNode: p s 'error';
+				continue;
+			;;
+			p.current_script is s;
+			p.nest++;
+			call Js.TryBegin: addr t;
+			u64 done: 0;
+			if call done is JsModules.Run: rec throws err2
+				Js.exception is (Js.TryCatchAll: addr t err2);
+				call Page.ReportException: p;
+			;;
+			p.nest--;
+			p.current_script is 0;
+			call Page.RunJobs: p;
+			call Page.FireNode: p s 'load';
+		;;
+		call Page.RunJobs: p;
+	[end]
+
+	# whether module scripts are still to run (the page's load waits for them)
+	[Waiting: ptr<Page> p: 0;]
+	[end: p.mod_next < p.mod_nodes.len]
+}

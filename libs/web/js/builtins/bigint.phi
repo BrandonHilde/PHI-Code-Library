@@ -1,0 +1,93 @@
+# BigInt: the function (not a constructor), asIntN and asUintN, and the prototype's toString,
+# toLocaleString and valueOf. The arithmetic is js/bigint.phi's.
+
+phi.JsBigIntBuiltins:Library
+{
+	[Init]
+		ptr<JsObj> proto: (JsObjs.NewObject);
+		JsRt.P.bigint is proto;
+		ptr<JsNativeFn> c: (Js.DefineClass: 'BigInt' addr Construct 1 proto);
+		ptr<JsObj> co: c as ptr<JsObj>;
+		call Js.DefineNative: co 'asIntN' addr AsIntN 2;
+		call Js.DefineNative: co 'asUintN' addr AsUintN 2;
+		call Js.DefineNative: proto 'toString' addr ToString 0;
+		call Js.DefineNative: proto 'toLocaleString' addr ToLocale 0;
+		call Js.DefineNative: proto 'valueOf' addr ValueOf 0;
+		call JsObjs.DefineValue: proto JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'BigInt') JsObjs.C;
+	[end]
+
+	# BigInt(value)
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		if (JsV.IsObj: (Js.NewTarget))
+			call JsErr.Type: 'BigInt is not a constructor';
+		;;
+		u64 p: (JsOps.ToPrimitive: (Js.Arg: args argc 0) JsOps.HINT_NUMBER);
+		if (JsV.IsNum: p)
+			f64 x: (JsV.AsNum: p);
+			if x is not x or not (WlNum.IsFinite: x) or (JsBig.Trunc: x) is not x
+				WlBuf b;
+				call b.AddZ: 'The number ';
+				call Js.TextOf: p addr b;
+				call b.AddZ: ' cannot be converted to a BigInt because it is not an integer';
+				call JsErr.Range: b.data;
+			;;
+			return (JsBig.FromDouble: x);
+		;;
+	[end: (JsOps.ToBigInt: p)]
+
+	[AsIntN: ptr<u64> args: 0; int argc: 0;]
+		u64 bits: (Index: (Js.Arg: args argc 0));
+	[end: (JsBig.AsN: (JsOps.ToBigInt: (Js.Arg: args argc 1)) bits true)]
+
+	[AsUintN: ptr<u64> args: 0; int argc: 0;]
+		u64 bits: (Index: (Js.Arg: args argc 0));
+	[end: (JsBig.AsN: (JsOps.ToBigInt: (Js.Arg: args argc 1)) bits false)]
+
+	# ToIndex
+	[Index: u64 v: 0; : u64]
+		if v is JsV.UNDEF return 0;
+		f64 n: (JsOps.ToInteger: v);
+		if n < 0.0 or n > 9007199254740991.0
+			call JsErr.Range: 'Invalid value: not (convertible to) a safe integer';
+		;;
+	[end: n as u64]
+
+	# thisBigIntValue
+	[This: ptr<u64> args: 0; : u64]
+		u64 t: args:(-1);
+		if (JsV.IsBig: t) return t;
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.kind is JsGc.K_BOXED and (JsV.IsBig: o.slot) return o.slot;
+		;;
+		call JsErr.Type: 'BigInt.prototype method requires that this be a BigInt';
+	[end: 0 as u64]
+
+	[ToString: ptr<u64> args: 0; int argc: 0;]
+		u64 x: (This: args);
+		u32 radix: 10;
+		u64 r: (Js.Arg: args argc 0);
+		if r is not JsV.UNDEF
+			f64 rv: (JsOps.ToInteger: r);
+			if rv < 2.0 or rv > 36.0
+				call JsErr.Range: 'toString() radix must be between 2 and 36';
+			;;
+			radix is rv as u32;
+		;;
+		WlBuf b;
+		call JsBig.ToText: x radix addr b;
+		u64 text: (Js.NewString: b.data b.len);
+		call b.Free;
+	[end: text]
+
+	[ToLocale: ptr<u64> args: 0; int argc: 0;]
+		u64 x: (This: args);
+		WlBuf b;
+		call JsBig.ToText: x 10 addr b;
+		u64 text: (Js.NewString: b.data b.len);
+		call b.Free;
+	[end: text]
+
+	[ValueOf: ptr<u64> args: 0; int argc: 0;]
+	[end: (This: args)]
+}

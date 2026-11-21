@@ -28,6 +28,9 @@ use js.builtins.array;
 use js.builtins.string;
 use js.builtins.number;
 use js.builtins.symbol;
+use js.bigint;
+use js.builtins.bigint;
+use js.modules;
 use js.builtins.error;
 use js.builtins.generator;
 use js.builtins.promise;
@@ -182,6 +185,7 @@ phi.Js:Library
 			so.name is (JsStrs.NewZ: name);
 		;;
 		JsParse.arena is addr arena;
+		JsParse.unit_name is so.name;
 		JsCompile.arena is addr arena;
 		JsCompile.source is so;
 		call JsOp.Start;
@@ -205,9 +209,84 @@ phi.Js:Library
 		call JsLex.Begin: src len;
 		bln strict: starts_strict;
 		starts_strict is false;
-		ptr<JsNode> tree: (JsParse.Script: is_eval strict);
+		ptr<JsNode> tree: 0;
+		JsParse.module_mode is compiling_module;
+		if compiling_module
+			tree is (JsParse.Module);
+		;;
+		else
+			tree is (JsParse.Script: is_eval strict);
+		;;
+		JsParse.module_mode is false;
 		call JsScopes.Program: tree arena;
 	[end: (JsCompile.Program: tree)]
+
+	bln compiling_module: false;
+
+	# A module's source compiled, as a record of it for a loader: { fn, exports, requests, reexports,
+	# stars }: exports are the names it exports from its own variables.
+	# fn is the module's function, (async) fn(%e, meta, ns0, ns1, ...): %e(name, getter) defines one
+	# of its exports on its namespace, meta is its import.meta, and nsK is the namespace of the module
+	# requests[K] names (a specifier string). reexports are [K, imported name (null: the namespace),
+	# exported name]; stars are the Ks of export * from. Undefined, with failed and exception set (a
+	# SyntaxError), if it doesn't compile.
+	[CompileModule: ptr<u8> src: 0; u32 len: 0; ptr<u8> name: 0;]
+		u64 result: JsV.UNDEF;
+		failed is false;
+		if JsRt.r.allocated > JsRt.r.threshold
+			call JsGc.Collect;
+		;;
+		JsTryState t;
+		call TryBegin: addr t;
+		JsGc.no_gc++;
+		if call result is ModuleThrowing: src len name throws err
+			# (TryCatchAll puts no_gc back as it was at TryBegin)
+			compiling_module is false;
+			JsParse.module_mode is false;
+			exception is (TryCatchAll: addr t err);
+			failed is true;
+			return JsV.UNDEF;
+		;;
+		JsGc.no_gc--;
+	[end: result]
+
+	[ModuleThrowing: ptr<u8> src: 0; u32 len: 0; ptr<u8> name: 0;]
+		compiling_module is true;
+		ptr<JsCode> c: (Compile: src len name false);
+		compiling_module is false;
+		ptr<JsObj> rec: (JsObjs.NewObject);
+		ptr<JsObj> requests: (JsObjs.NewArray: JsParse.request_count);
+		while u32 i: 0; i < JsParse.request_count; i++;
+			call JsObjs.ArrayPush: requests (JsV.Str: JsParse.requests:i);
+		;;
+		ptr<JsObj> reexports: (JsObjs.NewArray: JsParse.reexport_count);
+		while u32 k: 0; k < JsParse.reexport_count; k++;
+			ptr<JsObj> one: (JsObjs.NewArray: 3);
+			call JsObjs.ArrayPush: one (JsV.Int: JsParse.reexport_request:k as int);
+			if JsParse.reexport_imported:k is 0
+				call JsObjs.ArrayPush: one JsV.NULL;
+			;;
+			else
+				call JsObjs.ArrayPush: one (JsV.Str: JsParse.reexport_imported:k);
+			;;
+			call JsObjs.ArrayPush: one (JsV.Str: JsParse.reexport_names:k);
+			call JsObjs.ArrayPush: reexports (JsV.Obj: one);
+		;;
+		ptr<JsObj> stars: (JsObjs.NewArray: JsParse.star_count);
+		while u32 j: 0; j < JsParse.star_count; j++;
+			call JsObjs.ArrayPush: stars (JsV.Int: JsParse.star_request:j as int);
+		;;
+		ptr<JsObj> exports: (JsObjs.NewArray: JsParse.export_count);
+		while u32 x: 0; x < JsParse.export_count; x++;
+			call JsObjs.ArrayPush: exports (JsV.Str: JsParse.export_names:x);
+		;;
+		call Define: rec 'exports' (JsV.Obj: exports) JsObjs.WEC;
+		call Define: rec 'requests' (JsV.Obj: requests) JsObjs.WEC;
+		call Define: rec 'reexports' (JsV.Obj: reexports) JsObjs.WEC;
+		call Define: rec 'stars' (JsV.Obj: stars) JsObjs.WEC;
+		u64 fn: (RunCode: c);
+		call Define: rec 'fn' fn JsObjs.WEC;
+	[end: (JsV.Obj: rec)]
 
 	# what went wrong compiling: a SyntaxError, if it isn't one already
 	[CompileError: Error err;]

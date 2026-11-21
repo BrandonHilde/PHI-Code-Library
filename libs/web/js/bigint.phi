@@ -1,0 +1,832 @@
+# BigInt: integers of any size. A value is tagged JsV.TAG_BIG and points to a JsBigInt cell: a sign and
+# the magnitude's 32-bit digits, the lowest first, with no zero digit at the top (zero has none and is
+# never negative). Cells never change once made, so they're shared as freely as strings.
+#
+# The arithmetic works on digit arrays (ptr<u32>, count) on the heap and makes a new cell for each
+# answer: schoolbook multiplication, Knuth's Algorithm D for division (with Hacker's Delight's
+# divmnu's steps), and the bitwise operators on two's complement as the language defines them. A
+# result of more than MAX_BITS is a RangeError, as engines have one.
+
+struct.JsBigInt
+{
+	ptr<JsCell> gc_next;
+	u8 kind;
+	u8 mark;
+	u16 flags;             # NEGATIVE
+	u32 size;
+	u32 count;             # digits, right after this struct
+	u32 spare;
+}
+
+phi.JsBig:Library
+{
+	const u32 NEGATIVE: 1;
+	const u32 MAX_BITS: 16777216;         # 2 MB of digits
+	const u32 MAX_DIGITS: 524288;
+
+	# ---- making and reading
+
+	# a value from count digits (they may have zeros at the top), negative or not
+	[Make: ptr<u32> d: 0; u32 count: 0; bln negative: false; : u64]
+		while count > 0 and d:(count - 1) is 0
+			count--;
+		;;
+		if count > MAX_DIGITS
+			call JsErr.Range: 'Maximum BigInt size exceeded';
+		;;
+		ptr<JsBigInt> b: (JsGc.New: sizeof JsBigInt + count * 4 JsGc.K_BIGINT) as ptr<JsBigInt>;
+		b.count is count;
+		b.flags is 0;
+		if negative and count > 0
+			b.flags is NEGATIVE as u16;
+		;;
+		if count > 0
+			call Mem.Copy: (Digits: b) as ptr<u8> d as ptr<u8> count * 4;
+		;;
+	[end: (JsV.Big: b)]
+
+	[Digits: ptr<JsBigInt> b: 0; : ptr<u32>]
+	[end: ((b as ptr<u8>) + sizeof JsBigInt) as ptr<u32>]
+
+	[Negative: u64 v: 0;]
+		ptr<JsBigInt> b: (JsV.AsBig: v);
+	[end: (b.flags & NEGATIVE) is not 0]
+
+	[IsZero: u64 v: 0;]
+	[end: (JsV.AsBig: v).count is 0]
+
+	[FromI64: i64 x: 0; : u64]
+		u32 d[2];
+		bln negative: x < 0;
+		u64 m: x as u64;
+		if negative
+			m is (0 - x) as u64;
+		;;
+		d:0 is (m & 0xFFFFFFFF) as u32;
+		d:1 is (m >> 32) as u32;
+	[end: (Make: addr d 2 negative)]
+
+	[FromU64: u64 m: 0; : u64]
+		u32 d[2];
+		d:0 is (m & 0xFFFFFFFF) as u32;
+		d:1 is (m >> 32) as u32;
+	[end: (Make: addr d 2 false)]
+
+	[FromInt: int i: 0; : u64]
+	[end: (FromI64: i as i64)]
+
+	# an integral, finite f64, exactly
+	[FromDouble: f64 x: 0.0; : u64]
+		bln negative: x < 0.0;
+		if negative
+			x is 0.0 - x;
+		;;
+		if x < 18446744073709551616.0
+			return (Sign: (FromU64: x as u64) negative);
+		;;
+		u64 bits: (WlNum.Bits64: x);
+		u32 exponent: ((bits >> 52) & 0x7FF) as u32;
+		u64 mantissa: (bits & 0xFFFFFFFFFFFFF) | 0x10000000000000;
+		# x = mantissa * 2^(exponent - 1075)
+		u64 m: (FromU64: mantissa);
+	[end: (Sign: (ShiftLeft: m exponent - 1075) negative)]
+
+	# v with the sign given
+	[Sign: u64 v: 0; bln negative: false; : u64]
+		if (Negative: v) is negative or (IsZero: v) return v;
+		ptr<JsBigInt> b: (JsV.AsBig: v);
+	[end: (Make: (Digits: b) b.count negative)]
+
+	# the nearest f64 (ties to even), Infinity when it's too big for one
+	[ToDouble: u64 v: 0; : f64]
+		ptr<JsBigInt> b: (JsV.AsBig: v);
+		ptr<u32> d: (Digits: b);
+		u32 n: b.count;
+		f64 x: 0.0;
+		if n is 0 return 0.0;
+		if n <= 2
+			u64 m: d:0;
+			if n is 2
+				m is m | ((d:1 as u64) << 32);
+			;;
+			x is m as f64;
+		;;
+		else
+			# the top 64 bits, with a sticky bit for any below them, then scaled
+			u32 top: (BitLength: d n);
+			u32 shift: top - 64;
+			u64 m2: (BitsAt: d n shift 64);
+			bln sticky: (AnyBelow: d n shift);
+			if sticky
+				m2 is m2 | 1;
+			;;
+			x is (m2 as f64) * (Pow2: shift);
+		;;
+		if (b.flags & NEGATIVE) is not 0
+			x is 0.0 - x;
+		;;
+	[end: x]
+
+	# the low 64 bits, as two's complement (for BigInt64Array, BigUint64Array and DataView)
+	[ToU64: u64 v: 0; : u64]
+		ptr<JsBigInt> b: (JsV.AsBig: v);
+		ptr<u32> d: (Digits: b);
+		u64 m: 0;
+		if b.count > 0
+			m is d:0;
+		;;
+		if b.count > 1
+			m is m | ((d:1 as u64) << 32);
+		;;
+		if (b.flags & NEGATIVE) is not 0
+			m is (0 - m) as u64;
+		;;
+	[end: m]
+
+	# ---- comparing
+
+	# a < b: -1, a = b: 0, a > b: 1
+	[Compare: u64 a: 0; u64 b: 0;]
+		bln na: (Negative: a);
+		bln nb: (Negative: b);
+		if na and not nb return -1;
+		if nb and not na return 1;
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		ptr<JsBigInt> y: (JsV.AsBig: b);
+		int m: (CompareDigits: (Digits: x) x.count (Digits: y) y.count);
+		if na
+			m is 0 - m;
+		;;
+	[end: m]
+
+	[Equal: u64 a: 0; u64 b: 0;]
+	[end: (Compare: a b) is 0]
+
+	# a against an f64: -1, 0 or 1; 2 if it's NaN
+	[CompareDouble: u64 a: 0; f64 x: 0.0;]
+		if x is not x return 2;
+		if not (WlNum.IsFinite: x)
+			if x > 0.0 return -1;
+			return 1;
+		;;
+		f64 whole: (Trunc: x);
+		int m: (Compare: a (FromDouble: whole));
+		if m is not 0 return m;
+		if whole < x return -1;
+		if whole > x return 1;
+	[end: 0]
+
+	[CompareDigits: ptr<u32> a: 0; u32 na: 0; ptr<u32> b: 0; u32 nb: 0;]
+		if na is not nb
+			if na < nb return -1;
+			return 1;
+		;;
+		u32 i: na;
+		while i > 0
+			i--;
+			if a:i is not b:i
+				if a:i < b:i return -1;
+				return 1;
+			;;
+		;;
+	[end: 0]
+
+	# a hash of the value, for Map and Set
+	[Hash: u64 v: 0; : u32]
+		ptr<JsBigInt> b: (JsV.AsBig: v);
+		ptr<u32> d: (Digits: b);
+		u32 h: 2166136261 ^ b.flags;
+		while u32 i: 0; i < b.count; i++;
+			h is (h ^ d:i) * 16777619;
+		;;
+	[end: h]
+
+	# ---- arithmetic
+
+	[Add: u64 a: 0; u64 b: 0; : u64]
+	[end: (AddSigned: a b false)]
+
+	[Sub: u64 a: 0; u64 b: 0; : u64]
+	[end: (AddSigned: a b true)]
+
+	# a + b, or a - b when flip
+	[AddSigned: u64 a: 0; u64 b: 0; bln flip: false; : u64]
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		ptr<JsBigInt> y: (JsV.AsBig: b);
+		bln nx: (x.flags & NEGATIVE) is not 0;
+		bln ny: ((y.flags & NEGATIVE) is not 0) is not flip;
+		if y.count is 0 return a;
+		if x.count is 0
+			return (Make: (Digits: y) y.count ny);
+		;;
+		ptr<u32> r: 0;
+		u32 n: 0;
+		u64 result: 0;
+		if nx is ny
+			n is x.count;
+			if y.count > n
+				n is y.count;
+			;;
+			n++;
+			r is (Room: n);
+			call AddDigits: r (Digits: x) x.count (Digits: y) y.count;
+			result is (Make: r n nx);
+		;;
+		else
+			int m: (CompareDigits: (Digits: x) x.count (Digits: y) y.count);
+			if m is 0 return (FromInt: 0);
+			n is x.count;
+			if y.count > n
+				n is y.count;
+			;;
+			r is (Room: n);
+			if m > 0
+				call SubDigits: r (Digits: x) x.count (Digits: y) y.count;
+				result is (Make: r n nx);
+			;;
+			else
+				call SubDigits: r (Digits: y) y.count (Digits: x) x.count;
+				result is (Make: r n ny);
+			;;
+		;;
+		free r;
+	[end: result]
+
+	[Mul: u64 a: 0; u64 b: 0; : u64]
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		ptr<JsBigInt> y: (JsV.AsBig: b);
+		if x.count is 0 or y.count is 0 return (FromInt: 0);
+		if x.count + y.count > MAX_DIGITS
+			call JsErr.Range: 'Maximum BigInt size exceeded';
+		;;
+		u32 n: x.count + y.count;
+		ptr<u32> r: (Room: n);
+		call MulDigits: r (Digits: x) x.count (Digits: y) y.count;
+		bln negative: ((x.flags ^ y.flags) & NEGATIVE) is not 0;
+		u64 result: (Make: r n negative);
+		free r;
+	[end: result]
+
+	# a / b, rounded towards zero (want_rest: a % b, with a's sign, instead)
+	[Div: u64 a: 0; u64 b: 0; bln want_rest: false; : u64]
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		ptr<JsBigInt> y: (JsV.AsBig: b);
+		if y.count is 0
+			call JsErr.Range: 'Division by zero';
+		;;
+		bln nx: (x.flags & NEGATIVE) is not 0;
+		bln ny: (y.flags & NEGATIVE) is not 0;
+		if (CompareDigits: (Digits: x) x.count (Digits: y) y.count) < 0
+			if want_rest return a;
+			return (FromInt: 0);
+		;;
+		ptr<u32> q: (Room: x.count);
+		ptr<u32> rest: (Room: y.count);
+		call DivDigits: q rest (Digits: x) x.count (Digits: y) y.count;
+		u64 result: 0;
+		if want_rest
+			result is (Make: rest y.count nx);
+		;;
+		else
+			result is (Make: q x.count nx is not ny);
+		;;
+		free q;
+		free rest;
+	[end: result]
+
+	# a ** b (b not negative: the caller has checked)
+	[Pow: u64 a: 0; u64 b: 0; : u64]
+		if (Negative: b)
+			call JsErr.Range: 'Exponent must be non-negative';
+		;;
+		ptr<JsBigInt> e: (JsV.AsBig: b);
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		if e.count is 0 return (FromInt: 1);
+		if x.count is 0 return a;
+		# 1 and -1 to any power
+		if x.count is 1 and (Digits: x):0 is 1
+			if (Negative: a) and ((Digits: e):0 & 1) is 0 return (FromInt: 1);
+			return a;
+		;;
+		if e.count > 1
+			call JsErr.Range: 'Maximum BigInt size exceeded';
+		;;
+		u32 power: (Digits: e):0;
+		u32 bits: (BitLength: (Digits: x) x.count);
+		if (bits - 1) as u64 * power as u64 >= MAX_BITS as u64
+			call JsErr.Range: 'Maximum BigInt size exceeded';
+		;;
+		u64 result: (FromInt: 1);
+		u64 square: a;
+		while power > 0
+			if (power & 1) is not 0
+				result is (Mul: result square);
+			;;
+			power is power >> 1;
+			if power > 0
+				square is (Mul: square square);
+			;;
+		;;
+	[end: result]
+
+	[Neg: u64 a: 0; : u64]
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		if x.count is 0 return a;
+	[end: (Make: (Digits: x) x.count (x.flags & NEGATIVE) is 0)]
+
+	# ~a, which is -a - 1
+	[Not: u64 a: 0; : u64]
+	[end: (Sub: (Neg: a) (FromInt: 1))]
+
+	# a << n and a >> n (n may be negative, which shifts the other way); >> rounds towards -Infinity
+	[Shift: u64 a: 0; u64 n: 0; bln left: true; : u64]
+		ptr<JsBigInt> s: (JsV.AsBig: n);
+		bln negative: (Negative: n);
+		if negative
+			left is not left;
+		;;
+		if s.count > 1
+			if left and not (IsZero: a)
+				call JsErr.Range: 'Maximum BigInt size exceeded';
+			;;
+			if left return a;
+			if (Negative: a) return (FromInt: -1);
+			return (FromInt: 0);
+		;;
+		u32 by: 0;
+		if s.count is 1
+			by is (Digits: s):0;
+		;;
+		if left
+			if by >= MAX_BITS and not (IsZero: a)
+				call JsErr.Range: 'Maximum BigInt size exceeded';
+			;;
+			return (ShiftLeft: a by);
+		;;
+	[end: (ShiftRight: a by)]
+
+	[ShiftLeft: u64 a: 0; u32 by: 0; : u64]
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		if x.count is 0 or by is 0 return a;
+		u32 whole: by / 32;
+		u32 part: by % 32;
+		u32 n: x.count + whole + 1;
+		if n > MAX_DIGITS
+			call JsErr.Range: 'Maximum BigInt size exceeded';
+		;;
+		ptr<u32> r: (Room: n);
+		ptr<u32> d: (Digits: x);
+		u32 carry: 0;
+		while u32 i: 0; i < x.count; i++;
+			u32 v: d:i;
+			if part is 0
+				r:(i + whole) is v;
+			;;
+			else
+				r:(i + whole) is (v << part) | carry;
+				carry is v >> (32 - part);
+			;;
+		;;
+		r:(x.count + whole) is carry;
+		u64 result: (Make: r n (x.flags & NEGATIVE) is not 0);
+		free r;
+	[end: result]
+
+	# a >> by, rounding towards -Infinity
+	[ShiftRight: u64 a: 0; u32 by: 0; : u64]
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		if x.count is 0 or by is 0 return a;
+		bln negative: (x.flags & NEGATIVE) is not 0;
+		u32 whole: by / 32;
+		u32 part: by % 32;
+		if whole >= x.count
+			if negative return (FromInt: -1);
+			return (FromInt: 0);
+		;;
+		ptr<u32> d: (Digits: x);
+		bln lost: (AnyBelow: d x.count by);
+		u32 n: x.count - whole;
+		ptr<u32> r: (Room: n);
+		while u32 i: 0; i < n; i++;
+			u32 lo: d:(i + whole);
+			if part is 0
+				r:i is lo;
+			;;
+			else
+				u32 hi: 0;
+				if i + whole + 1 < x.count
+					hi is d:(i + whole + 1);
+				;;
+				r:i is (lo >> part) | (hi << (32 - part));
+			;;
+		;;
+		u64 result: (Make: r n negative);
+		free r;
+		if negative and lost
+			result is (Sub: result (FromInt: 1));
+		;;
+	[end: result]
+
+	# a & b, a | b, a ^ b (op: 0, 1, 2), on two's complement
+	[Bitwise: u64 a: 0; u64 b: 0; int op: 0; : u64]
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		ptr<JsBigInt> y: (JsV.AsBig: b);
+		u32 n: x.count;
+		if y.count > n
+			n is y.count;
+		;;
+		n++;
+		ptr<u32> p: (Twos: a n);
+		ptr<u32> q: (Twos: b n);
+		while u32 i: 0; i < n; i++;
+			if op is 0
+				p:i is p:i & q:i;
+			;;
+			elif op is 1
+				p:i is p:i | q:i;
+			;;
+			else
+				p:i is p:i ^ q:i;
+			;;
+		;;
+		u64 result: (FromTwos: p n);
+		free p;
+		free q;
+	[end: result]
+
+	# a's two's complement in n digits (n more than its own), on the heap
+	[Twos: u64 a: 0; u32 n: 0; : ptr<u32>]
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		ptr<u32> r: (Room: n);
+		call Mem.Copy: r as ptr<u8> (Digits: x) as ptr<u8> x.count * 4;
+		if (x.flags & NEGATIVE) is not 0
+			u64 carry: 1;
+			while u32 i: 0; i < n; i++;
+				u64 v: ((~r:i) as u64 & 0xFFFFFFFF) + carry;
+				r:i is (v & 0xFFFFFFFF) as u32;
+				carry is v >> 32;
+			;;
+		;;
+	[end: r]
+
+	# the value of n digits of two's complement (the top bit is the sign)
+	[FromTwos: ptr<u32> p: 0; u32 n: 0; : u64]
+		bln negative: (p:(n - 1) & 0x80000000) is not 0;
+		if negative
+			u64 carry: 1;
+			while u32 i: 0; i < n; i++;
+				u64 v: ((~p:i) as u64 & 0xFFFFFFFF) + carry;
+				p:i is (v & 0xFFFFFFFF) as u32;
+				carry is v >> 32;
+			;;
+		;;
+	[end: (Make: p n negative)]
+
+	# BigInt.asUintN (signed: asIntN): a modulo 2^bits, as a number from 0 (or -2^(bits-1))
+	[AsN: u64 a: 0; u64 bits: 0; bln signed: false; : u64]
+		if bits is 0 return (FromInt: 0);
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		if not signed and (x.flags & NEGATIVE) is 0 and (BitLength: (Digits: x) x.count) as u64 <= bits return a;
+		if signed and x.count is 0 return a;
+		if bits > MAX_BITS as u64
+			if signed return a;
+			call JsErr.Range: 'Maximum BigInt size exceeded';
+		;;
+		u32 b: bits as u32;
+		u32 n: (b + 31) / 32;
+		if x.count + 1 > n
+			n is x.count + 1;
+		;;
+		ptr<u32> p: (Twos: a n);
+		# keep the low b bits
+		u32 keep: (b + 31) / 32;
+		while u32 i: keep; i < n; i++;
+			p:i is 0;
+		;;
+		if b % 32 is not 0
+			p:(keep - 1) is p:(keep - 1) & ((1 << (b % 32)) - 1);
+		;;
+		u64 result: (Make: p keep false);
+		free p;
+		if signed
+			# if bit b-1 is set, it's that minus 2^b
+			ptr<JsBigInt> r: (JsV.AsBig: result);
+			if (BitLength: (Digits: r) r.count) is b
+				result is (Sub: result (ShiftLeft: (FromInt: 1) b));
+			;;
+		;;
+	[end: result]
+
+	# ---- text
+
+	# the digits in radix (2 to 36), with a - for a negative one
+	[ToText: u64 a: 0; u32 radix: 10; ptr<WlBuf> target: 0;]
+		ptr<JsBigInt> x: (JsV.AsBig: a);
+		if x.count is 0
+			call target.Add: '0';
+			return;
+		;;
+		# the digits come out lowest first, a chunk at a time: as many as fit below 2^32
+		u32 chunk: radix;
+		u32 per: 1;
+		while (chunk as u64) * radix as u64 <= 0xFFFFFFFF
+			chunk is chunk * radix;
+			per++;
+		;;
+		u32 n: x.count;
+		ptr<u32> d: (Room: n);
+		call Mem.Copy: d as ptr<u8> (Digits: x) as ptr<u8> n * 4;
+		WlBuf back;
+		while n > 0
+			u32 rest: (DivSmall: d n chunk);
+			while n > 0 and d:(n - 1) is 0
+				n--;
+			;;
+			while u32 k: 0; k < per; k++;
+				if n is 0 and rest is 0 break;
+				u32 digit: rest % radix;
+				rest is rest / radix;
+				if digit < 10
+					call back.Add: ('0' + digit) as u8;
+				;;
+				else
+					call back.Add: ('a' + digit - 10) as u8;
+				;;
+			;;
+		;;
+		free d;
+		if (x.flags & NEGATIVE) is not 0
+			call target.Add: '-';
+		;;
+		u32 i: back.len;
+		while i > 0
+			i--;
+			call target.Add: back.data:i;
+		;;
+		call back.Free;
+	[end]
+
+	# digits in radix (no sign, no prefix, no separators): the value, or JsV.UNDEF if one isn't a digit
+	[FromDigits: ptr<u8> text: 0; u32 length: 0; u32 radix: 10; bln negative: false; : u64]
+		if length is 0 return JsV.UNDEF;
+		# room for the most bits that many digits can make: per digit, the bits of radix - 1
+		u32 per: 1;
+		while (1 << per) < radix
+			per++;
+		;;
+		u32 n: (length * per + 31) / 32 + 1;
+		if n > MAX_DIGITS
+			call JsErr.Range: 'Maximum BigInt size exceeded';
+		;;
+		ptr<u32> d: (Room: n);
+		u32 used: 0;
+		while u32 i: 0; i < length; i++;
+			int v: (WlNum.DigitValue: text:i);
+			if v < 0 or v >= radix as int
+				free d;
+				return JsV.UNDEF;
+			;;
+			# d = d * radix + v
+			u64 carry: v as u64;
+			while u32 k: 0; k < used; k++;
+				u64 t: (d:k as u64) * radix as u64 + carry;
+				d:k is (t & 0xFFFFFFFF) as u32;
+				carry is t >> 32;
+			;;
+			if carry is not 0
+				d:used is carry as u32;
+				used++;
+			;;
+		;;
+		u64 result: (Make: d used negative);
+		free d;
+	[end: result]
+
+	# StringToBigInt: whitespace round it, then nothing (0n), decimal with a sign, or 0x, 0o, 0b and
+	# digits with none; JsV.UNDEF if it isn't one of those
+	[FromString: ptr<JsStr> s: 0; : u64]
+		call JsOps.Trim: s true true;
+		ptr<u8> p: s.data + JsOps.trim_start;
+		u32 n: JsOps.trim_len;
+		if n is 0 return (FromInt: 0);
+		if n > 2 and p:0 is '0'
+			u32 x: p:1 | 32;
+			if x is 'x' return (FromDigits: p + 2 n - 2 16 false);
+			if x is 'o' return (FromDigits: p + 2 n - 2 8 false);
+			if x is 'b' return (FromDigits: p + 2 n - 2 2 false);
+		;;
+		bln negative: false;
+		if p:0 is '+' or p:0 is '-'
+			negative is (p:0 is '-');
+			p is p + 1;
+			n--;
+		;;
+	[end: (FromDigits: p n 10 negative)]
+
+	# 2^e as an f64 (Infinity past the largest)
+	[Pow2: u32 e: 0; : f64]
+		if e > 1023 return (WlNum.FromBits: 0x7FF0000000000000);
+	[end: (WlNum.FromBits: ((1023 + e) as u64) << 52)]
+
+	# x without its fraction
+	[Trunc: f64 x: 0.0; : f64]
+		if x > 4503599627370496.0 or x < -4503599627370496.0 return x;
+	[end: (x as i64) as f64]
+
+	# ---- digit arrays
+
+	# n zeroed digits on the heap
+	[Room: u32 n: 0; : ptr<u32>]
+		if n is 0
+			n is 1;
+		;;
+		ptr<u32> r: new u32[n];
+		if r is 0
+			call JsErr.Range: 'Out of memory for a BigInt';
+		;;
+		call Mem.Fill: r as ptr<u8> 0 n * 4;
+	[end: r]
+
+	# r (room for the longer and one more) = a + b
+	[AddDigits: ptr<u32> r: 0; ptr<u32> a: 0; u32 na: 0; ptr<u32> b: 0; u32 nb: 0;]
+		u64 carry: 0;
+		u32 n: na;
+		if nb > n
+			n is nb;
+		;;
+		while u32 i: 0; i < n; i++;
+			u64 t: carry;
+			if i < na
+				t is t + a:i;
+			;;
+			if i < nb
+				t is t + b:i;
+			;;
+			r:i is (t & 0xFFFFFFFF) as u32;
+			carry is t >> 32;
+		;;
+		r:n is carry as u32;
+	[end]
+
+	# r = a - b, where a >= b
+	[SubDigits: ptr<u32> r: 0; ptr<u32> a: 0; u32 na: 0; ptr<u32> b: 0; u32 nb: 0;]
+		i64 borrow: 0;
+		while u32 i: 0; i < na; i++;
+			i64 t: (a:i as i64) - borrow;
+			if i < nb
+				t is t - (b:i as i64);
+			;;
+			if t < 0
+				t is t + 4294967296;
+				borrow is 1;
+			;;
+			else
+				borrow is 0;
+			;;
+			r:i is t as u32;
+		;;
+	[end]
+
+	# r (na + nb digits, zeroed) = a * b
+	[MulDigits: ptr<u32> r: 0; ptr<u32> a: 0; u32 na: 0; ptr<u32> b: 0; u32 nb: 0;]
+		while u32 i: 0; i < na; i++;
+			u64 carry: 0;
+			u64 ai: a:i;
+			if ai is 0 continue;
+			while u32 k: 0; k < nb; k++;
+				u64 t: ai * (b:k as u64) + (r:(i + k) as u64) + carry;
+				r:(i + k) is (t & 0xFFFFFFFF) as u32;
+				carry is t >> 32;
+			;;
+			r:(i + nb) is carry as u32;
+		;;
+	[end]
+
+	# d (n digits) divided by a small number in place; the remainder
+	[DivSmall: ptr<u32> d: 0; u32 n: 0; u32 by: 0; : u32]
+		u64 rest: 0;
+		u32 i: n;
+		while i > 0
+			i--;
+			u64 t: (rest << 32) | d:i;
+			d:i is (t / by) as u32;
+			rest is t % by;
+		;;
+	[end: rest as u32]
+
+	# q (nu digits) = u / v, rest (nv digits) = u % v, where u >= v and v has no zero at its top
+	[DivDigits: ptr<u32> q: 0; ptr<u32> rest: 0; ptr<u32> u: 0; u32 nu: 0; ptr<u32> v: 0; u32 nv: 0;]
+		if nv is 1
+			call Mem.Copy: q as ptr<u8> u as ptr<u8> nu * 4;
+			rest:0 is (DivSmall: q nu v:0);
+			return;
+		;;
+		# Knuth's D: normalize so v's top digit has its top bit set
+		u32 s: (LeadingZeros: v:(nv - 1));
+		ptr<u32> vn: (Room: nv);
+		ptr<u32> un: (Room: nu + 1);
+		while u32 i: nv - 1; i > 0; i--;
+			vn:i is (v:i << s) | (Carried: v:(i - 1) s);
+		;;
+		vn:0 is v:0 << s;
+		un:nu is (Carried: u:(nu - 1) s);
+		while u32 k: nu - 1; k > 0; k--;
+			un:k is (u:k << s) | (Carried: u:(k - 1) s);
+		;;
+		un:0 is u:0 << s;
+		u64 base: 4294967296;
+		i64 j: (nu - nv) as i64;
+		while j >= 0
+			u32 jj: j as u32;
+			u64 num: ((un:(jj + nv) as u64) << 32) | un:(jj + nv - 1);
+			u64 qhat: num / vn:(nv - 1);
+			u64 rhat: num % vn:(nv - 1);
+			while qhat >= base or qhat * vn:(nv - 2) > ((rhat << 32) | un:(jj + nv - 2))
+				qhat--;
+				rhat is rhat + vn:(nv - 1);
+				if rhat >= base break;
+			;;
+			# un[j..j+nv] -= qhat * vn
+			i64 k2: 0;
+			i64 t: 0;
+			while u32 i2: 0; i2 < nv; i2++;
+				u64 p: qhat * vn:i2;
+				t is (un:(i2 + jj) as i64) - k2 - ((p & 0xFFFFFFFF) as i64);
+				un:(i2 + jj) is (t & 0xFFFFFFFF) as u32;
+				k2 is ((p >> 32) as i64) - (t >> 32);
+			;;
+			t is (un:(jj + nv) as i64) - k2;
+			un:(jj + nv) is (t & 0xFFFFFFFF) as u32;
+			q:jj is (qhat & 0xFFFFFFFF) as u32;
+			if t < 0
+				# took off one too many: add one v back
+				q:jj is q:jj - 1;
+				u64 c: 0;
+				while u32 i3: 0; i3 < nv; i3++;
+					u64 t2: (un:(i3 + jj) as u64) + vn:i3 + c;
+					un:(i3 + jj) is (t2 & 0xFFFFFFFF) as u32;
+					c is t2 >> 32;
+				;;
+				un:(jj + nv) is ((un:(jj + nv) as u64 + c) & 0xFFFFFFFF) as u32;
+			;;
+			j--;
+		;;
+		# the remainder, normalized back
+		while u32 r: 0; r < nv; r++;
+			u32 hi: 0;
+			if r + 1 <= nv
+				hi is un:(r + 1);
+			;;
+			if s is 0
+				rest:r is un:r;
+			;;
+			else
+				rest:r is (un:r >> s) | (hi << (32 - s));
+			;;
+		;;
+		free vn;
+		free un;
+	[end]
+
+	# the bits of x that shifting left by s carries into the next digit
+	[Carried: u32 x: 0; u32 s: 0; : u32]
+		if s is 0 return 0;
+	[end: x >> (32 - s)]
+
+	[LeadingZeros: u32 x: 0; : u32]
+		if x is 0 return 32;
+		u32 n: 0;
+		while (x & 0x80000000) is 0
+			x is x << 1;
+			n++;
+		;;
+	[end: n]
+
+	# how many bits the magnitude takes
+	[BitLength: ptr<u32> d: 0; u32 n: 0; : u32]
+		if n is 0 return 0;
+	[end: n * 32 - (LeadingZeros: d:(n - 1))]
+
+	# count bits (up to 64) from bit at up, as a number
+	[BitsAt: ptr<u32> d: 0; u32 n: 0; u32 at_bit: 0; u32 count: 64; : u64]
+		u64 v: 0;
+		while u32 i: 0; i < count; i++;
+			u32 bit: at_bit + i;
+			u32 digit: bit / 32;
+			if digit < n and ((d:digit >> (bit % 32)) & 1) is not 0
+				v is v | ((1 as u64) << i);
+			;;
+		;;
+	[end: v]
+
+	# whether any of the bits below bit are set
+	[AnyBelow: ptr<u32> d: 0; u32 n: 0; u32 bit: 0;]
+		u32 whole: bit / 32;
+		while u32 i: 0; i < whole and i < n; i++;
+			if d:i is not 0 return true;
+		;;
+		if whole < n and bit % 32 is not 0
+			if (d:whole & ((1 << (bit % 32)) - 1)) is not 0 return true;
+		;;
+	[end: false]
+}

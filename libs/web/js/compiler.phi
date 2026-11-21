@@ -567,6 +567,9 @@ phi.JsCompile:Library
 			is JsN.NUM
 				call PushNum: n.num;
 			;;
+			is JsN.BIGINT
+				call OpA: JsOp.CONST (Const: (JsBig.FromDigits: n.name.data n.name.bytes n.num as u32 false));
+			;;
 			is JsN.STR
 				call PushStr: n.name;
 			;;
@@ -685,6 +688,16 @@ phi.JsCompile:Library
 			;;
 			call Line: n.line;
 			call OpA: JsOp.GETGLOBAL (Atom: n.name);
+			return;
+		;;
+		if (n.flags & JsN.X_IMPORT) is not 0
+			# a module's import: its namespace, and the name read from it (the namespace's getter
+			# says if it isn't there yet)
+			call GetVarOp: v false;
+			if n.raw is not 0
+				call Line: n.line;
+				call OpA: JsOp.GETFIELD (Atom: n.raw);
+			;;
 			return;
 		;;
 		call GetVarOp: v (n.flags & JsN.X_TDZ) is not 0;
@@ -1170,6 +1183,13 @@ phi.JsCompile:Library
 			;;
 			return;
 		;;
+		if (t.flags & JsN.X_IMPORT) is not 0
+			# an import can't be assigned
+			call Line: t.line;
+			call OpA: JsOp.THROW_CONST 0;
+			call Op: JsOp.POP;
+			return;
+		;;
 		if mode is M_INIT
 			call SetVarOp: v false;
 			return;
@@ -1413,7 +1433,7 @@ phi.JsCompile:Library
 		if t.kind is JsN.IDENT
 			ptr<JsVar> v: t.info as ptr<JsVar>;
 			# i++ on a plain local, its value unused: the commonest thing in a loop
-			if not want and op is JsOp.INC and v is not 0 and not v.captured and (t.flags & JsN.X_TDZ) is 0
+			if not want and op is JsOp.INC and v is not 0 and not v.captured and (t.flags & (JsN.X_TDZ | JsN.X_IMPORT)) is 0
 				u32 vk: v.kind;
 				if vk is not JsScopes.V_CONST and vk is not JsScopes.V_FNAME and vk is not JsScopes.V_CLASS_NAME
 					call OpA: JsOp.INCLOC v.slot as u32;
@@ -2633,7 +2653,7 @@ phi.JsCompile:Library
 					call SetVarOp: v false;
 				;;
 			;;
-			is JsN.EMPTY
+			is JsN.EMPTY JsN.IMPORT
 				cf.pending_labels is 0;
 			;;
 			else

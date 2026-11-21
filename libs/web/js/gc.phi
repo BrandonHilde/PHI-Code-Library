@@ -63,6 +63,7 @@ phi.JsGc:Library
 	const u32 K_GEN: 6;
 	const u32 K_SOURCE: 7;
 	const u32 K_REACTION: 8;
+	const u32 K_BIGINT: 9;
 	# objects from here on
 	const u32 K_OBJECT: 16;
 	const u32 K_ARRAY: 17;
@@ -121,14 +122,15 @@ phi.JsGc:Library
 
 	[Mark: u64 v: 0;]
 		u32 tag: (v >> 48) as u32;
-		if tag < JsV.TAG_OBJ or tag > JsV.TAG_SYM return;
+		if tag < JsV.TAG_OBJ or tag > JsV.TAG_BIG return;
 		call MarkCell: (v & JsV.PTR_MASK) as ptr<JsCell>;
 	[end]
 
 	[MarkCell: ptr<JsCell> c: 0;]
 		if c is 0 or c.mark is not 0 return;
 		c.mark is 1;
-		# a flat string has nothing else to reach, unless it knows its interned twin
+		# a BigInt reaches nothing; a flat string nothing else, unless it knows its interned twin
+		if c.kind is K_BIGINT return;
 		if c.kind is K_STRING
 			ptr<JsStr> s: c as ptr<JsStr>;
 			if s.left is 0 return;
@@ -155,7 +157,7 @@ phi.JsGc:Library
 
 	[IsMarked: u64 v: 0;]
 		u32 tag: (v >> 48) as u32;
-		if tag < JsV.TAG_OBJ or tag > JsV.TAG_SYM return true;
+		if tag < JsV.TAG_OBJ or tag > JsV.TAG_BIG return true;
 		ptr<JsCell> c: (v & JsV.PTR_MASK) as ptr<JsCell>;
 	[end: c.mark is not 0]
 

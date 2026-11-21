@@ -469,8 +469,8 @@ phi.JsJson:Library
 	# SerializeJSONProperty; false if the value isn't written at all
 	[Property: ptr<JsJsonOut> w: 0; u64 holder: 0; u64 name: 0;]
 		u64 v: (JsObjs.GetV: holder (JsObjs.KeyOf: name));
-		if (JsV.IsObj: v)
-			u64 tj: (JsObjs.GetAtom: (JsV.AsObj: v) (JsStrs.InternZ: 'toJSON') as ptr<u8> v);
+		if (JsV.IsObj: v) or (JsV.IsBig: v)
+			u64 tj: (JsObjs.GetV: v (JsV.Str: (JsStrs.InternZ: 'toJSON')));
 			if (JsOps.IsCallable: tj)
 				v is (JsVm.Call1: tj v name);
 			;;
@@ -487,10 +487,13 @@ phi.JsJson:Library
 				elif (JsV.IsStr: o.slot)
 					v is (JsV.Str: (JsOps.ToStr: v));
 				;;
-				elif (JsV.IsBool: o.slot)
+				elif (JsV.IsBool: o.slot) or (JsV.IsBig: o.slot)
 					v is o.slot;
 				;;
 			;;
+		;;
+		if (JsV.IsBig: v)
+			call JsErr.Type: 'Do not know how to serialize a BigInt';
 		;;
 		if v is JsV.NULL
 			call w.text.AddZ: 'null';

@@ -115,6 +115,8 @@ phi.JsN:Library
 	const u32 LABELED: 59;     # name, a: statement
 	const u32 FUNCDECL: 61;    # a: FUNC
 	const u32 CLASSDECL: 62;   # a: CLASS
+	const u32 BIGINT: 63;      # name: its digits, num: their radix
+	const u32 IMPORT: 64;      # a module's import of one name: name: the local name, raw: the name imported (0: the namespace), num: which request
 
 	# PROP's op
 	const u32 P_INIT: 0;
@@ -145,6 +147,7 @@ phi.JsN:Library
 	const u32 FN_EVAL: 65536;
 	const u32 FN_STATIC_INIT: 131072;
 	const u32 FN_NAME_REF: 262144;
+	const u32 FN_MODULE: 524288;   # a module's function: its top-level functions are lexical, as a module's are
 
 	# flags on others
 	const u32 X_COMPUTED: 1;
@@ -161,6 +164,7 @@ phi.JsN:Library
 	const u32 X_ANNEXB: 2048;  # a var made for a function in a block
 	const u32 X_NO_SUPER_CHECK: 4096;  # on a template piece: its cooked value is undefined
 	const u32 X_TDZ: 8192;     # on a reference: its variable may not be initialized yet
+	const u32 X_IMPORT: 16384; # on a reference to an import: info is the namespace parameter, raw the name to read from it (0: the namespace)
 }
 
 phi.JsParse:Library
@@ -505,7 +509,14 @@ phi.JsParse:Library
 				call Fail: 'with statements are not supported';
 			;;
 			is JsT.K_IMPORT
-				call Fail: 'Cannot use import statement outside a module';
+				# import(...) and import.meta are expressions; a declaration is only at a module's top
+				u32 after: (JsLex.Peek);
+				if after is not JsT.LPAREN and after is not JsT.DOT
+					if module_mode
+						call Fail: 'An import declaration can only be used at the top level of a module';
+					;;
+					call Fail: 'Cannot use import statement outside a module';
+				;;
 			;;
 			is JsT.K_EXPORT
 				call Unexpected;
@@ -1138,6 +1149,15 @@ phi.JsParse:Library
 			key.num is JsLex.tok.num;
 			call Next;
 		;;
+		elif k is JsT.BIGINT
+			# a BigInt as a property's name is its decimal text
+			key is (Node: JsN.STR);
+			WlBuf b;
+			call JsBig.ToText: (JsBig.FromDigits: JsLex.tok.text.data JsLex.tok.text.bytes JsLex.tok.num as u32 false) 10 addr b;
+			key.name is (JsStrs.Intern: b.data b.len);
+			call b.Free;
+			call Next;
+		;;
 		elif k is JsT.LBRACK
 			call Next;
 			bln saved_in: no_in;
@@ -1268,9 +1288,9 @@ phi.JsParse:Library
 		if k is JsN.MEMBER or k is JsN.INDEX or k is JsN.PRIVATE
 			return;
 		;;
-		# f() = 1 is an error only when it runs, in sloppy code, for the web's sake
+		# f() = 1 is an error only when it runs, in sloppy code, for the web's sake (but not import())
 		if k is JsN.CALL and not JsLex.strict and (t.flags & JsN.X_OPT) is 0
-			return;
+			if not (t.a.kind is JsN.IDENT and t.a.name is (JsStrs.InternZ: '%import')) return;
 		;;
 		call FailAt: 'Invalid left-hand side in assignment' t.line;
 	[end]
@@ -1631,7 +1651,7 @@ phi.JsParse:Library
 			e is (SuperExpression);
 		;;
 		elif k is JsT.K_IMPORT
-			call Fail: 'Cannot use import outside a module';
+			e is (ImportExpression);
 		;;
 		else
 			e is (Primary);
@@ -1884,6 +1904,13 @@ phi.JsParse:Library
 		;;
 		if k is JsT.NUM
 			n is (Node: JsN.NUM);
+			n.num is JsLex.tok.num;
+			call Next;
+			return (Done: n);
+		;;
+		if k is JsT.BIGINT
+			n is (Node: JsN.BIGINT);
+			n.name is JsLex.tok.text;
 			n.num is JsLex.tok.num;
 			call Next;
 			return (Done: n);
@@ -3169,6 +3196,524 @@ phi.JsParse:Library
 			a is a.next;
 		;;
 	[end]
+	# ---- modules: a module is compiled as a script that makes its function,
+	#   (async function (%e, %meta, %n0, %n1, ...) { body })
+	# where %nK is the namespace of the module the Kth request names, %meta is import.meta, and %e
+	# defines one of this module's exports, as a getter: the body starts by calling it for each
+	# name the module exports from its own variables. An imported name reads its namespace (the
+	# scope analysis and the compiler see to it: JsN.X_IMPORT). What the loader needs, the requests,
+	# re-exports and export *s, is left in the lists below.
+
+	bln module_mode: false;
+	ptr<JsPCtx> module_ctx: 0;
+	ptr<JsStr> unit_name: 0;             # the address of what's being compiled: import()'s base
+	ptr<JsStr> requests[256];
+	u32 request_count: 0;
+	ptr<JsStr> export_names[1024];
+	ptr<JsStr> export_locals[1024];
+	u32 export_count: 0;
+	u32 reexport_request[512];
+	ptr<JsStr> reexport_imported[512];   # 0: the namespace itself (export * as x from)
+	ptr<JsStr> reexport_names[512];
+	u32 reexport_count: 0;
+	u32 star_request[128];
+	u32 star_count: 0;
+
+	[Module]
+		ptr<JsPCtx> c: (arena.Alloc: sizeof JsPCtx) as ptr<JsPCtx>;
+		ctx is c;
+		no_in is false;
+		cover_err_msg is 0;
+		request_count is 0;
+		export_count is 0;
+		reexport_count is 0;
+		star_count is 0;
+		JsLex.strict is true;
+		call JsLex.Next;
+		ptr<JsNode> script: (Node: JsN.FUNC);
+		script.flags is JsN.FN_SCRIPT | JsN.FN_SIMPLE | JsN.FN_STRICT;
+		ptr<JsNode> m: (Node: JsN.FUNC);
+		m.flags is JsN.FN_ASYNC | JsN.FN_SIMPLE | JsN.FN_STRICT | JsN.FN_MODULE;
+		call EnterCtx: JsN.FN_ASYNC;
+		module_ctx is ctx;
+		ptr<JsNode> head: 0;
+		ptr<JsNode> tail: 0;
+		while JsLex.tok.kind is not JsT.EOF
+			ptr<JsNode> s: (ModuleItem);
+			if head is 0
+				head is s;
+			;;
+			else
+				tail.next is s;
+			;;
+			tail is s;
+			while tail.next is not 0
+				tail is tail.next;
+			;;
+		;;
+		m.d is ctx.vars;
+		ctx is c;
+		module_ctx is 0;
+		# the exports of its own names, first
+		u32 i: export_count;
+		while i > 0
+			i--;
+			ptr<JsNode> g: (ExportGetter: export_names:i export_locals:i);
+			g.next is head;
+			head is g;
+		;;
+		m.b is head;
+		# its parameters
+		ptr<JsNode> p: (Ident: (JsStrs.InternZ: '%e'));
+		m.a is p;
+		ptr<JsNode> q: (Ident: (JsStrs.InternZ: '%meta'));
+		p.next is q;
+		while u32 k: 0; k < request_count; k++;
+			ptr<JsNode> r: (Ident: (RequestParam: k));
+			q.next is r;
+			q is r;
+		;;
+		m.stop is JsLex.tok.start;
+		ptr<JsNode> st: (Node: JsN.EXPR);
+		st.a is m;
+		script.b is st;
+		script.stop is JsLex.tok.start;
+		script.d is c.vars;
+	[end: script]
+
+	# the name of the Kth request's namespace parameter
+	[RequestParam: u32 k: 0;]
+		WlBuf b;
+		call b.AddZ: '%n';
+		call b.AddInt: k as int;
+		ptr<JsStr> name: (JsStrs.Intern: b.data b.len);
+		call b.Free;
+	[end: name]
+
+	[Ident: ptr<JsStr> name: 0;]
+		ptr<JsNode> n: (Node: JsN.IDENT);
+		n.name is name;
+	[end: n]
+
+	# %e('name', () => local);
+	[ExportGetter: ptr<JsStr> name: 0; ptr<JsStr> local: 0;]
+		ptr<JsNode> c: (Node: JsN.CALL);
+		c.a is (Ident: (JsStrs.InternZ: '%e'));
+		ptr<JsNode> s: (Node: JsN.STR);
+		s.name is name;
+		ptr<JsNode> f: (Node: JsN.FUNC);
+		f.flags is JsN.FN_ARROW | JsN.FN_SIMPLE | JsN.FN_STRICT | JsN.FN_EXPR_BODY;
+		ptr<JsNode> r: (Node: JsN.RETURN);
+		r.a is (Ident: local);
+		f.b is r;
+		s.next is f;
+		c.b is s;
+		ptr<JsNode> e: (Node: JsN.EXPR);
+		e.a is c;
+	[end: e]
+
+	# which request a specifier is (each different one once)
+	[Request: ptr<JsStr> spec: 0;]
+		while u32 i: 0; i < request_count; i++;
+			if requests:i is spec return i;
+		;;
+		if request_count >= 256
+			call Fail: 'A module may import from at most 256 others';
+		;;
+		requests:request_count is spec;
+		request_count++;
+	[end: request_count - 1]
+
+	[ModuleItem]
+		u32 k: JsLex.tok.kind;
+		if k is JsT.K_IMPORT
+			u32 after: (JsLex.Peek);
+			if after is not JsT.LPAREN and after is not JsT.DOT
+				return (ImportDecl);
+			;;
+		;;
+		if k is JsT.K_EXPORT
+			return (ExportDecl);
+		;;
+	[end: (StatementItem)]
+
+	# a module's name for something: an identifier, a keyword, or a string
+	[ExportName]
+		u32 k: JsLex.tok.kind;
+		if k is JsT.IDENT or k >= JsT.KW or k is JsT.STR
+			ptr<JsStr> name: JsLex.tok.text;
+			call Next;
+			return name;
+		;;
+		call Unexpected;
+	[end: 0 as ptr<JsStr>]
+
+	[IsContextual: ptr<JsStr> word: 0;]
+	[end: JsLex.tok.kind is JsT.IDENT and JsLex.tok.text is word and not JsLex.tok.escaped]
+
+	# from 'specifier' (and any with { ... } after it): the request's number
+	[FromClause]
+		if not (IsContextual: JsRt.A.from)
+			call Unexpected;
+		;;
+		call Next;
+		u32 k: (SpecifierThenAttributes);
+	[end: k]
+
+	[SpecifierThenAttributes]
+		if JsLex.tok.kind is not JsT.STR
+			call Unexpected;
+		;;
+		u32 k: (Request: JsLex.tok.text);
+		call Next;
+		# import attributes (with { type: 'json' }): read and passed over
+		if JsLex.tok.kind is JsT.K_WITH and not JsLex.tok.nl_before
+			call Next;
+			call Expect: JsT.LBRACE;
+			int depth: 1;
+			while depth > 0 and JsLex.tok.kind is not JsT.EOF
+				if JsLex.tok.kind is JsT.LBRACE
+					depth++;
+				;;
+				elif JsLex.tok.kind is JsT.RBRACE
+					depth--;
+				;;
+				if depth > 0
+					call Next;
+				;;
+			;;
+			call Expect: JsT.RBRACE;
+		;;
+	[end: k]
+
+	[ImportNode: ptr<JsStr> local: 0; ptr<JsStr> imported: 0;]
+		ptr<JsNode> n: (Node: JsN.IMPORT);
+		n.name is local;
+		n.raw is imported;
+	[end: n]
+
+	[ImportDecl]
+		ptr<JsNode> head: (Node: JsN.EMPTY);
+		ptr<JsNode> tail: head;
+		call Next;
+		if JsLex.tok.kind is JsT.STR
+			u32 only: (SpecifierThenAttributes);
+			call Semicolon;
+			return (Done: head);
+		;;
+		if JsLex.tok.kind is JsT.IDENT
+			ptr<JsStr> local: (BindingName);
+			tail.next is (ImportNode: local (JsStrs.InternZ: 'default'));
+			tail is tail.next;
+			if not (Eat: JsT.COMMA)
+				u32 kd: (FromClause);
+				call Number: head kd;
+				call Semicolon;
+				return (Done: head);
+			;;
+		;;
+		if JsLex.tok.kind is JsT.MUL
+			call Next;
+			if not (IsContextual: JsRt.A.as_)
+				call Unexpected;
+			;;
+			call Next;
+			ptr<JsStr> ns: (BindingName);
+			tail.next is (ImportNode: ns 0);
+			tail is tail.next;
+		;;
+		elif JsLex.tok.kind is JsT.LBRACE
+			call Next;
+			while JsLex.tok.kind is not JsT.RBRACE
+				bln was_string: JsLex.tok.kind is JsT.STR;
+				bln was_name: JsLex.tok.kind is JsT.IDENT;
+				ptr<JsStr> imported: (ExportName);
+				ptr<JsStr> name: imported;
+				if (IsContextual: JsRt.A.as_)
+					call Next;
+					name is (BindingName);
+				;;
+				elif was_string or not was_name
+					call Fail: 'A string or a keyword can only be imported with as';
+				;;
+				else
+					call CheckBindable: name false;
+				;;
+				tail.next is (ImportNode: name imported);
+				tail is tail.next;
+				if not (Eat: JsT.COMMA) break;
+			;;
+			call Expect: JsT.RBRACE;
+		;;
+		else
+			call Unexpected;
+		;;
+		u32 k: (FromClause);
+		call Number: head k;
+		call Semicolon;
+	[end: (Done: head)]
+
+	# each IMPORT node in the list is of request k
+	[Number: ptr<JsNode> list: 0; u32 k: 0;]
+		while list is not 0
+			if list.kind is JsN.IMPORT
+				list.num is k as f64;
+			;;
+			list is list.next;
+		;;
+	[end]
+
+	[AddExport: ptr<JsStr> name: 0; ptr<JsStr> local: 0;]
+		while u32 i: 0; i < export_count; i++;
+			if export_names:i is name
+				call Fail: 'Duplicate export';
+			;;
+		;;
+		while u32 j: 0; j < reexport_count; j++;
+			if reexport_names:j is name
+				call Fail: 'Duplicate export';
+			;;
+		;;
+		if export_count >= 1024
+			call Fail: 'Too many exports';
+		;;
+		export_names:export_count is name;
+		export_locals:export_count is local;
+		export_count++;
+	[end]
+
+	[AddReexport: u32 k: 0; ptr<JsStr> imported: 0; ptr<JsStr> name: 0;]
+		while u32 i: 0; i < export_count; i++;
+			if export_names:i is name
+				call Fail: 'Duplicate export';
+			;;
+		;;
+		while u32 j: 0; j < reexport_count; j++;
+			if reexport_names:j is name
+				call Fail: 'Duplicate export';
+			;;
+		;;
+		if reexport_count >= 512
+			call Fail: 'Too many exports';
+		;;
+		reexport_request:reexport_count is k;
+		reexport_imported:reexport_count is imported;
+		reexport_names:reexport_count is name;
+		reexport_count++;
+	[end]
+
+	# the names a declaration's target binds
+	[ExportBound: ptr<JsNode> t: 0;]
+		call WlStack.Check;
+		if t is 0 return;
+		u32 k: t.kind;
+		if k is JsN.IDENT
+			call AddExport: t.name t.name;
+		;;
+		elif k is JsN.DEFAULT or k is JsN.REST
+			call ExportBound: t.a;
+		;;
+		elif k is JsN.ARRPAT
+			ptr<JsNode> e: t.a;
+			while e is not 0
+				if e.kind is not JsN.HOLE
+					call ExportBound: e;
+				;;
+				e is e.next;
+			;;
+		;;
+		elif k is JsN.OBJPAT
+			ptr<JsNode> p: t.a;
+			while p is not 0
+				if p.kind is JsN.REST
+					call ExportBound: p.a;
+				;;
+				else
+					call ExportBound: p.b;
+				;;
+				p is p.next;
+			;;
+		;;
+	[end]
+
+	[ExportDecl]
+		call Next;
+		u32 k: JsLex.tok.kind;
+		if k is JsT.MUL
+			call Next;
+			ptr<JsStr> as_name: 0;
+			if (IsContextual: JsRt.A.as_)
+				call Next;
+				as_name is (ExportName);
+			;;
+			u32 r: (FromClause);
+			if as_name is 0
+				if star_count >= 128
+					call Fail: 'Too many export *';
+				;;
+				star_request:star_count is r;
+				star_count++;
+			;;
+			else
+				call AddReexport: r 0 as_name;
+			;;
+			call Semicolon;
+			return (Done: (Node: JsN.EMPTY));
+		;;
+		if k is JsT.K_DEFAULT
+			call Next;
+			ptr<JsStr> dflt: (JsStrs.InternZ: 'default');
+			bln is_async: (IsContextual: JsRt.A.async) and (JsLex.Peek) is JsT.K_FUNCTION and not JsLex.peeked.nl_before;
+			if JsLex.tok.kind is JsT.K_FUNCTION or is_async
+				ptr<JsNode> d: (Node: JsN.FUNCDECL);
+				u32 flags: JsN.FN_DECL;
+				u32 start: JsLex.tok.start;
+				if is_async
+					flags is flags | JsN.FN_ASYNC;
+					call Next;
+				;;
+				call Expect: JsT.K_FUNCTION;
+				if (Eat: JsT.MUL)
+					flags is flags | JsN.FN_GEN;
+				;;
+				ptr<JsStr> name: dflt;
+				if JsLex.tok.kind is JsT.IDENT
+					name is (BindingName);
+				;;
+				d.a is (FunctionRest: flags start name);
+				d.a.name is name;
+				call AddExport: dflt name;
+				return (Done: d);
+			;;
+			if JsLex.tok.kind is JsT.K_CLASS
+				ptr<JsNode> cd: (Node: JsN.CLASSDECL);
+				cd.a is (Class: false);
+				if cd.a.name is 0
+					cd.a.name is dflt;
+				;;
+				call AddExport: dflt cd.a.name;
+				return (Done: cd);
+			;;
+			ptr<JsNode> v: (Node: JsN.VARDECL);
+			v.op is JsT.K_CONST as u16;
+			ptr<JsNode> dl: (Node: JsN.DECLARATOR);
+			dl.a is (Ident: dflt);
+			dl.b is (AssignNoCover);
+			call NameAnonymous: dl.b dl.a;
+			v.a is dl;
+			call Semicolon;
+			call AddExport: dflt dflt;
+			return (Done: v);
+		;;
+		if k is JsT.LBRACE
+			call Next;
+			ptr<JsStr> locals[256];
+			ptr<JsStr> names[256];
+			bln plain[256];
+			u32 n: 0;
+			while JsLex.tok.kind is not JsT.RBRACE
+				if n >= 256
+					call Fail: 'Too many names in one export';
+				;;
+				plain:n is (JsLex.tok.kind is JsT.IDENT);
+				locals:n is (ExportName);
+				names:n is locals:n;
+				if (IsContextual: JsRt.A.as_)
+					call Next;
+					names:n is (ExportName);
+				;;
+				n++;
+				if not (Eat: JsT.COMMA) break;
+			;;
+			call Expect: JsT.RBRACE;
+			if (IsContextual: JsRt.A.from)
+				u32 r2: (FromClause);
+				while u32 i: 0; i < n; i++;
+					call AddReexport: r2 locals:i names:i;
+				;;
+			;;
+			else
+				while u32 j: 0; j < n; j++;
+					if not plain:j
+						call Fail: 'A string or a keyword can only be exported from another module';
+					;;
+					call AddExport: names:j locals:j;
+				;;
+			;;
+			call Semicolon;
+			return (Done: (Node: JsN.EMPTY));
+		;;
+		if k is JsT.K_VAR or k is JsT.K_CONST or (LetStartsDecl)
+			u32 kind: k;
+			if k is not JsT.K_VAR and k is not JsT.K_CONST
+				kind is 1;
+			;;
+			ptr<JsNode> vs: (VarStatement: kind);
+			ptr<JsNode> dd: vs.a;
+			while dd is not 0
+				call ExportBound: dd.a;
+				dd is dd.next;
+			;;
+			return vs;
+		;;
+		if k is JsT.K_FUNCTION or ((IsContextual: JsRt.A.async) and (JsLex.Peek) is JsT.K_FUNCTION)
+			u32 fl: 0;
+			if k is not JsT.K_FUNCTION
+				fl is JsN.FN_ASYNC;
+			;;
+			ptr<JsNode> fd: (FunctionDecl: fl);
+			call AddExport: fd.a.name fd.a.name;
+			return fd;
+		;;
+		if k is JsT.K_CLASS
+			ptr<JsNode> c2: (ClassDecl);
+			call AddExport: c2.a.name c2.a.name;
+			return c2;
+		;;
+		call Unexpected;
+	[end: 0 as ptr<JsNode>]
+
+	# import(specifier[, options]) and import.meta
+	[ImportExpression]
+		ptr<JsNode> start: (Node: JsN.IDENT);
+		call Next;
+		if (Eat: JsT.DOT)
+			if not (IsContextual: JsRt.A.meta)
+				call Unexpected;
+			;;
+			if not module_mode
+				call Fail: 'Cannot use import.meta outside a module';
+			;;
+			call Next;
+			start.name is (JsStrs.InternZ: '%meta');
+			return (Done: start);
+		;;
+		if JsLex.tok.kind is not JsT.LPAREN
+			call Unexpected;
+		;;
+		call Next;
+		ptr<JsNode> c: (Node: JsN.CALL);
+		c.a is (Ident: (JsStrs.InternZ: '%import'));
+		bln saved_in: no_in;
+		no_in is false;
+		ptr<JsNode> spec: (AssignNoCover);
+		ptr<JsNode> base: (Node: JsN.STR);
+		base.name is unit_name;
+		if base.name is 0
+			base.name is JsRt.blank;
+		;;
+		spec.next is base;
+		if (Eat: JsT.COMMA)
+			if JsLex.tok.kind is not JsT.RPAREN
+				base.next is (AssignNoCover);
+				call Eat: JsT.COMMA;
+			;;
+		;;
+		no_in is saved_in;
+		call Expect: JsT.RPAREN;
+		c.b is spec;
+	[end: (Done: c)]
+
 }
 
 struct.JsNameLink

@@ -1,0 +1,22 @@
+340282366920938463463374607431768211455 ffffffffffffffffffffffffffffffff f5lxx1zz5pnorynqglhzmsp33
+bigint 31n 15n 5n 1000000n
+-3n -1n 1n -8n
+1180591620717411303424n -1n 240n -3n 5n -42n
+true false true true true
+-1n 255n -9223372036854775808n
+16n 1n 9007199254740993n
+18446744073709552000 -Infinity 12
+-16n 16n truthy falsy
+TypeError
+TypeError
+TypeError
+RangeError
+RangeError
+SyntaxError
+TypeError
+three 2 true true
+1n -2n -9223372036854775808n 18446744073709551615n 3 8
+-3,5,10
+1 578437695752307201n
+TypeError
+100000000000000000000 [object BigInt] 123

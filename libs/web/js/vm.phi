@@ -935,7 +935,12 @@ phi.JsVm:Library
 
 	[IncLocSlow: u32 slot: 0;]
 		# (like x = x + 1, for what isn't a small int)
-		bp:slot is (JsV.Num: (JsOps.ToNumber: bp:slot) + 1.0);
+		u64 v: (JsOps.ToNumeric: bp:slot);
+		if (JsV.IsBig: v)
+			bp:slot is (JsBig.Add: v (JsBig.FromInt: 1));
+			return;
+		;;
+		bp:slot is (JsV.Num: (JsV.AsNum: v) + 1.0);
 	[end]
 
 	[AddGeneral]
@@ -967,10 +972,34 @@ phi.JsVm:Library
 		ptr<u64> st: sp - 16;
 		# ToNumeric, left then right, each may run JS
 		if not (JsV.IsNum: st:0)
-			st:0 is (JsV.Num: (JsOps.ToNumber: st:0));
+			st:0 is (JsOps.ToNumeric: st:0);
 		;;
 		if not (JsV.IsNum: st:1)
-			st:1 is (JsV.Num: (JsOps.ToNumber: st:1));
+			st:1 is (JsOps.ToNumeric: st:1);
+		;;
+		if (JsV.IsBig: st:0) or (JsV.IsBig: st:1)
+			call JsOps.BothBig: st:0 st:1;
+			u64 r: 0;
+			when op
+				is JsOp.SUB
+					r is (JsBig.Sub: st:0 st:1);
+				;;
+				is JsOp.MUL
+					r is (JsBig.Mul: st:0 st:1);
+				;;
+				is JsOp.DIV
+					r is (JsBig.Div: st:0 st:1 false);
+				;;
+				is JsOp.MOD
+					r is (JsBig.Div: st:0 st:1 true);
+				;;
+				else
+					r is (JsBig.Pow: st:0 st:1);
+				;;
+			;;
+			st:0 is r;
+			sp-- 8;
+			return;
 		;;
 		x is (JsV.AsNum: st:0);
 		y is (JsV.AsNum: st:1);
@@ -1185,10 +1214,37 @@ phi.JsVm:Library
 		int a: 0;
 		int b: 0;
 		if not (JsV.IsNum: st:0)
-			st:0 is (JsV.Num: (JsOps.ToNumber: st:0));
+			st:0 is (JsOps.ToNumeric: st:0);
 		;;
 		if not (JsV.IsNum: st:1)
-			st:1 is (JsV.Num: (JsOps.ToNumber: st:1));
+			st:1 is (JsOps.ToNumeric: st:1);
+		;;
+		if (JsV.IsBig: st:0) or (JsV.IsBig: st:1)
+			call JsOps.BothBig: st:0 st:1;
+			u64 big: 0;
+			when op
+				is JsOp.BAND
+					big is (JsBig.Bitwise: st:0 st:1 0);
+				;;
+				is JsOp.BOR
+					big is (JsBig.Bitwise: st:0 st:1 1);
+				;;
+				is JsOp.BXOR
+					big is (JsBig.Bitwise: st:0 st:1 2);
+				;;
+				is JsOp.SHL
+					big is (JsBig.Shift: st:0 st:1 true);
+				;;
+				is JsOp.SAR
+					big is (JsBig.Shift: st:0 st:1 false);
+				;;
+				else
+					call JsErr.Type: 'BigInts have no unsigned right shift, use >> instead';
+				;;
+			;;
+			st:0 is big;
+			sp-- 8;
+			return;
 		;;
 		a is (JsOps.ToInt32: st:0);
 		b is (JsOps.ToInt32: st:1);
@@ -1352,9 +1408,14 @@ phi.JsVm:Library
 			is JsOp.NEG
 				u64 nv: sp:(-1);
 				if not (JsV.IsNum: nv)
-					nv is (JsV.Num: (JsOps.ToNumber: nv));
+					nv is (JsOps.ToNumeric: nv);
 				;;
-				sp:(-1) is (JsV.Num: (JsV.AsNum: nv) * -1.0);
+				if (JsV.IsBig: nv)
+					sp:(-1) is (JsBig.Neg: nv);
+				;;
+				else
+					sp:(-1) is (JsV.Num: (JsV.AsNum: nv) * -1.0);
+				;;
 			;;
 			is JsOp.INC JsOp.DEC
 				u64 uv: sp:(-1);
@@ -1369,7 +1430,17 @@ phi.JsVm:Library
 						return false;
 					;;
 				;;
-				f64 fv: (JsOps.ToNumber: uv);
+				uv is (JsOps.ToNumeric: uv);
+				if (JsV.IsBig: uv)
+					if op is JsOp.INC
+						sp:(-1) is (JsBig.Add: uv (JsBig.FromInt: 1));
+					;;
+					else
+						sp:(-1) is (JsBig.Sub: uv (JsBig.FromInt: 1));
+					;;
+					return false;
+				;;
+				f64 fv: (JsV.AsNum: uv);
 				if op is JsOp.INC
 					sp:(-1) is (JsV.Num: fv + 1.0);
 				;;
@@ -1378,8 +1449,9 @@ phi.JsVm:Library
 				;;
 			;;
 			is JsOp.TONUM
+				# (ToNumeric: what x++ keeps of x, a BigInt too)
 				if not (JsV.IsNum: sp:(-1))
-					sp:(-1) is (JsV.Num: (JsOps.ToNumber: sp:(-1)));
+					sp:(-1) is (JsOps.ToNumeric: sp:(-1));
 				;;
 			;;
 			is JsOp.EQ
@@ -2098,7 +2170,13 @@ phi.JsVm:Library
 				;;
 			;;
 			is JsOp.BITNOT
-				sp:(-1) is (JsV.Int: ~(JsOps.ToInt32: sp:(-1)));
+				u64 bn: (JsOps.ToNumeric: sp:(-1));
+				if (JsV.IsBig: bn)
+					sp:(-1) is (JsBig.Not: bn);
+				;;
+				else
+					sp:(-1) is (JsV.Int: ~(JsOps.ToInt32: bn));
+				;;
 			;;
 			is JsOp.EXP
 				call ArithSlow: JsOp.EXP;

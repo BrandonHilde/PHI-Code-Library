@@ -36,7 +36,10 @@ phi.JsNumberBuiltins:Library
 		if argc > 0
 			v is args:0;
 			if not (JsV.IsNum: v)
-				v is (JsV.Num: (JsOps.ToNumber: v));
+				v is (JsOps.ToNumeric: v);
+				if (JsV.IsBig: v)
+					v is (JsV.Num: (JsBig.ToDouble: v));
+				;;
 			;;
 		;;
 		if not (JsV.IsObj: nt) return v;

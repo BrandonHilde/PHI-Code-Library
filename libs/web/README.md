@@ -49,7 +49,9 @@ A program with `weblib.philib` beside it says `use weblib;` and needs none of th
 | JavaScript | `js/` | a bytecode VM with a precise garbage collector, and the standard library |
 | Page | `page/` | the DOM as JS sees it, events, timers, `fetch`, and the document's lifecycle |
 
-**JavaScript** is ES2020 and some of what's come since: classes with private fields, generators, async functions, destructuring, optional chaining, `Proxy`, `Reflect`, `Map` and `Set` with the new set operations, `WeakRef`, typed arrays, `RegExp` with lookbehind and named groups, `Date` and `JSON`.
+**JavaScript** is ES2020 and some of what's come since: classes with private fields, generators, async functions, destructuring, optional chaining, `Proxy`, `Reflect`, `Map` and `Set` with the new set operations, `WeakRef`, typed arrays, `RegExp` with lookbehind and named groups, `Date` and `JSON`; and since 2026-11-21, `BigInt` (with `BigInt64Array`, `BigUint64Array` and DataView's BigInt methods) and modules (`<script type=module>`, `import`/`export`, `import()` from any script, `import.meta`, top-level `await`).
+
+**Modules** (2026-11-21): the compiler makes a module a function whose parameters are the namespaces it imports from, so an import is a live binding (a read of the other module's namespace) and assigning one is a TypeError; its own exports are getters on its namespace, defined as it starts, and reading one before then is a ReferenceError. `js/modules.phi` keeps the modules by address, asks its host for each (`JsModules.load` and `resolve`), and runs a graph imports first; `page/pmodules.phi` fetches them as SCRIPT requests and runs a page's module scripts in document order once it's parsed, before `DOMContentLoaded`, as the HTML standard has it. A `nomodule` script doesn't run. Not yet: link-time errors for importing a name a module doesn't export (it reads undefined), JSON modules, import maps, the namespace object's own rules (its keys come in the order they were defined, not sorted, and its properties are getters), and a module with top-level `await` doesn't hold up the ones that import it.
 
 **The DOM** covers `Node`, `Element`, `Document` and collections that stay up to date, `innerHTML`, `classList`, `dataset`, `style`, `getComputedStyle`, selectors, capture and bubble events, `CustomEvent`, timers, `requestAnimationFrame`, `fetch`, `XMLHttpRequest`, `localStorage`, `location` and `navigator`.
 
@@ -83,9 +85,10 @@ figures are the same on Windows and Linux, except for `built-ins`, which was cou
 | html5lib / WPT tree construction | 14,792 of 14,792 runs |
 | html5lib tokenizer | 14,084 of 14,084 runs |
 | CSS parsing tests | 8,331 of 8,338 |
-| test262, `language` | 21,487 of 23,015 (93.4%), no crashes |
-| test262, `built-ins`, all of it (Linux, 2026-11-07) | 14,577 of 23,848 (61.1%), no crashes |
-| test262, `built-ins`, without the families that aren't built (`Temporal`, `Atomics`, `SharedArrayBuffer`, `BigInt`, `ShadowRealm`, the disposable stacks, `SuppressedError`, `Iterator`) | 14,561 of 17,702 (82.3%) |
+| test262, `language`, modules included (Linux, 2026-11-21) | 22,484 of 23,832 (94.3%), no crashes |
+| test262, `built-ins`, all of it (Linux, 2026-11-21) | 15,366 of 23,861 (64.4%), no crashes |
+| (before BigInt and modules, 2026-11-07: `language` without its 817 module tests, and `built-ins`) | 21,487 of 23,015 (93.4%); 14,577 of 23,848 (61.1%) |
+| test262, `built-ins`, without the families that weren't built on 2026-11-07 (`Temporal`, `Atomics`, `SharedArrayBuffer`, `BigInt`, `ShadowRealm`, the disposable stacks, `SuppressedError`, `Iterator`) | 14,561 of 17,702 (82.3%), then |
 
 (On Windows, 2026-11-06, `built-ins` without the families not built then was 14,351 of 17,398, 82.5%;
 which families those were wasn't written down. `Intl` is in test262's `intl402`, not `built-ins`.)
@@ -100,10 +103,10 @@ Every JS fixture also runs with a garbage collection at every safepoint, which i
 
 ## What it doesn't do yet
 
-- **JavaScript:** no `BigInt` (which alone is most of the remaining test262 failures in typed arrays), no `with`, no modules or dynamic `import()`, and direct `eval` runs as global code. No `Intl`. `String.normalize` returns text as it is. `\p{...}` knows the general categories but not scripts. No resizable or detached buffers, no `SharedArrayBuffer`, and the `v` regex flag is read as `u`, without its set notation.
+- **JavaScript:** no `with`, and direct `eval` runs as global code. No `Intl`. `String.normalize` returns text as it is. `\p{...}` knows the general categories but not scripts. No resizable or detached buffers, no `SharedArrayBuffer`, and the `v` regex flag is read as `u`, without its set notation.
 - **CSS:** no nesting, no `@container`, `@property` or `@counter-style`. Animations and transitions are parsed and kept, but don't run. `ex` and `ch` are 0.5em. Colours are 8-bit sRGB. Logical properties assume left-to-right text.
 - **HTML:** input is always read as UTF-8, with no `<meta charset>` or encoding sniffing. No declarative shadow DOM.
-- **DOM:** no shadow DOM at all, no custom elements, no `<canvas>`, no `Range` or `Selection`. `<script type=module>` doesn't run. Time zones are one fixed offset (`JsDate.tz_minutes`), UTC until a browser sets it, with no daylight saving. `localStorage` lasts as long as the page. `attributes` is a snapshot, not live.
+- **DOM:** no shadow DOM at all, no custom elements, no `<canvas>`, no `Range` or `Selection`. Time zones are one fixed offset (`JsDate.tz_minutes`), UTC until a browser sets it, with no daylight saving. `localStorage` lasts as long as the page. `attributes` is a snapshot, not live.
 - **Nodes aren't freed until their document is.** A long-lived page that makes and drops many nodes keeps growing until it's left.
 - **PHI OS is a separate project.** The library builds for it, but it's only tested on Windows. Its 64 KB program stack would limit how deeply scripts can nest.
 

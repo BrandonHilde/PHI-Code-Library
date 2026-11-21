@@ -6,6 +6,7 @@
 #   0xFFFB  an object (a pointer in the low 48 bits); also the GC's other cells, on the stack
 #   0xFFFC  a string
 #   0xFFFD  a symbol
+#   0xFFFE  a BigInt (js/bigint.phi)
 #
 # These are all small calls; the VM's hot paths read a stack slot's high word directly instead,
 # through a ptr<u32>.
@@ -17,6 +18,7 @@ phi.JsV:Library
 	const u32 TAG_OBJ: 0xFFFB;
 	const u32 TAG_STR: 0xFFFC;
 	const u32 TAG_SYM: 0xFFFD;
+	const u32 TAG_BIG: 0xFFFE;
 	# the high 32 bits of an int32 value, and of the special values
 	const u32 HI_INT: 0xFFFA0000;
 	const u32 HI_SPECIAL: 0xFFF90000;
@@ -37,6 +39,7 @@ phi.JsV:Library
 	u64 OBJ_BASE: 0xFFFB000000000000;
 	u64 STR_BASE: 0xFFFC000000000000;
 	u64 SYM_BASE: 0xFFFD000000000000;
+	u64 BIG_BASE: 0xFFFE000000000000;
 	u64 PTR_MASK: 0x0000FFFFFFFFFFFF;
 
 	[Tag: u64 v: 0;]
@@ -60,6 +63,15 @@ phi.JsV:Library
 
 	[IsSym: u64 v: 0;]
 	[end: (v >> 48) as u32 is TAG_SYM]
+
+	[IsBig: u64 v: 0;]
+	[end: (v >> 48) as u32 is TAG_BIG]
+
+	[Big: ptr<JsBigInt> p: 0;]
+	[end: BIG_BASE | ((p as u64) & PTR_MASK)]
+
+	[AsBig: u64 v: 0;]
+	[end: (v & PTR_MASK) as ptr<JsBigInt>]
 
 	[IsUndef: u64 v: 0;]
 	[end: v is UNDEF]

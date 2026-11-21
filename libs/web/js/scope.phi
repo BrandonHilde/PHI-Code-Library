@@ -17,6 +17,8 @@ struct.JsVar
 	bln needs_tdz;         # a reference checks, so entering its block must mark it uninitialized
 	bln used;
 	bln slotted;           # (the compiler has given it its slot)
+	ptr<JsStr> imported;   # (an import) the name it reads from its module's namespace; 0: the namespace
+	ptr<JsStr> import_param;   # (an import) the module function's parameter that holds that namespace
 }
 
 struct.JsBlock
@@ -72,6 +74,7 @@ phi.JsScopes:Library
 	const u32 V_HIDDEN: 16;
 	const u32 V_CLASS_NAME: 17;  # a class's name inside itself: can't be assigned
 	const u32 V_BLOCK_FUNC2: 18; # an async function or generator in a block: may not repeat
+	const u32 V_IMPORT: 19;    # a module's imported name: a reference reads its namespace
 
 	# block kinds
 	const u32 B_GLOBAL: 1;     # a script's top: its names are global variables, not slots
@@ -293,6 +296,11 @@ phi.JsScopes:Library
 			elif k is JsN.CLASSDECL
 				call DeclareLex: b t.a.name V_CLASS t.stop t.line;
 			;;
+			elif k is JsN.IMPORT
+				ptr<JsVar> iv: (DeclareLex: b t.name V_IMPORT 0 t.line);
+				iv.imported is t.raw;
+				iv.import_param is (JsParse.RequestParam: t.num as u32);
+			;;
 			elif k is JsN.FUNCDECL
 				if at_top
 					t.flags is t.flags & (0xFFFFFFFF - JsN.X_ANNEXB);
@@ -353,6 +361,13 @@ phi.JsScopes:Library
 		ptr<JsVar> v: (Resolve: n.name);
 		n.info is v as ptr<u8>;
 		if v is 0 return;
+		if v.kind is V_IMPORT
+			# it reads its module's namespace, a parameter of the module's function
+			n.info is (Resolve: v.import_param) as ptr<u8>;
+			n.raw is v.imported;
+			n.flags is n.flags | JsN.X_IMPORT;
+			return;
+		;;
 		u32 k: v.kind;
 		if k is V_LET or k is V_CONST or k is V_CLASS or k is V_PARAM or k is V_CLASS_NAME or k is V_CATCH_PAT
 			if v.decl_end is 0 return;
@@ -522,7 +537,7 @@ phi.JsScopes:Library
 		call WlStack.Check;
 		u32 k: n.kind;
 		when k
-			is JsN.NUM JsN.STR JsN.NULL JsN.TRUE JsN.FALSE JsN.HOLE JsN.REGEX JsN.EMPTY JsN.BREAK JsN.CONTINUE
+			is JsN.NUM JsN.STR JsN.NULL JsN.TRUE JsN.FALSE JsN.HOLE JsN.REGEX JsN.EMPTY JsN.BREAK JsN.CONTINUE JsN.BIGINT JsN.IMPORT
 				return;
 			;;
 			is JsN.IDENT
@@ -979,7 +994,8 @@ phi.JsScopes:Library
 			;;
 			ptr<JsNode> stmts: f.b;
 			if (f.flags & JsN.FN_EXPR_BODY) is 0
-				call DeclareStatements: info.body stmts true;
+				# (a module's functions are lexical, which they are in a block)
+				call DeclareStatements: info.body stmts (f.flags & JsN.FN_MODULE) is 0;
 			;;
 			call DeclareVarList: f;
 			call WalkList: stmts;

@@ -1,0 +1,44 @@
+# Module scripts in a page, through a host that serves them from tests/page/mod: the order they run
+# in (imports first; the document parsed; inline and src modules in document order; before
+# DOMContentLoaded), live bindings, namespaces with export *, import.meta, assigning an import,
+# import() from a classic script, and nomodule scripts left alone. Worked out from the HTML standard.
+use weblib;
+
+phi.TestModules:Program
+{
+	call Weblib.Start: 900000;
+	PageHost host;
+	host.logger is addr Print;
+	host.load is addr Load;
+	int size: (OS.FileSize: 'tests/page/modules.html');
+	ptr<u8> html: new u8[size + 1];
+	int got: (OS.ReadFile: 'tests/page/modules.html' html size);
+	the_page is (Page.New: addr host 800.0 600.0);
+	call Page.Load: the_page html got as u32 'http://test.example/tests/page/modules.html';
+	call Page.Tick: the_page 10.0;
+	call Page.Free: the_page;
+	log 'done\n';
+	exit 0;
+
+	ptr<Page> the_page: 0;
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+
+	# a request: the file under tests/page for its path, answered at once
+	[Load: ptr<Page> p: 0; ptr<u8> url: 0; PageLoad kind: PageLoad.FETCH; u32 id: 0;]
+		str path: 'tests/page/';
+		ptr<u8> rest: url + 30;    # after http://test.example/tests/page/
+		path++ rest;
+		int n: (OS.FileSize: addr path:0);
+		if n < 0
+			call Page.Delivered: p id 404 0 0;
+			return;
+		;;
+		ptr<u8> bytes: new u8[n + 1];
+		int read: (OS.ReadFile: addr path:0 bytes n);
+		call Page.Delivered: p id 200 bytes n as u32;
+		free bytes;
+	[end]
+}

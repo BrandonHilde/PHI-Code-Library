@@ -1,0 +1,14 @@
+classic script in head, document parsing
+classic script at the end of the body
+b.js runs first
+import() from a classic script: 42
+a.js runs (after b.js, which it imports)
+inline module: hello, modules, counter 1
+after bump, the import sees 2 (a live binding)
+namespace keys: twice,answer,fromStar
+import.meta.url ends with #module-0: true
+readyState when a module runs: interactive
+assigning an import: TypeError
+c.js (a src module, after the inline one): answer 42, element found: true
+DOMContentLoaded
+done

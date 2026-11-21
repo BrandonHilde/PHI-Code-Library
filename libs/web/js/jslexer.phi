@@ -27,6 +27,7 @@ phi.JsT:Library
 	const u32 STR: 4;
 	const u32 TEMPLATE: 5;
 	const u32 REGEX: 6;
+	const u32 BIGINT: 7;            # text: its digits; num: their radix
 	const u32 LBRACE: 10;
 	const u32 RBRACE: 11;
 	const u32 LPAREN: 12;
@@ -816,6 +817,9 @@ phi.JsLex:Library
 			if radix is not 0
 				pos++ 2;
 				call ScanRadix: radix;
+				if pos < size and src:pos is 'n'
+					call MakeBig: radix;
+				;;
 				call AfterNumber;
 				return;
 			;;
@@ -850,9 +854,29 @@ phi.JsLex:Library
 			;;
 		;;
 		call ScanDigits;
+		if pos < size and src:pos is 'n'
+			# a BigInt: its digits without the separators
+			call sb.Clear;
+			while u32 i: start; i < pos; i++;
+				if src:i is not '_'
+					call sb.Add: src:i;
+				;;
+			;;
+			call MakeBig: 10;
+			call AfterNumber;
+			return;
+		;;
 		call ScanFractionAndExponent: true;
 		tok.num is (ParseDecimal: start pos);
 		call AfterNumber;
+	[end]
+
+	# the digits in sb, and the n after them, are a BigInt
+	[MakeBig: int radix: 10;]
+		tok.kind is JsT.BIGINT;
+		tok.text is (JsStrs.Intern: sb.data sb.len);
+		tok.num is radix as f64;
+		pos++;
 	[end]
 
 	[ScanDigits]
@@ -958,7 +982,6 @@ phi.JsLex:Library
 			u32 c: src:pos;
 			if c < 128
 				if (cc:c & 3) is not 0 or c is '\\'
-					# (1n is a BigInt, which isn't here yet)
 					call Fail: 'Invalid or unexpected token';
 				;;
 			;;

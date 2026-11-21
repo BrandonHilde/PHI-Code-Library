@@ -1,0 +1,353 @@
+# Modules: loading a graph of them, linking it and running it (ECMAScript 16.2, as far as a host that
+# fetches each module once needs). The compiler makes each module a function (Js.CompileModule);
+# this keeps a record of each module by its address, asks the host for the ones that aren't here
+# yet, and runs a module after the ones it imports from.
+#
+# The host gives two hooks: load (an address: fetch it, then call JsModules.Arrived or Failed) and
+# resolve (a module's address and a specifier: the address it names, written to a WlBuf). Records
+# are JS objects in a hidden global ('%modules': address -> record), so the collector keeps them.
+#
+# A record: url, state (FETCHING, READY, RUNNING, DONE or FAILED), rec (what CompileModule made),
+# ns (its namespace: an object with no prototype, a getter for each export), deps (the records its
+# requests name, once it runs), error (why it failed), done (the promise its function gave).
+#
+# Kept simple: a module's own exports are defined as it starts to run, so in a cycle a module that
+# runs first sees undefined, not a ReferenceError, for what the other hasn't defined yet; an import
+# of a name a module doesn't export reads undefined rather than failing to link; and modules with
+# top-level await don't hold up those that import them.
+
+phi.JsModules:Library
+{
+	const int FETCHING: 0;
+	const int READY: 1;
+	const int RUNNING: 2;
+	const int DONE: 3;
+	const int FAILED: 4;
+
+	# the host's: fetch an address, and resolve a specifier against a module's address
+	method<ptr<u8>> load: 0;
+	method<ptr<u8> ptr<u8> u32 ptr<WlBuf>> resolve: 0;
+
+	# ---- the registry
+
+	[Registry: : ptr<JsObj>]
+		ptr<JsObj> g: JsRt.r.global;
+		ptr<JsStr> key: (JsStrs.InternZ: '%modules');
+		ptr<JsProp> found: (JsObjs.Find: g key as ptr<u8>);
+		if found is not 0 and (JsV.IsObj: found.value) return (JsV.AsObj: found.value);
+		ptr<JsObj> r: (JsObjs.NewWithProto: 0);
+		call JsObjs.DefineValue: g key as ptr<u8> (JsV.Obj: r) JsObjs.W;
+		call JsObjs.DefineValue: r (JsStrs.InternZ: '%pending') as ptr<u8> (JsV.Obj: (JsObjs.NewArray: 0)) JsObjs.W;
+	[end: r]
+
+	# the record for url, or undefined
+	[Find: ptr<u8> url: 0;]
+		ptr<JsObj> r: (Registry);
+		ptr<JsProp> p: (JsObjs.Find: r (JsStrs.InternZ: url) as ptr<u8>);
+		if p is 0 return JsV.UNDEF;
+	[end: p.value]
+
+	[Field: u64 rec: 0; ptr<u8> name: 0;]
+	[end: (Js.GetProp: rec name)]
+
+	[SetField: u64 rec: 0; ptr<u8> name: 0; u64 v: 0;]
+		call Js.Define: (JsV.AsObj: rec) name v JsObjs.WEC;
+	[end]
+
+	[State: u64 rec: 0;]
+	[end: (JsV.AsInt: (Field: rec 'state'))]
+
+	# a record for url, made (and asked of the host) if there isn't one
+	[Want: ptr<u8> url: 0;]
+		u64 have: (Find: url);
+		if have is not JsV.UNDEF return have;
+		u64 made: (Make: url);
+		if load is not 0
+			call load: url;
+		;;
+	[end: made]
+
+	# a new record for url, waiting for its text
+	[Make: ptr<u8> url: 0;]
+		ptr<JsObj> o: (JsObjs.NewObject);
+		u64 rec: (JsV.Obj: o);
+		call SetField: rec 'url' (Js.NewStringZ: url);
+		call SetField: rec 'state' (JsV.Int: FETCHING);
+		ptr<JsObj> ns: (JsObjs.NewWithProto: 0);
+		call JsObjs.DefineValue: ns JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'Module') 0;
+		call SetField: rec 'ns' (JsV.Obj: ns);
+		call JsObjs.DefineValue: (Registry) (JsStrs.InternZ: url) as ptr<u8> rec JsObjs.WEC;
+	[end: rec]
+
+	# what the host fetched for url: compiled, and what it imports asked for
+	[Arrived: ptr<u8> url: 0; ptr<u8> src: 0; u32 n: 0;]
+		u64 rec: (Find: url);
+		if rec is JsV.UNDEF
+			# (text the host had already, such as an inline module's: nothing to fetch)
+			rec is (Make: url);
+		;;
+		if (State: rec) is not FETCHING return;
+		u64 compiled: (Js.CompileModule: src n url);
+		if Js.failed
+			call SetField: rec 'error' Js.exception;
+			call SetField: rec 'state' (JsV.Int: FAILED);
+			Js.failed is false;
+			return;
+		;;
+		call SetField: rec 'rec' compiled;
+		call SetField: rec 'state' (JsV.Int: READY);
+		# its own exports, uninitialized until it runs: reading one before then is a ReferenceError
+		ptr<JsObj> ns: (JsV.AsObj: (Field: rec 'ns'));
+		ptr<JsObj> own: (JsV.AsObj: (Field: compiled 'exports'));
+		while u32 x: 0; x < own.length; x++;
+			ptr<JsNativeFn> early: (JsObjs.NewNative: addr TooEarly 0 0 false);
+			early.data is own.elems:x;
+			call JsObjs.DefineGetter: ns (JsV.AsStr: own.elems:x) as ptr<u8> (JsV.Obj: early as ptr<JsObj>) JsV.UNDEF JsObjs.E;
+		;;
+		u64 requests: (Field: compiled 'requests');
+		ptr<JsObj> list: (JsV.AsObj: requests);
+		while u32 i: 0; i < list.length; i++;
+			WlBuf full;
+			call Address: url list.elems:i addr full;
+			u64 dep: (Want: full.data);
+			call full.Free;
+		;;
+	[end]
+
+	# the host couldn't fetch url
+	[Failed: ptr<u8> url: 0;]
+		u64 rec: (Want: url);
+		if (State: rec) is not FETCHING return;
+		WlBuf why;
+		call why.AddZ: 'Failed to fetch module: ';
+		call why.AddZ: url;
+		call SetField: rec 'error' (JsV.Obj: (JsErr.Make: JsRt.P.type_error why.data));
+		call SetField: rec 'state' (JsV.Int: FAILED);
+		call why.Free;
+	[end]
+
+	# specifier (a JS string) against base, as an address
+	[Address: ptr<u8> base: 0; u64 specifier: 0; ptr<WlBuf> target: 0;]
+		ptr<JsStr> s: (JsStrs.Flat: (JsOps.ToStr: specifier));
+		if resolve is not 0
+			call resolve: base s.data s.bytes target;
+		;;
+		else
+			call target.AddN: s.data s.bytes;
+		;;
+	[end]
+
+	# ---- whether a graph is all here
+
+	# 1: everything rec imports, all the way down, has come; 0: something hasn't yet; -1: something
+	# failed (its error is fail_error)
+	u64 fail_error: 0;
+
+	[Here: u64 rec: 0;]
+		ptr<JsObj> seen: (JsObjs.NewWithProto: 0);
+		call Js.Push: (JsV.Obj: seen);
+		int r: (HereFrom: rec seen);
+		JsVm.sp-- 8;
+	[end: r]
+
+	[HereFrom: u64 rec: 0; ptr<JsObj> seen: 0;]
+		call WlStack.Check;
+		int state: (State: rec);
+		if state is FAILED
+			fail_error is (Field: rec 'error');
+			return -1;
+		;;
+		if state is FETCHING return 0;
+		ptr<JsStr> url: (JsStrs.Flat: (JsOps.ToStr: (Field: rec 'url')));
+		ptr<JsStr> key: (JsStrs.Intern: url.data url.bytes);
+		if (JsObjs.Find: seen key as ptr<u8>) is not 0 return 1;
+		call JsObjs.DefineValue: seen key as ptr<u8> JsV.TRUE JsObjs.WEC;
+		if state is not READY return 1;
+		ptr<JsObj> list: (JsV.AsObj: (Field: (Field: rec 'rec') 'requests'));
+		int result: 1;
+		while u32 i: 0; i < list.length; i++;
+			WlBuf full;
+			call Address: url.data list.elems:i addr full;
+			u64 dep: (Find: full.data);
+			call full.Free;
+			if dep is JsV.UNDEF return 0;
+			int d: (HereFrom: dep seen);
+			if d < 0 return -1;
+			if d is 0
+				result is 0;
+			;;
+		;;
+	[end: result]
+
+	# ---- running
+
+	# rec and what it imports run, the imports first: the promise rec's function gave (which fails
+	# if it throws); a module that failed to load or compile throws its error here
+	[Run: u64 rec: 0;]
+		call WlStack.Check;
+		int state: (State: rec);
+		if state is FAILED
+			call JsErr.Throw: (Field: rec 'error');
+		;;
+		if state is RUNNING or state is DONE return (Field: rec 'done');
+		if state is FETCHING
+			call JsErr.Type: 'A module ran before it arrived';
+		;;
+		call SetField: rec 'state' (JsV.Int: RUNNING);
+		call SetField: rec 'done' JsV.UNDEF;
+		ptr<JsStr> url: (JsStrs.Flat: (JsOps.ToStr: (Field: rec 'url')));
+		u64 compiled: (Field: rec 'rec');
+		ptr<JsObj> requests: (JsV.AsObj: (Field: compiled 'requests'));
+		ptr<JsObj> deps: (JsObjs.NewArray: requests.length);
+		call SetField: rec 'deps' (JsV.Obj: deps);
+		while u32 i: 0; i < requests.length; i++;
+			WlBuf full;
+			call Address: url.data requests.elems:i addr full;
+			u64 dep: (Find: full.data);
+			call full.Free;
+			if dep is JsV.UNDEF
+				call JsErr.Type: 'A module imports one that never arrived';
+			;;
+			call JsObjs.ArrayPush: deps dep;
+		;;
+		while u32 k: 0; k < deps.length; k++;
+			u64 ran: (Run: deps.elems:k);
+		;;
+		ptr<JsObj> ns: (JsV.AsObj: (Field: rec 'ns'));
+		# names it exports from others: each a getter that reads theirs
+		ptr<JsObj> re: (JsV.AsObj: (Field: compiled 'reexports'));
+		while u32 j: 0; j < re.length; j++;
+			ptr<JsObj> one: (JsV.AsObj: re.elems:j);
+			u64 from_ns: (Field: deps.elems:((JsV.AsInt: one.elems:0) as u32) 'ns');
+			call Forward: ns (JsV.AsStr: one.elems:2) from_ns one.elems:1;
+		;;
+		# export * from: every name the other exports, but default, that isn't already one of these
+		ptr<JsObj> stars: (JsV.AsObj: (Field: compiled 'stars'));
+		ptr<JsStr> dflt: (JsStrs.InternZ: 'default');
+		while u32 s: 0; s < stars.length; s++;
+			u64 other: (Field: deps.elems:((JsV.AsInt: stars.elems:s) as u32) 'ns');
+			ptr<JsObj> keys: (JsObjs.OwnKeys: (JsV.AsObj: other));
+			while u32 q: 0; q < keys.length; q++;
+				u64 kv: keys.elems:q;
+				if not (JsV.IsStr: kv) continue;
+				ptr<JsStr> name: (JsV.AsStr: kv);
+				if name is dflt continue;
+				if (JsObjs.Find: ns name as ptr<u8>) is not 0 continue;
+				call Forward: ns name other kv;
+			;;
+		;;
+		# import.meta, and the function that defines its own exports
+		ptr<JsObj> meta: (JsObjs.NewWithProto: 0);
+		call Js.Define: meta 'url' (Js.NewString: url.data url.bytes) JsObjs.WEC;
+		ptr<JsNativeFn> e: (JsObjs.NewNative: addr Export '%e' 2 false);
+		e.data is (JsV.Obj: ns);
+		call Js.Push: (JsV.Obj: e as ptr<JsObj>);
+		call Js.Push: (JsV.Obj: meta);
+		while u32 d: 0; d < deps.length; d++;
+			call Js.Push: (Field: deps.elems:d 'ns');
+		;;
+		u64 done: (Js.CallThrowing: (Field: compiled 'fn') JsV.UNDEF (deps.length + 2) as int);
+		call SetField: rec 'done' done;
+		call SetField: rec 'state' (JsV.Int: DONE);
+	[end: done]
+
+	[TooEarly: ptr<u64> args: 0; int argc: 0;]
+		WlBuf b;
+		call b.AddZ: 'Cannot access \'';
+		call Js.TextOf: (Js.CalleeOf: args).data addr b;
+		call b.AddZ: '\' before initialization';
+		call JsErr.Reference: b.data;
+	[end: JsV.UNDEF]
+
+	# ns gets a getter for name that reads key from other (or is other itself, when key is null)
+	[Forward: ptr<JsObj> ns: 0; ptr<JsStr> name: 0; u64 other: 0; u64 key: 0;]
+		ptr<JsNativeFn> g: (JsObjs.NewNative: addr Forwarded 0 0 false);
+		g.data is other;
+		g.data2 is key;
+		call JsObjs.DefineGetter: ns name as ptr<u8> (JsV.Obj: g as ptr<JsObj>) JsV.UNDEF JsObjs.E;
+	[end]
+
+	[Forwarded: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		if self.data2 is JsV.NULL return self.data;
+	[end: (JsObjs.GetV: self.data (JsObjs.KeyOf: self.data2))]
+
+	# %e(name, getter): one of the module's own exports
+	[Export: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<JsObj> ns: (JsV.AsObj: self.data);
+		ptr<JsStr> name: (JsStrs.InternStr: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		call JsObjs.DefineGetter: ns name as ptr<u8> (Js.Arg: args argc 1) JsV.UNDEF JsObjs.E;
+	[end: JsV.UNDEF]
+
+	# ---- import()
+
+	# %import(specifier, base): a promise of the module's namespace
+	[DynamicImport: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsPromiseObj> p: (JsPromises.New: JsRt.P.promise);
+		u64 pv: (JsV.Obj: p as ptr<JsObj>);
+		call Js.Push: pv;
+		ptr<JsStr> base: (JsStrs.Flat: (JsOps.ToStr: (Js.Arg: args argc 1)));
+		JsTryState t;
+		call Js.TryBegin: addr t;
+		u64 spec: JsV.UNDEF;
+		if call spec is JsOps.ToStr: (Js.Arg: args argc 0) throws err
+			call JsPromises.Reject: p (Js.TryCatch: addr t err);
+			JsVm.sp-- 8;
+			return pv;
+		;;
+		WlBuf full;
+		call Address: base.data (Js.Arg: args argc 0) addr full;
+		u64 rec: (Want: full.data);
+		call full.Free;
+		ptr<JsObj> pending: (JsV.AsObj: (Field: (JsV.Obj: (Registry)) '%pending'));
+		ptr<JsObj> one: (JsObjs.NewArray: 2);
+		call JsObjs.ArrayPush: one rec;
+		call JsObjs.ArrayPush: one pv;
+		call JsObjs.ArrayPush: pending (JsV.Obj: one);
+		call Settle;
+		JsVm.sp-- 8;
+	[end: pv]
+
+	# the import()s whose modules are all here now: run them, and keep their promises
+	[Settle]
+		ptr<JsObj> pending: (JsV.AsObj: (Field: (JsV.Obj: (Registry)) '%pending'));
+		u32 i: 0;
+		while i < pending.length
+			ptr<JsObj> one: (JsV.AsObj: pending.elems:i);
+			u64 rec: one.elems:0;
+			ptr<JsPromiseObj> p: (JsV.AsObj: one.elems:1) as ptr<JsPromiseObj>;
+			int here: (Here: rec);
+			if here is 0
+				i++;
+				continue;
+			;;
+			# taken off the list first: running it may add more
+			while u32 m: i; m + 1 < pending.length; m++;
+				pending.elems:m is pending.elems:(m + 1);
+			;;
+			pending.length is pending.length - 1;
+			if here < 0
+				call JsPromises.Reject: p fail_error;
+				continue;
+			;;
+			JsTryState t;
+			call Js.TryBegin: addr t;
+			u64 done: JsV.UNDEF;
+			if call done is Run: rec throws err
+				call JsPromises.Reject: p (Js.TryCatch: addr t err);
+				continue;
+			;;
+			# its namespace once its promise is kept
+			ptr<JsNativeFn> give: (JsObjs.NewNative: addr GiveNamespace 0 0 false);
+			give.data is (Field: rec 'ns');
+			u64 then_fn: (JsObjs.GetV: done (JsV.Str: JsRt.A.then));
+			call Js.Push: (JsV.Obj: give as ptr<JsObj>);
+			u64 chained: (Js.CallThrowing: then_fn done 1);
+			call JsPromises.Resolve: p chained;
+		;;
+	[end]
+
+	[GiveNamespace: ptr<u64> args: 0; int argc: 0;]
+	[end: (Js.CalleeOf: args).data]
+}

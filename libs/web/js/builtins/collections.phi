@@ -236,6 +236,9 @@ phi.JsCollections:Library
 		if (JsV.IsStr: k)
 			return (JsStrs.Hash: (JsV.AsStr: k));
 		;;
+		if (JsV.IsBig: k)
+			return (JsBig.Hash: k);
+		;;
 		u32 lo: k as u32;
 		u32 hi: (k >> 32) as u32;
 		u32 h: (lo ^ (hi * 31)) * 0x9E3779B1;
@@ -245,6 +248,9 @@ phi.JsCollections:Library
 		if a is b return true;
 		if (JsV.IsStr: a) and (JsV.IsStr: b)
 			return (JsStrs.Eq: (JsV.AsStr: a) (JsV.AsStr: b));
+		;;
+		if (JsV.IsBig: a) and (JsV.IsBig: b)
+			return (JsBig.Equal: a b);
 		;;
 	[end: false]
 

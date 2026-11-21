@@ -24,6 +24,7 @@ use page.bind;
 use page.events;
 use page.window;
 use page.observers;
+use page.pmodules;
 
 # what's asked of PageHost.load
 enum.PageLoad
@@ -119,6 +120,10 @@ struct.Page
 	bln load_fired;
 
 	ptr<DomNode> defer_list[atmost 256];
+	ptr<DomNode> mod_nodes[atmost 256];   # module scripts, in the document's order (page/pmodules.phi)
+	ptr<u8> mod_urls[atmost 256];         # their modules' addresses
+	bln mod_async[atmost 256];
+	u32 mod_next;                         # the first that hasn't run
 	ptr<DomNode> current_script;
 	ptr<DomNode> focused;
 
@@ -173,6 +178,7 @@ phi.Page:Library
 		current is p;
 		call PageBind.Install: p;
 		call PageObservers.Install: p;
+		call PageModules.Hooks;
 		call Js.AddRootFn: addr MarkAll;
 	[end: p]
 
@@ -184,6 +190,9 @@ phi.Page:Library
 	[end]
 
 	[Free: ptr<Page> p: 0;]
+		while u32 mu: 0; mu < p.mod_urls.len; mu++;
+			free p.mod_urls:mu;
+		;;
 		call Use: p;
 		call Js.Free: p.rt;
 		current is 0;
@@ -354,6 +363,14 @@ phi.Page:Library
 	[end]
 
 	[Run: ptr<Page> p: 0; ptr<DomNode> s: 0; bln from_parser: false;]
+		ptr<u8> t: (Dom.AttrValue: s 'type');
+		if t is not 0 and (Same: t 'module')
+			call ScanSheets: p;
+			call PageModules.Script: p s;
+			return;
+		;;
+		# a browser with modules leaves nomodule scripts (the fallback for one without) alone
+		if (Dom.AttrValue: s 'nomodule') is not 0 return;
 		if not (IsScriptType: s) return;
 		# what it may ask of the styles should include the sheets found so far
 		call ScanSheets: p;
@@ -472,6 +489,11 @@ phi.Page:Library
 			is PageLoad.SCRIPT
 				ptr<DomNode> s: r.node;
 				ptr<u8> name: r.url;
+				if s is 0
+					# a module's (page/pmodules.phi)
+					call PageModules.Arrived: p r.url ok bytes n;
+					return;
+				;;
 				if ok
 					p.current_script is s;
 					call RunSource: p bytes n name;
@@ -538,13 +560,15 @@ phi.Page:Library
 			;;
 			p.defer_list.len is 0;
 			call ScanSheets: p;
+			# module scripts run once the document is parsed, before DOMContentLoaded
+			call PageModules.Pump: p;
 			call Fire: p (PageBind.Wrap: p.doc.root) 'readystatechange' false;
 			call Fire: p (PageBind.Wrap: p.doc.root) 'DOMContentLoaded' true;
 			call RunJobs: p;
 		;;
 		if p.parse_done and not p.load_fired
 			# (a request of the parser's, a stylesheet or a script, holds up load)
-			bln waiting: false;
+			bln waiting: (PageModules.Waiting: p);
 			while u32 r: 0; r < p.requests.len; r++;
 				if not p.requests:r.done and p.requests:r.kind is not PageLoad.FETCH and p.requests:r.kind is not PageLoad.IMAGE
 					waiting is true;

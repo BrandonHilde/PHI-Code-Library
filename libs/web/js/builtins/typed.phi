@@ -1,7 +1,7 @@
 # ArrayBuffer, the typed arrays and DataView. A typed array is a host object whose hooks answer index keys from
 # its buffer's bytes. Most of its methods can be Array.prototype's own natives, which go through the same hooks;
-# those that must make a new typed array, or sort by number, are here. No BigInt64 arrays, as there's no BigInt,
-# and buffers can't be resized.
+# those that must make a new typed array, or sort by number, are here. BigInt64Array and BigUint64Array hold
+# BigInts (js/bigint.phi), and a copy between them and the others is a TypeError. Buffers can't be resized.
 
 struct.JsBufferData
 {
@@ -29,7 +29,9 @@ phi.JsTyped:Library
 	const u32 UINT32: 6;
 	const u32 FLOAT32: 7;
 	const u32 FLOAT64: 8;
-	const u32 KINDS: 9;
+	const u32 BIGINT64: 9;
+	const u32 BIGUINT64: 10;
+	const u32 KINDS: 11;
 
 	const u32 MAX_BYTES: 1000000000;
 
@@ -114,6 +116,8 @@ phi.JsTyped:Library
 		call OneKind: 'Uint32Array' UINT32 tco tp;
 		call OneKind: 'Float32Array' FLOAT32 tco tp;
 		call OneKind: 'Float64Array' FLOAT64 tco tp;
+		call OneKind: 'BigInt64Array' BIGINT64 tco tp;
+		call OneKind: 'BigUint64Array' BIGUINT64 tco tp;
 
 		ptr<JsObj> vp: (JsObjs.NewObject);
 		JsRt.P.dataview is vp;
@@ -130,6 +134,8 @@ phi.JsTyped:Library
 		call ViewMethods: vp 'Uint32' UINT32;
 		call ViewMethods: vp 'Float32' FLOAT32;
 		call ViewMethods: vp 'Float64' FLOAT64;
+		call ViewMethods: vp 'BigInt64' BIGINT64;
+		call ViewMethods: vp 'BigUint64' BIGUINT64;
 	[end]
 
 	[OneKind: ptr<u8> name: 0; u32 kind: 0; ptr<JsObj> tco: 0; ptr<JsObj> tp: 0;]
@@ -319,9 +325,44 @@ phi.JsTyped:Library
 				f64 wide: f:0 as f64;
 				return (JsV.Num: wide);
 			;;
+			is BIGINT64
+				ptr<i64> h: p as ptr<i64>;
+				return (JsBig.FromI64: h:0);
+			;;
+			is BIGUINT64
+				ptr<u64> k: p as ptr<u64>;
+				return (JsBig.FromU64: k:0);
+			;;
 		;;
 		ptr<f64> g: p as ptr<f64>;
 	[end: (JsV.Num: g:0)]
+
+	# whether the kind holds BigInts
+	[IsBigKind: u32 kind: 0;]
+	[end: kind is BIGINT64 or kind is BIGUINT64]
+
+	# a value made what an element of the kind takes: a BigInt (ToBigInt) or a number (ToNumber)
+	[Convert: u32 kind: 0; u64 val: 0;]
+		if (IsBigKind: kind) return (JsOps.ToBigInt: val);
+		if (JsV.IsNum: val) return val;
+	[end: (JsV.Num: (JsOps.ToNumber: val))]
+
+	# store a value Convert made
+	[Put: ptr<u8> p: 0; u32 kind: 0; u64 val: 0;]
+		if (IsBigKind: kind)
+			ptr<u64> q: p as ptr<u64>;
+			q:0 is (JsBig.ToU64: val);
+			return;
+		;;
+		call Store: p kind (JsV.AsNum: val);
+	[end]
+
+	# an element from one kind of array into another: they must both hold BigInts, or neither
+	[SameContent: u32 a: 0; u32 b: 0;]
+		if (IsBigKind: a) is not (IsBigKind: b)
+			call JsErr.Type: 'Content types differ: a BigInt array and another can\'t be copied between';
+		;;
+	[end]
 
 	[Store: ptr<u8> p: 0; u32 kind: 0; f64 x: 0.0;]
 		when kind
@@ -396,9 +437,9 @@ phi.JsTyped:Library
 	[HookSet: ptr<JsObj> o: 0; u64 key: 0; u64 val: 0; u64 recv: 0;]
 		if not (JsObjs.IsIndexKey: key) return 0;
 		ptr<JsViewData> v: (ViewOf: o);
-		f64 x: (JsOps.ToNumber: val);
+		u64 x: (Convert: v.kind val);
 		if (key as u32) < v.length
-			call Store: (At: v key as u32) v.kind x;
+			call Put: (At: v key as u32) v.kind x;
 		;;
 	[end: 1]
 
@@ -443,8 +484,8 @@ phi.JsTyped:Library
 		if (d.flags & JsObjs.H_E) is not 0 and (d.flags & JsObjs.E) is 0 return -1;
 		if (d.flags & JsObjs.H_W) is not 0 and (d.flags & JsObjs.W) is 0 return -1;
 		if (d.flags & JsObjs.H_VALUE) is not 0
-			f64 x: (JsOps.ToNumber: d.value);
-			call Store: (At: v key as u32) v.kind x;
+			u64 x: (Convert: v.kind d.value);
+			call Put: (At: v key as u32) v.kind x;
 		;;
 	[end: 1]
 
@@ -511,10 +552,11 @@ phi.JsTyped:Library
 		;;
 		if fo.cls is array_class
 			ptr<JsViewData> src: (ViewOf: fo);
+			call SameContent: kind src.kind;
 			ptr<JsObj> made: (MakeSized: kind src.length as f64 proto);
 			ptr<JsViewData> mv: (ViewOf: made);
 			while u32 i: 0; i < src.length; i++;
-				call Store: (At: mv i) kind (JsV.AsNum: (Load: (At: src i) src.kind));
+				call Put: (At: mv i) kind (Load: (At: src i) src.kind);
 			;;
 			return (JsV.Obj: made);
 		;;
@@ -534,6 +576,10 @@ phi.JsTyped:Library
 		;;
 		ptr<JsObj> o: (JsOps.ToObject: v);
 		f64 n: (JsArrayBuiltins.LengthOf: o);
+		# (the array is made before anything is read, so a length too big for one fails first)
+		if n > (MAX_BYTES as f64)
+			call JsErr.Range: 'Invalid typed array length';
+		;;
 		f64 i: 0.0;
 		while i < n
 			call JsObjs.ArrayPush: list (JsObjs.Get: o (JsArrayBuiltins.IndexKey: i) (JsV.Obj: o));
@@ -548,7 +594,7 @@ phi.JsTyped:Library
 	[FillFrom: ptr<JsObj> target: 0; ptr<JsObj> list: 0;]
 		ptr<JsViewData> v: (ViewOf: target);
 		while u32 i: 0; i < list.length and i < v.length; i++;
-			call Store: (At: v i) v.kind (JsOps.ToNumber: list.elems:i);
+			call Put: (At: v i) v.kind (Convert: v.kind list.elems:i);
 		;;
 	[end]
 
@@ -608,6 +654,12 @@ phi.JsTyped:Library
 			;;
 			is FLOAT32
 				return 'Float32Array';
+			;;
+			is BIGINT64
+				return 'BigInt64Array';
+			;;
+			is BIGUINT64
+				return 'BigUint64Array';
 			;;
 		;;
 		ptr<u8> last: 'Float64Array';
@@ -724,17 +776,18 @@ phi.JsTyped:Library
 			if off + (sv.length as f64) > (v.length as f64)
 				call JsErr.Range: 'offset is out of bounds';
 			;;
+			call SameContent: v.kind sv.kind;
 			# they may share a buffer, so what's read goes somewhere safe first
 			u32 n: sv.length;
-			ptr<f64> copy: new f64[n + 1];
+			ptr<u64> copy: new u64[n + 1];
 			if copy is 0
 				throw 'out of memory';
 			;;
 			while u32 i: 0; i < n; i++;
-				copy:i is (JsV.AsNum: (Load: (At: sv i) sv.kind));
+				copy:i is (Load: (At: sv i) sv.kind);
 			;;
 			while u32 j: 0; j < n; j++;
-				call Store: (At: v (off as u32) + j) v.kind copy:j;
+				call Put: (At: v (off as u32) + j) v.kind copy:j;
 			;;
 			free copy;
 			return JsV.UNDEF;
@@ -747,7 +800,7 @@ phi.JsTyped:Library
 		u32 count: len as u32;
 		while u32 k: 0; k < count; k++;
 			u64 e: (JsObjs.GetIndex: so k (JsV.Obj: so));
-			call Store: (At: v (off as u32) + k) v.kind (JsOps.ToNumber: e);
+			call Put: (At: v (off as u32) + k) v.kind (Convert: v.kind e);
 		;;
 	[end: JsV.UNDEF]
 
@@ -782,8 +835,11 @@ phi.JsTyped:Library
 		ptr<JsViewData> mv: (ViewOf: made);
 		u32 n: count as u32;
 		u32 start: first as u32;
+		if n > 0
+			call SameContent: mv.kind v.kind;
+		;;
 		while u32 i: 0; i < n and start + i < v.length; i++;
-			call Store: (At: mv i) mv.kind (JsV.AsNum: (Load: (At: v start + i) v.kind));
+			call Put: (At: mv i) mv.kind (Load: (At: v start + i) v.kind);
 		;;
 	[end: (JsV.Obj: made)]
 
@@ -828,7 +884,7 @@ phi.JsTyped:Library
 		ptr<JsObj> made: (SpeciesMake: o kept.length as f64);
 		ptr<JsViewData> mv: (ViewOf: made);
 		while u32 j: 0; j < kept.length; j++;
-			call Store: (At: mv j) mv.kind (JsV.AsNum: kept.elems:j);
+			call Put: (At: mv j) mv.kind (Convert: mv.kind kept.elems:j);
 		;;
 	[end: (JsV.Obj: made)]
 
@@ -852,7 +908,7 @@ phi.JsTyped:Library
 		sort_cmp is cmp;
 		call SortRuns: a.elems b.elems n cmp;
 		while u32 j: 0; j < n; j++;
-			call Store: (At: v j) v.kind (JsV.AsNum: a.elems:j);
+			call Put: (At: v j) v.kind a.elems:j;
 		;;
 	[end: args:(-1)]
 
@@ -905,6 +961,9 @@ phi.JsTyped:Library
 		if cmp is not JsV.UNDEF
 			f64 r: (JsOps.ToNumber: (JsVm.Call2: cmp JsV.UNDEF a b));
 			return not (r > 0.0);
+		;;
+		if (JsV.IsBig: a)
+			return (JsBig.Compare: a b) <= 0;
 		;;
 		f64 x: (JsV.AsNum: a);
 		f64 y: (JsV.AsNum: b);
@@ -996,13 +1055,13 @@ phi.JsTyped:Library
 		u32 kind: self.magic;
 		ptr<JsViewData> v: (ThisDataView: args);
 		f64 at_: (ToIndex: (Js.Arg: args argc 0));
-		f64 x: (JsOps.ToNumber: (Js.Arg: args argc 1));
+		u64 x: (Convert: kind (Js.Arg: args argc 1));
 		bln little: (JsOps.ToBool: (Js.Arg: args argc 2));
 		u32 size: (SizeOf: kind);
 		if at_ + (size as f64) > (v.length as f64)
 			call JsErr.Range: 'Offset is outside the bounds of the DataView';
 		;;
-		call Store: addr tmp:0 kind x;
+		call Put: addr tmp:0 kind x;
 		ptr<JsBufferData> bd: (BufferOf: v);
 		ptr<u8> p: bd.bytes + v.offset + at_ as u32;
 		while u32 i: 0; i < size; i++;

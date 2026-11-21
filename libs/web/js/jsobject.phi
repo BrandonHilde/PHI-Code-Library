@@ -742,6 +742,7 @@ phi.JsObjs:Library
 		if tag is JsV.TAG_STR return JsRt.P.string;
 		if tag is JsV.TAG_INT or tag < JsV.TAG_SPECIAL return JsRt.P.number;
 		if tag is JsV.TAG_SYM return JsRt.P.symbol;
+		if tag is JsV.TAG_BIG return JsRt.P.bigint;
 		if v is JsV.TRUE or v is JsV.FALSE return JsRt.P.boolean;
 		call JsErr.Type: 'Cannot read properties of undefined or null';
 	[end: 0 as ptr<JsObj>]

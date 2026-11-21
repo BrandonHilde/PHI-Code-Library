@@ -1,5 +1,6 @@
 pass api_example
 pass async_order
+pass bigint
 pass builtins_gc
 pass classes
 pass closures_loops
@@ -18,4 +19,4 @@ pass tagged_templates
 pass tdz
 pass this_binding
 pass try_finally
-20 passed, 0 failed
+21 passed, 0 failed

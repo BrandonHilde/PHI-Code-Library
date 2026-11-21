@@ -381,27 +381,9 @@ phi.TestJs262:Program
 	[end: ok]
 
 	[RunInRuntime: ptr<u8> text: 0; u32 n: 0; ptr<JsT262Meta> m: 0; bln strict: false;]
-		if not m.raw
-			# stand-ins for builtins not written yet: see the file
-			int shim_n: (OS.ReadFile: 'tests/js/shim262.js' harness_buf FILE_ROOM - 1);
-			if shim_n > 0
-				call Js.Eval: harness_buf shim_n as u32 'shim262.js';
-				if Js.failed
-					call cause.AddZ: 'shim: ';
-					call Describe: Js.exception;
-					return false;
-				;;
-			;;
-			if not (LoadHarness: 'assert.js') return false;
-			if not (LoadHarness: 'sta.js') return false;
-			if m.is_async
-				if not (LoadHarness: 'doneprintHandle.js') return false;
-			;;
-			ptr<u8> inc: addr m.includes;
-			while inc:0 is not 0
-				if not (LoadHarness: inc) return false;
-				inc is inc + (WlText.LenZ: inc) + 1;
-			;;
+		if not (Harness: m) return false;
+		if m.is_module
+			return (RunModule: m);
 		;;
 		WlBuf src;
 		if strict
@@ -412,7 +394,8 @@ phi.TestJs262:Program
 		JsTryState st;
 		call Js.TryBegin: addr st;
 		ptr<JsCode> code: 0;
-		if call code is Js.Compile: src.data src.len 'test' false throws err
+		# (named by its path, which import() resolves against)
+		if call code is Js.Compile: src.data src.len test_path false throws err
 			u64 ex: (Js.TryCatchAll: addr st err);
 			call src.Free;
 			if m.is_negative and m.neg_parse
@@ -454,6 +437,7 @@ phi.TestJs262:Program
 				call Describe: Js.exception;
 				return false;
 			;;
+			call captured.Reserve: 0;
 			captured.data:(captured.len) is 0;
 			if (Find: captured.data captured.len 'Test262:AsyncTestComplete' 0) >= 0
 				return true;
@@ -476,6 +460,156 @@ phi.TestJs262:Program
 		;;
 	[end: true]
 
+	# the harness's files and the test's includes, run first
+	[Harness: ptr<JsT262Meta> m: 0;]
+		if m.raw return true;
+		# stand-ins for builtins not written yet: see the file
+		int shim_n: (OS.ReadFile: 'tests/js/shim262.js' harness_buf FILE_ROOM - 1);
+		if shim_n > 0
+			call Js.Eval: harness_buf shim_n as u32 'shim262.js';
+			if Js.failed
+				call cause.AddZ: 'shim: ';
+				call Describe: Js.exception;
+				return false;
+			;;
+		;;
+		if not (LoadHarness: 'assert.js') return false;
+		if not (LoadHarness: 'sta.js') return false;
+		if m.is_async
+			if not (LoadHarness: 'doneprintHandle.js') return false;
+		;;
+		ptr<u8> inc: addr m.includes;
+		while inc:0 is not 0
+			if not (LoadHarness: inc) return false;
+			inc is inc + (WlText.LenZ: inc) + 1;
+		;;
+	[end: true]
+
+	# a module test: the test is a module, which may import others beside it (JsModules' hooks read them)
+	[RunModule: ptr<JsT262Meta> m: 0;]
+		JsModules.load is addr ModLoad;
+		JsModules.resolve is addr ModResolve;
+		JsTryState st;
+		call Js.TryBegin: addr st;
+		if call JsModules.Arrived: test_path file_buf test_n throws err
+			u64 ex0: (Js.TryCatchAll: addr st err);
+			call cause.AddZ: 'loading: ';
+			call Describe: ex0;
+			return false;
+		;;
+		u64 rec: (JsModules.Find: test_path);
+		if (JsModules.State: rec) is JsModules.FAILED
+			u64 why: (JsModules.Field: rec 'error');
+			if m.is_negative and m.neg_parse
+				return (MatchType: why m);
+			;;
+			call cause.AddZ: 'parse: ';
+			call Describe: why;
+			return false;
+		;;
+		if m.is_negative and m.neg_parse
+			call cause.AddZ: 'expected a SyntaxError at parse, and it parsed';
+			return false;
+		;;
+		int here: (JsModules.Here: rec);
+		if here < 0
+			if m.is_negative
+				return (MatchType: JsModules.fail_error m);
+			;;
+			call cause.AddZ: 'an import: ';
+			call Describe: JsModules.fail_error;
+			return false;
+		;;
+		if here is 0
+			call cause.AddZ: 'an import never arrived';
+			return false;
+		;;
+		u64 done: 0;
+		call Js.TryBegin: addr st;
+		if call done is JsModules.Run: rec throws err2
+			u64 ex: (Js.TryCatchAll: addr st err2);
+			if m.is_negative
+				return (MatchType: ex m);
+			;;
+			call cause.AddZ: 'threw: ';
+			call Describe: ex;
+			return false;
+		;;
+		call Js.RunJobs;
+		if (JsPromises.IsPromise: done)
+			ptr<JsPromiseObj> p: (JsV.AsObj: done) as ptr<JsPromiseObj>;
+			if p.state is JsPromises.REJECTED
+				if m.is_negative
+					return (MatchType: p.result m);
+				;;
+				call cause.AddZ: 'threw: ';
+				call Describe: p.result;
+				return false;
+			;;
+		;;
+		if m.is_negative
+			call cause.AddZ: 'expected an error, and it ran';
+			return false;
+		;;
+		if m.is_async
+			call captured.Reserve: 0;
+			captured.data:(captured.len) is 0;
+			if (Find: captured.data captured.len 'Test262:AsyncTestComplete' 0) >= 0
+				return true;
+			;;
+			call cause.AddZ: 'async: never finished';
+			return false;
+		;;
+	[end: true]
+
+	ptr<u8> test_path: 0;
+	u32 test_n: 0;
+
+	# JsModules' hooks: a module is the file at its address
+	[ModLoad: ptr<u8> url: 0;]
+		ptr<u8> room: new u8[FILE_ROOM];
+		int got: (OS.ReadFile: url room FILE_ROOM - 1);
+		if got < 0
+			call JsModules.Failed: url;
+		;;
+		else
+			call JsModules.Arrived: url room got as u32;
+		;;
+		free room;
+	[end]
+
+	# ./name and ../name beside the importing module's file
+	[ModResolve: ptr<u8> base: 0; ptr<u8> spec: 0; u32 n: 0; ptr<WlBuf> target: 0;]
+		if n is 0 or spec:0 is not '.'
+			call target.AddN: spec n;
+			return;
+		;;
+		u32 dir: (WlText.LenZ: base);
+		while dir > 0 and base:(dir - 1) is not '/'
+			dir--;
+		;;
+		u32 i: 0;
+		while true
+			if n - i >= 2 and spec:i is '.' and spec:(i + 1) is '/'
+				i++ 2;
+			;;
+			elif n - i >= 3 and spec:i is '.' and spec:(i + 1) is '.' and spec:(i + 2) is '/'
+				i++ 3;
+				if dir > 0
+					dir--;
+				;;
+				while dir > 0 and base:(dir - 1) is not '/'
+					dir--;
+				;;
+			;;
+			else
+				break;
+			;;
+		;;
+		call target.AddN: base dir;
+		call target.AddN: spec + i n - i;
+	[end]
+
 	[MatchType: u64 ex: 0; ptr<JsT262Meta> m: 0;]
 		WlBuf nm;
 		call ThrownName: ex addr nm;
@@ -496,11 +630,19 @@ phi.TestJs262:Program
 		;;
 		JsT262Meta m;
 		call ReadMeta: file_buf n as u32 addr m;
+		bln pass: true;
+		test_path is path;
+		test_n is n as u32;
 		if m.is_module
-			log 'R SKIP ' path ' module\n';
+			pass is (RunMode: file_buf n as u32 addr m true);
+			if pass
+				log 'R PASS ' path '\n';
+				return;
+			;;
+			call cause.Reserve: 0;
+			log 'R FAIL ' path ' ' cause.data '\n';
 			return;
 		;;
-		bln pass: true;
 		if not m.only_strict
 			pass is (RunMode: file_buf n as u32 addr m false);
 		;;

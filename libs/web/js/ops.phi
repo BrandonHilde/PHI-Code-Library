@@ -207,6 +207,9 @@ phi.JsOps:Library
 		if tag is JsV.TAG_SYM
 			call JsErr.Type: 'Cannot convert a Symbol value to a number';
 		;;
+		if tag is JsV.TAG_BIG
+			call JsErr.Type: 'Cannot convert a BigInt value to a number';
+		;;
 		f64 from_prim: (ToNumber: (ToPrimitive: v HINT_NUMBER));
 	[end: from_prim]
 
@@ -370,6 +373,7 @@ phi.JsOps:Library
 		if tag is JsV.TAG_SPECIAL return v is JsV.TRUE;
 		if tag is JsV.TAG_INT return (v as u32) is not 0;
 		if tag is JsV.TAG_OBJ or tag is JsV.TAG_SYM return true;
+		if tag is JsV.TAG_BIG return not (JsBig.IsZero: v);
 		if tag is JsV.TAG_STR
 			ptr<JsStr> s: (JsV.AsStr: v);
 			return s.bytes is not 0;
@@ -421,6 +425,13 @@ phi.JsOps:Library
 		if tag is JsV.TAG_SYM
 			call JsErr.Type: 'Cannot convert a Symbol value to a string';
 		;;
+		if tag is JsV.TAG_BIG
+			WlBuf b;
+			call JsBig.ToText: v 10 addr b;
+			ptr<JsStr> text: (JsStrs.New: b.data b.len);
+			call b.Free;
+			return text;
+		;;
 		ptr<JsStr> from_prim: (ToStr: (ToPrimitive: v HINT_STRING));
 	[end: from_prim]
 
@@ -444,6 +455,10 @@ phi.JsOps:Library
 	[StrictEq: u64 a: 0; u64 b: 0;]
 		u32 ta: (a >> 48) as u32;
 		u32 tb: (b >> 48) as u32;
+		if ta is JsV.TAG_BIG
+			if tb is not JsV.TAG_BIG return false;
+			return (JsBig.Equal: a b);
+		;;
 		if ta is JsV.TAG_STR
 			if tb is not JsV.TAG_STR return false;
 			return (JsStrs.Eq: (JsV.AsStr: a) (JsV.AsStr: b));
@@ -491,6 +506,21 @@ phi.JsOps:Library
 				continue;
 			;;
 			if ta is JsV.TAG_SYM or tb is JsV.TAG_SYM return false;
+			if ta is JsV.TAG_BIG or tb is JsV.TAG_BIG
+				if ta is JsV.TAG_BIG and tb is JsV.TAG_BIG return (JsBig.Equal: a b);
+				u64 big: a;
+				u64 other: b;
+				if tb is JsV.TAG_BIG
+					big is b;
+					other is a;
+				;;
+				if (JsV.IsStr: other)
+					u64 parsed: (JsBig.FromString: (JsV.AsStr: other));
+					if parsed is JsV.UNDEF return false;
+					return (JsBig.Equal: big parsed);
+				;;
+				return (JsBig.CompareDouble: big (JsV.AsNum: other)) is 0;
+			;;
 			# a string and a number
 			return (ToNumber: a) is (ToNumber: b);
 		;;
@@ -525,6 +555,9 @@ phi.JsOps:Library
 			if (JsStrs.Compare: (JsV.AsStr: a) (JsV.AsStr: b)) < 0 return 1;
 			return 0;
 		;;
+		if (JsV.IsBig: a) or (JsV.IsBig: b)
+			return (LessBig: a b);
+		;;
 		f64 x: (ToNumber: a);
 		f64 y: (ToNumber: b);
 		if x is not x or y is not y return -1;
@@ -543,10 +576,97 @@ phi.JsOps:Library
 			result is (JsV.Str: (JsStrs.Concat: sa sb));
 		;;
 		else
-			result is (JsV.Num: (ToNumber: a) + (ToNumber: b));
+			u64 x: (Numeric: a);
+			u64 y: (Numeric: b);
+			if (JsV.IsBig: x) or (JsV.IsBig: y)
+				call BothBig: x y;
+				result is (JsBig.Add: x y);
+			;;
+			else
+				result is (JsV.Num: (JsV.AsNum: x) + (JsV.AsNum: y));
+			;;
 		;;
 		JsGc.no_gc--;
 	[end: result]
+
+	# ---- BigInt's part
+
+	# ToNumeric: a number or a BigInt
+	[ToNumeric: u64 v: 0;]
+		v is (ToPrimitive: v HINT_NUMBER);
+	[end: (Numeric: v)]
+
+	# the same, for a primitive
+	[Numeric: u64 v: 0;]
+		if (JsV.IsNum: v) or (JsV.IsBig: v) return v;
+	[end: (JsV.Num: (ToNumber: v))]
+
+	# both must be BigInts, where either is
+	[BothBig: u64 a: 0; u64 b: 0;]
+		if not (JsV.IsBig: a) or not (JsV.IsBig: b)
+			call JsErr.Type: 'Cannot mix BigInt and other types, use explicit conversions';
+		;;
+	[end]
+
+	# ToBigInt
+	[ToBigInt: u64 v: 0;]
+		u64 p: (ToPrimitive: v HINT_NUMBER);
+		u32 tag: (p >> 48) as u32;
+		if tag is JsV.TAG_BIG return p;
+		if p is JsV.TRUE return (JsBig.FromInt: 1);
+		if p is JsV.FALSE return (JsBig.FromInt: 0);
+		if tag is JsV.TAG_STR
+			u64 parsed: (JsBig.FromString: (JsV.AsStr: p));
+			if parsed is JsV.UNDEF
+				WlBuf b;
+				call b.AddZ: 'Cannot convert ';
+				call Js.TextOf: p addr b;
+				call b.AddZ: ' to a BigInt';
+				call JsErr.Syntax: b.data;
+			;;
+			return parsed;
+		;;
+		if tag is JsV.TAG_SYM
+			call JsErr.Type: 'Cannot convert a Symbol value to a BigInt';
+		;;
+		if (JsV.IsNil: p)
+			call JsErr.Type: 'Cannot convert undefined or null to a BigInt';
+		;;
+		WlBuf nb;
+		call nb.AddZ: 'Cannot convert ';
+		call Js.TextOf: p addr nb;
+		call nb.AddZ: ' to a BigInt';
+		call JsErr.Type: nb.data;
+	[end: 0 as u64]
+
+	# a < b where one is a BigInt (both primitives): 1, 0, or -1 for undefined
+	[LessBig: u64 a: 0; u64 b: 0;]
+		if (JsV.IsBig: a) and (JsV.IsBig: b)
+			if (JsBig.Compare: a b) < 0 return 1;
+			return 0;
+		;;
+		if (JsV.IsStr: a)
+			a is (JsBig.FromString: (JsV.AsStr: a));
+			if a is JsV.UNDEF return -1;
+			if (JsBig.Compare: a b) < 0 return 1;
+			return 0;
+		;;
+		if (JsV.IsStr: b)
+			b is (JsBig.FromString: (JsV.AsStr: b));
+			if b is JsV.UNDEF return -1;
+			if (JsBig.Compare: a b) < 0 return 1;
+			return 0;
+		;;
+		if (JsV.IsBig: a)
+			int m: (JsBig.CompareDouble: a (ToNumber: b));
+			if m is 2 return -1;
+			if m < 0 return 1;
+			return 0;
+		;;
+		int m2: (JsBig.CompareDouble: b (ToNumber: a));
+		if m2 is 2 return -1;
+		if m2 > 0 return 1;
+	[end: 0]
 
 	# ---- typeof, callable, instanceof ----
 
@@ -555,6 +675,7 @@ phi.JsOps:Library
 		if tag < JsV.TAG_SPECIAL or tag is JsV.TAG_INT return JsRt.A.number;
 		if tag is JsV.TAG_STR return JsRt.A.string;
 		if tag is JsV.TAG_SYM return JsRt.A.symbol;
+		if tag is JsV.TAG_BIG return JsRt.A.bigint;
 		if tag is JsV.TAG_OBJ
 			ptr<JsObj> o: (JsV.AsObj: v);
 			if (o.flags & JsObjs.F_CALLABLE) is not 0 return JsRt.A.function;

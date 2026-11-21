@@ -38,10 +38,13 @@ phi.JsBuiltins:Library
 		call Js.DefineNativeSafe: g 'eval' addr GlobalEval 1;
 		call Js.DefineNative: g 'isNaN' addr GlobalIsNaN 1;
 		call Js.DefineNative: g 'isFinite' addr GlobalIsFinite 1;
+		# import(), which the compiler makes a call to this (it can't be named in a script)
+		call Js.DefineNative: g '%import' addr JsModules.DynamicImport 2;
 		call JsObjectBuiltins.Init;
 		call JsFunctionBuiltins.Init;
 		call JsErrorBuiltins.Init;
 		call JsSymbolBuiltins.Init;
+		call JsBigIntBuiltins.Init;
 		call JsIteratorBuiltins.Init;
 		call JsArrayBuiltins.Init;
 		call JsStringBuiltins.Init;
@@ -112,6 +115,11 @@ phi.JsBuiltins:Library
 					call b.AddN: ds.data ds.bytes;
 				;;
 				call b.Add: ')';
+			;;
+			elif (JsV.IsBig: v)
+				# as browsers' consoles show one: 10n
+				call JsBig.ToText: v 10 addr b;
+				call b.Add: 'n';
 			;;
 			else
 				call Js.TextOf: v addr b;

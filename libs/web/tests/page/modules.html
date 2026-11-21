@@ -1,0 +1,22 @@
+<!doctype html><html><head><title>modules</title>
+<script>console.log('classic script in head, document parsing');</script>
+<script type="module">
+import greet, { counter, bump, name as who } from './mod/a.js';
+import * as b from './mod/b.js';
+console.log('inline module: ' + greet(who) + ', counter ' + counter);
+bump();
+console.log('after bump, the import sees ' + counter + ' (a live binding)');
+console.log('namespace keys: ' + Object.keys(b).join(','));
+console.log('import.meta.url ends with #module-0: ' + import.meta.url.endsWith('#module-0'));
+console.log('readyState when a module runs: ' + document.readyState);
+try { counter = 5; } catch (e) { console.log('assigning an import: ' + e.constructor.name); }
+</script>
+<script nomodule>console.log('nomodule ran, which it should not');</script>
+<script type="module" src="mod/c.js"></script>
+</head><body><p id="p">text</p>
+<script>
+console.log('classic script at the end of the body');
+import('./mod/b.js').then(function (ns) { console.log('import() from a classic script: ' + ns.twice(21)); });
+document.addEventListener('DOMContentLoaded', function () { console.log('DOMContentLoaded'); });
+</script>
+</body></html>

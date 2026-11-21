@@ -469,8 +469,8 @@ Picked up when there's a reason to. Taken from weblib's list of what it doesn't 
 | Area | Missing | Note |
 |---|---|---|
 | HTML | Encoding sniffing, `<meta charset>` | Input is always read as UTF-8 today, which breaks older pages. encodinglib (2026-11-21) does it for a browser to use before weblib |
-| JS | Modules, `BigInt`, `Intl`, `with`, direct `eval` | `BigInt` is most of what remains failing in test262's typed arrays |
-| DOM | `MutationObserver`, `IntersectionObserver`, custom elements, shadow DOM | |
+| JS | `Intl`, `with`, direct `eval` (modules and `BigInt` done 2026-11-21) | Modules: link errors for missing names, JSON modules and import maps aren't done |
+| DOM | Custom elements, shadow DOM (the observers done 2026-11-21) | |
 | Canvas | `<canvas>` | Becomes possible once Image and Font exist, through hooks |
 | CSS | Nesting, `@container`, running animations and transitions | |
 | Memory | Nodes aren't freed until their document is | Matters for long-lived pages |
