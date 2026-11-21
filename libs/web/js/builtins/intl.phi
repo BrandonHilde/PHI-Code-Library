@@ -1,0 +1,90 @@
+# Intl: intl.js (intljs.phi holds it, made by tools/web/make_intl.py). It is JavaScript because almost
+# all of Intl is choosing among options and putting text together, which reads better there; what it
+# needs of the engine is already in the language (exact decimals come from the shortest digits
+# Number.prototype.toExponential gives).
+#
+# It is big, so a runtime starts without it and compiles it the first time a script needs it, which
+# most pages never do. Until then the global Intl is an empty object marked lazy: the first look at
+# any of its properties (JsObjs.Materialize) runs the script, which fills that same object in. The
+# locale methods of other builtins (toLocaleString and the rest) start as natives that load the script,
+# which puts its own in their places, and then call those; if the script ever failed, they call the
+# builtins they replaced.
+
+use js.builtins.intljs;
+
+phi.JsIntl:Library
+{
+	bln loading: false;
+
+	[Init]
+		ptr<JsObj> g: JsRt.r.global;
+		ptr<JsObj> stub: (JsObjs.NewObject);
+		stub.flags is (stub.flags | JsObjs.F_LAZY | JsObjs.F_SPECIAL) as u16;
+		call JsObjs.DefineZ: g 'Intl' (JsV.Obj: stub) JsObjs.WC;
+		call JsObjs.DefineZ: g '%intlStub' (JsV.Obj: stub) JsObjs.WC;
+		JsObjs.lazy_hook is addr Materialized;
+		call Forwarder: JsRt.P.number 'toLocaleString' 0;
+		call Forwarder: JsRt.P.bigint 'toLocaleString' 0;
+		call Forwarder: JsRt.P.date 'toLocaleString' 0;
+		call Forwarder: JsRt.P.date 'toLocaleDateString' 0;
+		call Forwarder: JsRt.P.date 'toLocaleTimeString' 0;
+		call Forwarder: JsRt.P.string 'localeCompare' 1;
+		call Forwarder: JsRt.P.string 'toLocaleLowerCase' 0;
+		call Forwarder: JsRt.P.string 'toLocaleUpperCase' 0;
+		call Forwarder: JsRt.P.array 'toLocaleString' 0;
+	[end]
+
+	# a native in place of a locale method, keeping the builtin it replaces
+	[Forwarder: ptr<JsObj> proto: 0; ptr<u8> name: 0; int nargs: 0;]
+		u64 old: (JsObjs.GetV: (JsV.Obj: proto) (JsObjs.KeyZ: name));
+		ptr<JsNativeFn> f: (Js.DefineNative: proto name addr Forward nargs);
+		f.data is old;
+		f.data2 is (JsV.Obj: proto);
+	[end]
+
+	[Forward: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		call Load;
+		u64 fn: (JsObjs.GetV: self.data2 (JsObjs.KeyZ: self.name));
+		if not (JsV.IsObj: fn) or (JsV.AsObj: fn) is self as ptr<JsObj>
+			fn is self.data;
+		;;
+		u64 this_val: args:(-1);
+		while int i: 0; i < argc; i++;
+			call Js.Push: args:i;
+		;;
+	[end: (Js.CallThrowing: fn this_val argc)]
+
+	# the lazy Intl was looked at
+	[Materialized: ptr<JsObj> o: 0;]
+		call Load;
+	[end]
+
+	# compiles and runs intl.js, once per runtime: '%intlStub' (the lazy Intl) is there until it has
+	[Load]
+		if loading return;
+		ptr<JsObj> g: JsRt.r.global;
+		ptr<JsProp> p: (JsObjs.Find: g (JsStrs.InternZ: '%intlStub') as ptr<u8>);
+		if p is 0 return;
+		ptr<JsObj> stub: (JsV.AsObj: p.value);
+		# (Object.freeze(Intl) before anything was looked at: it's filled in, then frozen as asked)
+		u32 sealed: (stub.flags as u32) & JsObjs.F_NOEXT;
+		stub.flags is ((stub.flags as u32) & (0xFFFF - JsObjs.F_LAZY - JsObjs.F_SPECIAL - JsObjs.F_NOEXT)) as u16;
+		loading is true;
+		# this can happen in the middle of anything (a property lookup), so nothing collects meanwhile
+		JsGc.no_gc++;
+		bln failed_before: Js.failed;
+		u64 exception_before: Js.exception;
+		str js: (JsIntlJs.Source);
+		u64 ignored: (Js.Eval: addr js:0 js.len as u32 'intl');
+		Js.failed is failed_before;
+		Js.exception is exception_before;
+		JsGc.no_gc--;
+		loading is false;
+		stub.flags is ((stub.flags as u32) | sealed) as u16;
+		p is (JsObjs.Find: g (JsStrs.InternZ: '%intlStub') as ptr<u8>);
+		if p is not 0
+			call JsObjs.RemoveProp: g p;
+		;;
+	[end]
+}

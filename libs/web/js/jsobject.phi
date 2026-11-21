@@ -123,7 +123,7 @@ phi.JsObjs:Library
 	# object flags
 	const u32 F_NOEXT: 1;
 	const u32 F_SPARSE: 2;
-	const u32 F_LAZY: 4;       # a function whose length, name and prototype aren't made yet
+	const u32 F_LAZY: 4;       # a function whose length, name and prototype aren't made yet (or see lazy_hook)
 	const u32 F_CALLABLE: 8;
 	const u32 F_CTOR: 16;
 	const u32 F_LEN_RO: 32;    # an array whose length can't be written
@@ -422,6 +422,9 @@ phi.JsObjs:Library
 
 	# ---- functions' lazy properties ----
 
+	# a plain object marked lazy (the global Intl, until its script is run) goes to lazy_hook
+	method<ptr<JsObj>> lazy_hook;
+
 	[Materialize: ptr<JsObj> o: 0;]
 		o.flags is o.flags & (0xFFFF - F_LAZY);
 		if o.kind is JsGc.K_ARRAY or (o.flags & F_HOOKS) is not 0
@@ -429,6 +432,12 @@ phi.JsObjs:Library
 		;;
 		if o.kind is not JsGc.K_BOXED
 			o.flags is o.flags & (0xFFFF - F_SPECIAL);
+		;;
+		if o.kind is JsGc.K_OBJECT
+			if lazy_hook is not 0
+				call lazy_hook: o;
+			;;
+			return;
 		;;
 		if o.kind is JsGc.K_FUNCTION
 			ptr<JsFn> f: o as ptr<JsFn>;

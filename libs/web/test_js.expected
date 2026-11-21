@@ -10,6 +10,7 @@ pass gc_survival
 pass generators
 pass getset
 pass hostile
+pass intl
 pass labels_asi
 pass numbers
 pass promise
@@ -19,4 +20,4 @@ pass tagged_templates
 pass tdz
 pass this_binding
 pass try_finally
-21 passed, 0 failed
+22 passed, 0 failed

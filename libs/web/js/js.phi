@@ -46,6 +46,7 @@ use js.builtins.regexp;
 use js.builtins.proxy;
 use js.builtins.date;
 use js.builtins.typed;
+use js.builtins.intl;
 
 # what Js.TryBegin keeps, so a native can catch what a call throws: see JS-INTERNALS.md
 struct.JsTryState

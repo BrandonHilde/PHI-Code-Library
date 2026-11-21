@@ -1,0 +1,45 @@
+object [object Intl] 0
+1,234,567.891 50% -0
+$1,234.50
+(\u20ac3.00)
+5,000 Japanese yen
+1.2M 2.5 thousand
+1.235E5 120E-6
+98,800 7.00
+88 km/h 1.5 megabytes
++5 -3
+12,345,678,901,234,567,890 0.10000000000000000001
+$3.00 \u2013 $5.00 ~1,000
+[{"type":"minusSign","value":"-"},{"type":"currency","value":"$"},{"type":"integer","value":"1"},{"type":"group","value":","},{"type":"integer","value":"234"},{"type":"decimal","value":"."},{"type":"fraction","value":"50"}]
+{"locale":"en-u-nu-latn","numberingSystem":"latn","style":"decimal","minimumIntegerDigits":1,"minimumFractionDigits":0,"maximumFractionDigits":1,"useGrouping":"auto","notation":"standard","signDisplay":"auto","roundingIncrement":1,"roundingMode":"halfExpand","roundingPriority":"auto","trailingZeroDisplay":"auto"}
+11/21/2026 11/21/2026, 3:04:05 PM
+Saturday, November 21, 2026
+10:04 AM
+Saturday, November 21, 2026 at 7:04:05 AM Pacific Standard Time
+November 21, 2026 at 7:04:05 AM PST
+Nov 21, 2026, 7:04:05 AM
+11/21/26, 7:04 AM
+2:00 PM GMT+2
+20:34:05
+Nov 21 \u2013 24, 2026
+3:04 \u2013 4:04 PM
+[{"type":"month","value":"Nov"},{"type":"literal","value":" "},{"type":"day","value":"21"}]
+en gregory Australia/Sydney h12 true
+yesterday in 2 weeks 3 months ago this year 5 min. ago
+red, green, and blue tea or coffee
+1one 2two 3few 4other 11other 12other 13other 21one 22two 101one one
+_x \u00c4pfel apple item10 item2 resume Resume r\u00e9sum\u00e9 ss \u00df zebra
+_x \u00c4pfel apple item2 item10 r\u00e9sum\u00e9 resume Resume \u00df ss zebra
+-1 -1 0
+Don't|stop|it's|3.50|now
+3 3
+zh-Hant-TW-u-ca-gregory zh-Hant-TW zh Hant TW en-Latn-US
+en-US he zh-Hant-TW gregory
+Germany Brazilian Portuguese Japanese Yen
+1 hour, 30 minutes 2:05:09
+1,234.5,11/21/2026, 3:04:05 PM,x 1,000,000
+RangeError
+TypeError
+RangeError
+TypeError
+TypeError

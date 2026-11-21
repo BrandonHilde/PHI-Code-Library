@@ -87,11 +87,14 @@ figures are the same on Windows and Linux, except for `built-ins`, which was cou
 | CSS parsing tests | 8,331 of 8,338 |
 | test262, `language`, modules included (Linux, 2026-11-21) | 22,484 of 23,832 (94.3%), no crashes |
 | test262, `built-ins`, all of it (Linux, 2026-11-21) | 15,366 of 23,861 (64.4%), no crashes |
+| test262, `intl402` without Temporal's 2,029 (Linux, 2026-11-21) | 1,140 of 1,353 (84.3%), no crashes |
 | (before BigInt and modules, 2026-11-07: `language` without its 817 module tests, and `built-ins`) | 21,487 of 23,015 (93.4%); 14,577 of 23,848 (61.1%) |
 | test262, `built-ins`, without the families that weren't built on 2026-11-07 (`Temporal`, `Atomics`, `SharedArrayBuffer`, `BigInt`, `ShadowRealm`, the disposable stacks, `SuppressedError`, `Iterator`) | 14,561 of 17,702 (82.3%), then |
 
 (On Windows, 2026-11-06, `built-ins` without the families not built then was 14,351 of 17,398, 82.5%;
-which families those were wasn't written down. `Intl` is in test262's `intl402`, not `built-ins`.)
+which families those were wasn't written down. `Intl` is in test262's `intl402`, not `built-ins`. Most of
+its failures there are tests of other locales' formats, of calendars and numbering systems other than
+Gregorian and Latin digits, and of Temporal's objects.)
 
 Most of the test262 failures are things deliberately not here (see below), and whole families are at or near 100%: `Reflect`, `parseInt`, `Number`, `Object`, `String`, `Date`.
 
@@ -99,14 +102,16 @@ Every JS fixture also runs with a garbage collection at every safepoint, which i
 
 **Observers** (2026-11-21): `MutationObserver` is the DOM standard's (records' `previousSibling` and `nextSibling` are always null); `IntersectionObserver` reports every target wholly in view, once, as a browser that shows the whole page and scrolls it itself would want; `ResizeObserver` reports each target's size once. They're `page/observers.js`, run in every page (`tools/web/make_observers.py` makes `observersjs.phi` from it), with the DOM's `on_mutation` hook telling it of changes while anything observes.
 
+**Intl** (2026-11-21) is ECMA-402 with one locale, English as the United States writes it: any locale a page asks for is checked and tidied as the standard has it, then formats as `en-US` (or `en`) does, as a browser with only English would. All of it is there but Temporal's parts: `Collator`, `NumberFormat` (every style and notation, the rounding options, ranges), `PluralRules`, `DateTimeFormat` (with the IANA time zones), `RelativeTimeFormat`, `ListFormat`, `DisplayNames` (common names), `Locale` (a short table of likely subtags), `Segmenter` (graphemes, words and sentences by simple rules, with no dictionary for Chinese or Japanese) and `DurationFormat`, with `toLocaleString` on numbers, BigInts, dates and arrays, `localeCompare` and the locale case changes using them. It is JavaScript, `js/builtins/intl.js`, and big (about 136 KB), so a runtime starts without it: `Intl` is an empty object marked lazy until something looks inside it, and the locale methods load it on their first call (about 0.2 s and 20 MB, once, on emulated 64-bit Linux). `tools/web/make_intl.py` makes `intljs.phi` from it and `intl_data.js`, which holds each time zone's rule now (from the IANA database's compiled files, whose last line is that rule) and how Latin letters with marks come apart (for sorting). A zone's rule now is used for every date, so times long ago in a zone whose rules have changed can be an hour or so out. Checked against Node.js, which agrees except where ICU writes narrow or thin spaces (before AM and PM, around a range's dash) and this a plain one.
+
 **Cookies** are the browser's (`PageHost.cookies` and `set_cookie`, which PHI OS answers from netlib's jar); a host without them gives a page what it set in this session.
 
 ## What it doesn't do yet
 
-- **JavaScript:** no `with`, and direct `eval` runs as global code. No `Intl`. `String.normalize` returns text as it is. `\p{...}` knows the general categories but not scripts. No resizable or detached buffers, no `SharedArrayBuffer`, and the `v` regex flag is read as `u`, without its set notation.
+- **JavaScript:** no `with`, and direct `eval` runs as global code. `Intl` has only English (above). `String.normalize` returns text as it is. `\p{...}` knows the general categories but not scripts. No resizable or detached buffers, no `SharedArrayBuffer`, and the `v` regex flag is read as `u`, without its set notation.
 - **CSS:** no nesting, no `@container`, `@property` or `@counter-style`. Animations and transitions are parsed and kept, but don't run. `ex` and `ch` are 0.5em. Colours are 8-bit sRGB. Logical properties assume left-to-right text.
 - **HTML:** input is always read as UTF-8, with no `<meta charset>` or encoding sniffing. No declarative shadow DOM.
-- **DOM:** no shadow DOM at all, no custom elements, no `<canvas>`, no `Range` or `Selection`. Time zones are one fixed offset (`JsDate.tz_minutes`), UTC until a browser sets it, with no daylight saving. `localStorage` lasts as long as the page. `attributes` is a snapshot, not live.
+- **DOM:** no shadow DOM at all, no custom elements, no `<canvas>`, no `Range` or `Selection`. `Date`'s local time is one fixed offset (`JsDate.tz_minutes`), UTC until a browser sets it, with no daylight saving (`Intl.DateTimeFormat` knows the named zones' rules). `localStorage` lasts as long as the page. `attributes` is a snapshot, not live.
 - **Nodes aren't freed until their document is.** A long-lived page that makes and drops many nodes keeps growing until it's left.
 - **PHI OS is a separate project.** The library builds for it, but it's only tested on Windows. Its 64 KB program stack would limit how deeply scripts can nest.
 
