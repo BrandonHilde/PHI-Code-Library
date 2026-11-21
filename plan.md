@@ -298,7 +298,7 @@ call Img.Free: image;
 | 3.4 JPEG progressive ✓ | Common on the web | The same |
 | 3.5 GIF ✓ | LZW, transparency, and animation frames with their timing | Pillow |
 | 3.6 Scaling ✓ | Nearest and bilinear, working by rows | Pillow, within a tolerance |
-| Later | WebP, then encoders (PNG done 2026-11-20, Phase 6), SVG (shares fontlib's rasterizer), AVIF only if needed | |
+| Later | Encoders past PNG, SVG (vectorlib now draws it), AVIF only if needed (WebP and the PNG writer done 2026-11-20, Phase 6) | |
 
 Tests compare decoded pixels with reference data, so no viewer program is needed here.
 
@@ -489,6 +489,7 @@ what 1.0 does wrong goes in [phi-notes.md](docs/phi-notes.md), not into PHI.
 | `editlib` ✓ | Text being edited: caret, selection, words, lines, undo and redo, finding | The text field's and Notes' own editing; selecting, copy and paste, undo, everywhere text is typed |
 | corelib's deflate ✓ | DEFLATE, zlib and gzip, written | What a PNG file needs; and gzip for anyone |
 | vectorlib ✓ | Shapes drawn smooth: paths, SVG path data, transforms, gradients, outlines, dashes, clipping | SVG gradients, clipping and transforms in the browser, CSS transforms, a `<canvas>`, Paint's smooth shapes, the desktop's round corners |
+| imagelib's WebP ✓ | Lossless and lossy WebP, read exactly as libwebp reads them | Pictures on today's web, which are more and more WebP, in the browser |
 | imagelib's PNG writer ✓ | An image to a PNG file, the smallest kind that loses nothing | Paint's pictures at about a fiftieth of a BMP's size on a disk with 3 MB to spare |
 
 **editlib, done 2026-11-20,** in [libs/edit](libs/edit): a gap buffer, UTF-8 throughout, undo a word at
@@ -501,6 +502,12 @@ and what's selected after each action, and every line of it was worked out by ha
 accumulation), outlines made as FreeType's stroker makes them, gradients premultiplied. Checked
 against macOS's Quartz on 15 scenes (`tools/vector/check_svg.py`): at most 2 pixels in 4,096 differ by
 more than a quarter, the mean by at most 1.2 of 255. Next: PHI OS's browser draws SVG with it.
+
+**WebP, done 2026-11-20,** in [libs/image](libs/image): lossless (VP8L) and lossy (VP8 key frames) with
+their alpha, every pixel libwebp's on 27 lossless and 34 lossy files made with every setting that changes
+the decoding, and 220 damaged ones back without a crash. The lossy tables come from libwebp's own
+library, checked against the RFC's values (`tools/image/vp8_tables.py`). Later: animation past the
+first frame.
 
 **Deflate and the PNG writer, done 2026-11-20,** in [libs/core](libs/core) and [libs/image](libs/image):
 every block written the smallest of three ways. zlib reads back everything corelib packs, at every level

@@ -13,6 +13,8 @@ use imagelib.png;
 use imagelib.pngout;
 use imagelib.jpeg;
 use imagelib.gif;
+use imagelib.webp;
+use imagelib.vp8;
 use imagelib.scale;
 
 phi.ImageLib:Library

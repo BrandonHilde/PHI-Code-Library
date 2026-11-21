@@ -52,6 +52,7 @@ phi.Img:Library
 	const int PNG: 2;
 	const int JPEG: 3;
 	const int GIF: 4;
+	const int WEBP: 5;
 
 	# the ways of scaling, for Scale
 	const int NEAREST: 0;
@@ -83,6 +84,9 @@ phi.Img:Library
 		if data is not 0 and length >= 4 and data:0 is 'G' and data:1 is 'I' and data:2 is 'F' and data:3 is '8'
 			return GIF;
 		;;
+		if data is not 0 and length >= 12 and data:0 is 'R' and data:1 is 'I' and data:2 is 'F' and data:3 is 'F' and data:8 is 'W' and data:9 is 'E' and data:10 is 'B' and data:11 is 'P'
+			return WEBP;
+		;;
 	[end: UNKNOWN]
 
 	# an image in any format imagelib reads; 0 if it can't be read, with the reason in error
@@ -99,6 +103,9 @@ phi.Img:Library
 			;;
 			is GIF
 				return (DecodeGif: data length);
+			;;
+			is WEBP
+				return (DecodeWebp: data length);
 			;;
 		;;
 		error is 'not an image format imagelib reads';
@@ -135,6 +142,46 @@ phi.Img:Library
 		ptr<ImgImage> image: d.image;
 		call Done: d;
 	[end: image]
+
+	# a WebP file, lossless or lossy (of an animation, its first frame); 0 if it can't be read,
+	# with the reason in error
+	[DecodeWebp: ptr<u8> data: 0; u32 length: 0; : ptr<ImgImage>]
+		error is '';
+		orientation is 1;
+		if data is 0 and length > 0
+			error is 'no data was given';
+			return 0;
+		;;
+		if length > 0x7FFFFFFF
+			error is 'more than 2 GB of data';
+			return 0;
+		;;
+		ptr<ImgWebp> d: new ImgWebp;
+		if d is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		call Mem.Fill: d 0 sizeof ImgWebp;
+		if call d.Read: data length (Limit) throws err
+			if err.kind is ErrorKind.THROWN
+				error is err.text;
+			;;
+			else
+				error is err.message;
+			;;
+			call Free: d.image;
+			call DoneWebp: d;
+			return 0;
+		;;
+		ptr<ImgImage> image: d.image;
+		call DoneWebp: d;
+	[end: image]
+
+	[DoneWebp: ptr<ImgWebp> d: 0;]
+		call d.FreeCodes;
+		call d.Forget;
+		free d;
+	[end]
 
 	# a PNG file; 0 if it can't be read, with the reason in error
 	[DecodePng: ptr<u8> data: 0; u32 length: 0; : ptr<ImgImage>]

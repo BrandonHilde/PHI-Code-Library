@@ -1,8 +1,8 @@
 # imagelib
 
 Image files in, pixels out. Whatever the file, the pixels are 32-bit `0xAARRGGBB` with straight (not
-premultiplied) alpha, a row at a time from the top. It reads BMP, PNG, JPEG (baseline and progressive) and GIF,
-animations too, scales images as Pillow does
+premultiplied) alpha, a row at a time from the top. It reads BMP, PNG, JPEG (baseline and progressive), GIF
+(animations too) and WebP (lossless and lossy, with alpha), scales images as Pillow does
 ([plan.md](../../plan.md#phase-3-image-library)), and writes PNG files. It uses [corelib](../core), so a program using it
 has `corelib.philib` beside `imagelib.philib`.
 
@@ -230,7 +230,31 @@ Memory: the new image, a few weights for each new pixel along each axis, and the
 needs, scaled across, kept in a ring (up to 4 million pixels of them; past that, each is scaled across again
 when it's needed again).
 
-## Writing PNG
+## WebP
+
+`Img.DecodeWebp` (and `Img.Decode`, which knows a WebP file by its RIFF and WEBP) reads both kinds of WebP
+and gives **libwebp's pixels exactly**, for each:
+
+- **Lossless (VP8L, RFC 9649):** the four transforms (predictor, cross-color, subtract green, color
+  indexing with 1, 2, 4 or 8 indexes packed to a pixel), Huffman codes changing across the image by an
+  image of their own, LZ77 copies and the color cache. A code that isn't complete (but for one symbol
+  alone), a copy reaching before the start, or a color from past the cache's end is refused, as libwebp
+  refuses them.
+- **Lossy (VP8 key frames, RFC 6386):** the boolean decoder, segments, 1 to 8 partitions, 16x16 and 4x4
+  intra prediction, the inverse DCT and Walsh-Hadamard transforms, and the simple and normal loop
+  filters; then RGB as libwebp makes it, with its "fancy" chroma upsampling and its YUV to RGB, which the
+  RFC leaves to the decoder. Its alpha (ALPH) raw or packed losslessly, with each filter.
+- **The container:** a simple file, or an extended one (VP8X), whose ICC profile, EXIF and XMP are
+  passed over. Of an animation, the first frame is read, placed on its canvas.
+
+The lossy decoder's fixed tables (about 3,000 probabilities and quantizer steps) are in
+`imagelib/vp8tables.phi`, made by `tools/image/vp8_tables.py` from libwebp's own library and checked
+there against values RFC 6386 gives, rather than typed in.
+
+Not done: animation beyond its first frame (for `Img.OpenAnimation`), and the alpha-plane dithering
+libwebp only does when asked.
+
+## Writing PNG## Writing PNG
 
 `Img.EncodePng` writes nothing an image doesn't need, and loses nothing: read back, every pixel is the
 same, alpha too. It chooses the kind from the pixels:
@@ -317,8 +341,19 @@ copy of libjpeg-turbo is asked instead. Pillow is counted too.
 | `release_jpeg` | The same on the release cases: more sizes, good files cut short, and files with bytes changed |
 | `test_jpeg_fuzz`, `release_jpeg_fuzz` | The crash fuzzer, in `fuzz_jpeg.phi`: a short run every day (2,000 random changes, one file's header bytes, a little noise), and the full run for release. The full run: 100,000 random changes to good files, every value of each of the first 200 bytes of six, troublesome numbers in every 16-bit field of the first 400 bytes, and 30,000 good headers followed by noise, so that random coefficients reach the IDCT (the 64-bit path too). All must come back, with an image within the limit or a reason. Its limit is 2048 by 2048, so that no image is refused for memory in 32 bits and read in 64 |
 | `test_encode` | The PNG writer: eight made images, one of each kind it chooses (palettes of 1, 2, 4 and 8 bits, with and without `tRNS`, RGB, RGBA, stored), each written and read back by the decoder with every pixel the same. Given a folder it writes them out, for `tools/image/check_png_writer.py` |
+| `test_webp` | WebP against libwebp, on the cases in [tests/webp](tests/webp) (`cases.txt` lists them, made by `tools/image/make_webp_tests.py` with libwebp through ImageMagick): lossless with every transform libwebp chooses and palettes of 2 to 200 colors; lossy at qualities 5 to 100, odd sizes, the simple and normal filter at several strengths and sharpnesses, 1 and 4 segments, 2 to 8 partitions, every encoder method, and alpha packed each way; each must be libwebp's pixels exactly (by CRC-32). And files cut short and changed, which must come back without a crash |
 | `test_image` | The API: finding the format, the limit, the reasons, freeing, and `BlendRow` against values worked out in Python |
 | `tests/use/test_imagelib` | The compiled `imagelib.philib` on its own, with corelib reached through it (its reader for BMP, its inflate for PNG, and its bit reader for JPEG) |
+
+### WebP, against libwebp (2026-11-20)
+
+| Cases | Result |
+|---|---|
+| Lossless, 27 files | 27 of 27 exactly libwebp's pixels |
+| Lossy, 34 files | 34 of 34 exactly libwebp's pixels |
+| Damaged (cut short, changed), 220 files | 220 came back: 63 read, 157 refused |
+
+The same on 32 and 64-bit Linux and macOS.
 
 ### Writing PNG, against outside evidence (2026-11-20)
 

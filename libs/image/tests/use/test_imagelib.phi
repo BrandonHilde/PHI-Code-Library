@@ -56,6 +56,34 @@ phi.TestImagelib:Program
 	call Img.Free: again;
 	call Img.Free: image;
 
+	# WebP, lossless (3 by 7) and lossy (1 by 1), made by libwebp, whose first pixels these must be
+	u8 webp_lossless: 82 73 70 70 110 0 0 0 87 69 66 80 86 80 56 76 97 0 0 0 47 2 128 1 0 80 27 219 54 244
+		255 183 43 101 235 69 38 86 131 216 168 70 44 82 135 136 82 104 69 105 36 73 74 253 43 204 150 65 50
+		132 203 238 153 6 0 144 166 225 238 218 248 255 54 230 26 250 31 242 205 239 5 81 229 208 31 213 230
+		127 45 108 205 13 36 210 219 61 43 47 125 162 5 158 17 226 132 108 127 124 135 58 115 60 132 109 177
+		246 100 0;
+	image is (Img.Decode: webp_lossless 118);
+	if image is 0
+		log 'refused: ' Img.error '\n';
+		exit 0;
+	;;
+	log 'webp, lossless: ' image.w ' by ' image.h ':';
+	while u32 i: 0; i < 4; i++;
+		log ' ' (Hex: image.pixels:i);
+	;;
+	log '\n';
+	call Img.Free: image;
+	u8 webp_lossy: 82 73 70 70 60 0 0 0 87 69 66 80 86 80 56 32 48 0 0 0 16 2 0 157 1 42 1 0 1 0 2 0 52 37
+		160 2 116 186 1 248 1 248 0 3 200 0 254 234 101 255 253 111 254 160 128 253 146 63 251 198 121 208 92
+		223 221 224 0 0;
+	image is (Img.Decode: webp_lossy 68);
+	if image is 0
+		log 'refused: ' Img.error '\n';
+		exit 0;
+	;;
+	log 'webp, lossy: ' image.w ' by ' image.h ': ' (Hex: image.pixels:0) '\n';
+	call Img.Free: image;
+
 	# 2 by 2 JPEG, YCbCr 4:4:4 (libjpeg-turbo gives FFF4C287 FF004300 FF3854DB FFC074FF)
 	u8 jpeg: 255 216 255 219 0 67 0 3 2 2 3 2 2 3 3 3 3 4 3 3 4 5 8 5 5 4 4 5 10 7 7 6 8 12 10 12 12 11
 		10 11 11 13 14 18 16 13 14 17 14 11 11 16 22 16 17 19 20 21 21 21 12 15 23 24 22 20 24 18 20

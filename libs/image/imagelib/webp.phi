@@ -1,0 +1,953 @@
+# WebP (RFC 9649): the RIFF container, lossless images (VP8L), and the alpha that a lossy image
+# keeps beside its colors (ALPH). Lossy images themselves (VP8) are imagelib/vp8.phi's.
+#
+# The container: RIFF, then WEBP, then chunks. A simple file is one image chunk, VP8 or VP8L. An
+# extended one starts with VP8X (the canvas's size, and flags) and may have ICCP, EXIF and XMP
+# (passed over), ALPH (alpha for a VP8 image), and for an animation ANIM and ANMF frames: of those,
+# the first frame is read, placed on the canvas where it says.
+#
+# A lossless image is an ARGB image packed in five steps that are undone in turn: up to four
+# transforms (predicting each pixel from those before it, decorrelating its colors, subtracting
+# green, and a palette whose indexes may be packed several to a pixel), and the pixels themselves,
+# Huffman coded with LZ77 copies and a cache of recent colors, the codes changing across the image
+# by an image of their own. Each rule here is the RFC's; where it leaves something open (an
+# incomplete code, a copy reaching before the start), libwebp's refusal is followed.
+
+use memory.mem;
+use user.math;
+use corelib;
+use imagelib.image;
+
+# A Huffman code read from the stream: canonical, lengths up to 15, decoded through a table of the
+# next 8 bits and, for longer codes, bit by bit
+struct.ImgWebpCode
+{
+	ptr<u16> symbols;           # in order of their codes
+	int counts[16];             # how many codes are each length
+	int single;                 # a code of one symbol, which takes no bits: it; otherwise -1
+	u32 fast[256];              # by the next 8 bits: symbol << 8 | length, or 0 for a longer code
+}
+
+# what one of the four transforms needs to be undone
+struct.ImgWebpStep
+{
+	int kind;                   # 0 predictor, 1 color, 2 subtract green, 3 color indexing
+	int bits;                   # PREDICTOR and COLOR: the block size's bits; INDEXING: the packing's
+	int xsize;                  # the width of the image it's undone on (INDEXING: the packed width)
+	int full;                   # INDEXING: the width it unpacks to
+	ptr<u32> data;              # the blocks' image, or the palette
+	int size;                   # the palette's
+}
+
+struct.ImgWebp
+{
+	ptr<ImgImage> image;        # what's been made so far, for Img to free if this fails
+	CoreBits b;
+	u32 limit;
+	# the codes of the stream being read: each group five codes in a row
+	ptr<ptr<ImgWebpCode>> codes;
+	int code_count;
+	ImgWebpStep steps[4];
+	int step_count;
+
+	# ---- the container
+
+	[Read: ptr<u8> data: 0; u32 length: 0; u32 most: 0;]
+		limit is most;
+		CoreReader r;
+		call r.Start: data length;
+		if length < 20 or data:0 is not 'R' or data:1 is not 'I' or data:2 is not 'F' or data:3 is not 'F' or data:8 is not 'W' or data:9 is not 'E' or data:10 is not 'B' or data:11 is not 'P'
+			throw 'not a WebP file';
+		;;
+		call r.Skip: 4;
+		u32 riff: (r.U32LE);
+		u32 stop: length;
+		if riff < 0xFFFFFFF0 and riff + 8 < stop
+			stop is riff + 8;
+		;;
+		call r.Seek: 12;
+		int canvas_w: 0;
+		int canvas_h: 0;
+		bln extended: false;
+		ptr<u8> alpha_at: 0;
+		u32 alpha_len: 0;
+		int frame_x: 0;
+		int frame_y: 0;
+		int chunks: 0;
+		while r.pos + 8 <= stop
+			chunks++;
+			if chunks > 10000
+				throw 'too many chunks';
+			;;
+			ptr<u8> tag: data + r.pos;
+			call r.Skip: 4;
+			u32 size: (r.U32LE);
+			u32 body: r.pos;
+			if size > stop - body
+				throw 'a chunk is cut short';
+			;;
+			ptr<u8> p: data + body;
+			if (Tag: tag 'VP8X')
+				if size < 10
+					throw 'VP8X is too short';
+				;;
+				extended is true;
+				canvas_w is (p:4 | (p:5 << 8) | (p:6 << 16)) as int + 1;
+				canvas_h is (p:7 | (p:8 << 8) | (p:9 << 16)) as int + 1;
+			;;
+			elif (Tag: tag 'ALPH')
+				if alpha_at is 0
+					alpha_at is p;
+					alpha_len is size;
+				;;
+			;;
+			elif (Tag: tag 'ANMF')
+				# the first frame: where it goes, then its own chunks (ALPH, VP8 or VP8L)
+				if size < 16
+					throw 'ANMF is too short';
+				;;
+				frame_x is ((p:0 | (p:1 << 8) | (p:2 << 16)) * 2) as int;
+				frame_y is ((p:3 | (p:4 << 8) | (p:5 << 16)) * 2) as int;
+				call r.Seek: body + 16;
+				stop is body + size;
+				continue;
+			;;
+			elif (Tag: tag 'VP8L')
+				call Lossless: p size;
+				call Place: canvas_w canvas_h frame_x frame_y extended;
+				return;
+			;;
+			elif (Tag: tag 'VP8 ')
+				# (on the heap: its state is more than a kernel's stack takes)
+				ptr<ImgVp8> lossy: new ImgVp8;
+				if lossy is 0
+					throw 'out of memory';
+				;;
+				call Mem.Fill: lossy 0 sizeof ImgVp8;
+				lossy.limit is limit;
+				if call lossy.Read: p size throws err
+					if lossy.image is not 0
+						call Img.Free: lossy.image;
+					;;
+					call lossy.Done;
+					free lossy;
+					throw err.text;
+				;;
+				image is lossy.image;
+				call lossy.Done;
+				free lossy;
+				if alpha_at is not 0
+					call Alpha: alpha_at alpha_len;
+				;;
+				call Place: canvas_w canvas_h frame_x frame_y extended;
+				return;
+			;;
+			call r.Seek: body + size + (size & 1);
+		;;
+		throw 'there is no image in it';
+	[end]
+
+	[Tag: ptr<u8> tag: 0; ptr<u8> name: 0;]
+	[end: tag:0 is name:0 and tag:1 is name:1 and tag:2 is name:2 and tag:3 is name:3]
+
+	# a frame smaller than the canvas, or not at its corner, is put on a clear canvas there
+	[Place: int canvas_w: 0; int canvas_h: 0; int x: 0; int y: 0; bln extended: false;]
+		if not extended or canvas_w <= 0 or canvas_h <= 0 return;
+		if canvas_w is image.w and canvas_h is image.h and x is 0 and y is 0 return;
+		if (canvas_w * canvas_h) as u32 > limit or canvas_w > 16384 or canvas_h > 16384
+			throw 'the canvas is ' canvas_w ' by ' canvas_h ', more pixels than the limit';
+		;;
+		ptr<ImgImage> canvas: (Img.New: canvas_w as u32 canvas_h as u32);
+		call Mem.Fill: canvas.pixels as ptr<u8> 0 canvas_w * canvas_h * 4;
+		while int row: 0; row < image.h; row++;
+			int cy: y + row;
+			if cy >= canvas_h break;
+			int n: (Math.Min: image.w canvas_w - x);
+			if n > 0
+				call Mem.Copy: canvas.pixels + (cy * canvas_w + x) * 4 image.pixels + row * image.w * 4 n * 4;
+			;;
+		;;
+		call Img.Free: image;
+		image is canvas;
+	[end]
+
+	# ---- alpha beside a lossy image
+
+	[Alpha: ptr<u8> p: 0; u32 n: 0;]
+		if n < 1
+			throw 'ALPH is empty';
+		;;
+		int how: p:0 & 3;
+		int filter: (p:0 >> 2) & 3;
+		int w: image.w;
+		int h: image.h;
+		ptr<u8> a: new u8[w * h];
+		if a is 0
+			throw 'output of memory for the alpha';
+		;;
+		if how is 0
+			if n - 1 < (w * h) as u32
+				free a;
+				throw 'ALPH is cut short';
+			;;
+			call Mem.Copy: a p + 1 w * h;
+		;;
+		elif how is 1
+			# a lossless stream with no header of its own, its green the alpha
+			ptr<u32> argb: 0;
+			if call argb is Stream: p + 1 n - 1 w h false throws err
+				free a;
+				throw 'its alpha: ' err.text;
+			;;
+			while int i: 0; i < w * h; i++;
+				a:i is ((argb:i >> 8) & 255) as u8;
+			;;
+			free argb;
+		;;
+		else
+			free a;
+			throw 'ALPH is packed a way there isn\'t';
+		;;
+		# undoing its filter: each value was the difference from its left, its top, or both
+		if filter is not 0
+			while int y: 0; y < h; y++;
+				ptr<u8> row: a + y * w;
+				ptr<u8> up: row - w;
+				while int x: 0; x < w; x++;
+					int pred: 0;
+					if x is 0 and y is 0
+						pred is 0;
+					;;
+					elif y is 0
+						pred is row:(x - 1);              # the top row: its left
+					;;
+					elif x is 0
+						pred is up:0;              # the left column: above it
+					;;
+					elif filter is 1
+						pred is row:(x - 1);
+					;;
+					elif filter is 2
+						pred is up:x;
+					;;
+					else
+						pred is (Math.Clamp: row:(x - 1) + up:x - up:(x - 1) 0 255);
+					;;
+					row:x is ((row:x + pred) & 255) as u8;
+				;;
+			;;
+		;;
+		while int i: 0; i < w * h; i++;
+			image.pixels:i is (image.pixels:i & 0xFFFFFF) | ((a:i as u32) << 24);
+		;;
+		free a;
+	[end]
+
+	# ---- a lossless image
+
+	[Lossless: ptr<u8> p: 0; u32 n: 0;]
+		if n < 5 or p:0 is not 0x2F
+			throw 'not a lossless WebP image';
+		;;
+		u32 head: p:1 | (p:2 << 8) | (p:3 << 16) | (p:4 << 24);
+		int w: (head & 0x3FFF) as int + 1;
+		int h: ((head >> 14) & 0x3FFF) as int + 1;
+		if (head >> 29) is not 0
+			throw 'a lossless image of a version there isn\'t';
+		;;
+		if (w * h) as u32 > limit
+			throw 'it is ' w ' by ' h ', more pixels than the limit';
+		;;
+		ptr<u32> argb: (Stream: p + 5 n - 5 w h true);
+		image is (Img.New: w as u32 h as u32);
+		call Mem.Copy: image.pixels argb w * h * 4;
+		free argb;
+	[end]
+
+	# A lossless image stream, w by h, its transforms first when it has any (an image's own; not
+	# an ALPH's, whose stream is the same with transforms too): its ARGB pixels, on the heap.
+	[Stream: ptr<u8> p: 0; u32 n: 0; int w: 0; int h: 0; bln whole: true; : ptr<u32>]
+		call b.Start: p n false;
+		step_count is 0;
+		int xsize: w;
+		bln seen: false false false false;
+		while (b.Bit) is 1
+			int kind: (b.Bits: 2) as int;
+			if seen:kind
+				throw 'a transform comes twice';
+			;;
+			seen:kind is true;
+			ptr<ImgWebpStep> s: addr steps:step_count;
+			s.kind is kind;
+			s.xsize is xsize;
+			s.data is 0;
+			step_count++;
+			if kind is 0 or kind is 1
+				s.bits is (b.Bits: 3) as int + 2;
+				s.data is (Entropy: (Shrink: xsize s.bits) (Shrink: h s.bits) false);
+			;;
+			elif kind is 3
+				s.size is (b.Bits: 8) as int + 1;
+				s.data is (Entropy: s.size 1 false);
+				# each color is the difference from the one before it
+				while int i: 1; i < s.size; i++;
+					s.data:i is (Add: s.data:i s.data:(i - 1));
+				;;
+				s.bits is 0;
+				if s.size <= 2
+					s.bits is 3;
+				;;
+				elif s.size <= 4
+					s.bits is 2;
+				;;
+				elif s.size <= 16
+					s.bits is 1;
+				;;
+				s.full is xsize;
+				xsize is (Shrink: xsize s.bits);
+				s.xsize is xsize;
+			;;
+		;;
+		ptr<u32> argb: (Entropy: xsize h true);
+		# the transforms undone, the last first
+		int k: step_count - 1;
+		while k >= 0
+			argb is (Undo: addr steps:k argb h);
+			k--;
+		;;
+		call Forget;
+	[end: argb]
+
+	# the transforms' images given back
+	[Forget]
+		while int k: 0; k < step_count; k++;
+			if steps:k.data is not 0
+				free steps:k.data;
+				steps:k.data is 0;
+			;;
+		;;
+		step_count is 0;
+	[end]
+
+	# w divided by 2 to the bits, rounded up
+	[Shrink: int w: 0; int bits: 0;]
+	[end: (w + (1 << bits) - 1) >> bits]
+
+	# two pixels added, channel by channel, each wrapping round at 256
+	[Add: u32 a: 0; u32 c: 0; : u32]
+		u32 ag: (a & 0xFF00FF00) + (c & 0xFF00FF00);
+		u32 rb: (a & 0x00FF00FF) + (c & 0x00FF00FF);
+	[end: (ag & 0xFF00FF00) | (rb & 0x00FF00FF)]
+
+	# ---- the pixels: Huffman codes, copies, and the color cache
+
+	# An entropy-coded image, xs by ys: with level0 (the image itself, not a transform's) its
+	# codes may change across it by an image of their own.
+	[Entropy: int xs: 0; int ys: 0; bln level0: false; : ptr<u32>]
+		int cache_bits: 0;
+		if (b.Bit) is 1
+			cache_bits is (b.Bits: 4) as int;
+			if cache_bits < 1 or cache_bits > 11
+				throw 'a color cache of a size there isn\'t';
+			;;
+		;;
+		int meta_bits: 0;
+		int meta_w: 0;
+		ptr<u32> meta: 0;
+		int groups: 1;
+		ptr<int> slot: 0;                       # each group the meta image names: its place, or -1
+		if level0 and (b.Bit) is 1
+			meta_bits is (b.Bits: 3) as int + 2;
+			meta_w is (Shrink: xs meta_bits);
+			int meta_h: (Shrink: ys meta_bits);
+			meta is (Entropy: meta_w meta_h false);
+			# only the groups it names are kept; the rest are read and let go
+			slot is new int[65536];
+			if slot is 0
+				free meta;
+				throw 'output of memory';
+			;;
+			call Mem.Fill32: slot as ptr<u32> 0xFFFFFFFF 65536;
+			int top: 0;
+			groups is 0;
+			while int i: 0; i < meta_w * meta_h; i++;
+				int g: ((meta:i >> 8) & 0xFFFF) as int;
+				meta:i is g as u32;
+				if g >= top
+					top is g + 1;
+				;;
+				if slot:g < 0
+					slot:g is groups;
+					groups++;
+				;;
+			;;
+			if groups > 4096
+				free meta;
+				free slot;
+				throw 'more than 4096 groups of codes';
+			;;
+			call ReadGroups: top cache_bits slot groups;
+			while int i: 0; i < meta_w * meta_h; i++;
+				meta:i is slot:(meta:i) as u32;
+			;;
+			free slot;
+		;;
+		else
+			call ReadGroups: 1 cache_bits 0 1;
+		;;
+		int total: xs * ys;
+		ptr<u32> output: new u32[total];
+		if output is 0
+			call FreeCodes;
+			if meta is not 0
+				free meta;
+			;;
+			throw 'output of memory for ' xs ' by ' ys ' pixels';
+		;;
+		ptr<u32> cache: 0;
+		int cache_size: 0;
+		if cache_bits > 0
+			cache_size is 1 << cache_bits;
+			cache is new u32[cache_size];
+			if cache is 0
+				free output;
+				call FreeCodes;
+				if meta is not 0
+					free meta;
+				;;
+				throw 'output of memory';
+			;;
+			call Mem.Fill: cache as ptr<u8> 0 cache_size * 4;
+		;;
+		int shift: 32 - cache_bits;
+		int pos: 0;
+		int x: 0;
+		int y: 0;
+		int mask: (1 << meta_bits) - 1;
+		int group: 0;
+		bln bad: false;
+		str why: [79];
+		while pos < total
+			if meta is not 0 and (x & mask) is 0
+				group is (meta:((y >> meta_bits) * meta_w + (x >> meta_bits))) as int;
+			;;
+			int g: group * 5;
+			int s: (Symbol: codes:g);
+			if s < 256
+				u32 red: (Symbol: codes:(g + 1)) as u32;
+				u32 blue: (Symbol: codes:(g + 2)) as u32;
+				u32 alpha: (Symbol: codes:(g + 3)) as u32;
+				u32 px: (alpha << 24) | (red << 16) | ((s as u32) << 8) | blue;
+				output:pos is px;
+				if cache is not 0
+					cache:((px * 0x1E35A7BD) >> shift) is px;
+				;;
+				pos++;
+				x++;
+				if x >= xs
+					x is 0;
+					y++;
+				;;
+			;;
+			elif s < 280
+				int len: (Prefix: s - 256);
+				int dcode: (Prefix: (Symbol: codes:(g + 4)));
+				int dist: 0;
+				if dcode > 120
+					dist is dcode - 120;
+				;;
+				else
+					int plane: ImgWebpTables.plane:(dcode - 1);
+					dist is (plane >> 4) * xs + 8 - (plane & 15);
+					if dist < 1
+						dist is 1;
+					;;
+				;;
+				if dist > pos or len > total - pos
+					bad is true;
+					why is 'a copy reaches outside the image';
+					break;
+				;;
+				while int i: 0; i < len; i++;
+					u32 cp: output:(pos - dist);
+					output:pos is cp;
+					if cache is not 0
+						cache:((cp * 0x1E35A7BD) >> shift) is cp;
+					;;
+					pos++;
+				;;
+				x is pos % xs;
+				y is pos / xs;
+				if meta is not 0
+					group is (meta:((y >> meta_bits) * meta_w + (x >> meta_bits))) as int;
+				;;
+			;;
+			else
+				int index: s - 280;
+				if index >= cache_size
+					bad is true;
+					why is 'a color from the cache past its end';
+					break;
+				;;
+				output:pos is cache:index;
+				pos++;
+				x++;
+				if x >= xs
+					x is 0;
+					y++;
+				;;
+			;;
+			if b.failed
+				bad is true;
+				why is 'it is cut short';
+				break;
+			;;
+		;;
+		if cache is not 0
+			free cache;
+		;;
+		if meta is not 0
+			free meta;
+		;;
+		call FreeCodes;
+		if bad
+			free output;
+			throw why;
+		;;
+	[end: output]
+
+	# a length or a distance from its prefix code and the extra bits after it
+	[Prefix: int code: 0;]
+		if code < 4 return code + 1;
+		int extra: (code - 2) >> 1;
+		if extra > 24
+			throw 'a length past what there can be';
+		;;
+		int offset: (2 + (code & 1)) << extra;
+	[end: offset + (b.Bits: extra as u32) as int + 1]
+
+	# The codes of `top` groups, five each, keeping those slot says are used (in their place) and
+	# reading the rest only to pass them; with no slot, group 0 is used.
+	[ReadGroups: int top: 0; int cache_bits: 0; ptr<int> slot: 0; int kept: 0;]
+		code_count is kept * 5;
+		codes is new ptr<ImgWebpCode>[code_count];
+		if codes is 0
+			throw 'output of memory';
+		;;
+		while int i: 0; i < code_count; i++;
+			codes:i is 0;
+		;;
+		int sizes: 280 256 256 256 40;
+		if cache_bits > 0
+			sizes:0 is 280 + (1 << cache_bits);
+		;;
+		while int g: 0; g < top; g++;
+			int place: 0;
+			if slot is not 0
+				place is slot:g;
+			;;
+			while int k: 0; k < 5; k++;
+				ptr<ImgWebpCode> c: (Code: sizes:k);
+				if place >= 0
+					codes:(place * 5 + k) is c;
+				;;
+				else
+					call FreeCode: c;
+				;;
+			;;
+		;;
+	[end]
+
+	[FreeCodes]
+		if codes is 0 return;
+		while int i: 0; i < code_count; i++;
+			call FreeCode: codes:i;
+		;;
+		free codes;
+		codes is 0;
+		code_count is 0;
+	[end]
+
+	[FreeCode: ptr<ImgWebpCode> c: 0;]
+		if c is 0 return;
+		if c.symbols is not 0
+			free c.symbols;
+		;;
+		free c;
+	[end]
+
+	# One prefix code, for an alphabet of size symbols: simple (one or two symbols, written output),
+	# or normal (its lengths, themselves coded). It must be complete, or one symbol alone.
+	[Code: int size: 0; : ptr<ImgWebpCode>]
+		u8 lengths[2400];
+		if size > 2400
+			throw 'an alphabet too big';
+		;;
+		call Mem.Fill: addr lengths 0 size;
+		if (b.Bit) is 1
+			int count: (b.Bit) as int + 1;
+			int first_bits: 1 + 7 * (b.Bit) as int;
+			int s0: (b.Bits: first_bits as u32) as int;
+			if s0 >= size
+				throw 'a symbol past its alphabet';
+			;;
+			lengths:s0 is 1;
+			if count is 2
+				int s1: (b.Bits: 8) as int;
+				if s1 >= size
+					throw 'a symbol past its alphabet';
+				;;
+				lengths:s1 is 1;
+			;;
+		;;
+		else
+			int order: 17 18 0 1 2 3 4 5 16 6 7 8 9 10 11 12 13 14 15;
+			u8 cl[19];
+			call Mem.Fill: addr cl 0 19;
+			int num: (b.Bits: 4) as int + 4;
+			while int i: 0; i < num; i++;
+				cl:(order:i) is (b.Bits: 3) as u8;
+			;;
+			ptr<ImgWebpCode> lc: (Build: addr cl 19);
+			int most: size;
+			if (b.Bit) is 1
+				int nbits: 2 + 2 * (b.Bits: 3) as int;
+				most is 2 + (b.Bits: nbits as u32) as int;
+				if most > size
+					call FreeCode: lc;
+					throw 'more code lengths than symbols';
+				;;
+			;;
+			int prev: 8;
+			int s: 0;
+			while s < size
+				if most is 0 break;
+				most--;
+				int v: (Symbol: lc);
+				if v < 16
+					lengths:s is v as u8;
+					s++;
+					if v is not 0
+						prev is v;
+					;;
+					continue;
+				;;
+				int repeat: 0;
+				int value: 0;
+				if v is 16
+					repeat is 3 + (b.Bits: 2) as int;
+					value is prev;
+				;;
+				elif v is 17
+					repeat is 3 + (b.Bits: 3) as int;
+				;;
+				else
+					repeat is 11 + (b.Bits: 7) as int;
+				;;
+				if s + repeat > size
+					call FreeCode: lc;
+					throw 'code lengths past the alphabet';
+				;;
+				while repeat > 0
+					lengths:s is value as u8;
+					s++;
+					repeat--;
+				;;
+				if b.failed break;
+			;;
+			call FreeCode: lc;
+		;;
+		if b.failed
+			throw 'it is cut short';
+		;;
+	[end: (Build: addr lengths size)]
+
+	# the canonical code with these lengths: complete, or a single symbol
+	[Build: ptr<u8> lengths: 0; int size: 0; : ptr<ImgWebpCode>]
+		ptr<ImgWebpCode> c: new ImgWebpCode;
+		if c is 0
+			throw 'output of memory';
+		;;
+		call Mem.Fill: c 0 sizeof ImgWebpCode;
+		c.single is -1;
+		int used: 0;
+		int last: 0;
+		while int s: 0; s < size; s++;
+			int len: lengths:s;
+			if len > 15
+				call FreeCode: c;
+				throw 'a code longer than 15 bits';
+			;;
+			if len > 0
+				c.counts:len++;
+				used++;
+				last is s;
+			;;
+		;;
+		if used is 0
+			call FreeCode: c;
+			throw 'a code with no symbols';
+		;;
+		if used is 1
+			c.single is last;
+			return c;
+		;;
+		# complete: every code of the longest length is somebody's
+		int left: 1;
+		while int len: 1; len < 16; len++;
+			left is left * 2 - c.counts:len;
+			if left < 0
+				call FreeCode: c;
+				throw 'a code with more codes than room';
+			;;
+		;;
+		if left is not 0
+			call FreeCode: c;
+			throw 'an incomplete code';
+		;;
+		c.symbols is new u16[used];
+		if c.symbols is 0
+			call FreeCode: c;
+			throw 'output of memory';
+		;;
+		# the symbols by length, then by value: and each one's code, for the table
+		int offsets[16];
+		int next[16];
+		offsets:1 is 0;
+		while int len: 1; len < 15; len++;
+			offsets:(len + 1) is offsets:len + c.counts:len;
+		;;
+		int code: 0;
+		while int len: 1; len < 16; len++;
+			next:len is code;
+			code is (code + c.counts:len) << 1;
+		;;
+		while int s: 0; s < size; s++;
+			int len: lengths:s;
+			if len is 0
+				continue;
+			;;
+			c.symbols:(offsets:len) is s as u16;
+			offsets:len++;
+			int this: next:len;
+			next:len++;
+			if len <= 8
+				# the table is indexed by the next 8 bits as they come, the code's first lowest
+				int turned: 0;
+				while int i: 0; i < len; i++;
+					turned is (turned << 1) | ((this >> i) & 1);
+				;;
+				while int fill: turned; fill < 256; fill++ (1 << len);
+					c.fast:fill is ((s as u32) << 8) | len as u32;
+				;;
+			;;
+		;;
+	[end: c]
+
+	# the next symbol in code c
+	[Symbol: ptr<ImgWebpCode> c: 0;]
+		if c.single >= 0 return c.single;
+		u32 peek: (b.Peek: 15);
+		u32 hit: c.fast:(peek & 255);
+		if hit is not 0
+			call b.Drop: hit & 255;
+			return (hit >> 8) as int;
+		;;
+		# longer than 8 bits: a bit at a time, the canonical way
+		int code: 0;
+		int first: 0;
+		int index: 0;
+		while int len: 1; len < 16; len++;
+			code is code | ((peek >> (len - 1)) & 1) as int;
+			int count: c.counts:len;
+			if code - first < count
+				call b.Drop: len as u32;
+				return c.symbols:(index + code - first);
+			;;
+			index++ count;
+			first is (first + count) << 1;
+			code is code << 1;
+		;;
+		throw 'a code that isn\'t in its table';
+	[end: 0]
+
+	# ---- undoing the transforms
+
+	# step undone on argb (step.xsize wide, h high): what comes back may be another buffer
+	[Undo: ptr<ImgWebpStep> s: 0; ptr<u32> argb: 0; int h: 0; : ptr<u32>]
+		int w: s.xsize;
+		if s.kind is 2
+			# subtract green: green is added back to red and blue
+			while int i: 0; i < w * h; i++;
+				u32 px: argb:i;
+				u32 g: (px >> 8) & 255;
+				u32 rb: ((px & 0x00FF00FF) + ((g << 16) | g)) & 0x00FF00FF;
+				argb:i is (px & 0xFF00FF00) | rb;
+			;;
+			return argb;
+		;;
+		if s.kind is 0
+			call Predict: s argb w h;
+			return argb;
+		;;
+		if s.kind is 1
+			int bw: (Shrink: w s.bits);
+			while int y: 0; y < h; y++;
+				while int x: 0; x < w; x++;
+					u32 e: s.data:((y >> s.bits) * bw + (x >> s.bits));
+					int g2r: (e & 255) as i8;
+					int g2b: ((e >> 8) & 255) as i8;
+					int r2b: ((e >> 16) & 255) as i8;
+					u32 px: argb:(y * w + x);
+					int green: ((px >> 8) & 255) as i8;
+					int red: ((px >> 16) & 255) as int;
+					int blue: (px & 255) as int;
+					red is (red + ((g2r * green) >> 5)) & 255;
+					blue is (blue + ((g2b * green) >> 5)) & 255;
+					blue is (blue + ((r2b * (red as i8)) >> 5)) & 255;
+					argb:(y * w + x) is (px & 0xFF00FF00) | ((red as u32) << 16) | blue as u32;
+				;;
+			;;
+			return argb;
+		;;
+		# color indexing: each packed pixel's green holds 1, 2, 4 or 8 indexes into the palette
+		int full: s.full;
+		ptr<u32> output: new u32[full * h];
+		if output is 0
+			free argb;
+			throw 'output of memory';
+		;;
+		int per: 1 << s.bits;
+		int bits_each: 8 >> s.bits;
+		u32 mask: (1 << bits_each) - 1;
+		while int y: 0; y < h; y++;
+			while int x: 0; x < full; x++;
+				u32 g: (argb:(y * w + (x >> s.bits)) >> 8) & 255;
+				int index: ((g >> (bits_each * (x & (per - 1)))) & mask) as int;
+				u32 color: 0;
+				if index < s.size
+					color is s.data:index;
+				;;
+				output:(y * full + x) is color;
+			;;
+		;;
+		free argb;
+	[end: output]
+
+	# the predictor transform undone: each pixel had its prediction from those before it taken away
+	[Predict: ptr<ImgWebpStep> s: 0; ptr<u32> argb: 0; int w: 0; int h: 0;]
+		int bw: (Shrink: w s.bits);
+		while int y: 0; y < h; y++;
+			while int x: 0; x < w; x++;
+				int i: y * w + x;
+				u32 pred: 0;
+				if x is 0 and y is 0
+					pred is 0xFF000000;
+				;;
+				elif y is 0
+					pred is argb:(i - 1);
+				;;
+				elif x is 0
+					pred is argb:(i - w);
+				;;
+				else
+					int mode: ((s.data:((y >> s.bits) * bw + (x >> s.bits)) >> 8) & 15) as int;
+					u32 left: argb:(i - 1);
+					u32 top: argb:(i - w);
+					u32 tl: argb:(i - w - 1);
+					u32 tr: argb:(i - w + 1);          # (the last column's is its own row's first)
+					when mode
+						is 0
+							pred is 0xFF000000;
+						;;
+						is 1
+							pred is left;
+						;;
+						is 2
+							pred is top;
+						;;
+						is 3
+							pred is tr;
+						;;
+						is 4
+							pred is tl;
+						;;
+						is 5
+							pred is (Avg: (Avg: left tr) top);
+						;;
+						is 6
+							pred is (Avg: left tl);
+						;;
+						is 7
+							pred is (Avg: left top);
+						;;
+						is 8
+							pred is (Avg: tl top);
+						;;
+						is 9
+							pred is (Avg: top tr);
+						;;
+						is 10
+							pred is (Avg: (Avg: left tl) (Avg: top tr));
+						;;
+						is 11
+							pred is (Select: left top tl);
+						;;
+						is 12
+							pred is (Full: left top tl);
+						;;
+						is 13
+							pred is (Half: (Avg: left top) tl);
+						;;
+						else
+							pred is 0xFF000000;               # (14 and 15 aren't modes: libwebp's)
+						;;
+					;;
+				;;
+				argb:i is (Add: argb:i pred);
+			;;
+		;;
+	[end]
+
+	[Avg: u32 a: 0; u32 c: 0; : u32]
+	[end: (((a ^ c) & 0xFEFEFEFE) >> 1) + (a & c)]
+
+	# left or top, whichever is nearer to left + top - top-left, channel by channel
+	[Select: u32 left: 0; u32 top: 0; u32 tl: 0; : u32]
+		int to_left: 0;
+		int to_top: 0;
+		while int k: 0; k < 32; k++ 8;
+			int l: ((left >> k) & 255) as int;
+			int t: ((top >> k) & 255) as int;
+			int c: ((tl >> k) & 255) as int;
+			# |prediction - left| is |top - top-left|, and |prediction - top| is |left - top-left|
+			to_left++ (Math.Abs: t - c);
+			to_top++ (Math.Abs: l - c);
+		;;
+		if to_left < to_top return left;
+	[end: top]
+
+	[Full: u32 a: 0; u32 c: 0; u32 d: 0; : u32]
+		u32 output: 0;
+		while int k: 0; k < 32; k++ 8;
+			int v: ((a >> k) & 255) as int + ((c >> k) & 255) as int - ((d >> k) & 255) as int;
+			output is output | ((Math.Clamp: v 0 255) as u32 << k);
+		;;
+	[end: output]
+
+	[Half: u32 a: 0; u32 c: 0; : u32]
+		u32 output: 0;
+		while int k: 0; k < 32; k++ 8;
+			int x: ((a >> k) & 255) as int;
+			int y: ((c >> k) & 255) as int;
+			output is output | ((Math.Clamp: x + (x - y) / 2 0 255) as u32 << k);
+		;;
+	[end: output]
+}
+
+phi.ImgWebpTables:Library
+{
+	# VP8L's distances for its 120 shortest codes, as (y << 4) | (8 - x): the RFC's table of
+	# (x, y), and libwebp's kCodeToPlane, which agree
+	u8 plane: 24 7 23 25 40 6 39 41 22 26 38 42 56 5 55 57 21 27 54 58 37 43 72 4 71 73 20 28 53 59 70 74 36 44 88 69 75 52 60 3 87 89 19 29 86 90 35 45 68 76 85 91 51 61 104 2 103 105 18 30 102 106 34 46 84 92 67 77 101 107 50 62 120 1 119 121 83 93 17 31 100 108 66 78 118 122 33 47 117 123 49 63 99 109 82 94 0 116 124 65 79 16 32 98 110 48 115 125 81 95 64 114 126 97 111 80 113 127 96 112;
+}

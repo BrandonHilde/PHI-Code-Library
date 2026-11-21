@@ -1,0 +1,1359 @@
+# Lossy WebP: a VP8 key frame (RFC 6386), decoded as libwebp decodes it.
+#
+# The frame is read in two streams of boolean-coded bits: the first partition (the frame's header,
+# then each macroblock's segment, skip flag and prediction modes) and one to eight partitions of
+# coefficients, a row of macroblocks each in turn. Each 16 by 16 macroblock of luma and 8 by 8 of
+# each chroma is predicted from the pixels decoded before it (above and to the left, as they were
+# before filtering) and the inverse transforms of its coefficients are added. When the frame is
+# whole, the loop filter smooths the edges of blocks, and the picture becomes RGB with chroma
+# upsampled as libwebp's "fancy" upsampler does.
+#
+# The arithmetic is libwebp's throughout (its integer transforms, its predictors and their edges
+# of 127 and 129, its filters, and its YUV to RGB): RFC 6386 gives the same numbers for all but the
+# last two, which the RFC leaves to the decoder. The fixed tables are imagelib/vp8tables.phi.
+
+use memory.mem;
+use user.math;
+use corelib;
+use imagelib.image;
+use imagelib.vp8tables;
+
+# RFC 6386's boolean decoder (its section 7): bits of a probability, from a partition's bytes
+struct.ImgVp8Bool
+{
+	ptr<u8> data;
+	u32 len;
+	u32 pos;
+	u32 value;
+	u32 range;
+	int count;
+	bln eof;                    # it needed a byte past the end: the data is cut short
+
+	[Start: ptr<u8> bytes: 0; u32 length: 0;]
+		data is bytes;
+		len is length;
+		pos is 0;
+		value is 0;
+		eof is false;
+		value is ((Next) << 8) | (Next);
+		range is 255;
+		count is 0;
+	[end]
+
+	[Next: : u32]
+		if pos >= len
+			if pos > len + 1
+				eof is true;
+			;;
+			pos++;
+			return 0;
+		;;
+		u32 v: data:pos;
+		pos++;
+	[end: v]
+
+	# a bit that's 0 with probability prob / 256
+	[Bit: int prob: 128;]
+		u32 split: 1 + (((range - 1) * prob as u32) >> 8);
+		u32 big: split << 8;
+		int bit: 0;
+		if value >= big
+			bit is 1;
+			range-- split;
+			value-- big;
+		;;
+		else
+			range is split;
+		;;
+		while range < 128
+			value is value << 1;
+			range is range << 1;
+			count++;
+			if count is 8
+				count is 0;
+				value is value | (Next);
+			;;
+		;;
+	[end: bit]
+
+	# n bits, the first the most significant, each even
+	[Value: int n: 0;]
+		int v: 0;
+		while n > 0
+			v is (v << 1) | (Bit: 128);
+			n--;
+		;;
+	[end: v]
+
+	# n bits and a sign after them
+	[Signed: int n: 0;]
+		int v: (Value: n);
+		if (Bit: 128) is 1 return 0 - v;
+	[end: v]
+}
+
+struct.ImgVp8
+{
+	ptr<ImgImage> image;
+	u32 limit;
+	ImgVp8Bool br;              # the first partition
+	ImgVp8Bool parts[8];        # the coefficients'
+	int part_count;
+	int w;
+	int h;
+	int mb_w;
+	int mb_h;
+	# segments
+	bln use_segment;
+	bln update_map;
+	bln absolute;
+	int seg_quant[4];
+	int seg_filter[4];
+	int seg_prob[3];
+	# the loop filter
+	bln simple;
+	int level;
+	int sharpness;
+	bln use_lf_delta;
+	int ref_delta[4];
+	int mode_delta[4];
+	int filter_limit[8];        # by segment and whether it's 4x4: the edge limit, 0 for none
+	int filter_ilevel[8];
+	int filter_hev[8];
+	# quantizers, by segment: y1 dc and ac, y2 dc and ac, uv dc and ac
+	int quant[24];
+	u8 coef[1056];              # [type][band][context][node]
+	bln use_skip;
+	int skip_prob;
+	# the planes, padded to whole macroblocks
+	ptr<u8> yp;
+	ptr<u8> up;
+	ptr<u8> vp;
+	int ys;                     # their widths
+	int uvs;
+	# what each macroblock was, for the filter: its segment, and whether its inner edges are filtered
+	ptr<u8> mb_seg;
+	ptr<u8> mb_inner;
+	# contexts across a row: each column's modes and nonzero flags above, and the left's
+	ptr<u8> top_modes;          # mb_w * 4
+	u8 left_modes[4];
+	ptr<u8> top_nz;             # mb_w * 9: 4 Y, 2 U, 2 V, and Y2
+	u8 left_nz[9];
+	# one macroblock being made: its coefficients, and its pixels with their edges
+	int coeffs[384];            # 16 Y blocks, 4 U, 4 V, 16 each
+	u8 ybuf[357];               # 17 rows of 21: the top edge (from x = -1 to 19), then 16 rows
+	u8 ubuf[81];                # 9 rows of 9
+	u8 vbuf[81];
+	u8 bmodes[16];
+
+	[Done]
+		if yp is not 0
+			free yp;
+		;;
+		if up is not 0
+			free up;
+		;;
+		if vp is not 0
+			free vp;
+		;;
+		if mb_seg is not 0
+			free mb_seg;
+		;;
+		if mb_inner is not 0
+			free mb_inner;
+		;;
+		if top_modes is not 0
+			free top_modes;
+		;;
+		if top_nz is not 0
+			free top_nz;
+		;;
+		yp is 0;
+		up is 0;
+		vp is 0;
+		mb_seg is 0;
+		mb_inner is 0;
+		top_modes is 0;
+		top_nz is 0;
+	[end]
+
+	[Read: ptr<u8> data: 0; u32 length: 0;]
+		if length < 10
+			throw 'a lossy image cut short';
+		;;
+		u32 bits: data:0 | (data:1 << 8) | (data:2 << 16);
+		if (bits & 1) is not 0
+			throw 'a lossy image that isn\'t a key frame';
+		;;
+		if ((bits >> 1) & 7) > 3
+			throw 'a lossy image of a profile there isn\'t';
+		;;
+		if ((bits >> 4) & 1) is 0
+			throw 'a lossy frame that isn\'t to be shown';
+		;;
+		u32 first: bits >> 5;
+		if data:3 is not 0x9D or data:4 is not 0x01 or data:5 is not 0x2A
+			throw 'a lossy image without its start code';
+		;;
+		w is ((data:6 | (data:7 << 8)) & 0x3FFF) as int;
+		h is ((data:8 | (data:9 << 8)) & 0x3FFF) as int;
+		if w is 0 or h is 0
+			throw 'a lossy image with no size';
+		;;
+		if (w * h) as u32 > limit
+			throw 'it is ' w ' by ' h ', more pixels than the limit';
+		;;
+		if first > length - 10
+			throw 'the first partition is cut short';
+		;;
+		call br.Start: data + 10 first;
+		call Header: data + 10 + first length - 10 - first;
+		call Frame;
+		if level > 0
+			call Filter;
+		;;
+		call Rgb;
+	[end]
+
+	# ---- the frame's header (RFC 6386, 9.3 to 9.11; libwebp's VP8GetHeaders)
+
+	[Header: ptr<u8> rest: 0; u32 rest_len: 0;]
+		int color_space: (br.Bit: 128);
+		int clamping: (br.Bit: 128);
+		use_segment is ((br.Bit: 128) is 1);
+		update_map is false;
+		if use_segment
+			update_map is ((br.Bit: 128) is 1);
+			if (br.Bit: 128) is 1
+				absolute is ((br.Bit: 128) is 1);
+				while int s: 0; s < 4; s++;
+					seg_quant:s is 0;
+					if (br.Bit: 128) is 1
+						seg_quant:s is (br.Signed: 7);
+					;;
+				;;
+				while int s: 0; s < 4; s++;
+					seg_filter:s is 0;
+					if (br.Bit: 128) is 1
+						seg_filter:s is (br.Signed: 6);
+					;;
+				;;
+			;;
+			if update_map
+				while int s: 0; s < 3; s++;
+					seg_prob:s is 255;
+					if (br.Bit: 128) is 1
+						seg_prob:s is (br.Value: 8);
+					;;
+				;;
+			;;
+		;;
+		simple is ((br.Bit: 128) is 1);
+		level is (br.Value: 6);
+		sharpness is (br.Value: 3);
+		use_lf_delta is ((br.Bit: 128) is 1);
+		if use_lf_delta and (br.Bit: 128) is 1
+			while int i: 0; i < 4; i++;
+				if (br.Bit: 128) is 1
+					ref_delta:i is (br.Signed: 6);
+				;;
+			;;
+			while int i: 0; i < 4; i++;
+				if (br.Bit: 128) is 1
+					mode_delta:i is (br.Signed: 6);
+				;;
+			;;
+		;;
+		# the coefficients' partitions: the sizes of all but the last, then each
+		part_count is 1 << (br.Value: 2);
+		u32 sizes: (part_count - 1) as u32 * 3;
+		if rest_len < sizes
+			throw 'the partitions are cut short';
+		;;
+		ptr<u8> p: rest + sizes;
+		u32 left: rest_len - sizes;
+		while int k: 0; k < part_count - 1; k++;
+			u32 n: rest:(k * 3) | (rest:(k * 3 + 1) << 8) | (rest:(k * 3 + 2) << 16);
+			if n > left
+				n is left;
+			;;
+			call parts:k.Start: p n;
+			p++ n;
+			left-- n;
+		;;
+		call parts:(part_count - 1).Start: p left;
+		# the quantizers
+		int base: (br.Value: 7);
+		int dy1_dc: 0;
+		int dy2_dc: 0;
+		int dy2_ac: 0;
+		int duv_dc: 0;
+		int duv_ac: 0;
+		if (br.Bit: 128) is 1
+			dy1_dc is (br.Signed: 4);
+		;;
+		if (br.Bit: 128) is 1
+			dy2_dc is (br.Signed: 4);
+		;;
+		if (br.Bit: 128) is 1
+			dy2_ac is (br.Signed: 4);
+		;;
+		if (br.Bit: 128) is 1
+			duv_dc is (br.Signed: 4);
+		;;
+		if (br.Bit: 128) is 1
+			duv_ac is (br.Signed: 4);
+		;;
+		while int s: 0; s < 4; s++;
+			int q: base;
+			if use_segment
+				q is seg_quant:s;
+				if not absolute
+					q++ base;
+				;;
+			;;
+			quant:(s * 6) is ImgVp8Tables.dc:(Math.Clamp: q + dy1_dc 0 127);
+			quant:(s * 6 + 1) is ImgVp8Tables.ac:(Math.Clamp: q 0 127);
+			quant:(s * 6 + 2) is ImgVp8Tables.dc:(Math.Clamp: q + dy2_dc 0 127) * 2;
+			int y2ac: (ImgVp8Tables.ac:(Math.Clamp: q + dy2_ac 0 127) * 101581) >> 16;
+			if y2ac < 8
+				y2ac is 8;
+			;;
+			quant:(s * 6 + 3) is y2ac;
+			quant:(s * 6 + 4) is ImgVp8Tables.dc:(Math.Clamp: q + duv_dc 0 117);
+			quant:(s * 6 + 5) is ImgVp8Tables.ac:(Math.Clamp: q + duv_ac 0 127);
+		;;
+		int refresh: (br.Bit: 128);             # (a key frame's refresh_entropy_probs: unused)
+		# the coefficients' probabilities, each updated or as a key frame starts
+		while int i: 0; i < 1056; i++;
+			if (br.Bit: ImgVp8Tables.update:i) is 1
+				coef:i is (br.Value: 8) as u8;
+			;;
+			else
+				coef:i is ImgVp8Tables.coef:i;
+			;;
+		;;
+		use_skip is ((br.Bit: 128) is 1);
+		if use_skip
+			skip_prob is (br.Value: 8);
+		;;
+		if br.eof
+			throw 'the header is cut short';
+		;;
+		# the filter's strength, by segment and whether a macroblock is 4x4
+		while int s: 0; s < 4; s++;
+			int base_level: level;
+			if use_segment
+				base_level is seg_filter:s;
+				if not absolute
+					base_level++ level;
+				;;
+			;;
+			while int i4: 0; i4 < 2; i4++;
+				int lv: base_level;
+				if use_lf_delta
+					lv++ ref_delta:0;
+					if i4 is 1
+						lv++ mode_delta:0;
+					;;
+				;;
+				lv is (Math.Clamp: lv 0 63);
+				int k: s * 2 + i4;
+				filter_limit:k is 0;
+				if lv > 0
+					int il: lv;
+					if sharpness > 0
+						if sharpness > 4
+							il is il >> 2;
+						;;
+						else
+							il is il >> 1;
+						;;
+						if il > 9 - sharpness
+							il is 9 - sharpness;
+						;;
+					;;
+					if il < 1
+						il is 1;
+					;;
+					filter_ilevel:k is il;
+					filter_limit:k is 2 * lv + il;
+					filter_hev:k is 0;
+					if lv >= 40
+						filter_hev:k is 2;
+					;;
+					elif lv >= 15
+						filter_hev:k is 1;
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	# ---- every macroblock
+
+	[Frame]
+		mb_w is (w + 15) >> 4;
+		mb_h is (h + 15) >> 4;
+		ys is mb_w * 16;
+		uvs is mb_w * 8;
+		yp is new u8[ys * mb_h * 16];
+		up is new u8[uvs * mb_h * 8];
+		vp is new u8[uvs * mb_h * 8];
+		mb_seg is new u8[mb_w * mb_h];
+		mb_inner is new u8[mb_w * mb_h];
+		top_modes is new u8[mb_w * 4];
+		top_nz is new u8[mb_w * 9];
+		if yp is 0 or up is 0 or vp is 0 or mb_seg is 0 or mb_inner is 0 or top_modes is 0 or top_nz is 0
+			throw 'out of memory for a ' w ' by ' h ' image';
+		;;
+		call Mem.Fill: top_modes 0 mb_w * 4;
+		call Mem.Fill: top_nz 0 mb_w * 9;
+		while int my: 0; my < mb_h; my++;
+			call Mem.Fill: addr left_modes 0 4;
+			call Mem.Fill: addr left_nz 0 9;
+			ptr<ImgVp8Bool> tokens: addr parts:(my & (part_count - 1));
+			while int mx: 0; mx < mb_w; mx++;
+				call Macroblock: mx my tokens;
+			;;
+			if br.eof or tokens.eof
+				throw 'the image is cut short';
+			;;
+		;;
+	[end]
+
+	[Macroblock: int mx: 0; int my: 0; ptr<ImgVp8Bool> tokens: 0;]
+		# its modes, from the first partition
+		int seg: 0;
+		if update_map
+			if (br.Bit: seg_prob:0) is 0
+				seg is (br.Bit: seg_prob:1);
+			;;
+			else
+				seg is 2 + (br.Bit: seg_prob:2);
+			;;
+		;;
+		int skip: 0;
+		if use_skip
+			skip is (br.Bit: skip_prob);
+		;;
+		bln is4: (br.Bit: 145) is 0;
+		int ymode: 0;
+		if is4
+			while int y: 0; y < 4; y++;
+				int mode: left_modes:y;
+				while int x: 0; x < 4; x++;
+					int prob_at: (top_modes:(mx * 4 + x) * 10 + mode) * 9;
+					int i: 0;
+					while true
+						int next: ImgVp8Tables.tree:(2 * i + (br.Bit: ImgVp8Tables.bmode:(prob_at + i)));
+						if next <= 0
+							mode is 0 - next;
+							break;
+						;;
+						i is next;
+					;;
+					top_modes:(mx * 4 + x) is mode as u8;
+					bmodes:(y * 4 + x) is mode as u8;
+				;;
+				left_modes:y is mode as u8;
+			;;
+		;;
+		else
+			if (br.Bit: 156) is 1
+				ymode is 3;                         # H
+				if (br.Bit: 128) is 1
+					ymode is 1;                     # TM
+				;;
+			;;
+			else
+				ymode is 0;                         # DC
+				if (br.Bit: 163) is 1
+					ymode is 2;                     # V
+				;;
+			;;
+			while int k: 0; k < 4; k++;
+				top_modes:(mx * 4 + k) is ymode as u8;
+				left_modes:k is ymode as u8;
+			;;
+		;;
+		int uvmode: 0;
+		if (br.Bit: 142) is 1
+			uvmode is 2;
+			if (br.Bit: 114) is 1
+				uvmode is 3;
+				if (br.Bit: 183) is 1
+					uvmode is 1;
+				;;
+			;;
+		;;
+		# its coefficients, from its row's partition
+		call Mem.Fill32: addr coeffs as ptr<u32> 0 384;
+		bln any: false;
+		ptr<u8> tnz: top_nz + mx * 9;
+		if skip is 0
+			any is (Residuals: tokens seg is4 tnz);
+		;;
+		else
+			while int k: 0; k < 8; k++;
+				tnz:k is 0;
+				left_nz:k is 0;
+			;;
+			if not is4
+				tnz:8 is 0;
+				left_nz:8 is 0;
+			;;
+		;;
+		mb_seg:(my * mb_w + mx) is seg as u8;
+		# for the filter: bit 0, its inner edges are filtered (it's 4x4, or has coefficients); bit 1, 4x4
+		mb_inner:(my * mb_w + mx) is ((is4 or any) as u8) | ((is4 as u8) << 1);
+		call Rebuild: mx my is4 ymode uvmode;
+	[end]
+
+	# A macroblock's coefficients, dequantized: true if any isn't zero.
+	[Residuals: ptr<ImgVp8Bool> t: 0; int seg: 0; bln is4: false; ptr<u8> tnz: 0;]
+		int first: 0;
+		int ytype: 3;
+		bln any: false;
+		if not is4
+			int dc[16];
+			int ctx: tnz:8 + left_nz:8;
+			int nz: (Coeffs: t 1 ctx quant:(seg * 6 + 2) quant:(seg * 6 + 3) 0 addr dc);
+			int flag: 0;
+			if nz > 0
+				flag is 1;
+			;;
+			tnz:8 is flag as u8;
+			left_nz:8 is flag as u8;
+			call Walsh: addr dc;
+			first is 1;
+			ytype is 0;
+		;;
+		while int y: 0; y < 4; y++;
+			while int x: 0; x < 4; x++;
+				int ctx: tnz:x + left_nz:y;
+				ptr<int> block: addr coeffs:((y * 4 + x) * 16);
+				int nz: (Coeffs: t ytype ctx quant:(seg * 6) quant:(seg * 6 + 1) first block);
+				int flag: 0;
+				if nz > first
+					flag is 1;
+				;;
+				tnz:x is flag as u8;
+				left_nz:y is flag as u8;
+				if nz > 0 or block:0 is not 0
+					any is true;
+				;;
+			;;
+		;;
+		while int ch: 0; ch < 2; ch++;
+			while int y: 0; y < 2; y++;
+				while int x: 0; x < 2; x++;
+					int ctx: tnz:(4 + ch * 2 + x) + left_nz:(4 + ch * 2 + y);
+					ptr<int> block: addr coeffs:(256 + ch * 64 + (y * 2 + x) * 16);
+					int nz: (Coeffs: t 2 ctx quant:(seg * 6 + 4) quant:(seg * 6 + 5) 0 block);
+					int flag: 0;
+					if nz > 0
+						flag is 1;
+						any is true;
+					;;
+					tnz:(4 + ch * 2 + x) is flag as u8;
+					left_nz:(4 + ch * 2 + y) is flag as u8;
+				;;
+			;;
+		;;
+	[end: any]
+
+	# The Y2 block's inverse Walsh-Hadamard transform, its results the 16 Y blocks' DC coefficients.
+	[Walsh: ptr<int> dc: 0;]
+		int tmp[16];
+		while int i: 0; i < 4; i++;
+			int a0: dc:i + dc:(12 + i);
+			int a1: dc:(4 + i) + dc:(8 + i);
+			int a2: dc:(4 + i) - dc:(8 + i);
+			int a3: dc:i - dc:(12 + i);
+			tmp:i is a0 + a1;
+			tmp:(8 + i) is a0 - a1;
+			tmp:(4 + i) is a3 + a2;
+			tmp:(12 + i) is a3 - a2;
+		;;
+		while int i: 0; i < 4; i++;
+			int d: tmp:(i * 4) + 3;
+			int a0: d + tmp:(3 + i * 4);
+			int a1: tmp:(1 + i * 4) + tmp:(2 + i * 4);
+			int a2: tmp:(1 + i * 4) - tmp:(2 + i * 4);
+			int a3: d - tmp:(3 + i * 4);
+			coeffs:((i * 4) * 16) is (a0 + a1) >> 3;
+			coeffs:((i * 4 + 1) * 16) is (a3 + a2) >> 3;
+			coeffs:((i * 4 + 2) * 16) is (a0 - a1) >> 3;
+			coeffs:((i * 4 + 3) * 16) is (a3 - a2) >> 3;
+		;;
+	[end]
+
+	# One block's coefficients of a type (0 Y after Y2, 1 Y2, 2 chroma, 3 Y with its DC), from
+	# position first, dequantized into block in natural order: the position after the last that
+	# isn't zero (0 if none). libwebp's GetCoeffs.
+	[Coeffs: ptr<ImgVp8Bool> t: 0; int type: 0; int ctx: 0; int dq_dc: 0; int dq_ac: 0; int first: 0; ptr<int> block: 0;]
+		int n: first;
+		int p: (Probs: type n ctx);
+		while n < 16
+			if (t.Bit: coef:p) is 0 return n;          # the end of the block
+			while (t.Bit: coef:(p + 1)) is 0
+				n++;
+				if n is 16 return 16;
+				p is (Probs: type n 0);
+			;;
+			int v: 1;
+			int next_ctx: 1;
+			if (t.Bit: coef:(p + 2)) is 1
+				v is (Large: t p);
+				next_ctx is 2;
+			;;
+			if (t.Bit: 128) is 1
+				v is 0 - v;
+			;;
+			int dq: dq_ac;
+			if n is 0
+				dq is dq_dc;
+			;;
+			block:(ImgVp8Tables.zigzag:n) is v * dq;
+			n++;
+			if n < 16
+				p is (Probs: type n next_ctx);
+			;;
+		;;
+	[end: 16]
+
+	# where the probabilities for position n of a block of type, after a context, begin
+	[Probs: int type: 0; int n: 0; int ctx: 0;]
+	[end: ((type * 8 + ImgVp8Tables.bands:n) * 3 + ctx) * 11]
+
+	# a coefficient of 2 or more: its token's rest, and its extra bits
+	[Large: ptr<ImgVp8Bool> t: 0; int p: 0;]
+		if (t.Bit: coef:(p + 3)) is 0
+			if (t.Bit: coef:(p + 4)) is 0 return 2;
+			return 3 + (t.Bit: coef:(p + 5));
+		;;
+		if (t.Bit: coef:(p + 6)) is 0
+			if (t.Bit: coef:(p + 7)) is 0 return 5 + (t.Bit: 159);
+			int two: 7 + 2 * (t.Bit: 165);
+			return two + (t.Bit: 145);
+		;;
+		int bit1: (t.Bit: coef:(p + 8));
+		int bit0: (t.Bit: coef:(p + 9 + bit1));
+		int cat: 2 * bit1 + bit0;
+		int extra: 0;
+		int k: ImgVp8Tables.cat_at:cat;
+		while ImgVp8Tables.cats:k is not 0
+			extra is extra + extra + (t.Bit: ImgVp8Tables.cats:k);
+			k++;
+		;;
+	[end: extra + 3 + (8 << cat)]
+
+	# ---- making a macroblock's pixels
+
+	[Rebuild: int mx: 0; int my: 0; bln is4: false; int ymode: 0; int uvmode: 0;]
+		call Edges: mx my;
+		if is4
+			while int b: 0; b < 16; b++;
+				int bx: b & 3;
+				int by: b >> 2;
+				int o: (1 + by * 4) * 21 + 1 + bx * 4;      # its top left, in ybuf
+				call Predict4: o bmodes:b;
+				call Idct: addr coeffs:(b * 16) addr ybuf o 21;
+			;;
+		;;
+		else
+			call Predict16: mx my ymode;
+			while int b: 0; b < 16; b++;
+				call Idct: addr coeffs:(b * 16) addr ybuf (1 + (b >> 2) * 4) * 21 + 1 + (b & 3) * 4 21;
+			;;
+		;;
+		call PredictUv: addr ubuf mx my uvmode;
+		call PredictUv: addr vbuf mx my uvmode;
+		while int b: 0; b < 4; b++;
+			int o: (1 + (b >> 1) * 4) * 9 + 1 + (b & 1) * 4;
+			call Idct: addr coeffs:(256 + b * 16) addr ubuf o 9;
+			call Idct: addr coeffs:(320 + b * 16) addr vbuf o 9;
+		;;
+		# into the planes
+		while int y: 0; y < 16; y++;
+			call Mem.Copy: yp + (my * 16 + y) * ys + mx * 16 addr ybuf:((1 + y) * 21 + 1) 16;
+		;;
+		while int y: 0; y < 8; y++;
+			call Mem.Copy: up + (my * 8 + y) * uvs + mx * 8 addr ubuf:((1 + y) * 9 + 1) 8;
+			call Mem.Copy: vp + (my * 8 + y) * uvs + mx * 8 addr vbuf:((1 + y) * 9 + 1) 8;
+		;;
+	[end]
+
+	# The edges a macroblock is predicted from, into the buffers' first row and column: the row
+	# above (127 on the top row), the column left (129 at the left edge), the corner, and for luma
+	# four pixels above to the right (those of the macroblock above and right; on the right edge
+	# the last above, repeated; 127 on the top row), repeated down the right side for the 4x4
+	# blocks of the right column below the first, as libwebp has them.
+	[Edges: int mx: 0; int my: 0;]
+		# luma
+		if my is 0
+			call Mem.Fill: addr ybuf 127 21;
+		;;
+		else
+			ptr<u8> above_row: yp + (my * 16 - 1) * ys + mx * 16;
+			call Mem.Copy: addr ybuf:1 above_row 16;
+			if mx is 0
+				ybuf:0 is 129;
+			;;
+			else
+				ybuf:0 is above_row:(-1);
+			;;
+			if mx < mb_w - 1
+				call Mem.Copy: addr ybuf:17 above_row + 16 4;
+			;;
+			else
+				call Mem.Fill: addr ybuf:17 above_row:15 4;
+			;;
+		;;
+		while int y: 0; y < 16; y++;
+			if mx is 0
+				ybuf:((1 + y) * 21) is 129;
+			;;
+			else
+				ybuf:((1 + y) * 21) is yp:((my * 16 + y) * ys + mx * 16 - 1);
+			;;
+		;;
+		while int k: 1; k < 4; k++;
+			call Mem.Copy: addr ybuf:((k * 4) * 21 + 17) addr ybuf:17 4;
+		;;
+		# chroma
+		call EdgesUv: addr ubuf up mx my;
+		call EdgesUv: addr vbuf vp mx my;
+	[end]
+
+	[EdgesUv: ptr<u8> buf: 0; ptr<u8> plane: 0; int mx: 0; int my: 0;]
+		if my is 0
+			call Mem.Fill: buf 127 9;
+		;;
+		else
+			ptr<u8> above_row: plane + (my * 8 - 1) * uvs + mx * 8;
+			call Mem.Copy: buf + 1 above_row 8;
+			if mx is 0
+				buf:0 is 129;
+			;;
+			else
+				buf:0 is above_row:(-1);
+			;;
+		;;
+		while int y: 0; y < 8; y++;
+			if mx is 0
+				buf:((1 + y) * 9) is 129;
+			;;
+			else
+				buf:((1 + y) * 9) is plane:((my * 8 + y) * uvs + mx * 8 - 1);
+			;;
+		;;
+	[end]
+
+	# a 16x16 prediction into ybuf: DC (from what's there of the top and left), TM, V or H
+	[Predict16: int mx: 0; int my: 0; int mode: 0;]
+		if mode is 0
+			int dc: 0;
+			if mx > 0 and my > 0
+				int sum: 16;
+				while int i: 0; i < 16; i++;
+					sum++ ybuf:(1 + i) + ybuf:((1 + i) * 21);
+				;;
+				dc is sum >> 5;
+			;;
+			elif my > 0
+				int sum: 8;
+				while int i: 0; i < 16; i++;
+					sum++ ybuf:(1 + i);
+				;;
+				dc is sum >> 4;
+			;;
+			elif mx > 0
+				int sum: 8;
+				while int i: 0; i < 16; i++;
+					sum++ ybuf:((1 + i) * 21);
+				;;
+				dc is sum >> 4;
+			;;
+			else
+				dc is 128;
+			;;
+			while int y: 0; y < 16; y++;
+				call Mem.Fill: addr ybuf:((1 + y) * 21 + 1) dc 16;
+			;;
+			return;
+		;;
+		call Directional: addr ybuf 21 16 mode;
+	[end]
+
+	# 8x8 chroma prediction, the same way
+	[PredictUv: ptr<u8> buf: 0; int mx: 0; int my: 0; int mode: 0;]
+		if mode is 0
+			int dc: 0;
+			if mx > 0 and my > 0
+				int sum: 8;
+				while int i: 0; i < 8; i++;
+					sum++ buf:(1 + i) + buf:((1 + i) * 9);
+				;;
+				dc is sum >> 4;
+			;;
+			elif my > 0
+				int sum: 4;
+				while int i: 0; i < 8; i++;
+					sum++ buf:(1 + i);
+				;;
+				dc is sum >> 3;
+			;;
+			elif mx > 0
+				int sum: 4;
+				while int i: 0; i < 8; i++;
+					sum++ buf:((1 + i) * 9);
+				;;
+				dc is sum >> 3;
+			;;
+			else
+				dc is 128;
+			;;
+			while int y: 0; y < 8; y++;
+				call Mem.Fill: buf + (1 + y) * 9 + 1 dc 8;
+			;;
+			return;
+		;;
+		call Directional: buf 9 8 mode;
+	[end]
+
+	# TM (1), V (2) or H (3), n by n into buf (whose row is stride wide, its edges in row 0 and column 0)
+	[Directional: ptr<u8> buf: 0; int stride: 0; int n: 0; int mode: 0;]
+		int corner: buf:0;
+		while int y: 0; y < n; y++;
+			int left: buf:((1 + y) * stride);
+			ptr<u8> row: buf + (1 + y) * stride + 1;
+			while int x: 0; x < n; x++;
+				int top: buf:(1 + x);
+				int v: top;
+				if mode is 1
+					v is (Math.Clamp: left + top - corner 0 255);
+				;;
+				elif mode is 3
+					v is left;
+				;;
+				row:x is v as u8;
+			;;
+		;;
+	[end]
+
+	# A 4x4 block's prediction by its mode (libwebp's numbering), into ybuf at o, from the pixels
+	# around it there: the four above and four above-right, the corner, and the four left.
+	[Predict4: int o: 0; int mode: 0;]
+		ptr<u8> d: addr ybuf:o;
+		int s: 21;
+		int tl: d:(-s - 1);
+		int a: d:(-s);
+		int b: d:(1 - s);
+		int c: d:(2 - s);
+		int e: d:(3 - s);                       # (the RFC's D)
+		int f: d:(4 - s);                       # the four above-right: E F G H
+		int g: d:(5 - s);
+		int hh: d:(6 - s);
+		int k: d:(7 - s);
+		int i0: d:(-1);
+		int j0: d:(s - 1);
+		int k0: d:(2 * s - 1);
+		int l0: d:(3 * s - 1);
+		when mode
+			is 0
+				int dc: 4 + a + b + c + e + i0 + j0 + k0 + l0;
+				call Fill4: d dc >> 3;
+			;;
+			is 1
+				while int y: 0; y < 4; y++;
+					int left: d:(y * s - 1);
+					while int x: 0; x < 4; x++;
+						d:(y * s + x) is (Math.Clamp: left + d:(x - s) - tl 0 255) as u8;
+					;;
+				;;
+			;;
+			is 2
+				# vertical, smoothed: each above with its neighbors
+				int v0: (Avg3: tl a b);
+				int v1: (Avg3: a b c);
+				int v2: (Avg3: b c e);
+				int v3: (Avg3: c e f);
+				while int y: 0; y < 4; y++;
+					d:(y * s) is v0 as u8;
+					d:(y * s + 1) is v1 as u8;
+					d:(y * s + 2) is v2 as u8;
+					d:(y * s + 3) is v3 as u8;
+				;;
+			;;
+			is 3
+				# horizontal, smoothed
+				call Row4: d 0 (Avg3: tl i0 j0);
+				call Row4: d s (Avg3: i0 j0 k0);
+				call Row4: d 2 * s (Avg3: j0 k0 l0);
+				call Row4: d 3 * s (Avg3: k0 l0 l0);
+			;;
+			is 4
+				# down and right
+				call Put: d 0 3 (Avg3: j0 k0 l0);
+				int x1: (Avg3: i0 j0 k0);
+				call Put: d 1 3 x1;
+				call Put: d 0 2 x1;
+				int x2: (Avg3: tl i0 j0);
+				call Put: d 2 3 x2;
+				call Put: d 1 2 x2;
+				call Put: d 0 1 x2;
+				int x3: (Avg3: a tl i0);
+				call Put: d 3 3 x3;
+				call Put: d 2 2 x3;
+				call Put: d 1 1 x3;
+				call Put: d 0 0 x3;
+				int x4: (Avg3: b a tl);
+				call Put: d 3 2 x4;
+				call Put: d 2 1 x4;
+				call Put: d 1 0 x4;
+				int x5: (Avg3: c b a);
+				call Put: d 3 1 x5;
+				call Put: d 2 0 x5;
+				call Put: d 3 0 (Avg3: e c b);
+			;;
+			is 5
+				# vertical and right
+				int y0: (Avg2: tl a);
+				call Put: d 0 0 y0;
+				call Put: d 1 2 y0;
+				int y1: (Avg2: a b);
+				call Put: d 1 0 y1;
+				call Put: d 2 2 y1;
+				int y2: (Avg2: b c);
+				call Put: d 2 0 y2;
+				call Put: d 3 2 y2;
+				call Put: d 3 0 (Avg2: c e);
+				call Put: d 0 3 (Avg3: k0 j0 i0);
+				call Put: d 0 2 (Avg3: j0 i0 tl);
+				int y3: (Avg3: i0 tl a);
+				call Put: d 0 1 y3;
+				call Put: d 1 3 y3;
+				int y4: (Avg3: tl a b);
+				call Put: d 1 1 y4;
+				call Put: d 2 3 y4;
+				int y5: (Avg3: a b c);
+				call Put: d 2 1 y5;
+				call Put: d 3 3 y5;
+				call Put: d 3 1 (Avg3: b c e);
+			;;
+			is 6
+				# down and left
+				call Put: d 0 0 (Avg3: a b c);
+				int z1: (Avg3: b c e);
+				call Put: d 1 0 z1;
+				call Put: d 0 1 z1;
+				int z2: (Avg3: c e f);
+				call Put: d 2 0 z2;
+				call Put: d 1 1 z2;
+				call Put: d 0 2 z2;
+				int z3: (Avg3: e f g);
+				call Put: d 3 0 z3;
+				call Put: d 2 1 z3;
+				call Put: d 1 2 z3;
+				call Put: d 0 3 z3;
+				int z4: (Avg3: f g hh);
+				call Put: d 3 1 z4;
+				call Put: d 2 2 z4;
+				call Put: d 1 3 z4;
+				int z5: (Avg3: g hh k);
+				call Put: d 3 2 z5;
+				call Put: d 2 3 z5;
+				call Put: d 3 3 (Avg3: hh k k);
+			;;
+			is 7
+				# vertical and left
+				call Put: d 0 0 (Avg2: a b);
+				int w1: (Avg2: b c);
+				call Put: d 1 0 w1;
+				call Put: d 0 2 w1;
+				int w2: (Avg2: c e);
+				call Put: d 2 0 w2;
+				call Put: d 1 2 w2;
+				int w3: (Avg2: e f);
+				call Put: d 3 0 w3;
+				call Put: d 2 2 w3;
+				call Put: d 0 1 (Avg3: a b c);
+				int w4: (Avg3: b c e);
+				call Put: d 1 1 w4;
+				call Put: d 0 3 w4;
+				int w5: (Avg3: c e f);
+				call Put: d 2 1 w5;
+				call Put: d 1 3 w5;
+				int w6: (Avg3: e f g);
+				call Put: d 3 1 w6;
+				call Put: d 2 3 w6;
+				call Put: d 3 2 (Avg3: f g hh);
+				call Put: d 3 3 (Avg3: g hh k);
+			;;
+			is 8
+				# horizontal and down
+				int h0: (Avg2: i0 tl);
+				call Put: d 0 0 h0;
+				call Put: d 2 1 h0;
+				int h1: (Avg2: j0 i0);
+				call Put: d 0 1 h1;
+				call Put: d 2 2 h1;
+				int h2: (Avg2: k0 j0);
+				call Put: d 0 2 h2;
+				call Put: d 2 3 h2;
+				call Put: d 0 3 (Avg2: l0 k0);
+				call Put: d 3 0 (Avg3: a b c);
+				call Put: d 2 0 (Avg3: tl a b);
+				int h3: (Avg3: i0 tl a);
+				call Put: d 1 0 h3;
+				call Put: d 3 1 h3;
+				int h4: (Avg3: j0 i0 tl);
+				call Put: d 1 1 h4;
+				call Put: d 3 2 h4;
+				int h5: (Avg3: k0 j0 i0);
+				call Put: d 1 2 h5;
+				call Put: d 3 3 h5;
+				call Put: d 1 3 (Avg3: l0 k0 j0);
+			;;
+			else
+				# horizontal and up
+				call Put: d 0 0 (Avg2: i0 j0);
+				int u1: (Avg2: j0 k0);
+				call Put: d 2 0 u1;
+				call Put: d 0 1 u1;
+				int u2: (Avg2: k0 l0);
+				call Put: d 2 1 u2;
+				call Put: d 0 2 u2;
+				call Put: d 1 0 (Avg3: i0 j0 k0);
+				int u3: (Avg3: j0 k0 l0);
+				call Put: d 3 0 u3;
+				call Put: d 1 1 u3;
+				int u4: (Avg3: k0 l0 l0);
+				call Put: d 3 1 u4;
+				call Put: d 1 2 u4;
+				call Put: d 3 2 l0;
+				call Put: d 2 2 l0;
+				call Put: d 0 3 l0;
+				call Put: d 1 3 l0;
+				call Put: d 2 3 l0;
+				call Put: d 3 3 l0;
+			;;
+		;;
+	[end]
+
+	[Avg3: int a: 0; int b: 0; int c: 0;]
+	[end: (a + 2 * b + c + 2) >> 2]
+
+	[Avg2: int a: 0; int b: 0;]
+	[end: (a + b + 1) >> 1]
+
+	[Put: ptr<u8> d: 0; int x: 0; int y: 0; int v: 0;]
+		d:(y * 21 + x) is v as u8;
+	[end]
+
+	[Row4: ptr<u8> d: 0; int o: 0; int v: 0;]
+		call Mem.Fill: d + o v 4;
+	[end]
+
+	[Fill4: ptr<u8> d: 0; int v: 0;]
+		while int y: 0; y < 4; y++;
+			call Mem.Fill: d + y * 21 v 4;
+		;;
+	[end]
+
+	# A block's inverse DCT added to the 4x4 pixels at o in buf (stride wide), clipped to 0 to 255
+	# (libwebp's TransformOne: the RFC's, its constants 20091 and 35468).
+	[Idct: ptr<int> c: 0; ptr<u8> buf: 0; int o: 0; int stride: 0;]
+		bln nothing: true;
+		while int i: 0; i < 16; i++;
+			if c:i is not 0
+				nothing is false;
+				break;
+			;;
+		;;
+		if nothing return;
+		int tmp[16];
+		while int i: 0; i < 4; i++;
+			int a: c:i + c:(8 + i);
+			int b: c:i - c:(8 + i);
+			int cc: (Mul2: c:(4 + i)) - (Mul1: c:(12 + i));
+			int dd: (Mul1: c:(4 + i)) + (Mul2: c:(12 + i));
+			tmp:(i * 4) is a + dd;
+			tmp:(i * 4 + 1) is b + cc;
+			tmp:(i * 4 + 2) is b - cc;
+			tmp:(i * 4 + 3) is a - dd;
+		;;
+		while int i: 0; i < 4; i++;
+			int dc: tmp:i + 4;
+			int a: dc + tmp:(8 + i);
+			int b: dc - tmp:(8 + i);
+			int cc: (Mul2: tmp:(4 + i)) - (Mul1: tmp:(12 + i));
+			int dd: (Mul1: tmp:(4 + i)) + (Mul2: tmp:(12 + i));
+			ptr<u8> row: buf + o + i * stride;
+			row:0 is (Math.Clamp: row:0 + ((a + dd) >> 3) 0 255) as u8;
+			row:1 is (Math.Clamp: row:1 + ((b + cc) >> 3) 0 255) as u8;
+			row:2 is (Math.Clamp: row:2 + ((b - cc) >> 3) 0 255) as u8;
+			row:3 is (Math.Clamp: row:3 + ((a - dd) >> 3) 0 255) as u8;
+		;;
+	[end]
+
+	[Mul1: int a: 0;]
+	[end: ((a * 20091) >> 16) + a]
+
+	[Mul2: int a: 0;]
+	[end: (a * 35468) >> 16]
+
+	# ---- the loop filter (RFC 6386, 15; libwebp's), over the whole frame, a macroblock at a time
+
+	[Filter]
+		while int my: 0; my < mb_h; my++;
+			while int mx: 0; mx < mb_w; mx++;
+				int flags: mb_inner:(my * mb_w + mx);
+				bln inner: (flags & 1) is 1;
+				int which: mb_seg:(my * mb_w + mx) * 2 + (flags >> 1);
+				int lim: filter_limit:which;
+				if lim is 0
+					continue;
+				;;
+				int il: filter_ilevel:which;
+				int hev: filter_hev:which;
+				ptr<u8> y0: yp + my * 16 * ys + mx * 16;
+				ptr<u8> u0: up + my * 8 * uvs + mx * 8;
+				ptr<u8> v0: vp + my * 8 * uvs + mx * 8;
+				if simple
+					if mx > 0
+						call Simple: y0 1 ys 16 lim + 4;
+					;;
+					if inner
+						while int e: 1; e < 4; e++;
+							call Simple: y0 + e * 4 1 ys 16 lim;
+						;;
+					;;
+					if my > 0
+						call Simple: y0 ys 1 16 lim + 4;
+					;;
+					if inner
+						while int e: 1; e < 4; e++;
+							call Simple: y0 + e * 4 * ys ys 1 16 lim;
+						;;
+					;;
+					continue;
+				;;
+				if mx > 0
+					call Loop: y0 1 ys 16 lim + 4 il hev true;
+					call Loop: u0 1 uvs 8 lim + 4 il hev true;
+					call Loop: v0 1 uvs 8 lim + 4 il hev true;
+				;;
+				if inner
+					while int e: 1; e < 4; e++;
+						call Loop: y0 + e * 4 1 ys 16 lim il hev false;
+					;;
+					call Loop: u0 + 4 1 uvs 8 lim il hev false;
+					call Loop: v0 + 4 1 uvs 8 lim il hev false;
+				;;
+				if my > 0
+					call Loop: y0 ys 1 16 lim + 4 il hev true;
+					call Loop: u0 uvs 1 8 lim + 4 il hev true;
+					call Loop: v0 uvs 1 8 lim + 4 il hev true;
+				;;
+				if inner
+					while int e: 1; e < 4; e++;
+						call Loop: y0 + e * 4 * ys ys 1 16 lim il hev false;
+					;;
+					call Loop: u0 + 4 * uvs uvs 1 8 lim il hev false;
+					call Loop: v0 + 4 * uvs uvs 1 8 lim il hev false;
+				;;
+			;;
+		;;
+	[end]
+
+	# the simple filter across an edge: size pixels along it, step across it, next along it
+	[Simple: ptr<u8> p: 0; int step: 0; int next: 0; int size: 0; int thresh: 0;]
+		int t2: 2 * thresh + 1;
+		while int i: 0; i < size; i++;
+			ptr<u8> q: p + i * next;
+			int p1: q:(-2 * step);
+			int p0: q:(0 - step);
+			int q0: q:0;
+			int q1: q:step;
+			if 4 * (Math.Abs: p0 - q0) + (Math.Abs: p1 - q1) <= t2
+				call Two: q step;
+			;;
+		;;
+	[end]
+
+	# the normal filter across an edge: on a macroblock's edge (mb) six pixels change, inside it four
+	[Loop: ptr<u8> p: 0; int step: 0; int next: 0; int size: 0; int thresh: 0; int ithresh: 0; int hev: 0; bln mb: false;]
+		int t2: 2 * thresh + 1;
+		while int i: 0; i < size; i++;
+			ptr<u8> q: p + i * next;
+			int p3: q:(-4 * step);
+			int p2: q:(-3 * step);
+			int p1: q:(-2 * step);
+			int p0: q:(0 - step);
+			int q0: q:0;
+			int q1: q:step;
+			int q2: q:(2 * step);
+			int q3: q:(3 * step);
+			if 4 * (Math.Abs: p0 - q0) + (Math.Abs: p1 - q1) > t2
+				continue;
+			;;
+			if (Math.Abs: p3 - p2) > ithresh or (Math.Abs: p2 - p1) > ithresh or (Math.Abs: p1 - p0) > ithresh or (Math.Abs: q3 - q2) > ithresh or (Math.Abs: q2 - q1) > ithresh or (Math.Abs: q1 - q0) > ithresh
+				continue;
+			;;
+			if (Math.Abs: p1 - p0) > hev or (Math.Abs: q1 - q0) > hev
+				call Two: q step;
+			;;
+			elif mb
+				call Six: q step;
+			;;
+			else
+				call Four: q step;
+			;;
+		;;
+	[end]
+
+	[Clip1: int v: 0;]
+	[end: (Math.Clamp: v 0 255)]
+
+	[Sclip1: int v: 0;]
+	[end: (Math.Clamp: v (-128) 127)]
+
+	[Sclip2: int v: 0;]
+	[end: (Math.Clamp: v (-16) 15)]
+
+	[Two: ptr<u8> q: 0; int step: 0;]
+		int p1: q:(-2 * step);
+		int p0: q:(0 - step);
+		int q0: q:0;
+		int q1: q:step;
+		int a: 3 * (q0 - p0) + (Sclip1: p1 - q1);
+		int a1: (Sclip2: (a + 4) >> 3);
+		int a2: (Sclip2: (a + 3) >> 3);
+		q:(0 - step) is (Clip1: p0 + a2) as u8;
+		q:0 is (Clip1: q0 - a1) as u8;
+	[end]
+
+	[Four: ptr<u8> q: 0; int step: 0;]
+		int p1: q:(-2 * step);
+		int p0: q:(0 - step);
+		int q0: q:0;
+		int q1: q:step;
+		int a: 3 * (q0 - p0);
+		int a1: (Sclip2: (a + 4) >> 3);
+		int a2: (Sclip2: (a + 3) >> 3);
+		int a3: (a1 + 1) >> 1;
+		q:(-2 * step) is (Clip1: p1 + a3) as u8;
+		q:(0 - step) is (Clip1: p0 + a2) as u8;
+		q:0 is (Clip1: q0 - a1) as u8;
+		q:step is (Clip1: q1 - a3) as u8;
+	[end]
+
+	[Six: ptr<u8> q: 0; int step: 0;]
+		int p2: q:(-3 * step);
+		int p1: q:(-2 * step);
+		int p0: q:(0 - step);
+		int q0: q:0;
+		int q1: q:step;
+		int q2: q:(2 * step);
+		int a: (Sclip1: 3 * (q0 - p0) + (Sclip1: p1 - q1));
+		int a1: (27 * a + 63) >> 7;
+		int a2: (18 * a + 63) >> 7;
+		int a3: (9 * a + 63) >> 7;
+		q:(-3 * step) is (Clip1: p2 + a3) as u8;
+		q:(-2 * step) is (Clip1: p1 + a2) as u8;
+		q:(0 - step) is (Clip1: p0 + a1) as u8;
+		q:0 is (Clip1: q0 - a1) as u8;
+		q:step is (Clip1: q1 - a2) as u8;
+		q:(2 * step) is (Clip1: q2 - a3) as u8;
+	[end]
+
+	# ---- to RGB: chroma upsampled as libwebp's fancy upsampler does, each pair of rows from the
+	# two rows of chroma nearest them, 9 3 3 1
+
+	[Rgb]
+		image is (Img.New: w as u32 h as u32);
+		# the first row alone, from the first row of chroma
+		call Pair: 0 (-1) 0 0;
+		int y: 1;
+		while y + 1 < h
+			call Pair: y y + 1 (y - 1) >> 1 (y + 1) >> 1;
+			y++ 2;
+		;;
+		if y < h
+			call Pair: y (-1) (y - 1) >> 1 (y - 1) >> 1;
+		;;
+	[end]
+
+	# Rows ty and by (by -1 for none) of the picture, from chroma rows tu (above) and cu.
+	[Pair: int ty: 0; int by: 0; int tu: 0; int cu: 0;]
+		ptr<u8> top_y: yp + ty * ys;
+		ptr<u8> bot_y: 0;
+		if by >= 0
+			bot_y is yp + by * ys;
+		;;
+		ptr<u32> top_out: image.pixels + ty * w * 4;
+		ptr<u32> bot_out: 0;
+		if by >= 0
+			bot_out is image.pixels + by * w * 4;
+		;;
+		ptr<u8> tu_row: up + tu * uvs;
+		ptr<u8> tv_row: vp + tu * uvs;
+		ptr<u8> cu_row: up + cu * uvs;
+		ptr<u8> cv_row: vp + cu * uvs;
+		int last_pair: (w - 1) >> 1;
+		u32 tl_uv: tu_row:0 | (tv_row:0 << 16);
+		u32 l_uv: cu_row:0 | (cv_row:0 << 16);
+		u32 uv0: (3 * tl_uv + l_uv + 0x00020002) >> 2;
+		top_out:0 is (Color: top_y:0 uv0);
+		if bot_y is not 0
+			u32 buv0: (3 * l_uv + tl_uv + 0x00020002) >> 2;
+			bot_out:0 is (Color: bot_y:0 buv0);
+		;;
+		while int x: 1; x <= last_pair; x++;
+			u32 t_uv: tu_row:x | (tv_row:x << 16);
+			u32 uv: cu_row:x | (cv_row:x << 16);
+			u32 avg: tl_uv + t_uv + l_uv + uv + 0x00080008;
+			u32 diag_12: (avg + 2 * (t_uv + l_uv)) >> 3;
+			u32 diag_03: (avg + 2 * (tl_uv + uv)) >> 3;
+			u32 a0: (diag_12 + tl_uv) >> 1;
+			u32 a1: (diag_03 + t_uv) >> 1;
+			top_out:(2 * x - 1) is (Color: top_y:(2 * x - 1) a0);
+			top_out:(2 * x) is (Color: top_y:(2 * x) a1);
+			if bot_y is not 0
+				u32 b0: (diag_03 + l_uv) >> 1;
+				u32 b1: (diag_12 + uv) >> 1;
+				bot_out:(2 * x - 1) is (Color: bot_y:(2 * x - 1) b0);
+				bot_out:(2 * x) is (Color: bot_y:(2 * x) b1);
+			;;
+			tl_uv is t_uv;
+			l_uv is uv;
+		;;
+		if (w & 1) is 0
+			u32 e0: (3 * tl_uv + l_uv + 0x00020002) >> 2;
+			top_out:(w - 1) is (Color: top_y:(w - 1) e0);
+			if bot_y is not 0
+				u32 e1: (3 * l_uv + tl_uv + 0x00020002) >> 2;
+				bot_out:(w - 1) is (Color: bot_y:(w - 1) e1);
+			;;
+		;;
+	[end]
+
+	# a pixel from its luma and its chroma (u in the low 16 bits, v in the high), as libwebp's
+	# VP8YuvToRgb makes it: opaque
+	[Color: int y: 0; u32 uv: 0; : u32]
+		int u: (uv & 255) as int;
+		int v: ((uv >> 16) & 255) as int;
+		int yy: (y * 19077) >> 8;
+		int r: (Clip8: yy + ((v * 26149) >> 8) - 14234);
+		int g: (Clip8: yy - ((u * 6419) >> 8) - ((v * 13320) >> 8) + 8708);
+		int b: (Clip8: yy + ((u * 33050) >> 8) - 17685);
+	[end: 0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | b as u32]
+
+	[Clip8: int v: 0;]
+		if (v & ~16383) is 0 return v >> 6;
+		if v < 0 return 0;
+	[end: 255]
+}

@@ -89,3 +89,36 @@ kernel with less room would want the library's lines alone marked, or a switch.
 Linux runs go through Lima's x86 emulation: imagelib's `test_png_fuzz` printed exactly its expected
 output and was still cut off at 300 s. Give the emulated runs a longer `-Timeout` before reading a
 timeout as a bug.
+
+**A method's result reads a variable declared again after a block that had one of the same name as
+another class's (or fails to build).** Found writing imagelib's VP8 decoder, 2026-11-20, in 1.0 on ARM
+and x86 alike:
+
+```phi
+phi.T:Program
+{
+	int v: 7;
+	log (Foo.F: 1) '\n';          # 17: F's [end: ...] took T's v, not its own (3)
+	exit 0;
+}
+
+phi.Foo:Library
+{
+	[F: int a: 0;]
+		if a > 5
+			int v: 1;               # a v inside a block
+			return v + 100;
+		;;
+		int v: 3;                   # and another at the method's level, after it
+		int w: v + 10;              # statements see this one: w is 13
+	[end: v + 10]                   # the result doesn't: 17, T's v plus 10
+}
+```
+
+Only the `[end: ...]` expression is wrong; statements after the second declaration see it. Where no
+other class has a variable of that name, the build stops instead: `'v' is declared only inside blocks
+(if, else, while) that have ended here`. A warning (`'v' is a variable of T; write T.v to say so`)
+came in one build of the decoder and not in the small case above. **Here:** the decoder names its
+variables apart, and a scan of every `.phi` file in this repo and PHI OS for the pattern (a name
+declared in a block, again at the method's level, then in `[end: ...]`) found no other. **For PHI:** a
+silent wrong value, so a candidate for "something that demands a fix".

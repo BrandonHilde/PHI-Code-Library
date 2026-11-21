@@ -1,0 +1,76 @@
+# imagelib's WebP decoder against libwebp, every day: the cases in tests/webp/cases.bin, made by
+# tools/image/make_webp_tests.py. A lossless or lossy case must give libwebp's pixels exactly (by
+# CRC-32); a damaged one must come back, read or refused, without a crash.
+use imagelib;
+use data.crc32;
+use memory.mem;
+
+phi.TestWebp:Program
+{
+	call ImageLib.Start;
+	str path: 'tests/webp/cases.bin';
+	int size: (OS.FileSize: path);
+	if size <= 0
+		log 'no ' path '\n';
+		exit 1;
+	;;
+	ptr<u8> all: new u8[size];
+	int got: (OS.ReadFile: path all size);
+	CoreReader r;
+	call r.Start: all got as u32;
+	u32 count: (r.U32LE);
+	int counts: 0 0 0;
+	int right: 0 0 0;
+	int read: 0 0 0;
+	while u32 i: 0; i < count; i++;
+		int kind: (r.U8) as int;
+		u32 name_len: (r.U8);
+		str name: '';
+		ptr<u8> name_at: (r.Bytes: name_len);
+		while u32 k: 0; k < name_len; k++;
+			name++ name_at:k as chr;
+		;;
+		u32 length: (r.U32LE);
+		ptr<u8> data: (r.Bytes: length);
+		bln ok: (r.U8) is 1;
+		u32 w: 0;
+		u32 h: 0;
+		u32 crc: 0;
+		if ok
+			w is (r.U32LE);
+			h is (r.U32LE);
+			if kind < 2
+				crc is (r.U32LE);
+			;;
+		;;
+		if r.failed or kind > 2
+			log path ' is damaged\n';
+			exit 1;
+		;;
+		counts:kind++;
+		ptr<ImgImage> image: (Img.DecodeWebp: data length);
+		if image is not 0
+			read:kind++;
+		;;
+		if kind is 2
+			right:kind++;                       # (back, without a crash: what's asked of it)
+		;;
+		elif image is 0
+			log name ': refused: ' Img.error '\n';
+		;;
+		elif image.w as u32 is not w or image.h as u32 is not h
+			log name ': ' image.w ' by ' image.h ', where libwebp gives ' w ' by ' h '\n';
+		;;
+		elif (Crc32.Of: image.pixels as ptr<u8> w * h * 4) is crc
+			right:kind++;
+		;;
+		else
+			log name ': not libwebp\'s pixels\n';
+		;;
+		call Img.Free: image;
+	;;
+	log 'lossless: ' right:0 ' of ' counts:0 ' exactly as libwebp\n';
+	log 'lossy: ' right:1 ' of ' counts:1 ' exactly as libwebp\n';
+	log 'damaged: ' counts:2 ' came back (' read:2 ' read, ' counts:2 - read:2 ' refused)\n';
+	exit 0;
+}

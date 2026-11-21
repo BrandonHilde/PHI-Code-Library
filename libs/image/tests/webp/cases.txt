@@ -1,0 +1,282 @@
+# made by tools/image/make_webp_tests.py: each case, and what libwebp made of it
+lossless photo 64x48 method 0                           7012 bytes  64 by 48
+lossless photo 64x48 method 4                           6636 bytes  64 by 48
+lossless photo 64x48 method 6                           6638 bytes  64 by 48
+lossless drawing 120x80 method 4                         460 bytes  120 by 80
+lossless drawing 120x80 method 6                         460 bytes  120 by 80
+lossless palette2 33x17 method 4                          62 bytes  33 by 17
+lossless palette2 33x17 method 6                          62 bytes  33 by 17
+lossless palette4 33x17 method 4                          84 bytes  33 by 17
+lossless palette4 33x17 method 6                          84 bytes  33 by 17
+lossless palette16 40x30 method 4                        202 bytes  40 by 30
+lossless palette16 40x30 method 6                        202 bytes  40 by 30
+lossless palette200 40x30 method 4                       220 bytes  40 by 30
+lossless palette200 40x30 method 6                       254 bytes  40 by 30
+lossless alpha 50x30 method 4                             78 bytes  50 by 30
+lossless alpha 50x30 method 6                             78 bytes  50 by 30
+lossless cutout 48x48 method 4                           258 bytes  48 by 48
+lossless cutout 48x48 method 6                           228 bytes  48 by 48
+lossless photo 1x1 method 0                               38 bytes  1 by 1
+lossless photo 1x1 method 4                               38 bytes  1 by 1
+lossless photo 1x1 method 6                               38 bytes  1 by 1
+lossless photo 3x7 method 0                              144 bytes  3 by 7
+lossless photo 3x7 method 4                              118 bytes  3 by 7
+lossless photo 3x7 method 6                              118 bytes  3 by 7
+lossless drawing 17x5 method 4                            76 bytes  17 by 5
+lossless drawing 17x5 method 6                            76 bytes  17 by 5
+lossless flat 300x200 method 4                            44 bytes  300 by 200
+lossless flat 300x200 method 6                            44 bytes  300 by 200
+lossy photo 64x48 q75                                   1108 bytes  64 by 48
+lossy photo 64x48 q5                                     362 bytes  64 by 48
+lossy photo 64x48 q100                                  6636 bytes  64 by 48
+lossy drawing 120x80 q50                                2122 bytes  120 by 80
+lossy photo 33x17 q80                                    472 bytes  33 by 17
+lossy photo 1x1 q75                                       68 bytes  1 by 1
+lossy alpha 50x30 q80                                    258 bytes  50 by 30
+lossy alpha 50x30 q80 alpha 0 none                      1730 bytes  50 by 30
+lossy alpha 50x30 q80 alpha 1 none                       258 bytes  50 by 30
+lossy alpha 50x30 q80 alpha 1 fast                       258 bytes  50 by 30
+lossy alpha 50x30 q80 alpha 1 best                       258 bytes  50 by 30
+lossy cutout 48x48 q60                                   416 bytes  48 by 48
+lossy cutout 48x48 q60 alpha 0 none                     2552 bytes  48 by 48
+lossy cutout 48x48 q60 alpha 1 none                      416 bytes  48 by 48
+lossy cutout 48x48 q60 alpha 1 fast                      416 bytes  48 by 48
+lossy cutout 48x48 q60 alpha 1 best                      416 bytes  48 by 48
+lossy photo 160x120 q70 simple filter                   5214 bytes  160 by 120
+lossy photo 160x120 q70 strong filter sharp 0           5214 bytes  160 by 120
+lossy photo 160x120 q70 strong filter sharp 3           5214 bytes  160 by 120
+lossy photo 160x120 q70 strong filter sharp 7           5214 bytes  160 by 120
+lossy photo 160x120 q70 no filter                       5210 bytes  160 by 120
+lossy photo 160x120 q70 1 segment                       5292 bytes  160 by 120
+lossy photo 160x120 q70 4 segments sns 100              6174 bytes  160 by 120
+lossy photo 160x120 q70 2 partitions                    5214 bytes  160 by 120
+lossy photo 160x120 q70 4 partitions                    5214 bytes  160 by 120
+lossy photo 160x120 q70 8 partitions                    5214 bytes  160 by 120
+lossy photo 160x120 q70 method 0                        6138 bytes  160 by 120
+lossy photo 160x120 q70 method 1                        5926 bytes  160 by 120
+lossy photo 160x120 q70 method 2                        5484 bytes  160 by 120
+lossy photo 160x120 q70 method 3                        5210 bytes  160 by 120
+lossy photo 160x120 q70 method 4                        5214 bytes  160 by 120
+lossy photo 160x120 q70 method 5                        4794 bytes  160 by 120
+lossy photo 160x120 q70 method 6                        4678 bytes  160 by 120
+lossy drawing 200x150 q90 method 6                      9294 bytes  200 by 150
+lossless photo 64x48 method 0, cut to 12                  12 bytes  refused by libwebp
+lossless photo 64x48 method 0, cut to 20                  20 bytes  refused by libwebp
+lossless photo 64x48 method 0, cut to 30                  30 bytes  refused by libwebp
+lossless photo 64x48 method 0, cut to 3506              3506 bytes  refused by libwebp
+lossless photo 64x48 method 0, cut to 7011              7011 bytes  refused by libwebp
+lossless photo 64x48 method 0, changed 0                7012 bytes  64 by 48
+lossless photo 64x48 method 0, changed 1                7012 bytes  64 by 48
+lossless photo 64x48 method 0, changed 2                7012 bytes  64 by 48
+lossless photo 64x48 method 0, changed 3                7012 bytes  64 by 48
+lossless photo 64x48 method 0, changed 4                7012 bytes  64 by 48
+lossless photo 64x48 method 0, changed 5                7012 bytes  64 by 48
+lossless drawing 120x80 method 4, cut to 12               12 bytes  refused by libwebp
+lossless drawing 120x80 method 4, cut to 20               20 bytes  refused by libwebp
+lossless drawing 120x80 method 4, cut to 30               30 bytes  refused by libwebp
+lossless drawing 120x80 method 4, cut to 230             230 bytes  refused by libwebp
+lossless drawing 120x80 method 4, cut to 459             459 bytes  refused by libwebp
+lossless drawing 120x80 method 4, changed 0              460 bytes  120 by 80
+lossless drawing 120x80 method 4, changed 1              460 bytes  refused by libwebp
+lossless drawing 120x80 method 4, changed 2              460 bytes  refused by libwebp
+lossless drawing 120x80 method 4, changed 3              460 bytes  refused by libwebp
+lossless drawing 120x80 method 4, changed 4              460 bytes  refused by libwebp
+lossless drawing 120x80 method 4, changed 5              460 bytes  refused by libwebp
+lossless palette2 33x17 method 6, cut to 12               12 bytes  refused by libwebp
+lossless palette2 33x17 method 6, cut to 20               20 bytes  refused by libwebp
+lossless palette2 33x17 method 6, cut to 30               30 bytes  refused by libwebp
+lossless palette2 33x17 method 6, cut to 31               31 bytes  refused by libwebp
+lossless palette2 33x17 method 6, cut to 61               61 bytes  refused by libwebp
+lossless palette2 33x17 method 6, changed 0               62 bytes  refused by libwebp
+lossless palette2 33x17 method 6, changed 1               62 bytes  refused by libwebp
+lossless palette2 33x17 method 6, changed 2               62 bytes  33 by 17
+lossless palette2 33x17 method 6, changed 3               62 bytes  refused by libwebp
+lossless palette2 33x17 method 6, changed 4               62 bytes  refused by libwebp
+lossless palette2 33x17 method 6, changed 5               62 bytes  refused by libwebp
+lossless palette16 40x30 method 4, cut to 12              12 bytes  refused by libwebp
+lossless palette16 40x30 method 4, cut to 20              20 bytes  refused by libwebp
+lossless palette16 40x30 method 4, cut to 30              30 bytes  refused by libwebp
+lossless palette16 40x30 method 4, cut to 101            101 bytes  refused by libwebp
+lossless palette16 40x30 method 4, cut to 201            201 bytes  refused by libwebp
+lossless palette16 40x30 method 4, changed 0             202 bytes  refused by libwebp
+lossless palette16 40x30 method 4, changed 1             202 bytes  refused by libwebp
+lossless palette16 40x30 method 4, changed 2             202 bytes  refused by libwebp
+lossless palette16 40x30 method 4, changed 3             202 bytes  refused by libwebp
+lossless palette16 40x30 method 4, changed 4             202 bytes  refused by libwebp
+lossless palette16 40x30 method 4, changed 5             202 bytes  refused by libwebp
+lossless palette200 40x30 method 6, cut to 12             12 bytes  refused by libwebp
+lossless palette200 40x30 method 6, cut to 20             20 bytes  refused by libwebp
+lossless palette200 40x30 method 6, cut to 30             30 bytes  refused by libwebp
+lossless palette200 40x30 method 6, cut to 127           127 bytes  refused by libwebp
+lossless palette200 40x30 method 6, cut to 253           253 bytes  refused by libwebp
+lossless palette200 40x30 method 6, changed 0            254 bytes  refused by libwebp
+lossless palette200 40x30 method 6, changed 1            254 bytes  refused by libwebp
+lossless palette200 40x30 method 6, changed 2            254 bytes  refused by libwebp
+lossless palette200 40x30 method 6, changed 3            254 bytes  refused by libwebp
+lossless palette200 40x30 method 6, changed 4            254 bytes  refused by libwebp
+lossless palette200 40x30 method 6, changed 5            254 bytes  refused by libwebp
+lossless cutout 48x48 method 4, cut to 12                 12 bytes  refused by libwebp
+lossless cutout 48x48 method 4, cut to 20                 20 bytes  refused by libwebp
+lossless cutout 48x48 method 4, cut to 30                 30 bytes  refused by libwebp
+lossless cutout 48x48 method 4, cut to 129               129 bytes  refused by libwebp
+lossless cutout 48x48 method 4, cut to 257               257 bytes  refused by libwebp
+lossless cutout 48x48 method 4, changed 0                258 bytes  refused by libwebp
+lossless cutout 48x48 method 4, changed 1                258 bytes  refused by libwebp
+lossless cutout 48x48 method 4, changed 2                258 bytes  refused by libwebp
+lossless cutout 48x48 method 4, changed 3                258 bytes  refused by libwebp
+lossless cutout 48x48 method 4, changed 4                258 bytes  refused by libwebp
+lossless cutout 48x48 method 4, changed 5                258 bytes  refused by libwebp
+lossless photo 1x1 method 4, cut to 12                    12 bytes  refused by libwebp
+lossless photo 1x1 method 4, cut to 20                    20 bytes  refused by libwebp
+lossless photo 1x1 method 4, cut to 30                    30 bytes  refused by libwebp
+lossless photo 1x1 method 4, cut to 19                    19 bytes  refused by libwebp
+lossless photo 1x1 method 4, cut to 37                    37 bytes  refused by libwebp
+lossless photo 1x1 method 4, changed 0                    38 bytes  1 by 1
+lossless photo 1x1 method 4, changed 1                    38 bytes  refused by libwebp
+lossless photo 1x1 method 4, changed 2                    38 bytes  refused by libwebp
+lossless photo 1x1 method 4, changed 3                    38 bytes  refused by libwebp
+lossless photo 1x1 method 4, changed 4                    38 bytes  refused by libwebp
+lossless photo 1x1 method 4, changed 5                    38 bytes  refused by libwebp
+lossless photo 3x7 method 4, cut to 12                    12 bytes  refused by libwebp
+lossless photo 3x7 method 4, cut to 20                    20 bytes  refused by libwebp
+lossless photo 3x7 method 4, cut to 30                    30 bytes  refused by libwebp
+lossless photo 3x7 method 4, cut to 59                    59 bytes  refused by libwebp
+lossless photo 3x7 method 4, cut to 117                  117 bytes  refused by libwebp
+lossless photo 3x7 method 4, changed 0                   118 bytes  refused by libwebp
+lossless photo 3x7 method 4, changed 1                   118 bytes  refused by libwebp
+lossless photo 3x7 method 4, changed 2                   118 bytes  refused by libwebp
+lossless photo 3x7 method 4, changed 3                   118 bytes  refused by libwebp
+lossless photo 3x7 method 4, changed 4                   118 bytes  refused by libwebp
+lossless photo 3x7 method 4, changed 5                   118 bytes  refused by libwebp
+lossless drawing 17x5 method 6, cut to 12                 12 bytes  refused by libwebp
+lossless drawing 17x5 method 6, cut to 20                 20 bytes  refused by libwebp
+lossless drawing 17x5 method 6, cut to 30                 30 bytes  refused by libwebp
+lossless drawing 17x5 method 6, cut to 38                 38 bytes  refused by libwebp
+lossless drawing 17x5 method 6, cut to 75                 75 bytes  refused by libwebp
+lossless drawing 17x5 method 6, changed 0                 76 bytes  refused by libwebp
+lossless drawing 17x5 method 6, changed 1                 76 bytes  refused by libwebp
+lossless drawing 17x5 method 6, changed 2                 76 bytes  refused by libwebp
+lossless drawing 17x5 method 6, changed 3                 76 bytes  refused by libwebp
+lossless drawing 17x5 method 6, changed 4                 76 bytes  refused by libwebp
+lossless drawing 17x5 method 6, changed 5                 76 bytes  refused by libwebp
+lossy photo 64x48 q75, cut to 12                          12 bytes  refused by libwebp
+lossy photo 64x48 q75, cut to 20                          20 bytes  refused by libwebp
+lossy photo 64x48 q75, cut to 30                          30 bytes  refused by libwebp
+lossy photo 64x48 q75, cut to 554                        554 bytes  refused by libwebp
+lossy photo 64x48 q75, cut to 1107                      1107 bytes  refused by libwebp
+lossy photo 64x48 q75, changed 0                        1108 bytes  64 by 48
+lossy photo 64x48 q75, changed 1                        1108 bytes  64 by 48
+lossy photo 64x48 q75, changed 2                        1108 bytes  64 by 48
+lossy photo 64x48 q75, changed 3                        1108 bytes  64 by 48
+lossy photo 64x48 q75, changed 4                        1108 bytes  64 by 48
+lossy photo 64x48 q75, changed 5                        1108 bytes  64 by 48
+lossy drawing 120x80 q50, cut to 12                       12 bytes  refused by libwebp
+lossy drawing 120x80 q50, cut to 20                       20 bytes  refused by libwebp
+lossy drawing 120x80 q50, cut to 30                       30 bytes  refused by libwebp
+lossy drawing 120x80 q50, cut to 1061                   1061 bytes  refused by libwebp
+lossy drawing 120x80 q50, cut to 2121                   2121 bytes  refused by libwebp
+lossy drawing 120x80 q50, changed 0                     2122 bytes  120 by 80
+lossy drawing 120x80 q50, changed 1                     2122 bytes  120 by 80
+lossy drawing 120x80 q50, changed 2                     2122 bytes  120 by 80
+lossy drawing 120x80 q50, changed 3                     2122 bytes  120 by 80
+lossy drawing 120x80 q50, changed 4                     2122 bytes  120 by 80
+lossy drawing 120x80 q50, changed 5                     2122 bytes  120 by 80
+lossy alpha 50x30 q80, cut to 12                          12 bytes  refused by libwebp
+lossy alpha 50x30 q80, cut to 20                          20 bytes  refused by libwebp
+lossy alpha 50x30 q80, cut to 30                          30 bytes  refused by libwebp
+lossy alpha 50x30 q80, cut to 129                        129 bytes  refused by libwebp
+lossy alpha 50x30 q80, cut to 257                        257 bytes  refused by libwebp
+lossy alpha 50x30 q80, changed 0                         258 bytes  refused by libwebp
+lossy alpha 50x30 q80, changed 1                         258 bytes  50 by 30
+lossy alpha 50x30 q80, changed 2                         258 bytes  refused by libwebp
+lossy alpha 50x30 q80, changed 3                         258 bytes  refused by libwebp
+lossy alpha 50x30 q80, changed 4                         258 bytes  refused by libwebp
+lossy alpha 50x30 q80, changed 5                         258 bytes  50 by 30
+lossy alpha 50x30 q80 alpha 1 fast, cut to 12             12 bytes  refused by libwebp
+lossy alpha 50x30 q80 alpha 1 fast, cut to 20             20 bytes  refused by libwebp
+lossy alpha 50x30 q80 alpha 1 fast, cut to 30             30 bytes  refused by libwebp
+lossy alpha 50x30 q80 alpha 1 fast, cut to 129           129 bytes  refused by libwebp
+lossy alpha 50x30 q80 alpha 1 fast, cut to 257           257 bytes  refused by libwebp
+lossy alpha 50x30 q80 alpha 1 fast, changed 0            258 bytes  50 by 30
+lossy alpha 50x30 q80 alpha 1 fast, changed 1            258 bytes  refused by libwebp
+lossy alpha 50x30 q80 alpha 1 fast, changed 2            258 bytes  50 by 30
+lossy alpha 50x30 q80 alpha 1 fast, changed 3            258 bytes  refused by libwebp
+lossy alpha 50x30 q80 alpha 1 fast, changed 4            258 bytes  refused by libwebp
+lossy alpha 50x30 q80 alpha 1 fast, changed 5            258 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 0 none, cut to 12            12 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 0 none, cut to 20            20 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 0 none, cut to 30            30 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 0 none, cut to 1276        1276 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 0 none, cut to 2551        2551 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 0 none, changed 0          2552 bytes  48 by 48
+lossy cutout 48x48 q60 alpha 0 none, changed 1          2552 bytes  48 by 48
+lossy cutout 48x48 q60 alpha 0 none, changed 2          2552 bytes  48 by 48
+lossy cutout 48x48 q60 alpha 0 none, changed 3          2552 bytes  48 by 48
+lossy cutout 48x48 q60 alpha 0 none, changed 4          2552 bytes  48 by 48
+lossy cutout 48x48 q60 alpha 0 none, changed 5          2552 bytes  48 by 48
+lossy cutout 48x48 q60 alpha 1 best, cut to 12            12 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 1 best, cut to 20            20 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 1 best, cut to 30            30 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 1 best, cut to 208          208 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 1 best, cut to 415          415 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 1 best, changed 0           416 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 1 best, changed 1           416 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 1 best, changed 2           416 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 1 best, changed 3           416 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 1 best, changed 4           416 bytes  refused by libwebp
+lossy cutout 48x48 q60 alpha 1 best, changed 5           416 bytes  refused by libwebp
+lossy photo 160x120 q70 strong filter sharp 3, cut to 12      12 bytes  refused by libwebp
+lossy photo 160x120 q70 strong filter sharp 3, cut to 20      20 bytes  refused by libwebp
+lossy photo 160x120 q70 strong filter sharp 3, cut to 30      30 bytes  refused by libwebp
+lossy photo 160x120 q70 strong filter sharp 3, cut to 2607    2607 bytes  refused by libwebp
+lossy photo 160x120 q70 strong filter sharp 3, cut to 5213    5213 bytes  refused by libwebp
+lossy photo 160x120 q70 strong filter sharp 3, changed 0    5214 bytes  160 by 120
+lossy photo 160x120 q70 strong filter sharp 3, changed 1    5214 bytes  160 by 120
+lossy photo 160x120 q70 strong filter sharp 3, changed 2    5214 bytes  160 by 120
+lossy photo 160x120 q70 strong filter sharp 3, changed 3    5214 bytes  160 by 120
+lossy photo 160x120 q70 strong filter sharp 3, changed 4    5214 bytes  160 by 120
+lossy photo 160x120 q70 strong filter sharp 3, changed 5    5214 bytes  160 by 120
+lossy photo 160x120 q70 1 segment, cut to 12              12 bytes  refused by libwebp
+lossy photo 160x120 q70 1 segment, cut to 20              20 bytes  refused by libwebp
+lossy photo 160x120 q70 1 segment, cut to 30              30 bytes  refused by libwebp
+lossy photo 160x120 q70 1 segment, cut to 2646          2646 bytes  refused by libwebp
+lossy photo 160x120 q70 1 segment, cut to 5291          5291 bytes  refused by libwebp
+lossy photo 160x120 q70 1 segment, changed 0            5292 bytes  160 by 120
+lossy photo 160x120 q70 1 segment, changed 1            5292 bytes  refused by libwebp
+lossy photo 160x120 q70 1 segment, changed 2            5292 bytes  160 by 120
+lossy photo 160x120 q70 1 segment, changed 3            5292 bytes  refused by libwebp
+lossy photo 160x120 q70 1 segment, changed 4            5292 bytes  160 by 120
+lossy photo 160x120 q70 1 segment, changed 5            5292 bytes  160 by 120
+lossy photo 160x120 q70 4 partitions, cut to 12           12 bytes  refused by libwebp
+lossy photo 160x120 q70 4 partitions, cut to 20           20 bytes  refused by libwebp
+lossy photo 160x120 q70 4 partitions, cut to 30           30 bytes  refused by libwebp
+lossy photo 160x120 q70 4 partitions, cut to 2607       2607 bytes  refused by libwebp
+lossy photo 160x120 q70 4 partitions, cut to 5213       5213 bytes  refused by libwebp
+lossy photo 160x120 q70 4 partitions, changed 0         5214 bytes  160 by 120
+lossy photo 160x120 q70 4 partitions, changed 1         5214 bytes  160 by 120
+lossy photo 160x120 q70 4 partitions, changed 2         5214 bytes  160 by 120
+lossy photo 160x120 q70 4 partitions, changed 3         5214 bytes  160 by 120
+lossy photo 160x120 q70 4 partitions, changed 4         5214 bytes  160 by 120
+lossy photo 160x120 q70 4 partitions, changed 5         5214 bytes  160 by 120
+lossy photo 160x120 q70 method 1, cut to 12               12 bytes  refused by libwebp
+lossy photo 160x120 q70 method 1, cut to 20               20 bytes  refused by libwebp
+lossy photo 160x120 q70 method 1, cut to 30               30 bytes  refused by libwebp
+lossy photo 160x120 q70 method 1, cut to 2963           2963 bytes  refused by libwebp
+lossy photo 160x120 q70 method 1, cut to 5925           5925 bytes  refused by libwebp
+lossy photo 160x120 q70 method 1, changed 0             5926 bytes  160 by 120
+lossy photo 160x120 q70 method 1, changed 1             5926 bytes  160 by 120
+lossy photo 160x120 q70 method 1, changed 2             5926 bytes  160 by 120
+lossy photo 160x120 q70 method 1, changed 3             5926 bytes  160 by 120
+lossy photo 160x120 q70 method 1, changed 4             5926 bytes  160 by 120
+lossy photo 160x120 q70 method 1, changed 5             5926 bytes  160 by 120
+lossy photo 160x120 q70 method 4, cut to 12               12 bytes  refused by libwebp
+lossy photo 160x120 q70 method 4, cut to 20               20 bytes  refused by libwebp
+lossy photo 160x120 q70 method 4, cut to 30               30 bytes  refused by libwebp
+lossy photo 160x120 q70 method 4, cut to 2607           2607 bytes  refused by libwebp
+lossy photo 160x120 q70 method 4, cut to 5213           5213 bytes  refused by libwebp
+lossy photo 160x120 q70 method 4, changed 0             5214 bytes  160 by 120
+lossy photo 160x120 q70 method 4, changed 1             5214 bytes  160 by 120
+lossy photo 160x120 q70 method 4, changed 2             5214 bytes  160 by 120
+lossy photo 160x120 q70 method 4, changed 3             5214 bytes  160 by 120
+lossy photo 160x120 q70 method 4, changed 4             5214 bytes  160 by 120
+lossy photo 160x120 q70 method 4, changed 5             5214 bytes  160 by 120
