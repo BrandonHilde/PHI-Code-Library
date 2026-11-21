@@ -1,0 +1,84 @@
+# corelib's Brotli decoder against Brotli's own encoder, every day: the cases in tests/brotli/cases.bin,
+# made by tools/core/make_brotli_tests.py. Each good stream must decode to exactly what was packed (by
+# size and CRC-32); each damaged one must come back, decoded or refused, without a crash. The static
+# dictionary is brotli/dictionary.bin, given to the decoder as any program gives it.
+use corelib;
+use data.crc32;
+
+phi.TestBrotli:Program
+{
+	call CoreLib.Start;
+	ptr<u8> dict: (Load: 'brotli/dictionary.bin');
+	log 'the dictionary: ' (CoreBrotli.Dictionary: dict CoreBrotliTables.DICTIONARY_SIZE) '\n';
+	ptr<u8> all: (Load: 'tests/brotli/cases.bin');
+	CoreReader r;
+	call r.Start: all loaded;
+	u32 count: (r.U32LE);
+	int good: 0;
+	int right: 0;
+	int damaged: 0;
+	int damaged_read: 0;
+	while u32 i: 0; i < count; i++;
+		int kind: (r.U8) as int;
+		u32 name_len: (r.U8);
+		ptr<u8> name_at: (r.Bytes: name_len);
+		str name: '';
+		while u32 k: 0; k < name_len; k++;
+			name++ name_at:k as chr;
+		;;
+		u32 length: (r.U32LE);
+		ptr<u8> stream: (r.Bytes: length);
+		u32 want_size: 0;
+		u32 want_crc: 0;
+		if kind is 0
+			want_size is (r.U32LE);
+			want_crc is (r.U32LE);
+		;;
+		if r.failed
+			log 'the cases are damaged\n';
+			exit 1;
+		;;
+		u32 size: 0;
+		ptr<u8> out_bytes: (CoreBrotli.Decode: stream length 0 addr size);
+		if kind is 0
+			good++;
+			if out_bytes is 0
+				log name ': refused: ' CoreBrotli.error '\n';
+			;;
+			elif size is not want_size or (Crc32.Of: out_bytes size) is not want_crc
+				log name ': ' size ' bytes, not what was packed\n';
+			;;
+			else
+				right++;
+			;;
+		;;
+		else
+			damaged++;
+			if out_bytes is not 0
+				damaged_read++;
+			;;
+		;;
+		if out_bytes is not 0
+			free out_bytes;
+		;;
+	;;
+	log 'good: ' right ' of ' good ' decoded exactly\n';
+	log 'damaged: ' damaged ' came back (' damaged_read ' decoded, ' damaged - damaged_read ' refused)\n';
+	u32 none: 0;
+	ptr<u8> nothing: (CoreBrotli.Decode: 0 5 0 addr none);
+	log 'no data: ' (nothing is 0) ', ' CoreBrotli.error '\n';
+	exit 0;
+
+	u32 loaded: 0;
+
+	[Load: ptr<u8> path: 0; : ptr<u8>]
+		int size: (OS.FileSize: path);
+		if size <= 0
+			log 'no ' path '\n';
+			exit 1;
+		;;
+		ptr<u8> bytes: new u8[size];
+		int got: (OS.ReadFile: path bytes size);
+		loaded is got as u32;
+	[end: bytes]
+}

@@ -1,7 +1,7 @@
 # corelib
 
 What `imagelib` and `fontlib` both need: checked reading of bytes and bits, Adler-32, and inflating
-and deflating DEFLATE, zlib and gzip data. It's small on purpose, and depends on no other library here.
+and deflating DEFLATE, zlib and gzip data, and decoding Brotli (RFC 7932). It's small on purpose, and depends on no other library here.
 
 ```phi
 use corelib;
@@ -33,6 +33,7 @@ These names are the API. Everything else the library declares (`CoreHuff`, `Core
 | `CoreAdler` | `Of: data length` → Adler-32, `Add: adler data length` → (carries on from an earlier one). CRC-32 is the standard library's `data.crc32` |
 | `CoreInflate` | `Raw`, `Zlib`, `Gzip`, each `: data length limit size_out` → the output, or 0 with the reason in `CoreInflate.error`. `CoreInflate.used` is how many bytes of the input the stream took |
 | `CoreDeflate` | `Raw`, `Zlib`, `Gzip`, each `: data length level size_out` → the packed bytes on the heap (free them), or 0 with the reason in `CoreDeflate.error`. `level` is 0 (stored) to 9 (packs the most), 6 as zlib's default. At most 1 GB of input |
+| `CoreBrotli` | `Dictionary: bytes length` → (the static dictionary: [brotli/dictionary.bin](brotli)'s bytes, which must stay where they are; false if they aren't that file), `Decode: data length limit size_out` → the bytes on the heap (free them), or 0 with the reason in `CoreBrotli.error`; `CoreBrotli.used` is how many bytes of the input the stream took. `limit` is the most it may make (0: 64 MB) |
 | `CoreInflate.ZlibUpTo: data length limit size_out` → | zlib data inflated up to `limit` bytes and no more, for a reader that knows how much it needs (as a PNG's image data is): it stops at the limit, with `CoreInflate.more` true if the stream had more to give, and when the data ends too soon it gives back what it made, with the reason in `error`. It fails (0) only when the stream is damaged before the limit |
 
 **A read past the end** of a `CoreReader` or `CoreBits` gives 0 and sets `failed`, which stays set.
@@ -63,7 +64,19 @@ copies and characters make a block, written whichever of three ways is smallest:
 for it (none longer than 15 bits), with DEFLATE's fixed codes, or stored. So what doesn't pack grows by
 about 5 bytes in every 16 KB, and never by more. Gzip's header has no name and no time.
 
-**One thread at a time:** `CoreInflate.error`, `used` and `more`, and `CoreDeflate.error`, are shared.
+**Brotli** decodes every kind of meta-block (stored, metadata, compressed), block types and their
+switches in each category, context maps (with move-to-front), every context mode, the last-distances
+ring, and words from the static dictionary with their 121 transforms. The dictionary is 120 KB, so it
+isn't in corelib: a program that reads Brotli loads `brotli/dictionary.bin` and gives it to
+`CoreBrotli.Dictionary`, which checks its CRC-32. A stream with no dictionary words (most binary data)
+decodes without it; one that uses the dictionary, before it's given, fails saying so. What's refused is
+what RFC 7932 says a decoder must refuse: codes that aren't complete, nonzero padding, a meta-block
+length with a nibble or byte too many, copies from before the start or past a meta-block's end, a
+transform or word length there isn't. Brotli's small fixed tables are in `corelib/brotlitables.phi`, and
+both they and the dictionary were read out of the Brotli library itself
+(`tools/core/brotli_tables.py`); see [THIRD_PARTY.md](THIRD_PARTY.md) for their MIT license.
+
+**One thread at a time:** `CoreInflate.error`, `used` and `more`, `CoreDeflate.error`, and `CoreBrotli.error` and `used`, are shared.
 
 ## How it's checked
 
@@ -83,6 +96,7 @@ pwsh ./build.ps1 core -Test -Release              # the release tests too
 | `test_inflate_upto`, `release_inflate_upto` | `ZlibUpTo` against zlib, on the cases in `upto.bin` every day (each good zlib stream cut at 2 lengths, and whole with 3 limits; and the bad zlib streams) and `upto-release.bin` for release (cut at many lengths, and 6 limits). Each must give what zlib gives of it as far as it goes, by length and CRC-32, and say whether there's more past the limit, or be damaged where zlib finds it damaged (`uptocases.phi` does both) |
 | `release_inflate_fuzz` (release tier) | 100,000 random changes to good streams, every value of each of the first 48 bytes of one stream in each format, and noise. All of them must come back, with a result or a failure |
 | `test_deflate` | Deflate at levels 0, 1, 6 and 9 on eight kinds of data (nothing, one byte, a short text, every byte, noise, zeros, words, a drawing), in each framing, read back by corelib's inflate exactly; and the size each packs to, so a change in how well it packs shows |
+| `test_brotli` | Brotli against its own encoder, on the cases in [tests/brotli](tests/brotli) (made by `tools/core/make_brotli_tests.py` with the `brotli` command): English and HTML at every quality from 0 to 11 with windows of 10, 16 and 22 bits (so words from the dictionary and their transforms), source code, noise, zeros, one byte and nothing, each decoded exactly; and streams cut short and changed, which must come back without a crash |
 | `tests/use/test_corelib` | The compiled `corelib.philib`, on its own |
 
 The reference is Python's zlib. `make_inflate_tests.py` makes the streams with it, at every level and
@@ -114,6 +128,10 @@ zlib. **Every one comes back exactly.** In zlib's framing, corelib's size agains
 
 At level 0 both store, and come to the same size. On source text corelib is up to 5% bigger than zlib at
 levels 6 and 9 (it doesn't match lazily); on the rest it's as small or smaller.
+
+**Brotli against Brotli's encoder** (2026-11-20, 1.2.1): 45 of 45 streams decoded exactly (by size and
+CRC-32), and 92 damaged ones back without a crash (4 decoded, 88 refused), the same on 32 and 64-bit
+Linux and macOS.
 
 **Speed** (2026-11-08, as a 64-bit Linux program, with Python's zlib on the same data for comparison):
 

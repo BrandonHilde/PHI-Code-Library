@@ -1,7 +1,18 @@
 # What came from elsewhere
 
 imagelib's code is its own: nothing in it was copied from another project, and nothing from GPL code.
-What did come from elsewhere is test data, which keeps its own license.
+What did come from elsewhere is test data, which keeps its own license, and one file of fixed data.
+
+## Data built into programs
+
+| Where | What | From | License |
+|---|---|---|---|
+| `imagelib/vp8tables.phi` | Lossy WebP's fixed tables: VP8's coefficient probabilities and their update probabilities, its 4x4 intra modes' probabilities, and its quantizer steps (RFC 6386, 13.4, 13.5, 12.3, 14.1) | Read out of libwebp's compiled library (1.6) by `tools/image/vp8_tables.py`, and checked against the RFC's values | libwebp's BSD 3-clause license (<https://chromium.googlesource.com/webm/libwebp/+/refs/heads/main/COPYING>); the same tables are in RFC 6386, whose code is under a BSD license too |
+
+A program that reads lossy WebP carries these tables, so its notices should include libwebp's.
+
+`tests/webp/` is made by `tools/image/make_webp_tests.py`, with libwebp's encoder and decoder through
+ImageMagick, from images the script makes.
 
 ## Test data
 

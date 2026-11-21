@@ -1,0 +1,138 @@
+# made by tools/core/make_brotli_tests.py: each case, and what it must decode to
+english, q0 w10                        10383 bytes, to   16000
+english, q0 w16                         7477 bytes, to   16000
+english, q0 w22                         7477 bytes, to   16000
+english, q1 w10                         9783 bytes, to   16000
+english, q1 w16                         7545 bytes, to   16000
+english, q1 w22                         7545 bytes, to   16000
+english, q5 w10                         7230 bytes, to   16000
+english, q5 w16                         6304 bytes, to   16000
+english, q5 w22                         6320 bytes, to   16000
+english, q9 w10                         7238 bytes, to   16000
+english, q9 w16                         6296 bytes, to   16000
+english, q9 w22                         6304 bytes, to   16000
+english, q11 w10                        6122 bytes, to   16000
+english, q11 w16                        5555 bytes, to   16000
+english, q11 w22                        5555 bytes, to   16000
+html, q0 w10                            4120 bytes, to   15315
+html, q0 w16                            1633 bytes, to   15315
+html, q0 w22                            1633 bytes, to   15315
+html, q1 w10                            3614 bytes, to   15315
+html, q1 w16                            1410 bytes, to   15315
+html, q1 w22                            1410 bytes, to   15315
+html, q5 w10                             955 bytes, to   15315
+html, q5 w16                             854 bytes, to   15315
+html, q5 w22                             855 bytes, to   15315
+html, q9 w10                             945 bytes, to   15315
+html, q9 w16                             837 bytes, to   15315
+html, q9 w22                             838 bytes, to   15315
+html, q11 w10                            853 bytes, to   15315
+html, q11 w16                            731 bytes, to   15315
+html, q11 w22                            731 bytes, to   15315
+source code, q0 w22                     4768 bytes, to   12000
+source code, q5 w22                     3892 bytes, to   12000
+source code, q11 w22                    3509 bytes, to   12000
+noise, q0 w22                           4004 bytes, to    4000
+noise, q5 w22                           4004 bytes, to    4000
+noise, q11 w22                          4004 bytes, to    4000
+zeros, q0 w22                             77 bytes, to   50000
+zeros, q5 w22                             13 bytes, to   50000
+zeros, q11 w22                            13 bytes, to   50000
+one byte, q0 w22                           5 bytes, to       1
+one byte, q5 w22                           5 bytes, to       1
+one byte, q11 w22                          5 bytes, to       1
+nothing, q0 w22                            1 bytes, to       0
+nothing, q5 w22                            1 bytes, to       0
+nothing, q11 w22                           1 bytes, to       0
+english, q0 w10, cut to 1                  1 bytes, damaged
+english, q0 w10, cut to 3                  3 bytes, damaged
+english, q0 w10, cut to 5191            5191 bytes, damaged
+english, q0 w10, cut to 10382          10382 bytes, damaged
+english, q0 w10, changed 0             10383 bytes, damaged
+english, q0 w10, changed 1             10383 bytes, damaged
+english, q0 w10, changed 2             10383 bytes, damaged
+english, q0 w10, changed 3             10383 bytes, damaged
+english, q1 w16, cut to 1                  1 bytes, damaged
+english, q1 w16, cut to 3                  3 bytes, damaged
+english, q1 w16, cut to 3772            3772 bytes, damaged
+english, q1 w16, cut to 7544            7544 bytes, damaged
+english, q1 w16, changed 0              7545 bytes, damaged
+english, q1 w16, changed 1              7545 bytes, damaged
+english, q1 w16, changed 2              7545 bytes, damaged
+english, q1 w16, changed 3              7545 bytes, damaged
+english, q5 w22, cut to 1                  1 bytes, damaged
+english, q5 w22, cut to 3                  3 bytes, damaged
+english, q5 w22, cut to 3160            3160 bytes, damaged
+english, q5 w22, cut to 6319            6319 bytes, damaged
+english, q5 w22, changed 0              6320 bytes, damaged
+english, q5 w22, changed 1              6320 bytes, damaged
+english, q5 w22, changed 2              6320 bytes, damaged
+english, q5 w22, changed 3              6320 bytes, damaged
+english, q11 w10, cut to 1                 1 bytes, damaged
+english, q11 w10, cut to 3                 3 bytes, damaged
+english, q11 w10, cut to 3061           3061 bytes, damaged
+english, q11 w10, cut to 6121           6121 bytes, damaged
+english, q11 w10, changed 0             6122 bytes, damaged
+english, q11 w10, changed 1             6122 bytes, damaged
+english, q11 w10, changed 2             6122 bytes, damaged
+english, q11 w10, changed 3             6122 bytes, damaged
+html, q0 w16, cut to 1                     1 bytes, damaged
+html, q0 w16, cut to 3                     3 bytes, damaged
+html, q0 w16, cut to 816                 816 bytes, damaged
+html, q0 w16, cut to 1632               1632 bytes, damaged
+html, q0 w16, changed 0                 1633 bytes, damaged
+html, q0 w16, changed 1                 1633 bytes, damaged
+html, q0 w16, changed 2                 1633 bytes, damaged
+html, q0 w16, changed 3                 1633 bytes, damaged
+html, q1 w22, cut to 1                     1 bytes, damaged
+html, q1 w22, cut to 3                     3 bytes, damaged
+html, q1 w22, cut to 705                 705 bytes, damaged
+html, q1 w22, cut to 1409               1409 bytes, damaged
+html, q1 w22, changed 0                 1410 bytes, damaged
+html, q1 w22, changed 1                 1410 bytes, damaged
+html, q1 w22, changed 2                 1410 bytes, damaged
+html, q1 w22, changed 3                 1410 bytes, damaged
+html, q9 w10, cut to 1                     1 bytes, damaged
+html, q9 w10, cut to 3                     3 bytes, damaged
+html, q9 w10, cut to 472                 472 bytes, damaged
+html, q9 w10, cut to 944                 944 bytes, damaged
+html, q9 w10, changed 0                  945 bytes, damaged
+html, q9 w10, changed 1                  945 bytes, damaged
+html, q9 w10, changed 2                  945 bytes, damaged
+html, q9 w10, changed 3                  945 bytes, damaged
+html, q11 w16, cut to 1                    1 bytes, damaged
+html, q11 w16, cut to 3                    3 bytes, damaged
+html, q11 w16, cut to 365                365 bytes, damaged
+html, q11 w16, cut to 730                730 bytes, damaged
+html, q11 w16, changed 0                 731 bytes, damaged
+html, q11 w16, changed 1                 731 bytes, damaged
+html, q11 w16, changed 2                 731 bytes, damaged
+html, q11 w16, changed 3                 731 bytes, damaged
+source code, q11 w22, cut to 1             1 bytes, damaged
+source code, q11 w22, cut to 3             3 bytes, damaged
+source code, q11 w22, cut to 1754       1754 bytes, damaged
+source code, q11 w22, cut to 3508       3508 bytes, damaged
+source code, q11 w22, changed 0         3509 bytes, damaged
+source code, q11 w22, changed 1         3509 bytes, damaged
+source code, q11 w22, changed 2         3509 bytes, damaged
+source code, q11 w22, changed 3         3509 bytes, damaged
+zeros, q0 w22, cut to 1                    1 bytes, damaged
+zeros, q0 w22, cut to 3                    3 bytes, damaged
+zeros, q0 w22, cut to 38                  38 bytes, damaged
+zeros, q0 w22, cut to 76                  76 bytes, damaged
+zeros, q0 w22, changed 0                  77 bytes, damaged
+zeros, q0 w22, changed 1                  77 bytes, damaged
+zeros, q0 w22, changed 2                  77 bytes, damaged
+zeros, q0 w22, changed 3                  77 bytes, damaged
+one byte, q5 w22, cut to 1                 1 bytes, damaged
+one byte, q5 w22, cut to 2                 2 bytes, damaged
+one byte, q5 w22, cut to 3                 3 bytes, damaged
+one byte, q5 w22, cut to 4                 4 bytes, damaged
+one byte, q5 w22, changed 0                5 bytes, damaged
+one byte, q5 w22, changed 1                5 bytes, damaged
+one byte, q5 w22, changed 2                5 bytes, damaged
+one byte, q5 w22, changed 3                5 bytes, damaged
+nothing, q11 w22, changed 0                1 bytes, damaged
+nothing, q11 w22, changed 1                1 bytes, damaged
+nothing, q11 w22, changed 2                1 bytes, damaged
+nothing, q11 w22, changed 3                1 bytes, damaged

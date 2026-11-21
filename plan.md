@@ -489,6 +489,7 @@ what 1.0 does wrong goes in [phi-notes.md](docs/phi-notes.md), not into PHI.
 | `editlib` ✓ | Text being edited: caret, selection, words, lines, undo and redo, finding | The text field's and Notes' own editing; selecting, copy and paste, undo, everywhere text is typed |
 | corelib's deflate ✓ | DEFLATE, zlib and gzip, written | What a PNG file needs; and gzip for anyone |
 | vectorlib ✓ | Shapes drawn smooth: paths, SVG path data, transforms, gradients, outlines, dashes, clipping | SVG gradients, clipping and transforms in the browser, CSS transforms, a `<canvas>`, Paint's smooth shapes, the desktop's round corners |
+| corelib's Brotli ✓ | Brotli (RFC 7932), its dictionary given by the program | WOFF2 fonts (next, in fontlib), and `Content-Encoding: br` |
 | imagelib's WebP ✓ | Lossless and lossy WebP, read exactly as libwebp reads them | Pictures on today's web, which are more and more WebP, in the browser |
 | imagelib's PNG writer ✓ | An image to a PNG file, the smallest kind that loses nothing | Paint's pictures at about a fiftieth of a BMP's size on a disk with 3 MB to spare |
 
@@ -502,6 +503,11 @@ and what's selected after each action, and every line of it was worked out by ha
 accumulation), outlines made as FreeType's stroker makes them, gradients premultiplied. Checked
 against macOS's Quartz on 15 scenes (`tools/vector/check_svg.py`): at most 2 pixels in 4,096 differ by
 more than a quarter, the mean by at most 1.2 of 255. Next: PHI OS's browser draws SVG with it.
+
+**Brotli, done 2026-11-20,** in [libs/core](libs/core): every kind of meta-block, context modelling and
+the dictionary's words and transforms; 45 of 45 streams from Brotli's encoder (every quality, several
+windows) decoded exactly. The plan's "Brotli gets its own library" was about its 120 KB dictionary
+landing in every program: instead the program gives it (`brotli/dictionary.bin`), so it's corelib's.
 
 **WebP, done 2026-11-20,** in [libs/image](libs/image): lossless (VP8L) and lossy (VP8 key frames) with
 their alpha, every pixel libwebp's on 27 lossless and 34 lossy files made with every setting that changes
@@ -550,6 +556,11 @@ This repo doesn't change the PHI compiler, as weblib's design already says. Requ
 `js/unicode.phi` and `js/casemap.phi` (from Unicode's data, Unicode License v3) are built into every
 program that uses weblib. Whether `NOTICE` should name them is the owner's call
 ([libs/web/THIRD_PARTY.md](libs/web/THIRD_PARTY.md) lists them).
+
+**`NOTICE` and the fixed tables of other projects (2026-11-20).** corelib's Brotli tables (MIT) and
+imagelib's VP8 tables (libwebp's BSD license, the same as RFC 6386's) are built into programs that use
+them; their licenses are in each library's THIRD_PARTY.md. Whether `NOTICE` should name them is the
+owner's call, as for weblib's tables above.
 
 ## Decisions made (2026-11-06)
 

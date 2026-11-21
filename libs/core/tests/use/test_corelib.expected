@@ -5,3 +5,5 @@ damaged: 1, the Adler-32 check doesn't match the data
 reader: 1751477356 8303 left 26
 adler: 3294432221
 deflate: 32 bytes to 24, back: hello hello hello hello, corelib
+brotli dictionary: 1
+brotli: 60 bytes to 63: the quick brown fox jumps over the lazy dog, and the dog sleeps

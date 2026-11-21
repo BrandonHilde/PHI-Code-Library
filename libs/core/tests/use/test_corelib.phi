@@ -42,6 +42,20 @@ phi.TestCorelib:Program
 	call Show: back back_size;
 	free packed;
 	free back;
+
+	# Brotli, with the static dictionary given as a program gives it (from brotli -q 11)
+	int dict_size: (OS.FileSize: '../../brotli/dictionary.bin');
+	ptr<u8> dict: new u8[dict_size];
+	int dict_got: (OS.ReadFile: '../../brotli/dictionary.bin' dict dict_size);
+	log 'brotli dictionary: ' (CoreBrotli.Dictionary: dict dict_got as u32) '\n';
+	u8 br: 31 62 0 136 156 9 54 78 168 119 55 124 132 74 111 50 51 54 58 13 114 134 167 39 223 208 194 26
+		100 174 44 175 99 28 48 223 246 249 254 32 114 53 86 121 130 225 246 195 241 68 85 134 4 156 250 96 31
+		176 240 10;
+	u32 br_size: 0;
+	ptr<u8> br_text: (CoreBrotli.Decode: br 60 0 addr br_size);
+	log 'brotli: 60 bytes to ' br_size ': ';
+	call Show: br_text br_size;
+	free br_text;
 	free text;
 	free more;
 	exit 0;

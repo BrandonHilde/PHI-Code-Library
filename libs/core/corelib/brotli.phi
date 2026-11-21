@@ -1,0 +1,882 @@
+# corelib's Brotli (RFC 7932): what WOFF2 fonts are packed with, and what a web server may send.
+#
+#   call CoreBrotli.Dictionary: dict dict_length;       # once: libs/core/brotli/dictionary.bin's bytes
+#   u32 size: 0;
+#   ptr<u8> bytes: (CoreBrotli.Decode: data length 0 addr size);   # 0: the default limit, 64 MB
+#   if bytes is 0
+#       log 'bad data: ' CoreBrotli.error '\n';
+#   ;;
+#   free bytes;
+#
+# Brotli's static dictionary of 122,784 bytes (English words, and pieces of HTML, CSS and
+# JavaScript) is the program's to give, so it isn't in every program that uses corelib: a stream
+# that names a word from it before the dictionary has been given fails, saying so. It must be
+# libs/core/brotli/dictionary.bin, byte for byte (Dictionary checks its CRC-32). The rest of
+# Brotli's fixed data is small, in corelib/brotlitables.phi, made from the Brotli library's own.
+#
+# A stream is meta-blocks: stored, metadata (passed over), or compressed. A compressed one has up to
+# 256 block types in each of three categories (literals, insert-and-copy commands, distances), each
+# with its own Huffman codes, switching as the stream says; literals' codes are chosen by a context
+# of the two bytes before them, and distances' by the copy's length. A copy reaching past what's
+# been made (and past the window) is a word from the dictionary, changed by one of 121 transforms.
+# What zlib's checks are to inflate, Brotli's are here: codes must be complete, lengths must fit
+# what's left, padding must be zero, and copies must come from what's there.
+
+use memory.mem;
+use data.crc32;
+use corelib.bits;
+use corelib.brotlitables;
+
+# a prefix code: canonical, up to 15 bits, decoded through a table of the next 8 bits
+struct.CoreBrotliCode
+{
+	ptr<u16> symbols;
+	int counts[16];
+	int single;                 # one symbol alone, which takes no bits; otherwise -1
+	u32 fast[256];              # symbol << 8 | length, or 0 for a longer code
+}
+
+struct.CoreBrotliDec
+{
+	CoreBits b;
+	ptr<u8> output;
+	u32 size;
+	u32 room;
+	u32 limit;
+	u32 window;                 # the most a copy may reach back
+	int dist[4];                # the last four distances, the last first
+	# each category (0 literals, 1 commands, 2 distances): its block types, codes and where it is
+	int types[3];
+	ptr<CoreBrotliCode> type_code[3];
+	ptr<CoreBrotliCode> length_code[3];
+	int current[3];
+	int last[3];
+	int second[3];
+	u32 left[3];                # of the block now
+	ptr<u8> modes;              # each literal block type's context mode
+	ptr<u8> literal_map;        # 64 contexts for each literal block type: which literal code
+	ptr<u8> distance_map;       # 4 for each distance block type
+	ptr<ptr<CoreBrotliCode>> literal_codes;
+	int literal_count;
+	ptr<ptr<CoreBrotliCode>> command_codes;
+	int command_count;
+	ptr<ptr<CoreBrotliCode>> distance_codes;
+	int distance_count;
+	int npostfix;
+	int ndirect;
+
+	[Run: ptr<u8> data: 0; u32 length: 0;]
+		call b.Start: data length false;
+		dist:0 is 4;
+		dist:1 is 11;
+		dist:2 is 15;
+		dist:3 is 16;
+		# the window's size
+		int wbits: 16;
+		if (b.Bit) is 1
+			int n: (b.Bits: 3) as int;
+			if n is not 0
+				wbits is 17 + n;
+			;;
+			else
+				int m: (b.Bits: 3) as int;
+				if m is 1
+					throw 'a large window, which RFC 7932 doesn\'t have';
+				;;
+				wbits is 17;
+				if m is not 0
+					wbits is 8 + m;
+				;;
+			;;
+		;;
+		window is (1 << wbits) - 16;
+		int blocks: 0;
+		while true
+			blocks++;
+			if blocks > 1000000
+				throw 'too many meta-blocks';
+			;;
+			bln last_block: (b.Bit) is 1;
+			if last_block and (b.Bit) is 1 break;          # the last, and empty
+			int nibbles: (b.Bits: 2) as int;
+			if nibbles is 3
+				# metadata: passed over
+				if (b.Bit) is not 0
+					throw 'a reserved bit that isn\'t 0';
+				;;
+				int skip_bytes: (b.Bits: 2) as int;
+				u32 skip: 0;
+				while int i: 0; i < skip_bytes; i++;
+					u32 byte: (b.Bits: 8);
+					if i is skip_bytes - 1 and byte is 0 and skip_bytes > 1
+						throw 'a metadata length with a byte too many';
+					;;
+					skip is skip | (byte << (i * 8));
+				;;
+				if skip_bytes > 0
+					skip++;
+				;;
+				call Align;
+				call Pass: skip false;
+				if last_block break;
+				continue;
+			;;
+			nibbles++ 4;
+			u32 mlen: 0;
+			while int i: 0; i < nibbles; i++;
+				u32 nib: (b.Bits: 4);
+				if i is nibbles - 1 and nibbles > 4 and nib is 0
+					throw 'a meta-block length with a nibble too many';
+				;;
+				mlen is mlen | (nib << (i * 4));
+			;;
+			mlen++;
+			if not last_block and (b.Bit) is 1
+				# stored
+				call Align;
+				call Pass: mlen true;
+				continue;
+			;;
+			call Compressed: mlen;
+			call Clear;
+			if b.failed
+				throw 'it is cut short';
+			;;
+			if last_block break;
+		;;
+		if b.failed
+			throw 'it is cut short';
+		;;
+	[end]
+
+	# to the next byte: what's left of this one must be zeros
+	[Align]
+		u32 extra: b.count % 8;
+		if extra > 0 and (b.Bits: extra) is not 0
+			throw 'padding that isn\'t zeros';
+		;;
+	[end]
+
+	# n bytes passed over, or (keep) copied to the output, straight from the data
+	[Pass: u32 n: 0; bln keep: false;]
+		call b.Release;
+		if n > b.len - b.pos
+			throw 'it is cut short';
+		;;
+		if keep
+			call Room: n;
+			call Mem.Copy: output + size b.data + b.pos n;
+			size++ n;
+		;;
+		b.pos++ n;
+	[end]
+
+	# room in the output for n more bytes, within the limit
+	[Room: u32 n: 0;]
+		if n > limit - size
+			throw 'more than the limit of ' limit ' bytes';
+		;;
+		if size + n <= room return;
+		u32 fresh: room * 2;
+		if fresh < size + n + 4096
+			fresh is size + n + 4096;
+		;;
+		if fresh > limit
+			fresh is limit;
+		;;
+		ptr<u8> bigger: new u8[fresh];
+		if bigger is 0
+			throw 'out of memory';
+		;;
+		if size > 0
+			call Mem.Copy: bigger output size;
+		;;
+		if output is not 0
+			free output;
+		;;
+		output is bigger;
+		room is fresh;
+	[end]
+
+	# ---- a compressed meta-block
+
+	[Compressed: u32 mlen: 0;]
+		while int c: 0; c < 3; c++;
+			types:c is (VarLen) + 1;
+			current:c is 0;
+			last:c is 0;
+			second:c is 1;
+			left:c is 1 << 24;
+			if types:c >= 2
+				type_code:c is (Code: types:c + 2);
+				length_code:c is (Code: 26);
+				left:c is (Length: c);
+			;;
+		;;
+		npostfix is (b.Bits: 2) as int;
+		ndirect is ((b.Bits: 4) as int) << npostfix;
+		modes is new u8[types:0];
+		if modes is 0
+			throw 'out of memory';
+		;;
+		while int i: 0; i < types:0; i++;
+			modes:i is (b.Bits: 2) as u8;
+		;;
+		int trees_l: (VarLen) + 1;
+		literal_map is (Map: types:0 * 64 trees_l);
+		int trees_d: (VarLen) + 1;
+		distance_map is (Map: types:2 * 4 trees_d);
+		literal_count is trees_l;
+		literal_codes is (Codes: trees_l 256);
+		command_count is types:1;
+		command_codes is (Codes: types:1 704);
+		distance_count is trees_d;
+		distance_codes is (Codes: trees_d 16 + ndirect + (48 << npostfix));
+		if b.failed
+			throw 'it is cut short';
+		;;
+		u32 stop: size + mlen;
+		if mlen > limit - size
+			throw 'more than the limit of ' limit ' bytes';
+		;;
+		call Room: mlen;
+		int ins_base: 0 0 0 0 8 8 0 16 8 16 16;
+		int copy_base: 0 8 0 8 0 8 16 0 16 8 16;
+		int ins_extra: 0 0 0 0 0 0 1 1 2 2 3 3 4 4 5 5 6 7 8 9 10 12 14 24;
+		int ins_start: 0 1 2 3 4 5 6 8 10 14 18 26 34 50 66 98 130 194 322 578 1090 2114 6210 22594;
+		int copy_extra: 0 0 0 0 0 0 0 0 1 1 2 2 3 3 4 4 5 5 6 7 8 9 10 24;
+		int copy_start: 2 3 4 5 6 7 8 9 10 12 14 18 22 30 38 54 70 102 134 198 326 582 1094 2118;
+		while size < stop
+			if left:1 is 0
+				call Switch: 1;
+			;;
+			left:1--;
+			int cmd: (Symbol: command_codes:(current:1));
+			int range: cmd >> 6;
+			int ic: ins_base:range + ((cmd >> 3) & 7);
+			int cc: copy_base:range + (cmd & 7);
+			u32 insert: (ins_start:ic + (b.Bits: ins_extra:ic as u32) as int) as u32;
+			u32 copy: (copy_start:cc + (b.Bits: copy_extra:cc as u32) as int) as u32;
+			# the literals
+			if insert > stop - size
+				throw 'more literals than the meta-block has';
+			;;
+			while u32 k: 0; k < insert; k++;
+				if left:0 is 0
+					call Switch: 0;
+				;;
+				left:0--;
+				u32 p1: 0;
+				u32 p2: 0;
+				if size > 0
+					p1 is output:(size - 1);
+				;;
+				if size > 1
+					p2 is output:(size - 2);
+				;;
+				int t: current:0;
+				int base: modes:t * 512;
+				int ctx: (CoreBrotliTables.lookup:(base + p1) | CoreBrotliTables.lookup:(base + 256 + p2)) as int;
+				int tree: literal_map:(t * 64 + ctx);
+				output:size is (Symbol: literal_codes:tree) as u8;
+				size++;
+			;;
+			if b.failed
+				throw 'it is cut short';
+			;;
+			if size >= stop break;              # (its copy isn't made: the meta-block is done)
+			# the distance
+			int distance: dist:0;
+			bln pushed: false;
+			if range >= 2
+				if left:2 is 0
+					call Switch: 2;
+				;;
+				left:2--;
+				int dctx: 3;
+				if copy <= 4
+					dctx is copy as int - 2;
+				;;
+				int dcode: (Symbol: distance_codes:(distance_map:(current:2 * 4 + dctx)));
+				if dcode is not 0
+					distance is (Distance: dcode);
+					pushed is true;
+				;;
+			;;
+			u32 most: window;
+			if size < most
+				most is size;
+			;;
+			if distance <= 0
+				throw 'a distance before the start';
+			;;
+			if distance as u32 > most
+				call Word: distance as u32 - most - 1 copy stop;
+				continue;
+			;;
+			if copy > stop - size
+				throw 'a copy longer than the meta-block has left';
+			;;
+			if pushed
+				dist:3 is dist:2;
+				dist:2 is dist:1;
+				dist:1 is dist:0;
+				dist:0 is distance;
+			;;
+			u32 from: size - distance as u32;
+			while u32 k: 0; k < copy; k++;
+				output:size is output:(from + k);
+				size++;
+			;;
+		;;
+	[end]
+
+	# a distance from its code (not 0): one of the last four, nudged, or a direct one, or coded
+	[Distance: int dcode: 0;]
+		if dcode < 16
+			int which: 0 1 2 3 0 0 0 0 0 0 1 1 1 1 1 1;
+			int nudge: 0 0 0 0 -1 1 -2 2 -3 3 -1 1 -2 2 -3 3;
+			return dist:(which:dcode) + nudge:dcode;
+		;;
+		if dcode < 16 + ndirect return dcode - 15;
+		int d: dcode - ndirect - 16;
+		int hcode: d >> npostfix;
+		int lcode: d & ((1 << npostfix) - 1);
+		int nbits: 1 + (hcode >> 1);
+		int offset: ((2 + (hcode & 1)) << nbits) - 4;
+		int extra: (b.Bits: nbits as u32) as int;
+	[end: ((offset + extra) << npostfix) + lcode + ndirect + 1]
+
+	# A word from the static dictionary, by its number past the window, length copy long: the word
+	# of that length and its transform (RFC 7932, 8).
+	[Word: u32 word_id: 0; u32 copy: 0; u32 stop: 0;]
+		if CoreBrotli.dictionary is 0
+			throw 'it uses Brotli\'s dictionary, which hasn\'t been given (CoreBrotli.Dictionary)';
+		;;
+		if copy < 4 or copy > 24
+			throw 'a dictionary word of a length there isn\'t';
+		;;
+		int len: copy as int;
+		int bits: CoreBrotliTables.size_bits:len;
+		u32 index: word_id & ((1 << bits) - 1);
+		u32 transform: word_id >> bits;
+		if transform >= 121
+			throw 'a transform there isn\'t';
+		;;
+		ptr<u8> word: CoreBrotli.dictionary + CoreBrotliTables.offsets:len + index * copy;
+		int prefix: CoreBrotliTables.transforms:(transform * 3);
+		int kind: CoreBrotliTables.transforms:(transform * 3 + 1);
+		int suffix: CoreBrotliTables.transforms:(transform * 3 + 2);
+		u8 made[64];
+		int n: 0;
+		while int i: 0; i < CoreBrotliTables.affix_len:prefix; i++;
+			made:n is CoreBrotliTables.affix:(CoreBrotliTables.affix_at:prefix + i);
+			n++;
+		;;
+		int from: 0;
+		int upto: len;
+		if kind >= 1 and kind <= 9
+			upto is len - kind;
+		;;
+		elif kind >= 12 and kind <= 20
+			from is kind - 11;
+		;;
+		int start: n;
+		while int i: from; i < upto; i++;
+			made:n is word:i;
+			n++;
+		;;
+		# uppercase, as RFC 7932 has it: a byte below 0xC0 alone, a two-byte character's second
+		# byte, or a longer one's third
+		made:n is 0;
+		made:(n + 1) is 0;
+		made:(n + 2) is 0;
+		if kind is 10 or kind is 11
+			int p: start;
+			int remaining: n - start;
+			while remaining > 0
+				int step: 1;
+				if made:p < 0xC0
+					if made:p >= 'a' and made:p <= 'z'
+						made:p is made:p ^ 32;
+					;;
+				;;
+				elif made:p < 0xE0
+					made:(p + 1) is made:(p + 1) ^ 32;
+					step is 2;
+				;;
+				else
+					made:(p + 2) is made:(p + 2) ^ 5;
+					step is 3;
+				;;
+				p++ step;
+				remaining-- step;
+				if kind is 10 break;
+			;;
+		;;
+		while int i: 0; i < CoreBrotliTables.affix_len:suffix; i++;
+			made:n is CoreBrotliTables.affix:(CoreBrotliTables.affix_at:suffix + i);
+			n++;
+		;;
+		if n as u32 > stop - size
+			throw 'a dictionary word longer than the meta-block has left';
+		;;
+		call Mem.Copy: output + size addr made n;
+		size++ n as u32;
+	[end]
+
+	# a new block of category c: its type, from its code, and its length
+	[Switch: int c: 0;]
+		int code: (Symbol: type_code:c);
+		int t: 0;
+		if code is 0
+			t is second:c;
+		;;
+		elif code is 1
+			t is last:c + 1;
+		;;
+		else
+			t is code - 2;
+		;;
+		if t >= types:c
+			t-- types:c;
+		;;
+		second:c is last:c;
+		last:c is t;
+		current:c is t;
+		left:c is (Length: c);
+	[end]
+
+	[Length: int c: 0; : u32]
+		int code: (Symbol: length_code:c);
+	[end: CoreBrotliTables.range_base:code + (b.Bits: CoreBrotliTables.range_bits:code)]
+
+	# a number from 0 to 255, in up to 11 bits
+	[VarLen]
+		if (b.Bit) is 0 return 0;
+		int n: (b.Bits: 3) as int;
+		if n is 0 return 1;
+	[end: (1 << n) + (b.Bits: n as u32) as int]
+
+	# a context map of size entries naming trees codes (RFC 7932, 7.3)
+	[Map: int entries: 0; int trees: 1; : ptr<u8>]
+		ptr<u8> map: new u8[entries];
+		if map is 0
+			throw 'out of memory';
+		;;
+		call Mem.Fill: map 0 entries;
+		if trees < 2 return map;
+		int rlemax: 0;
+		if (b.Bit) is 1
+			rlemax is (b.Bits: 4) as int + 1;
+		;;
+		ptr<CoreBrotliCode> code: (Code: trees + rlemax);
+		int i: 0;
+		while i < entries
+			int c: (Symbol: code);
+			if c is 0
+				map:i is 0;
+				i++;
+			;;
+			elif c <= rlemax
+				int reps: (1 << c) + (b.Bits: c as u32) as int;
+				if i + reps > entries
+					call FreeCode: code;
+					free map;
+					throw 'a context map past its end';
+				;;
+				i++ reps;
+			;;
+			else
+				map:i is (c - rlemax) as u8;
+				i++;
+			;;
+			if b.failed
+				call FreeCode: code;
+				free map;
+				throw 'it is cut short';
+			;;
+		;;
+		call FreeCode: code;
+		if (b.Bit) is 1
+			# the inverse of move-to-front
+			u8 order[256];
+			while int k: 0; k < 256; k++;
+				order:k is k as u8;
+			;;
+			while int k: 0; k < entries; k++;
+				int at_index: map:k;
+				u8 v: order:at_index;
+				map:k is v;
+				while at_index > 0
+					order:at_index is order:(at_index - 1);
+					at_index--;
+				;;
+				order:0 is v;
+			;;
+		;;
+	[end: map]
+
+	[Codes: int count: 0; int size: 0; : ptr<ptr<CoreBrotliCode>>]
+		ptr<ptr<CoreBrotliCode>> list: new ptr<CoreBrotliCode>[count];
+		if list is 0
+			throw 'out of memory';
+		;;
+		while int i: 0; i < count; i++;
+			list:i is 0;
+		;;
+		while int i: 0; i < count; i++;
+			list:i is (Code: size);
+		;;
+	[end: list]
+
+	# ---- prefix codes (RFC 7932, 3.4 and 3.5)
+
+	[Code: int size: 0; : ptr<CoreBrotliCode>]
+		if size > 704
+			throw 'an alphabet too big';
+		;;
+		u8 lengths[704];
+		call Mem.Fill: addr lengths 0 size;
+		int hskip: (b.Bits: 2) as int;
+		if hskip is 1
+			# simple: one to four symbols, written out
+			int bits: 0;
+			while (1 << bits) < size
+				bits++;
+			;;
+			int count: (b.Bits: 2) as int + 1;
+			int sym[4];
+			while int i: 0; i < count; i++;
+				sym:i is (b.Bits: bits as u32) as int;
+				if sym:i >= size
+					throw 'a symbol past its alphabet';
+				;;
+				while int k: 0; k < i; k++;
+					if sym:k is sym:i
+						throw 'a symbol twice in a code';
+					;;
+				;;
+			;;
+			if count is 1
+				return (Build: addr lengths size sym:0);
+			;;
+			if count is 2
+				lengths:(sym:0) is 1;
+				lengths:(sym:1) is 1;
+			;;
+			elif count is 3
+				lengths:(sym:0) is 1;
+				lengths:(sym:1) is 2;
+				lengths:(sym:2) is 2;
+			;;
+			elif (b.Bit) is 0
+				while int i: 0; i < 4; i++;
+					lengths:(sym:i) is 2;
+				;;
+			;;
+			else
+				lengths:(sym:0) is 1;
+				lengths:(sym:1) is 2;
+				lengths:(sym:2) is 3;
+				lengths:(sym:3) is 3;
+			;;
+			return (Build: addr lengths size (-1));
+		;;
+		# complex: the code lengths' own code first, its lengths in a code of their own
+		int order: 1 2 3 4 0 5 17 6 16 7 8 9 10 11 12 13 14 15;
+		int peek_len: 2 2 2 3 2 2 2 4 2 2 2 3 2 2 2 4;
+		int peek_val: 0 4 3 2 0 4 3 1 0 4 3 2 0 4 3 5;
+		u8 cl[18];
+		call Mem.Fill: addr cl 0 18;
+		int space: 32;
+		int nonzero: 0;
+		while int i: hskip; i < 18; i++;
+			int v: (b.Peek: 4) as int;
+			call b.Drop: peek_len:v as u32;
+			cl:(order:i) is peek_val:v as u8;
+			if peek_val:v is not 0
+				space-- 32 >> peek_val:v;
+				nonzero++;
+				if space <= 0 break;
+			;;
+		;;
+		if not (nonzero is 1 or space is 0)
+			throw 'a code-length code that isn\'t complete';
+		;;
+		int only: -1;
+		if nonzero is 1
+			while int i: 0; i < 18; i++;
+				if cl:i is not 0
+					only is i;
+				;;
+			;;
+		;;
+		ptr<CoreBrotliCode> lc: 0;
+		if only >= 0
+			lc is (Build: addr cl 18 only);
+		;;
+		else
+			lc is (Build: addr cl 18 (-1));
+		;;
+		int symbol: 0;
+		int prev: 8;
+		int repeat: 0;
+		int repeat_len: 0;
+		int left: 32768;
+		while symbol < size and left > 0
+			int len: (Symbol: lc);
+			if b.failed
+				call FreeCode: lc;
+				throw 'it is cut short';
+			;;
+			if len < 16
+				repeat is 0;
+				lengths:symbol is len as u8;
+				symbol++;
+				if len is not 0
+					prev is len;
+					left-- 32768 >> len;
+				;;
+				continue;
+			;;
+			int extra: 2;
+			int new_len: prev;
+			if len is 17
+				extra is 3;
+				new_len is 0;
+			;;
+			if repeat_len is not new_len
+				repeat is 0;
+				repeat_len is new_len;
+			;;
+			int old: repeat;
+			if repeat > 0
+				repeat-- 2;
+				repeat is repeat << extra;
+			;;
+			repeat++ (b.Bits: extra as u32) as int + 3;
+			int delta: repeat - old;
+			if symbol + delta > size
+				call FreeCode: lc;
+				throw 'code lengths past the alphabet';
+			;;
+			while int k: 0; k < delta; k++;
+				lengths:symbol is repeat_len as u8;
+				symbol++;
+			;;
+			if repeat_len is not 0
+				left-- delta << (15 - repeat_len);
+			;;
+		;;
+		call FreeCode: lc;
+		if left is not 0
+			throw 'a code that isn\'t complete';
+		;;
+	[end: (Build: addr lengths size (-1))]
+
+	# the canonical code for these lengths; with only at 0 or more, that symbol alone
+	[Build: ptr<u8> lengths: 0; int size: 0; int only: -1; : ptr<CoreBrotliCode>]
+		ptr<CoreBrotliCode> c: new CoreBrotliCode;
+		if c is 0
+			throw 'out of memory';
+		;;
+		call Mem.Fill: c 0 sizeof CoreBrotliCode;
+		c.single is only;
+		if only >= 0 return c;
+		int used: 0;
+		while int s: 0; s < size; s++;
+			if lengths:s > 0
+				c.counts:(lengths:s)++;
+				used++;
+			;;
+		;;
+		int room: 1;
+		while int len: 1; len < 16; len++;
+			room is room * 2 - c.counts:len;
+			if room < 0
+				call FreeCode: c;
+				throw 'a code with more codes than room';
+			;;
+		;;
+		if room is not 0 or used < 2
+			call FreeCode: c;
+			throw 'a code that isn\'t complete';
+		;;
+		c.symbols is new u16[used];
+		if c.symbols is 0
+			call FreeCode: c;
+			throw 'out of memory';
+		;;
+		int offsets[16];
+		int next[16];
+		offsets:1 is 0;
+		while int len: 1; len < 15; len++;
+			offsets:(len + 1) is offsets:len + c.counts:len;
+		;;
+		int code: 0;
+		while int len: 1; len < 16; len++;
+			next:len is code;
+			code is (code + c.counts:len) << 1;
+		;;
+		while int s: 0; s < size; s++;
+			int len: lengths:s;
+			if len is 0
+				continue;
+			;;
+			c.symbols:(offsets:len) is s as u16;
+			offsets:len++;
+			int this: next:len;
+			next:len++;
+			if len <= 8
+				int turned: 0;
+				while int i: 0; i < len; i++;
+					turned is (turned << 1) | ((this >> i) & 1);
+				;;
+				while int fill: turned; fill < 256; fill++ (1 << len);
+					c.fast:fill is ((s as u32) << 8) | len as u32;
+				;;
+			;;
+		;;
+	[end: c]
+
+	[Symbol: ptr<CoreBrotliCode> c: 0;]
+		if c.single >= 0 return c.single;
+		u32 peek: (b.Peek: 15);
+		u32 hit: c.fast:(peek & 255);
+		if hit is not 0
+			call b.Drop: hit & 255;
+			return (hit >> 8) as int;
+		;;
+		int code: 0;
+		int first: 0;
+		int index: 0;
+		while int len: 1; len < 16; len++;
+			code is code | ((peek >> (len - 1)) & 1) as int;
+			int count: c.counts:len;
+			if code - first < count
+				call b.Drop: len as u32;
+				return c.symbols:(index + code - first);
+			;;
+			index++ count;
+			first is (first + count) << 1;
+			code is code << 1;
+		;;
+		throw 'a code that isn\'t in its table';
+	[end: 0]
+
+	[FreeCode: ptr<CoreBrotliCode> c: 0;]
+		if c is 0 return;
+		if c.symbols is not 0
+			free c.symbols;
+		;;
+		free c;
+	[end]
+
+	[FreeList: ptr<ptr<CoreBrotliCode>> list: 0; int count: 0;]
+		if list is 0 return;
+		while int i: 0; i < count; i++;
+			call FreeCode: list:i;
+		;;
+		free list;
+	[end]
+
+	# a meta-block's codes and maps given back
+	[Clear]
+		while int c: 0; c < 3; c++;
+			call FreeCode: type_code:c;
+			call FreeCode: length_code:c;
+			type_code:c is 0;
+			length_code:c is 0;
+		;;
+		call FreeList: literal_codes literal_count;
+		call FreeList: command_codes command_count;
+		call FreeList: distance_codes distance_count;
+		literal_codes is 0;
+		command_codes is 0;
+		distance_codes is 0;
+		if modes is not 0
+			free modes;
+		;;
+		if literal_map is not 0
+			free literal_map;
+		;;
+		if distance_map is not 0
+			free distance_map;
+		;;
+		modes is 0;
+		literal_map is 0;
+		distance_map is 0;
+	[end]
+}
+
+phi.CoreBrotli:Library
+{
+	const u32 DEFAULT_LIMIT: 64 * 1024 * 1024;
+
+	str error: [127];
+	ptr<u8> dictionary: 0;
+	u32 used;                   # how many bytes of the input the stream took
+
+	# Brotli's static dictionary (libs/core/brotli/dictionary.bin's bytes), kept by address: they
+	# must stay where they are. False if they aren't that file.
+	[Dictionary: ptr<u8> bytes: 0; u32 length: 0;]
+		if bytes is 0 or length is not CoreBrotliTables.DICTIONARY_SIZE return false;
+		if (Crc32.Of: bytes length) is not CoreBrotliTables.DICTIONARY_CRC return false;
+		dictionary is bytes;
+	[end: true]
+
+	# a Brotli stream decoded: the bytes, on the heap (free them), their count in size_out; 0 with
+	# the reason in error. limit is the most it may make (0: 64 MB).
+	[Decode: ptr<u8> data: 0; u32 length: 0; u32 limit: 0; ptr<u32> size_out: 0; : ptr<u8>]
+		error is '';
+		used is 0;
+		if size_out is not 0
+			size_out:0 is 0;
+		;;
+		if data is 0 and length > 0
+			error is 'no data was given';
+			return 0;
+		;;
+		if limit is 0
+			limit is DEFAULT_LIMIT;
+		;;
+		ptr<CoreBrotliDec> d: new CoreBrotliDec;
+		if d is 0
+			error is 'out of memory';
+			return 0;
+		;;
+		call Mem.Fill: d 0 sizeof CoreBrotliDec;
+		d.limit is limit;
+		if call d.Run: data length throws err
+			if err.kind is ErrorKind.THROWN
+				error is err.text;
+			;;
+			else
+				error is err.message;
+			;;
+			call d.Clear;
+			if d.output is not 0
+				free d.output;
+			;;
+			free d;
+			return 0;
+		;;
+		call d.Clear;
+		call d.b.Release;
+		used is d.b.pos;
+		ptr<u8> output: d.output;
+		u32 size: d.size;
+		free d;
+		if output is 0
+			output is new u8[1];
+			if output is 0
+				error is 'out of memory';
+				return 0;
+			;;
+		;;
+		if size_out is not 0
+			size_out:0 is size;
+		;;
+	[end: output]
+}
