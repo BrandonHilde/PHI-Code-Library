@@ -58,6 +58,7 @@ The reason in brackets is right, but "16-bit program" isn't.
 **`phi test --help` crashes** (2026-11-08). `phi test` takes `--help` as the file to test, and .NET's
 unhandled `FileNotFoundException` comes out, with its stack trace, from `TestRunner.BuildTestLibraries`.
 `phi` with no arguments prints the usage, so that's the way to see it for now.
+**Fixed by 1.0:** `phi test --help` prints the usage (checked 2026-11-21).
 
 **A `u32` index is sign-extended in 64-bit code** (2026-11-08). `p:i`, with `p` a pointer and `i` a
 `u32`, comes out as `movsxd rax, eax` before the add (seen in corelib's inflate, in
@@ -130,3 +131,15 @@ server's EncryptedExtensions to read, has no way in. netlib has HTTP/2 now (`Wir
 on HTTP/1.1 with every server that speaks TLS 1.3. What would do: a list of ALPN names on the session
 before the ClientHello is made (`application_layer_protocol_negotiation`, extension 16), and the name
 the server chose, from its EncryptedExtensions, after the handshake (2026-11-21).
+
+**A shift is done in 32 bits whatever it's stored into, and a constant one that overflows is folded
+without a word.** `u64 a: 1 << 42;` is 1024, as is `1 << n` with `n` 42: the shift is an `int`'s,
+its count taken modulo 32, and only then made a `u64`. The constant is folded at build time to the
+same 1024, where a build could tell it's wrong. And `u8` 200 `<< 24` is an `int`, so it comes out
+-939524096: stored in an `int` that's silent, and stored in a `u32` it stops the program ("a negative
+number can't be a u32"). Two of weblib's were met this way on 2026-11-21: `Float16Array`'s rounding,
+which shifted a `1` by up to 42 (wrong numbers, found by test262), and canvas's `putImageData`, which
+built a pixel from four `u8`s (a stopped program). **Here:** a `u64` one is shifted (`u64 one: 1;`),
+and a byte is made a `u32` before its shift. **For PHI:** an error for a constant shift past its
+width, and a warning when a shift's count may reach 32 in an `int` that's then widened, as the
+silent wrong value is the dangerous half (2026-11-21, checked in 1.0 on macOS arm64).
