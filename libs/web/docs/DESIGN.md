@@ -130,9 +130,11 @@ These compile and then do the wrong thing, or surprise you:
 
 ## Assembly: the x87
 
-All of weblib is plain PHI but for these, each written twice (`asm.` for 32-bit programs, `x64.` for
-64-bit ones), all for the x86's floating point unit, so they're why weblib builds only for x86 systems
-(listed 2026-11-10):
+All of weblib is plain PHI but for these, each written three times: `asm.` for 32-bit programs and
+`x64.` for 64-bit ones, for the x86's floating point unit (listed 2026-11-10), and since 2026-11-22
+`arm.` for macOS programs, which call the Mac's own C library (`bl _log`, `_exp`, `_tan`, `_atan2`,
+`_pow` and the rest), whose results are correctly rounded or nearly so. On ARM the setting of the
+control word is nothing: its floating point is double precision, rounding to nearest, already.
 
 | Where | What | Why |
 |---|---|---|
@@ -145,7 +147,7 @@ All of weblib is plain PHI but for these, each written twice (`asm.` for 32-bit 
 Each `math.phi` routine sets the x87 to extended precision for its instruction and back to double. Plain
 PHI versions would be ports of fdlibm (the library V8 uses for these): they'd give browsers' results to the
 last bit, which the x87 doesn't always, and build anywhere, but the JS tests' expected digits would need
-checking again. Not done yet.
+checking again. Not done yet. Until then a result can differ in its last bit between an x86 build and a Mac one.
 
 ## Testing
 
