@@ -30,6 +30,8 @@ struct.CssIdx
 	ptr<CssIdx> next;
 	u32 order;
 	u32 rank;
+	ptr<DomNode> scope;     # its sheet's tree: 0 for the document's (CssSheet.scope)
+	u8 aim;                 # CssCascade.AIM_*: what in or around that tree it's for
 }
 
 struct.CssBucket
@@ -232,6 +234,16 @@ phi.CssCascade:Library
 	const u32 K_CLASS: 2;
 	const u32 K_TAG: 3;
 
+	# what a rule is for, as its sheet's tree sees it: the elements in the tree (in any tree, for the UA
+	# sheet's), the tree's host (:host), or the host's children shown in its slots (::slotted)
+	const u32 AIM_TREE: 0;
+	const u32 AIM_ANY: 1;
+	const u32 AIM_HOST: 2;
+	const u32 AIM_SLOTTED: 3;
+
+	ptr<DomNode> cur_scope: 0;      # the sheet being indexed
+	ptr<DomNode> cur_tree: 0;       # the tree of the element being styled (0: the document's)
+
 	const u32 RANK_UA: 0;
 	const u32 RANK_UNLAYERED: 0x7FFFFFF0;
 	const u32 RANK_INLINE: 0x7FFFFFF8;
@@ -379,10 +391,13 @@ phi.CssCascade:Library
 			call WalkLayers: e e.sheets:i.first 0 0;
 		;;
 		call RankLayers: e;
+		cur_scope is 0;
 		call Walk: e ua_sheet.first RANK_UA 0 0;
 		while u32 i: 0; i < e.sheet_count; i++;
+			cur_scope is e.sheets:i.scope;
 			call Walk: e e.sheets:i.first RANK_UNLAYERED 0 0;
 		;;
+		cur_scope is 0;
 		# (an @import answered during that was seen by it)
 		e.needs_index is false;
 	[end]
@@ -592,6 +607,8 @@ phi.CssCascade:Library
 				x.decls is r.decls;
 				x.order is e.rule_order;
 				x.rank is rank;
+				x.scope is cur_scope;
+				x.aim is (AimOf: c rank) as u8;
 				e.rule_order++;
 				if c.pseudo is not 0
 					e.has_pseudo is true;
@@ -736,12 +753,47 @@ phi.CssCascade:Library
 	[TryList: ptr<CssIdx> x: 0; ptr<DomNode> node: 0;]
 		while x is not 0
 			ptr<CssComplex> c: x.sel;
-			if (CssSel.MatchFrom: c.right node)
-				call AddHit: x.decls c.spec x.order x.rank c.pseudo;
+			u32 aim: x.aim;
+			bln for_it: true;
+			u32 rank: x.rank;
+			if aim is AIM_TREE
+				for_it is (x.scope is cur_tree);
+			;;
+			elif aim is AIM_HOST
+				for_it is (node.shadow is x.scope and x.scope is not 0);
+			;;
+			elif aim is AIM_SLOTTED
+				for_it is (node.parent is not 0 and node.parent.shadow is x.scope and x.scope is not 0);
+			;;
+			# (a shadow tree's own rules for its host and slotted children give way to the outside's)
+			if aim is AIM_HOST or aim is AIM_SLOTTED
+				rank is RANK_HINTS;
+			;;
+			if for_it and (CssSel.MatchFrom: c.right node)
+				call AddHit: x.decls c.spec x.order rank c.pseudo;
 			;;
 			x is x.next;
 		;;
 	[end]
+
+	# which elements a rule is for, from what's at its right: :host, ::slotted(), or neither
+	[AimOf: ptr<CssComplex> c: 0; u32 rank: 0;]
+		if rank is RANK_UA return AIM_ANY;
+		ptr<CssSimple> s: c.right.first;
+		while s is not 0
+			if s.kind is CssSel.S_PSEUDO as u8
+				if s.pseudo is CssK.HOST as u16 or s.pseudo is CssSel.P_HOST_CONTEXT as u16 return AIM_HOST;
+				if s.pseudo is CssSel.P_SLOTTED as u16 return AIM_SLOTTED;
+			;;
+			s is s.next;
+		;;
+	[end: AIM_TREE]
+
+	# the tree an element is in: its shadow root, or 0 for the document's (or none)
+	[TreeOf: ptr<DomNode> node: 0;]
+		ptr<DomNode> top: (Dom.TreeRoot: node);
+		if (Dom.IsShadowRoot: top) return top;
+	[end: 0 as ptr<DomNode>]
 
 	[TryKey: ptr<CssEngine> e: 0; ptr<WlAtom> key: 0; u32 kind: 0; ptr<DomNode> node: 0;]
 		if e.doc.quirks and kind is not K_TAG
@@ -755,6 +807,7 @@ phi.CssCascade:Library
 
 	[Collect: ptr<CssEngine> e: 0; ptr<DomNode> node: 0;]
 		hit_n is 0;
+		cur_tree is (TreeOf: node);
 		if node.id_atom is not 0
 			call TryKey: e node.id_atom K_ID node;
 		;;
@@ -1015,6 +1068,11 @@ phi.CssCascade:Library
 						;;
 					;;
 				;;
+				# a host's shadow tree, then its own children
+				if n.shadow is not 0
+					n is n.shadow;
+					continue;
+				;;
 				if n.first_child is not 0
 					n is n.first_child;
 					continue;
@@ -1026,7 +1084,7 @@ phi.CssCascade:Library
 					continue;
 				;;
 			;;
-			# up and along
+			# up and along (from the top of a shadow tree, to its host's children)
 			while n is not 0
 				if n is force
 					force is 0;
@@ -1034,6 +1092,15 @@ phi.CssCascade:Library
 				if n.next is not 0
 					n is n.next;
 					break;
+				;;
+				if n.parent is 0 and (Dom.IsShadowRoot: n)
+					ptr<DomNode> host: n.shadow;
+					if host.first_child is not 0
+						n is host.first_child;
+						break;
+					;;
+					n is host;
+					continue;
 				;;
 				n is n.parent;
 				if n is doc.root
@@ -1052,9 +1119,21 @@ phi.CssCascade:Library
 	[end]
 
 
+	# what an element inherits from: its parent's style, or in the flat tree, a shadow tree's host's
+	# for its top, and the slot's for a host's child shown in one
 	[ParentStyle: ptr<DomNode> n: 0;]
 		ptr<DomNode> up: n.parent;
-		if up is 0 or up.type is not DomType.ELEMENT return 0;
+		if up is 0 return 0;
+		if up.type is DomType.FRAGMENT and (up.flags & Dom.SHADOW_ROOT) is not 0
+			up is up.shadow;
+		;;
+		elif up.type is DomType.ELEMENT and up.shadow is not 0
+			ptr<DomNode> slot: (Dom.AssignedSlot: n);
+			if slot is not 0 and slot.style is not 0
+				up is slot;
+			;;
+		;;
+		if up.type is not DomType.ELEMENT return 0;
 	[end: up.style as ptr<CssComputed>]
 
 	[Restyle: ptr<CssEngine> e: 0; ptr<DomNode> n: 0;]

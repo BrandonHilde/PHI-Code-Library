@@ -484,7 +484,9 @@ phi.PageEvents:Library
 				if up is 0
 					up is at_.parent;
 				;;
-				if up is 0 and (Dom.IsShadowRoot: at_) and composed
+				# (an event that started in this shadow tree stops at its top unless it's composed; one that
+				# came in through a slot goes on)
+				if up is 0 and (Dom.IsShadowRoot: at_) and (composed or (Dom.TreeRoot: n) is not at_)
 					up is at_.shadow;
 				;;
 				if up is 0

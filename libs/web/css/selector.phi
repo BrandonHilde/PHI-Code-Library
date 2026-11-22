@@ -93,6 +93,12 @@ phi.CssSel:Library
 	const u32 PE_UNKNOWN: 9;    # valid to write, like ::-webkit-anything, but matches nothing
 	const u32 PE_COUNT: 9;
 
+	# pseudo-classes with no keyword of their own (CssSimple.pseudo): ::slotted(S) is kept as one of
+	# these, standing for the whole compound it ends (what a shadow tree's sheet says of its host's
+	# children shown in its slots)
+	const u32 P_HOST_CONTEXT: 0xFFF0;
+	const u32 P_SLOTTED: 0xFFF1;
+
 	const u32 MAX_NEST: 32;
 	const u32 MAX_COMPOUNDS: 512;
 	const u32 MAX_SPEC: 1023;
@@ -384,8 +390,16 @@ phi.CssSel:Library
 				if pos >= stop return false;
 				if t:pos.type is CssLex.COLON
 					pos++;
+					slotted is 0;
 					if (PseudoElement: whole true) is false return false;
 					spec:0 is (AddSpec: spec:0 1);
+					if slotted is not 0
+						# ::slotted(S) stands for the whole compound
+						spec:0 is (AddSpec: spec:0 (MaxSpec: slotted.sub));
+						c.first is slotted;
+						last is slotted;
+						slotted is 0;
+					;;
 					parts++;
 					continue;
 				;;
@@ -423,6 +437,9 @@ phi.CssSel:Library
 
 	[PseudoElement: ptr<CssComplex> whole: 0; bln two_colons: true;]
 		if whole.pseudo is not 0 return false;
+		if t:pos.type is CssLex.FUNCTION and two_colons and (WlText.EqNoCaseZ: t:pos.text t:pos.len 'slotted')
+			return (Slotted: whole);
+		;;
 		if t:pos.type is not CssLex.IDENT return false;
 		ptr<CssTok> tk: addr t:pos;
 		u32 kw: (CssVp.Kw: tk);
@@ -467,6 +484,22 @@ phi.CssSel:Library
 		;;
 		whole.pseudo is pe as u8;
 		pos++;
+	[end: true]
+
+	# ::slotted(S): the compound it ends becomes a P_SLOTTED of S alone (what's before it in the compound,
+	# slot or a slot's name, isn't kept)
+	ptr<CssSimple> slotted: 0;
+
+	[Slotted: ptr<CssComplex> whole: 0;]
+		ptr<CssTok> tk: addr t:pos;
+		u32 close: tk.match;
+		if close > stop return false;
+		ptr<CssSimple> f: (NewSimple: S_PSEUDO);
+		f.pseudo is P_SLOTTED as u16;
+		f.sub is (List: pos + 1 close false false);
+		if f.sub is 0 return false;
+		slotted is f;
+		pos is close + 1;
 	[end: true]
 
 	# [ name ], [ ns|name ], [ name op value flag ]
@@ -578,6 +611,17 @@ phi.CssSel:Library
 		u32 inner: pos + 1;
 		ptr<CssSimple> f: (NewSimple: S_PSEUDO);
 		f.pseudo is kw as u16;
+		if kw is CssK.HOST or (WlText.EqNoCaseZ: tk.text tk.len 'host-context')
+			# :host(S) and :host-context(S), S a compound selector
+			if kw is not CssK.HOST
+				f.pseudo is P_HOST_CONTEXT as u16;
+			;;
+			f.sub is (List: inner close false false);
+			if f.sub is 0 return 0;
+			sp:0 is (AddSpec: 1 << 10 (MaxSpec: f.sub));
+			pos is close + 1;
+			return f;
+		;;
 		when kw
 			is CssK.IS CssK.WHERE CssK.MATCHES CssK._WEBKIT_ANY CssK._MOZ_ANY
 				if kw is CssK.MATCHES or kw is CssK._WEBKIT_ANY or kw is CssK._MOZ_ANY
@@ -737,8 +781,8 @@ phi.CssSel:Library
 				if left is 0 return true;
 				u32 comb: c.comb;
 				if comb is C_DESCENDANT or comb is C_CHILD
-					ptr<DomNode> up: e.parent;
-					if up is 0 or up.type is not DomType.ELEMENT return false;
+					ptr<DomNode> up: (Up: e);
+					if up is 0 return false;
 					if comb is C_DESCENDANT
 						desc_c is left;
 						desc_e is up;
@@ -772,13 +816,22 @@ phi.CssSel:Library
 				sib_c is 0;
 			;;
 			if desc_c is 0 return false;
-			ptr<DomNode> further: desc_e.parent;
-			if further is 0 or further.type is not DomType.ELEMENT return false;
+			ptr<DomNode> further: (Up: desc_e);
+			if further is 0 return false;
 			desc_e is further;
 			c is desc_c;
 			e is further;
 		;;
 	[end: false]
+
+	# the element above e: its parent, or for the top of a shadow tree its host (which only a shadow
+	# tree's own rules are tried on, as the cascade has it); 0 at the top
+	[Up: ptr<DomNode> e: 0;]
+		ptr<DomNode> up: e.parent;
+		if up is 0 return 0 as ptr<DomNode>;
+		if up.type is DomType.ELEMENT return up;
+		if up.type is DomType.FRAGMENT and (up.flags & Dom.SHADOW_ROOT) is not 0 return up.shadow;
+	[end: 0 as ptr<DomNode>]
 
 	[MatchCompound: ptr<CssCompound> c: 0; ptr<DomNode> e: 0;]
 		ptr<CssSimple> s: c.first;
@@ -1066,6 +1119,25 @@ phi.CssSel:Library
 			;;
 			is CssK.INVALID
 				return (Ask: e ST_VALID) is 0;
+			;;
+			is CssK.HOST
+				# a shadow host, as its own shadow tree's sheets see it (the cascade tries those rules on it)
+				if e.shadow is 0 or (e.shadow.flags & Dom.SHADOW_ROOT) is 0 return false;
+				if s.sub is not 0 return (AnyOf: s.sub e);
+				return true;
+			;;
+			is P_HOST_CONTEXT
+				if e.shadow is 0 or (e.shadow.flags & Dom.SHADOW_ROOT) is 0 return false;
+				ptr<DomNode> up: e;
+				while up is not 0
+					if up.type is DomType.ELEMENT and (AnyOf: s.sub up) return true;
+					up is (Dom.ShadowParent: up);
+				;;
+				return false;
+			;;
+			is P_SLOTTED
+				if (Dom.AssignedSlot: e) is 0 return false;
+				return (AnyOf: s.sub e);
 			;;
 			is CssK.DEFINED
 				# built in, or a custom element that has been made by its class (a name with a hyphen is a

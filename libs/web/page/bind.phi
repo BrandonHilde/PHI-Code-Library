@@ -152,6 +152,8 @@ phi.PageBind:Library
 		ptr<JsObj> proto: (JsObjs.NewWithProto: parent);
 		call JsObjs.ArrayPush: keep (JsV.Obj: proto);
 		call Js.DefineClass: name addr IllegalCtor 0 proto;
+		# (what Object.prototype.toString says of one: [object HTMLDivElement])
+		call JsObjs.DefineValue: proto JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: name) JsObjs.C;
 	[end: proto]
 
 	[IllegalCtor: ptr<u64> args: 0; int argc: 0;]
@@ -2676,6 +2678,8 @@ phi.PageBind:Library
 			call Css.StyleGet: o.data as ptr<DomNode> name.data name.len addr text;
 		;;
 		else
+			# (computed: as the page's styles are now)
+			call Page.UpdateStyle: Page.current;
 			call Css.ComputedText: o.data as ptr<DomNode> name.data name.len addr text;
 		;;
 		u64 r: (Js.NewString: text.data text.len);

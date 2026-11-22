@@ -139,7 +139,7 @@ struct.Page
 	ptr<DomNode> current_script;
 	ptr<DomNode> focused;
 
-	PageSheet sheets[atmost 512];
+	PageSheet sheets[atmost 4096];        # (each shadow tree's <style> is one)
 	u32 sheets_version;
 	bln sheets_scanned;
 
@@ -667,6 +667,7 @@ phi.Page:Library
 		;;
 		ptr<WlAtom> style_tag: (WlAtoms.GetZ: 'style');
 		ptr<WlAtom> link_tag: (WlAtoms.GetZ: 'link');
+		# (shadow trees' sheets too: each is for its own tree)
 		ptr<DomNode> n: p.doc.root;
 		while n is not 0
 			if n.type is DomType.ELEMENT and n.ns is DomNs.HTML
@@ -677,7 +678,7 @@ phi.Page:Library
 					call SeeLink: p n;
 				;;
 			;;
-			n is (Dom.Next: n p.doc.root);
+			n is (Dom.ShadowNext: n p.doc.root);
 		;;
 		# whatever wasn't found has left the document
 		while u32 i: 0; i < p.sheets.len; i++;
@@ -765,6 +766,11 @@ phi.Page:Library
 		WlBuf text;
 		call Dom.TextContent: n text;
 		u32 h: (WlText.Hash: text.data text.len);
+		ptr<DomNode> scope: (SheetScope: n);
+		if s.sheet is not 0 and s.sheet.scope is not scope
+			# moved into another tree: it's that tree's now
+			s.text_hash is 0;
+		;;
 		if s.sheet is 0 or h is not s.text_hash or text.len is not s.text_len
 			if s.sheet is not 0
 				call p.css.RemoveSheet: s.sheet;
@@ -774,6 +780,7 @@ phi.Page:Library
 			s.text_hash is h;
 			s.text_len is text.len;
 			if s.sheet is not 0
+				s.sheet.scope is scope;
 				call p.css.AddSheet: s.sheet;
 			;;
 		;;
@@ -816,9 +823,16 @@ phi.Page:Library
 		;;
 		s.sheet is (Css.ParseSheet: bytes len base_url);
 		if s.sheet is not 0
+			s.sheet.scope is (SheetScope: n);
 			call p.css.AddSheet: s.sheet;
 		;;
 	[end]
+
+	# the tree a <style> or <link>'s sheet is for: the shadow root it's in, or 0 for the document
+	[SheetScope: ptr<DomNode> n: 0;]
+		ptr<DomNode> top: (Dom.TreeRoot: n);
+		if (Dom.IsShadowRoot: top) return top;
+	[end: 0 as ptr<DomNode>]
 
 	# The style engine found an @import that applies (as it worked the styles out): the sheet is
 	# asked of the host like any other, and goes to the import when it comes (DeliverNow). The
@@ -853,7 +867,14 @@ phi.Page:Library
 	[UpdateStyle: ptr<Page> p: 0;]
 		call Use: p;
 		call ScanSheets: p;
-	[end: (p.css.Update)]
+		if (p.css.Update) return true;
+		# (what stopped it, for the console)
+		WlBuf b;
+		call b.AddZ: 'styles could not be worked out: ';
+		call b.AddZ: CssError.text;
+		call Log: p b.data b.len 2;
+		call b.Free;
+	[end: false]
 
 	[SetViewport: ptr<Page> p: 0; f64 width: 0.0; f64 height: 0.0;]
 		call Use: p;

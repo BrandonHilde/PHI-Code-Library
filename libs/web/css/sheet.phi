@@ -87,6 +87,7 @@ struct.CssSheet
 	ptr<u8> base_url;           # zero-terminated, in the arena; 0 if none
 	ptr<CssDecls> all_decls;    # every block in it, to free them
 	u32 rule_count;
+	ptr<DomNode> scope;         # the shadow root whose sheet it is: its rules are for that tree (0: the document)
 }
 
 # ---- media queries

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html><head><title>shadow</title>
+<style>
+.in { color: rgb(255, 0, 0) }
+x-card { font-size: 20px }
+x-card.outer { color: rgb(10, 10, 10) }
+</style>
+</head><body>
+<x-card id="card"><span id="s1">slotted</span><b slot="b" id="named">named</b>text</x-card>
+<x-card id="card2" class="outer"></x-card>
+<script>
+var log = function () { console.log(Array.prototype.join.call(arguments, " ")); };
+var style = function (el, p) { return getComputedStyle(el).getPropertyValue(p); };
+class XCard extends HTMLElement {
+  constructor() {
+    super();
+    var root = this.attachShadow({ mode: "open" });
+    root.innerHTML = "<style>:host { display: block; color: rgb(1, 2, 3) } .in { color: rgb(4, 5, 6) } ::slotted(span) { color: rgb(7, 8, 9) } #wrap { font-size: 30px }</style>" +
+      "<div id='wrap'><div class='in' id='inner'>inside</div><slot id='d'></slot><slot name='b' id='b'>fallback</slot><slot name='c' id='c'><i>c fallback</i></slot></div>";
+  }
+}
+customElements.define("x-card", XCard);
+var card = document.getElementById("card"), root = card.shadowRoot;
+var inner = root.getElementById("inner");
+log("root:", root instanceof ShadowRoot, root instanceof DocumentFragment, root.mode, root.host === card, root.parentNode, Object.prototype.toString.call(root));
+log("tree:", inner.getRootNode() === root, inner.getRootNode({ composed: true }) === document, inner.isConnected, root.contains(inner), document.contains(inner));
+log("query:", document.querySelector(".in"), root.querySelector(".in") === inner, root.querySelectorAll("slot").length, document.getElementById("inner"));
+log("slots:", root.getElementById("d").assignedNodes().map(function (n) { return n.nodeName; }).join(","), root.getElementById("b").assignedElements().map(function (n) { return n.id; }).join(","), root.getElementById("c").assignedNodes().length, root.getElementById("c").assignedNodes({ flatten: true }).map(function (n) { return n.nodeName; }).join(","));
+log("assignedSlot:", document.getElementById("s1").assignedSlot.id, document.getElementById("named").assignedSlot.id, card.lastChild.assignedSlot.id);
+log("styles:", style(card, "display"), style(card, "color"), style(inner, "color"), style(document.getElementById("s1"), "color"), style(document.getElementById("named"), "color"));
+log("outer wins:", style(document.getElementById("card2"), "color"), style(document.getElementById("card2").shadowRoot.getElementById("inner"), "color"));
+log("inherited:", style(inner, "font-size"), style(document.getElementById("s1"), "font-size"), style(root.getElementById("wrap"), "font-size"));
+log(":defined and :host from outside:", card.matches(":defined"), card.matches(":host"));
+var heard = [];
+card.addEventListener("ping", function (e) { heard.push("host:" + e.target.id + ":" + e.eventPhase); });
+document.body.addEventListener("ping", function (e) { heard.push("body:" + e.target.id); });
+inner.addEventListener("ping", function (e) { heard.push("inner:" + e.target.id); });
+root.addEventListener("ping", function (e) { heard.push("root:" + e.target.id); });
+inner.dispatchEvent(new CustomEvent("ping", { bubbles: true, composed: true }));
+log("composed:", heard.join(" "));
+heard = [];
+inner.dispatchEvent(new CustomEvent("ping", { bubbles: true }));
+log("not composed:", heard.join(" "));
+heard = [];
+document.getElementById("s1").addEventListener("ping", function (e) { heard.push("s1"); });
+root.getElementById("d").addEventListener("ping", function (e) { heard.push("slot:" + e.target.id); });
+document.getElementById("s1").dispatchEvent(new CustomEvent("ping", { bubbles: true }));
+log("through a slot:", heard.join(" "));
+var closed = document.createElement("div").attachShadow({ mode: "closed" });
+log("closed:", closed.host.shadowRoot, closed.mode);
+try { card.attachShadow({ mode: "open" }); } catch (e) { log("twice:", e.name); }
+try { document.createElement("img").attachShadow({ mode: "open" }); } catch (e) { log("img:", e.name); }
+log("innerHTML:", root.innerHTML.length > 100, card.innerHTML);
+</script></body></html>
