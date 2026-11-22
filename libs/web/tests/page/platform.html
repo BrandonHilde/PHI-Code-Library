@@ -68,6 +68,7 @@ Object.defineProperty(made, "url", {get: function () { return "http://test.examp
 fetch(made).then(function (r) { return r.text(); }).then(function (t) { log("made with:", t); });
 t("class names", function () { return [Object.prototype.toString.call(new Request("/")), Object.prototype.toString.call(new Headers()), Object.prototype.toString.call(new Response())].join(" "); });
 t("methods", function () { return [new Request("/", {method: "patch"}).method, new Request("/", {method: "delete"}).method].join(" "); });
+t("domain", function () { var refused = ""; try { document.domain = "example"; } catch (e) { refused = e.name; } document.domain = "TEST.example"; return [document.domain, refused].join(" "); });
 t("media", function () { var v = document.createElement("video"), a = new Audio(); v.volume = 0.5; return [v instanceof HTMLMediaElement, a instanceof HTMLMediaElement, v.paused, v.readyState, isNaN(v.duration), v.canPlayType("video/mp4"), v.volume, HTMLMediaElement.HAVE_ENOUGH_DATA, typeof a.load, v.buffered.length].join(" "); });
 document.createElement("audio").play().catch(function (e) { log("play:", e.name); });
 var y = new XMLHttpRequest();

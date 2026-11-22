@@ -1656,6 +1656,33 @@
     });
   }
 
+  // ---- document.domain ----
+  // its URL's host (none for a document with an opaque origin); setting it to the host or one of
+  // the domains above it is taken, as it was when that relaxed the same-origin rule, and else refused
+  if (global.Document && !Object.getOwnPropertyDescriptor(global.Document.prototype, "domain")) {
+    Object.defineProperty(global.Document.prototype, "domain", {
+      get: function () {
+        if (this._domain !== undefined) return this._domain;
+        try {
+          var u = new global.URL(this.URL);
+          return u.protocol === "http:" || u.protocol === "https:" || u.protocol === "file:" ? u.hostname : "";
+        } catch (e) { return ""; }
+      },
+      set: function (v) {
+        v = String(v).toLowerCase();
+        var now = this.domain;
+        if (now === "" || !(v === now || now.slice(-(v.length + 1)) === "." + v)) {
+          throw new DOMException("'" + v + "' is not a suffix of '" + now + "'.", "SecurityError");
+        }
+        if (v !== now && v.indexOf(".") < 0) {
+          throw new DOMException("'" + v + "' is a top-level domain.", "SecurityError");
+        }
+        hidden(this, "_domain", v);
+      },
+      enumerable: true, configurable: true
+    });
+  }
+
   // ---- XMLHttpRequest, made of fetch ----
   // Its states and events as the standard has them, its request headers and body, and its answer
   // as text, JSON, an ArrayBuffer, a Blob or a document. Not kept: waiting for the answer
