@@ -46,7 +46,7 @@ console[0]: xhr 200 {"answer": 7} 4
 console[0]: timing number 0 0
 console[0]: initCustomEvent old-way true false 7
 console[0]: initEvent plain false true
-console[0]: canvas context null
+console[0]: canvas context [object CanvasRenderingContext2D]
 console[0]: fetch 200 true
 console[0]: fetch 404 404 false
 console[0]: json 7
@@ -419,7 +419,7 @@ console[0]: xhr 200 {"answer": 7} 4
 console[0]: timing number 0 0
 console[0]: initCustomEvent old-way true false 7
 console[0]: initEvent plain false true
-console[0]: canvas context null
+console[0]: canvas context [object CanvasRenderingContext2D]
 console[0]: fetch 200 true
 console[0]: fetch 404 404 false
 console[0]: json 7

@@ -1,0 +1,1937 @@
+# <canvas> and its 2D context (CanvasRenderingContext2D), Path2D, CanvasGradient, CanvasPattern and
+# ImageData, drawn with vectorlib onto pixels the canvas keeps: 0xAARRGGBB, straight alpha, width by
+# height, transparent to start. A browser paints them where layout put the canvas:
+#
+#   ptr<PageCanvasCtx> c: (PageCanvas.Of: node);    # 0 if the page never drew on it
+#   if c is not 0  ...  c.pixels, c.w, c.h
+#
+# PageCanvas.changes goes up each time a script draws on one (or a canvas is cleared): when it's
+# changed, what's on the screen is out of date.
+#
+# Text and other documents' pictures come from the browser, through PageHost: canvas_text (a string's
+# outlines and size in a font), image_pixels (an <img>'s pixels) and encode_png (for toDataURL).
+#
+# A path made on the context is kept as the canvas's pixels see it: each point is placed by the
+# transform there when it's added, as the standard has it, so a later transform doesn't move it. A
+# Path2D keeps its own units, and is placed by the transform when it's drawn. An outline is drawn in
+# the units the transform makes (a scaled line is wider), so the context's path is taken back through
+# the transform to be outlined.
+#
+# Not done: shadows, filters, compositing other than source-over (globalCompositeOperation is kept,
+# but draws as source-over), a radial gradient's starting circle (its center is the focus), conic
+# gradients (drawn with their first color), and isPointInStroke (false).
+
+struct.PageCanvasState
+{
+	VgMatrix m;
+	f64 alpha;
+	u32 fill_color;
+	u32 stroke_color;
+	u64 fill_style;             # the string or the CanvasGradient or CanvasPattern, as set
+	u64 stroke_style;
+	f64 line_width;
+	int cap;
+	int join;
+	f64 miter;
+	f64 dash[32];
+	int dash_n;
+	f64 dash_offset;
+	u64 font;
+	int align;                  # 0 start, 1 end, 2 left, 3 right, 4 center
+	int baseline;               # 0 alphabetic, 1 top, 2 hanging, 3 middle, 4 ideographic, 5 bottom
+	bln smoothing;
+	u64 composite;
+	u64 shadow_color;
+	f64 shadow_blur;
+	f64 shadow_x;
+	f64 shadow_y;
+	# for restore: the clip as it was
+	int clip_x0;
+	int clip_y0;
+	int clip_x1;
+	int clip_y1;
+	ptr<u8> mask;
+}
+
+struct.PageCanvasCtx
+{
+	ptr<DomNode> node;
+	ptr<u32> pixels;
+	int w;
+	int h;
+	VgCanvas vc;
+	ptr<VgPath> path;           # the current path, in the canvas's pixels
+	ptr<VgPath> work;
+	PageCanvasState s;
+	ptr<PageCanvasState> saved;
+	int depth;
+	int room;
+}
+
+struct.PageGradient
+{
+	VgPaint paint;
+	bln conic;
+}
+
+struct.PagePattern
+{
+	ptr<u32> pixels;
+	int w;
+	int h;
+	bln repeat;
+}
+
+# an <img>'s pixels, from PageHost.image_pixels
+struct.PageBitmap
+{
+	ptr<u32> pixels;
+	int w;
+	int h;
+}
+
+phi.PageCanvas:Library
+{
+	ptr<JsClass> ctx_class: 0;
+	ptr<JsClass> path_class: 0;
+	ptr<JsClass> gradient_class: 0;
+	ptr<JsClass> pattern_class: 0;
+	ptr<JsObj> ctx_proto: 0;
+	ptr<JsObj> path_proto: 0;
+	ptr<JsObj> gradient_proto: 0;
+	ptr<JsObj> pattern_proto: 0;
+	ptr<JsObj> image_data_proto: 0;
+	ptr<JsObj> metrics_proto: 0;
+	u32 changes: 0;
+
+	# magics for the path methods, shared by the context and Path2D
+	const u32 P_MOVE: 0;
+	const u32 P_LINE: 1;
+	const u32 P_QUAD: 2;
+	const u32 P_CUBIC: 3;
+	const u32 P_ARC: 4;
+	const u32 P_ARC_TO: 5;
+	const u32 P_ELLIPSE: 6;
+	const u32 P_RECT: 7;
+	const u32 P_ROUND_RECT: 8;
+	const u32 P_CLOSE: 9;
+
+	[Install: ptr<JsObj> keep: 0;]
+		if ctx_class is 0
+			ctx_class is (JsObjs.NewClass: 'CanvasRenderingContext2D');
+			ctx_class.trace is addr TraceCtx;
+			ctx_class.finalize is addr FreeCtx;
+			path_class is (JsObjs.NewClass: 'Path2D');
+			path_class.finalize is addr FreePath2D;
+			gradient_class is (JsObjs.NewClass: 'CanvasGradient');
+			gradient_class.finalize is addr FreeData;
+			pattern_class is (JsObjs.NewClass: 'CanvasPattern');
+			pattern_class.finalize is addr FreePattern;
+		;;
+		ptr<JsObj> c: (PageBind.Class: 'CanvasRenderingContext2D' JsRt.P.object keep);
+		ctx_proto is c;
+		call PageBind.Getter: c 'canvas' addr CanvasGet 0 0;
+		call PageBind.Method: c 'save' addr Save 0 0;
+		call PageBind.Method: c 'restore' addr Restore 0 0;
+		call PageBind.Method: c 'reset' addr ResetFn 0 0;
+		call PageBind.Method: c 'scale' addr Transform 2 0;
+		call PageBind.Method: c 'rotate' addr Transform 1 1;
+		call PageBind.Method: c 'translate' addr Transform 2 2;
+		call PageBind.Method: c 'transform' addr Transform 6 3;
+		call PageBind.Method: c 'setTransform' addr Transform 0 4;
+		call PageBind.Method: c 'resetTransform' addr Transform 0 5;
+		call PageBind.Method: c 'getTransform' addr GetTransform 0 0;
+		call PageBind.Getter: c 'globalAlpha' addr NumGet addr NumSet 0;
+		call PageBind.Getter: c 'lineWidth' addr NumGet addr NumSet 1;
+		call PageBind.Getter: c 'miterLimit' addr NumGet addr NumSet 2;
+		call PageBind.Getter: c 'lineDashOffset' addr NumGet addr NumSet 3;
+		call PageBind.Getter: c 'shadowBlur' addr NumGet addr NumSet 4;
+		call PageBind.Getter: c 'shadowOffsetX' addr NumGet addr NumSet 5;
+		call PageBind.Getter: c 'shadowOffsetY' addr NumGet addr NumSet 6;
+		call PageBind.Getter: c 'fillStyle' addr StyleGet addr StyleSet 0;
+		call PageBind.Getter: c 'strokeStyle' addr StyleGet addr StyleSet 1;
+		call PageBind.Getter: c 'lineCap' addr WordGet addr WordSet 0;
+		call PageBind.Getter: c 'lineJoin' addr WordGet addr WordSet 1;
+		call PageBind.Getter: c 'textAlign' addr WordGet addr WordSet 2;
+		call PageBind.Getter: c 'textBaseline' addr WordGet addr WordSet 3;
+		call PageBind.Getter: c 'font' addr KeptGet addr KeptSet 0;
+		call PageBind.Getter: c 'globalCompositeOperation' addr KeptGet addr KeptSet 1;
+		call PageBind.Getter: c 'shadowColor' addr KeptGet addr KeptSet 2;
+		call PageBind.Getter: c 'imageSmoothingEnabled' addr SmoothGet addr SmoothSet 0;
+		call PageBind.Method: c 'setLineDash' addr SetLineDash 1 0;
+		call PageBind.Method: c 'getLineDash' addr GetLineDash 0 0;
+		call PageBind.Method: c 'createLinearGradient' addr NewGradient 4 0;
+		call PageBind.Method: c 'createRadialGradient' addr NewGradient 6 1;
+		call PageBind.Method: c 'createConicGradient' addr NewGradient 3 2;
+		call PageBind.Method: c 'createPattern' addr NewPattern 2 0;
+		call PageBind.Method: c 'clearRect' addr Rects 4 0;
+		call PageBind.Method: c 'fillRect' addr Rects 4 1;
+		call PageBind.Method: c 'strokeRect' addr Rects 4 2;
+		call PageBind.Method: c 'beginPath' addr BeginPath 0 0;
+		call PageBind.Method: c 'fill' addr Draw 0 0;
+		call PageBind.Method: c 'stroke' addr Draw 0 1;
+		call PageBind.Method: c 'clip' addr Draw 0 2;
+		call PageBind.Method: c 'isPointInPath' addr PointIn 2 0;
+		call PageBind.Method: c 'isPointInStroke' addr PointIn 2 1;
+		call PageBind.Method: c 'fillText' addr Text 3 0;
+		call PageBind.Method: c 'strokeText' addr Text 3 1;
+		call PageBind.Method: c 'measureText' addr MeasureText 1 0;
+		call PageBind.Method: c 'drawImage' addr DrawImage 3 0;
+		call PageBind.Method: c 'createImageData' addr CreateImageData 2 0;
+		call PageBind.Method: c 'getImageData' addr GetImageData 4 0;
+		call PageBind.Method: c 'putImageData' addr PutImageData 3 0;
+		call PathMethods: c;
+
+		ptr<JsObj> pp: (JsObjs.NewWithProto: JsRt.P.object);
+		path_proto is pp;
+		call JsObjs.ArrayPush: keep (JsV.Obj: pp);
+		call Js.DefineClass: 'Path2D' addr NewPath2D 0 pp;
+		call PathMethods: pp;
+		call PageBind.Method: pp 'addPath' addr AddPath 1 0;
+
+		gradient_proto is (PageBind.Class: 'CanvasGradient' JsRt.P.object keep);
+		call PageBind.Method: gradient_proto 'addColorStop' addr AddColorStop 2 0;
+		pattern_proto is (PageBind.Class: 'CanvasPattern' JsRt.P.object keep);
+		call PageBind.Method: pattern_proto 'setTransform' addr Nothing 0 0;
+		metrics_proto is (PageBind.Class: 'TextMetrics' JsRt.P.object keep);
+
+		ptr<JsObj> ip: (JsObjs.NewWithProto: JsRt.P.object);
+		image_data_proto is ip;
+		call JsObjs.ArrayPush: keep (JsV.Obj: ip);
+		call Js.DefineClass: 'ImageData' addr NewImageData 2 ip;
+	[end]
+
+	[PathMethods: ptr<JsObj> p: 0;]
+		call PageBind.Method: p 'moveTo' addr PathFn 2 P_MOVE;
+		call PageBind.Method: p 'lineTo' addr PathFn 2 P_LINE;
+		call PageBind.Method: p 'quadraticCurveTo' addr PathFn 4 P_QUAD;
+		call PageBind.Method: p 'bezierCurveTo' addr PathFn 6 P_CUBIC;
+		call PageBind.Method: p 'arc' addr PathFn 5 P_ARC;
+		call PageBind.Method: p 'arcTo' addr PathFn 5 P_ARC_TO;
+		call PageBind.Method: p 'ellipse' addr PathFn 7 P_ELLIPSE;
+		call PageBind.Method: p 'rect' addr PathFn 4 P_RECT;
+		call PageBind.Method: p 'roundRect' addr PathFn 4 P_ROUND_RECT;
+		call PageBind.Method: p 'closePath' addr PathFn 0 P_CLOSE;
+	[end]
+
+	[Nothing: ptr<u64> args: 0; int argc: 0;]
+	[end: JsV.UNDEF]
+
+	# ---- the canvas element ----
+
+	[IsCanvas: ptr<DomNode> n: 0;]
+		if n is 0 or n.type is not DomType.ELEMENT or n.ns is not DomNs.HTML return false;
+	[end: n.tag is (WlAtoms.GetZ: 'canvas')]
+
+	# its size, as its attributes say (300 by 150 without them)
+	[Size: ptr<DomNode> n: 0; ptr<u8> name: 0; int otherwise: 0;]
+		ptr<DomAttr> a: (Dom.Attr: n (WlAtoms.GetZ: name));
+		if a is 0 return otherwise;
+		u32 i: 0;
+		while i < a.value_len and (a.value:i is 32 or a.value:i is 9 or a.value:i is 10 or a.value:i is 12 or a.value:i is 13)
+			i++;
+		;;
+		if i >= a.value_len or a.value:i < '0' or a.value:i > '9' return otherwise;
+		int v: 0;
+		while i < a.value_len and a.value:i >= '0' and a.value:i <= '9'
+			v is v * 10 + (a.value:i - '0');
+			if v > 16384 return otherwise;
+			i++;
+		;;
+	[end: v]
+
+	# the context a canvas has, or 0
+	[Of: ptr<DomNode> n: 0;]
+		if not (IsCanvas: n) or n.js_wrapper is 0 return 0 as ptr<PageCanvasCtx>;
+		ptr<JsProp> p: (JsObjs.Find: (JsV.AsObj: n.js_wrapper) (JsStrs.InternZ: '%context2d') as ptr<u8>);
+		if p is 0 return 0 as ptr<PageCanvasCtx>;
+		ptr<PageCanvasCtx> c: (JsV.AsObj: p.value).data as ptr<PageCanvasCtx>;
+		call Fit: c;
+	[end: c]
+
+	# element.getContext('2d'): the one it has, made the first time
+	[GetContext: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (PageBind.ThisElement: args);
+		if not (IsCanvas: n) return JsV.NULL;
+		ptr<JsStr> kind: (JsStrs.Flat: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		if not (WlText.Eq: kind.data kind.bytes '2d' 2) return JsV.NULL;
+		ptr<JsObj> w: (JsV.AsObj: (PageBind.Wrap: n));
+		ptr<JsStr> key: (JsStrs.InternZ: '%context2d');
+		ptr<JsProp> found: (JsObjs.Find: w key as ptr<u8>);
+		if found is not 0 return found.value;
+		ptr<PageCanvasCtx> c: new PageCanvasCtx;
+		if c is 0
+			throw 'outline of memory';
+		;;
+		call Mem.Fill: c as ptr<u8> 0 sizeof PageCanvasCtx;
+		c.node is n;
+		c.path is (Vg.NewPath);
+		c.work is (Vg.NewPath);
+		if c.path is 0 or c.work is 0
+			throw 'outline of memory';
+		;;
+		call Defaults: addr c.s;
+		ptr<JsObj> o: (JsObjs.NewHost: ctx_class ctx_proto c as ptr<u8>);
+		call JsObjs.DefineValue: w key as ptr<u8> (JsV.Obj: o) 0;
+		call Fit: c;
+	[end: (JsV.Obj: o)]
+
+	# when the canvas's width or height is set: its pixels go back to transparent, and its context to
+	# how it started
+	[Resized: ptr<DomNode> n: 0;]
+		ptr<PageCanvasCtx> c: (Of: n);
+		if c is 0 return;
+		call Clear: c;
+		call Restart: c;
+	[end]
+
+	# the pixels made the canvas's size, if it's changed (all transparent then)
+	[Fit: ptr<PageCanvasCtx> c: 0;]
+		int w: (Size: c.node 'width' 300);
+		int h: (Size: c.node 'height' 150);
+		if c.pixels is not 0 and w is c.w and h is c.h return;
+		call c.vc.Done;
+		if c.pixels is not 0
+			free c.pixels;
+		;;
+		c.w is w;
+		c.h is h;
+		c.pixels is new u32[w * h + 1];
+		if c.pixels is 0
+			throw 'outline of memory';
+		;;
+		call Mem.Fill: c.pixels as ptr<u8> 0 (w * h + 1) * 4;
+		call Restart: c;
+	[end]
+
+	[Restart: ptr<PageCanvasCtx> c: 0;]
+		call c.vc.Start: c.pixels c.w c.h c.w;
+		while c.depth > 0
+			c.depth--;
+			ptr<PageCanvasState> st: c.saved + c.depth * sizeof PageCanvasState;
+			if st.mask is not 0
+				free st.mask;
+			;;
+		;;
+		call Defaults: addr c.s;
+		call c.path.Clear;
+	[end]
+
+	[Clear: ptr<PageCanvasCtx> c: 0;]
+		call Mem.Fill: c.pixels as ptr<u8> 0 c.w * c.h * 4;
+		changes++;
+	[end]
+
+	[Defaults: ptr<PageCanvasState> s: 0;]
+		call Mem.Fill: s as ptr<u8> 0 sizeof PageCanvasState;
+		call s.m.Identity;
+		s.alpha is 1.0;
+		s.fill_color is 0xFF000000;
+		s.stroke_color is 0xFF000000;
+		s.fill_style is (Js.NewStringZ: '#000000');
+		s.stroke_style is s.fill_style;
+		s.line_width is 1.0;
+		s.cap is Vg.BUTT;
+		s.join is Vg.MITER;
+		s.miter is 10.0;
+		s.font is (Js.NewStringZ: '10px sans-serif');
+		s.composite is (Js.NewStringZ: 'source-over');
+		s.shadow_color is (Js.NewStringZ: 'rgba(0, 0, 0, 0)');
+		s.smoothing is true;
+		s.clip_x1 is 0x7FFFFFFF;
+		s.clip_y1 is 0x7FFFFFFF;
+	[end]
+
+	[TraceState: ptr<PageCanvasState> s: 0;]
+		call Js.Mark: s.fill_style;
+		call Js.Mark: s.stroke_style;
+		call Js.Mark: s.font;
+		call Js.Mark: s.composite;
+		call Js.Mark: s.shadow_color;
+	[end]
+
+	[TraceCtx: ptr<JsObj> o: 0;]
+		ptr<PageCanvasCtx> c: o.data as ptr<PageCanvasCtx>;
+		call TraceState: addr c.s;
+		while int i: 0; i < c.depth; i++;
+			call TraceState: c.saved + i * sizeof PageCanvasState;
+		;;
+	[end]
+
+	[FreeCtx: ptr<JsObj> o: 0;]
+		ptr<PageCanvasCtx> c: o.data as ptr<PageCanvasCtx>;
+		while c.depth > 0
+			c.depth--;
+			ptr<PageCanvasState> st: c.saved + c.depth * sizeof PageCanvasState;
+			if st.mask is not 0
+				free st.mask;
+			;;
+		;;
+		if c.saved is not 0
+			free c.saved;
+		;;
+		call c.vc.Done;
+		if c.pixels is not 0
+			free c.pixels;
+		;;
+		call Vg.FreePath: c.path;
+		call Vg.FreePath: c.work;
+		free c;
+	[end]
+
+	[FreeData: ptr<JsObj> o: 0;]
+		free o.data;
+	[end]
+
+	[FreePath2D: ptr<JsObj> o: 0;]
+		call Vg.FreePath: o.data as ptr<VgPath>;
+	[end]
+
+	[FreePattern: ptr<JsObj> o: 0;]
+		ptr<PagePattern> p: o.data as ptr<PagePattern>;
+		if p.pixels is not 0
+			free p.pixels;
+		;;
+		free p;
+	[end]
+
+	[ThisCtx: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsObj: t)
+			ptr<JsObj> o: (JsV.AsObj: t);
+			if o.cls is ctx_class
+				ptr<PageCanvasCtx> c: o.data as ptr<PageCanvasCtx>;
+				call Fit: c;
+				return c;
+			;;
+		;;
+		call JsErr.Type: 'Illegal invocation: this is not a CanvasRenderingContext2D';
+	[end: 0 as ptr<PageCanvasCtx>]
+
+	[CanvasGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+	[end: (PageBind.Wrap: c.node)]
+
+	# ---- arguments ----
+
+	[Num: ptr<u64> args: 0; int argc: 0; int i: 0;]
+	[end: (JsOps.ToNumber: (Js.Arg: args argc i))]
+
+	[Finite: f64 x: 0.0;]
+	[end: x is x and x - x is 0.0]
+
+	# the first n arguments as numbers target target: false if one isn't finite (then nothing is done)
+	[Nums: ptr<u64> args: 0; int argc: 0; int n: 0; ptr<f64> target: 0;]
+		bln ok: true;
+		while int i: 0; i < n; i++;
+			target:i is (Num: args argc i);
+			if not (Finite: target:i)
+				ok is false;
+			;;
+		;;
+	[end: ok]
+
+	[Is: ptr<JsStr> s: 0; ptr<u8> word: 0;]
+	[end: (WlText.EqZ: s.data s.bytes word)]
+
+	[Str: u64 v: 0;]
+	[end: (JsStrs.Flat: (JsOps.ToStr: v))]
+
+	# ---- state ----
+
+	[Save: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		if c.depth >= c.room
+			int room: c.room * 2 + 8;
+			ptr<PageCanvasState> grown: new PageCanvasState[room];
+			if grown is 0
+				throw 'outline of memory';
+			;;
+			if c.saved is not 0
+				call Mem.Copy: grown as ptr<u8> c.saved as ptr<u8> c.depth * sizeof PageCanvasState;
+				free c.saved;
+			;;
+			c.saved is grown;
+			c.room is room;
+		;;
+		ptr<PageCanvasState> st: c.saved + c.depth * sizeof PageCanvasState;
+		call Mem.Copy: st as ptr<u8> addr c.s as ptr<u8> sizeof PageCanvasState;
+		st.clip_x0 is c.vc.clip_x0;
+		st.clip_y0 is c.vc.clip_y0;
+		st.clip_x1 is c.vc.clip_x1;
+		st.clip_y1 is c.vc.clip_y1;
+		st.mask is 0;
+		if c.vc.mask is not 0
+			st.mask is new u8[c.w * c.h];
+			if st.mask is 0
+				throw 'outline of memory';
+			;;
+			call Mem.Copy: st.mask c.vc.mask c.w * c.h;
+		;;
+		c.depth++;
+	[end: JsV.UNDEF]
+
+	[Restore: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		if c.depth is 0 return JsV.UNDEF;
+		c.depth--;
+		ptr<PageCanvasState> st: c.saved + c.depth * sizeof PageCanvasState;
+		call Mem.Copy: addr c.s as ptr<u8> st as ptr<u8> sizeof PageCanvasState;
+		call c.vc.NoClip;
+		c.vc.clip_x0 is st.clip_x0;
+		c.vc.clip_y0 is st.clip_y0;
+		c.vc.clip_x1 is st.clip_x1;
+		c.vc.clip_y1 is st.clip_y1;
+		c.vc.mask is st.mask;
+		c.s.mask is 0;
+	[end: JsV.UNDEF]
+
+	[ResetFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		call Clear: c;
+		call Restart: c;
+	[end: JsV.UNDEF]
+
+	# scale (0), rotate (1), translate (2), transform (3), setTransform (4), resetTransform (5)
+	[Transform: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		f64 v[6];
+		when self.magic
+			is 0
+				if not (Nums: args argc 2 addr v:0) return JsV.UNDEF;
+				call c.s.m.Scale: v:0 v:1;
+			;;
+			is 1
+				if not (Nums: args argc 1 addr v:0) return JsV.UNDEF;
+				call c.s.m.Rotate: v:0;
+			;;
+			is 2
+				if not (Nums: args argc 2 addr v:0) return JsV.UNDEF;
+				call c.s.m.Translate: v:0 v:1;
+			;;
+			is 3
+				if not (Nums: args argc 6 addr v:0) return JsV.UNDEF;
+				call c.s.m.Then: v:0 v:1 v:2 v:3 v:4 v:5;
+			;;
+			is 4
+				if argc >= 6
+					if not (Nums: args argc 6 addr v:0) return JsV.UNDEF;
+					call c.s.m.Set: v:0 v:1 v:2 v:3 v:4 v:5;
+				;;
+				elif argc >= 1 and (JsV.IsObj: args:0)
+					call MatrixFrom: args:0 addr c.s.m;
+				;;
+				else
+					call c.s.m.Identity;
+				;;
+			;;
+			else
+				call c.s.m.Identity;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	# a DOMMatrix2DInit's a to f (m11 and the rest when those aren't there)
+	[MatrixFrom: u64 o: 0; ptr<VgMatrix> m: 0;]
+		f64 a: (Field: o 'a' 'm11' 1.0);
+		f64 b: (Field: o 'b' 'm12' 0.0);
+		f64 cc: (Field: o 'c' 'm21' 0.0);
+		f64 d: (Field: o 'd' 'm22' 1.0);
+		f64 e: (Field: o 'e' 'm41' 0.0);
+		f64 f: (Field: o 'f' 'm42' 0.0);
+		call m.Set: a b cc d e f;
+	[end]
+
+	[Field: u64 o: 0; ptr<u8> name: 0; ptr<u8> other: 0; f64 otherwise: 0.0;]
+		u64 v: (JsObjs.GetV: o (JsObjs.KeyZ: name));
+		if v is JsV.UNDEF
+			v is (JsObjs.GetV: o (JsObjs.KeyZ: other));
+		;;
+		if v is JsV.UNDEF return otherwise;
+	[end: (JsOps.ToNumber: v)]
+
+	[GetTransform: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		ptr<JsObj> o: (JsObjs.NewObject);
+		ptr<VgMatrix> m: addr c.s.m;
+		call Js.Define: o 'a' (JsV.Num: m.a) JsObjs.WEC;
+		call Js.Define: o 'b' (JsV.Num: m.b) JsObjs.WEC;
+		call Js.Define: o 'c' (JsV.Num: m.c) JsObjs.WEC;
+		call Js.Define: o 'd' (JsV.Num: m.d) JsObjs.WEC;
+		call Js.Define: o 'e' (JsV.Num: m.e) JsObjs.WEC;
+		call Js.Define: o 'f' (JsV.Num: m.f) JsObjs.WEC;
+		call Js.Define: o 'm11' (JsV.Num: m.a) JsObjs.WEC;
+		call Js.Define: o 'm12' (JsV.Num: m.b) JsObjs.WEC;
+		call Js.Define: o 'm21' (JsV.Num: m.c) JsObjs.WEC;
+		call Js.Define: o 'm22' (JsV.Num: m.d) JsObjs.WEC;
+		call Js.Define: o 'm41' (JsV.Num: m.e) JsObjs.WEC;
+		call Js.Define: o 'm42' (JsV.Num: m.f) JsObjs.WEC;
+		call Js.Define: o 'is2D' JsV.TRUE JsObjs.WEC;
+	[end: (JsV.Obj: o)]
+
+	# globalAlpha (0), lineWidth, miterLimit, lineDashOffset, shadowBlur, shadowOffsetX, shadowOffsetY
+	[NumGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		f64 v: 0.0;
+		when self.magic
+			is 0
+				v is c.s.alpha;
+			;;
+			is 1
+				v is c.s.line_width;
+			;;
+			is 2
+				v is c.s.miter;
+			;;
+			is 3
+				v is c.s.dash_offset;
+			;;
+			is 4
+				v is c.s.shadow_blur;
+			;;
+			is 5
+				v is c.s.shadow_x;
+			;;
+			is 6
+				v is c.s.shadow_y;
+			;;
+		;;
+	[end: (JsV.Num: v)]
+
+	[NumSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		f64 v: (Num: args argc 0);
+		if not (Finite: v) return JsV.UNDEF;
+		when self.magic
+			is 0
+				if v >= 0.0 and v <= 1.0
+					c.s.alpha is v;
+				;;
+			;;
+			is 1
+				if v > 0.0
+					c.s.line_width is v;
+				;;
+			;;
+			is 2
+				if v > 0.0
+					c.s.miter is v;
+				;;
+			;;
+			is 3
+				c.s.dash_offset is v;
+			;;
+			is 4
+				if v >= 0.0
+					c.s.shadow_blur is v;
+				;;
+			;;
+			is 5
+				c.s.shadow_x is v;
+			;;
+			is 6
+				c.s.shadow_y is v;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	# fillStyle (0) and strokeStyle (1): a color's string, as the standard writes it, or the object
+	[StyleGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		if self.magic is 1 return c.s.stroke_style;
+	[end: c.s.fill_style]
+
+	[StyleSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		u64 v: (Js.Arg: args argc 0);
+		u64 kept: v;
+		u32 color: 0;
+		if (JsV.IsObj: v)
+			ptr<JsObj> o: (JsV.AsObj: v);
+			if o.cls is not gradient_class and o.cls is not pattern_class return JsV.UNDEF;
+		;;
+		else
+			ptr<JsStr> s: (Str: v);
+			if not (Css.ParseColor: s.data s.bytes) return JsV.UNDEF;
+			u32 rgba: Css.color_value;
+			color is ((rgba & 255) << 24) | (rgba >> 8);
+			kept is (Serialized: rgba);
+		;;
+		if self.magic is 1
+			c.s.stroke_style is kept;
+			c.s.stroke_color is color;
+		;;
+		else
+			c.s.fill_style is kept;
+			c.s.fill_color is color;
+		;;
+	[end: JsV.UNDEF]
+
+	# a canvas's way: #rrggbb when it's opaque, rgba(r, g, b, a) when not
+	[Serialized: u32 rgba: 0;]
+		WlBuf b;
+		if (rgba & 255) is 255
+			ptr<u8> hex: '0123456789abcdef';
+			call b.Add: '#';
+			while int k: 3; k > 0; k--;
+				u32 byte: (rgba >> (k * 8)) & 255;
+				call b.Add: hex:(byte >> 4);
+				call b.Add: hex:(byte & 15);
+			;;
+		;;
+		else
+			call CssSer.Color: rgba addr b;
+		;;
+		u64 v: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: v]
+
+	# lineCap (0), lineJoin (1), textAlign (2), textBaseline (3)
+	[WordGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		ptr<u8> w: 'butt';
+		when self.magic
+			is 0
+				if c.s.cap is Vg.ROUND
+					w is 'round';
+				;;
+				elif c.s.cap is Vg.SQUARE
+					w is 'square';
+				;;
+			;;
+			is 1
+				w is 'miter';
+				if c.s.join is Vg.ROUND
+					w is 'round';
+				;;
+				elif c.s.join is Vg.BEVEL
+					w is 'bevel';
+				;;
+			;;
+			is 2
+				w is (Pick: 'start end left right center' c.s.align);
+			;;
+			is 3
+				w is (Pick: 'alphabetic top hanging middle ideographic bottom' c.s.baseline);
+			;;
+		;;
+	[end: (Js.NewStringZ: w)]
+
+	# the i'th of the words, as a string of its own
+	ptr<u8> picked: 0;
+	u8 pick_buf[32];
+
+	[Pick: ptr<u8> words: 0; int i: 0;]
+		u32 at_: 0;
+		int k: 0;
+		while k < i
+			while words:at_ is not 32
+				at_++;
+			;;
+			at_++;
+			k++;
+		;;
+		u32 n: 0;
+		while words:(at_ + n) is not 0 and words:(at_ + n) is not 32 and n < 31
+			pick_buf:n is words:(at_ + n);
+			n++;
+		;;
+		pick_buf:n is 0;
+	[end: addr pick_buf:0]
+
+	# which of the words it is, or -1
+	[Which: ptr<JsStr> s: 0; ptr<u8> words: 0;]
+		u32 at_: 0;
+		int k: 0;
+		while words:at_ is not 0
+			u32 n: 0;
+			while words:(at_ + n) is not 0 and words:(at_ + n) is not 32
+				n++;
+			;;
+			if n is s.bytes and (Mem.Equal: s.data words + at_ n) return k;
+			at_ is at_ + n;
+			if words:at_ is 32
+				at_++;
+			;;
+			k++;
+		;;
+	[end: -1]
+
+	[WordSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		ptr<JsStr> s: (Str: (Js.Arg: args argc 0));
+		when self.magic
+			is 0
+				int cap: (Which: s 'butt round square');
+				if cap is 0
+					c.s.cap is Vg.BUTT;
+				;;
+				elif cap is 1
+					c.s.cap is Vg.ROUND;
+				;;
+				elif cap is 2
+					c.s.cap is Vg.SQUARE;
+				;;
+			;;
+			is 1
+				int join: (Which: s 'miter round bevel');
+				if join is 0
+					c.s.join is Vg.MITER;
+				;;
+				elif join is 1
+					c.s.join is Vg.ROUND;
+				;;
+				elif join is 2
+					c.s.join is Vg.BEVEL;
+				;;
+			;;
+			is 2
+				int al: (Which: s 'start end left right center');
+				if al >= 0
+					c.s.align is al;
+				;;
+			;;
+			is 3
+				int bl: (Which: s 'alphabetic top hanging middle ideographic bottom');
+				if bl >= 0
+					c.s.baseline is bl;
+				;;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	# font (0), globalCompositeOperation (1), shadowColor (2): kept as they're set
+	[KeptGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		if self.magic is 1 return c.s.composite;
+		if self.magic is 2 return c.s.shadow_color;
+	[end: c.s.font]
+
+	[KeptSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		u64 v: (JsV.Str: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		when self.magic
+			is 0
+				c.s.font is v;
+			;;
+			is 1
+				ptr<JsStr> s: (JsStrs.Flat: (JsV.AsStr: v));
+				int op: (Which: s 'source-over source-in source-outline source-atop destination-over destination-in destination-outline destination-atop lighter copy xor multiply screen overlay darken lighten color-dodge color-burn hard-light soft-light difference exclusion hue saturation color luminosity');
+				if op >= 0
+					c.s.composite is v;
+				;;
+			;;
+			is 2
+				ptr<JsStr> sc: (JsStrs.Flat: (JsV.AsStr: v));
+				if (Css.ParseColor: sc.data sc.bytes)
+					c.s.shadow_color is (Serialized: Css.color_value);
+				;;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	[SmoothGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+	[end: (JsV.Bool: c.s.smoothing)]
+
+	[SmoothSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		c.s.smoothing is (JsOps.ToBool: (Js.Arg: args argc 0));
+	[end: JsV.UNDEF]
+
+	[SetLineDash: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		u64 list: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: list)
+			call JsErr.Type: 'setLineDash takes a list of numbers';
+		;;
+		ptr<JsObj> lo: (JsV.AsObj: list);
+		f64 len: (JsArrayBuiltins.LengthOf: lo);
+		f64 got[32];
+		int n: 0;
+		f64 k: 0.0;
+		while k < len and n < 32
+			f64 x: (JsOps.ToNumber: (JsObjs.Get: lo (JsArrayBuiltins.IndexKey: k) list));
+			if not (Finite: x) or x < 0.0 return JsV.UNDEF;
+			got:n is x;
+			n++;
+			k is k + 1.0;
+		;;
+		# an odd list is read twice
+		int total: n;
+		if (n & 1) is 1 and n * 2 <= 32
+			while int i: 0; i < n; i++;
+				got:(n + i) is got:i;
+			;;
+			total is n * 2;
+		;;
+		while int j: 0; j < total; j++;
+			c.s.dash:j is got:j;
+		;;
+		c.s.dash_n is total;
+	[end: JsV.UNDEF]
+
+	[GetLineDash: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		ptr<JsObj> a: (JsObjs.NewArray: c.s.dash_n as u32);
+		while int i: 0; i < c.s.dash_n; i++;
+			call JsObjs.ArrayPush: a (JsV.Num: c.s.dash:i);
+		;;
+	[end: (JsV.Obj: a)]
+
+	# ---- gradients and patterns ----
+
+	# createLinearGradient (0), createRadialGradient (1), createConicGradient (2)
+	[NewGradient: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		call ThisCtx: args;
+		f64 v[6];
+		int n: 4;
+		if self.magic is 1
+			n is 6;
+		;;
+		elif self.magic is 2
+			n is 3;
+		;;
+		if not (Nums: args argc n addr v:0)
+			call JsErr.Type: 'The gradient\\'s numbers must be finite';
+		;;
+		ptr<PageGradient> g: new PageGradient;
+		if g is 0
+			throw 'outline of memory';
+		;;
+		call Mem.Fill: g as ptr<u8> 0 sizeof PageGradient;
+		if self.magic is 0
+			call g.paint.Linear: v:0 v:1 v:2 v:3;
+		;;
+		elif self.magic is 1
+			if v:2 < 0.0 or v:5 < 0.0
+				free g;
+				call PageBind.DomError: 'IndexSizeError' 'A radius can\\'t be negative';
+			;;
+			call g.paint.Radial: v:3 v:4 v:5;
+			call g.paint.Focus: v:0 v:1;
+		;;
+		else
+			call g.paint.Linear: v:1 v:2 v:1 + 1.0 v:2;
+			g.conic is true;
+		;;
+	[end: (JsV.Obj: (JsObjs.NewHost: gradient_class gradient_proto g as ptr<u8>))]
+
+	[AddColorStop: ptr<u64> args: 0; int argc: 0;]
+		u64 t: args:(-1);
+		if not (JsV.IsObj: t) or (JsV.AsObj: t).cls is not gradient_class
+			call JsErr.Type: 'Illegal invocation';
+		;;
+		ptr<PageGradient> g: (JsV.AsObj: t).data as ptr<PageGradient>;
+		f64 at_: (Num: args argc 0);
+		if not (Finite: at_)
+			call JsErr.Type: 'The offset must be finite';
+		;;
+		if at_ < 0.0 or at_ > 1.0
+			call PageBind.DomError: 'IndexSizeError' 'The offset must be from 0 to 1';
+		;;
+		ptr<JsStr> s: (Str: (Js.Arg: args argc 1));
+		if not (Css.ParseColor: s.data s.bytes)
+			call PageBind.DomError: 'SyntaxError' 'That isn\\'t a color';
+		;;
+		u32 rgba: Css.color_value;
+		if g.paint.stops < 16
+			call g.paint.Stop: at_ ((rgba & 255) << 24) | (rgba >> 8);
+		;;
+	[end: JsV.UNDEF]
+
+	[NewPattern: ptr<u64> args: 0; int argc: 0;]
+		call ThisCtx: args;
+		PageBitmap pic;
+		if not (PictureOf: (Js.Arg: args argc 0) addr pic) return JsV.NULL;
+		ptr<JsStr> rep: (Str: (Js.Arg: args argc 1));
+		int how: (Which: rep 'repeat repeat-x repeat-y no-repeat');
+		if (Js.Arg: args argc 1) is JsV.NULL or rep.bytes is 0
+			how is 0;
+		;;
+		if how < 0
+			call PageBind.DomError: 'SyntaxError' 'That isn\\'t a way to repeat';
+		;;
+		ptr<PagePattern> p: new PagePattern;
+		if p is 0
+			throw 'outline of memory';
+		;;
+		p.w is pic.w;
+		p.h is pic.h;
+		p.repeat is (how is not 3);
+		p.pixels is new u32[pic.w * pic.h + 1];
+		if p.pixels is 0
+			throw 'outline of memory';
+		;;
+		call Mem.Copy: p.pixels as ptr<u8> pic.pixels as ptr<u8> pic.w * pic.h * 4;
+	[end: (JsV.Obj: (JsObjs.NewHost: pattern_class pattern_proto p as ptr<u8>))]
+
+	# what fills (stroke false) or outlines a shape now, placed by m (the transform from its units)
+	[PaintOf: ptr<PageCanvasCtx> c: 0; bln stroke: false; ptr<VgPaint> paint: 0; VgMatrix m;]
+		u64 style: c.s.fill_style;
+		u32 color: c.s.fill_color;
+		if stroke
+			style is c.s.stroke_style;
+			color is c.s.stroke_color;
+		;;
+		if (JsV.IsObj: style)
+			ptr<JsObj> o: (JsV.AsObj: style);
+			if o.cls is gradient_class
+				ptr<PageGradient> g: o.data as ptr<PageGradient>;
+				call Mem.Copy: paint as ptr<u8> addr g.paint as ptr<u8> sizeof VgPaint;
+				if g.conic
+					u32 first: 0;
+					if g.paint.stops > 0
+						first is g.paint.colors:0;
+					;;
+					call paint.Solid: first;
+				;;
+				call paint.m.Copy: m;
+				return;
+			;;
+			ptr<PagePattern> pt: o.data as ptr<PagePattern>;
+			call paint.Image: pt.pixels pt.w pt.h pt.w;
+			paint.spread is Vg.REPEAT;
+			if not pt.repeat
+				paint.spread is Vg.NONE;
+			;;
+			paint.smooth is c.s.smoothing;
+			call paint.m.Copy: m;
+			return;
+		;;
+		call paint.Solid: color;
+	[end]
+
+	# ---- paths ----
+
+	[NewPath2D: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'Path2D requires new';
+		;;
+		ptr<VgPath> p: (Vg.NewPath);
+		if p is 0
+			throw 'outline of memory';
+		;;
+		u64 from: (Js.Arg: args argc 0);
+		if (JsV.IsObj: from) and (JsV.AsObj: from).cls is path_class
+			call p.Append: (JsV.AsObj: from).data as ptr<VgPath>;
+		;;
+		elif from is not JsV.UNDEF
+			ptr<JsStr> d: (Str: from);
+			ptr<u8> z: (WlText.Dup: d.data d.bytes);
+			call p.Svg: z;
+			free z;
+		;;
+		ptr<JsObj> o: (JsObjs.NewHost: path_class (JsOps.ProtoFromCtor: nt path_proto) p as ptr<u8>);
+	[end: (JsV.Obj: o)]
+
+	[AddPath: ptr<u64> args: 0; int argc: 0;]
+		ptr<VgPath> p: (ThisPath2D: args);
+		u64 other: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: other) or (JsV.AsObj: other).cls is not path_class
+			call JsErr.Type: 'addPath takes a Path2D';
+		;;
+		VgMatrix m;
+		call m.Identity;
+		if (JsV.IsObj: (Js.Arg: args argc 1))
+			call MatrixFrom: args:1 addr m;
+		;;
+		call Mapped: p (JsV.AsObj: other).data as ptr<VgPath> m false;
+	[end: JsV.UNDEF]
+
+	[ThisPath2D: ptr<u64> args: 0;]
+		u64 t: args:(-1);
+		if (JsV.IsObj: t) and (JsV.AsObj: t).cls is path_class
+			return (JsV.AsObj: t).data as ptr<VgPath>;
+		;;
+		call JsErr.Type: 'Illegal invocation: this is not a Path2D';
+	[end: 0 as ptr<VgPath>]
+
+	# src's steps onto p, each point placed by m; with join, its first move is a line if p has a part going
+	[Mapped: ptr<VgPath> p: 0; ptr<VgPath> src: 0; VgMatrix m; bln join: false;]
+		ptr<f64> d: src.data;
+		int i: 0;
+		bln first: true;
+		while i < src.used
+			int kind: d:i as int;
+			when kind
+				is Vg.MOVE
+					f64 mx: (m.X: d:(i + 1) d:(i + 2));
+					f64 my: (m.Y: d:(i + 1) d:(i + 2));
+					if first and join and p.begun
+						call p.LineTo: mx my;
+					;;
+					else
+						call p.MoveTo: mx my;
+					;;
+					i++ 3;
+				;;
+				is Vg.LINE
+					call p.LineTo: (m.X: d:(i + 1) d:(i + 2)) (m.Y: d:(i + 1) d:(i + 2));
+					i++ 3;
+				;;
+				is Vg.QUAD
+					call p.QuadTo: (m.X: d:(i + 1) d:(i + 2)) (m.Y: d:(i + 1) d:(i + 2)) (m.X: d:(i + 3) d:(i + 4)) (m.Y: d:(i + 3) d:(i + 4));
+					i++ 5;
+				;;
+				is Vg.CUBIC
+					call p.CubicTo: (m.X: d:(i + 1) d:(i + 2)) (m.Y: d:(i + 1) d:(i + 2)) (m.X: d:(i + 3) d:(i + 4)) (m.Y: d:(i + 3) d:(i + 4)) (m.X: d:(i + 5) d:(i + 6)) (m.Y: d:(i + 5) d:(i + 6));
+					i++ 7;
+				;;
+				else
+					call p.Close;
+					i++;
+				;;
+			;;
+			first is false;
+		;;
+	[end]
+
+	# the path a method works on (the context's, or a Path2D) and the transform its points go through
+	[PathFn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u64 t: args:(-1);
+		ptr<VgPath> p: 0;
+		VgMatrix m;
+		call m.Identity;
+		ptr<PageCanvasCtx> c: 0;
+		if (JsV.IsObj: t) and (JsV.AsObj: t).cls is path_class
+			p is (JsV.AsObj: t).data as ptr<VgPath>;
+		;;
+		else
+			c is (ThisCtx: args);
+			p is c.path;
+			call m.Copy: c.s.m;
+		;;
+		ptr<VgPath> work: (Vg.NewPath);
+		if work is 0
+			throw 'outline of memory';
+		;;
+		call Steps: p work m self.magic args argc;
+		call Vg.FreePath: work;
+	[end: JsV.UNDEF]
+
+	[Steps: ptr<VgPath> p: 0; ptr<VgPath> work: 0; VgMatrix m; u32 kind: 0; ptr<u64> args: 0; int argc: 0;]
+		f64 v[8];
+		when kind
+			is P_CLOSE
+				call p.Close;
+				return;
+			;;
+			is P_MOVE
+				if not (Nums: args argc 2 addr v:0) return;
+				call p.MoveTo: (m.X: v:0 v:1) (m.Y: v:0 v:1);
+			;;
+			is P_LINE
+				if not (Nums: args argc 2 addr v:0) return;
+				if not p.begun
+					call p.MoveTo: (m.X: v:0 v:1) (m.Y: v:0 v:1);
+				;;
+				else
+					call p.LineTo: (m.X: v:0 v:1) (m.Y: v:0 v:1);
+				;;
+			;;
+			is P_QUAD
+				if not (Nums: args argc 4 addr v:0) return;
+				if not p.begun
+					call p.MoveTo: (m.X: v:0 v:1) (m.Y: v:0 v:1);
+				;;
+				call p.QuadTo: (m.X: v:0 v:1) (m.Y: v:0 v:1) (m.X: v:2 v:3) (m.Y: v:2 v:3);
+			;;
+			is P_CUBIC
+				if not (Nums: args argc 6 addr v:0) return;
+				if not p.begun
+					call p.MoveTo: (m.X: v:0 v:1) (m.Y: v:0 v:1);
+				;;
+				call p.CubicTo: (m.X: v:0 v:1) (m.Y: v:0 v:1) (m.X: v:2 v:3) (m.Y: v:2 v:3) (m.X: v:4 v:5) (m.Y: v:4 v:5);
+			;;
+			is P_RECT
+				if not (Nums: args argc 4 addr v:0) return;
+				call p.MoveTo: (m.X: v:0 v:1) (m.Y: v:0 v:1);
+				call p.LineTo: (m.X: v:0 + v:2 v:1) (m.Y: v:0 + v:2 v:1);
+				call p.LineTo: (m.X: v:0 + v:2 v:1 + v:3) (m.Y: v:0 + v:2 v:1 + v:3);
+				call p.LineTo: (m.X: v:0 v:1 + v:3) (m.Y: v:0 v:1 + v:3);
+				call p.Close;
+				call p.MoveTo: (m.X: v:0 v:1) (m.Y: v:0 v:1);
+			;;
+			is P_ROUND_RECT
+				if not (Nums: args argc 4 addr v:0) return;
+				f64 r: 0.0;
+				u64 radii: (Js.Arg: args argc 4);
+				if (JsV.IsObj: radii)
+					f64 first: (JsOps.ToNumber: (JsObjs.Get: (JsV.AsObj: radii) JsV.INT_BASE radii));
+					if (Finite: first)
+						r is first;
+					;;
+				;;
+				elif radii is not JsV.UNDEF
+					r is (JsOps.ToNumber: radii);
+				;;
+				if not (Finite: r)
+					return;
+				;;
+				if r < 0.0
+					call JsErr.Range: 'A radius can\\'t be negative';
+				;;
+				f64 x: v:0;
+				f64 y: v:1;
+				f64 w: v:2;
+				f64 h: v:3;
+				if w < 0.0
+					x is x + w;
+					w is 0.0 - w;
+				;;
+				if h < 0.0
+					y is y + h;
+					h is 0.0 - h;
+				;;
+				call work.Clear;
+				call work.RoundRect: x y w h r r;
+				call Mapped: p work m false;
+				call p.MoveTo: (m.X: v:0 v:1) (m.Y: v:0 v:1);
+			;;
+			is P_ARC
+				if not (Nums: args argc 5 addr v:0) return;
+				if v:2 < 0.0
+					call PageBind.DomError: 'IndexSizeError' 'The radius can\\'t be negative';
+				;;
+				call work.Clear;
+				call ArcSteps: work v:0 v:1 v:2 v:2 0.0 v:3 v:4 (JsOps.ToBool: (Js.Arg: args argc 5));
+				call Mapped: p work m true;
+			;;
+			is P_ELLIPSE
+				if not (Nums: args argc 7 addr v:0) return;
+				if v:2 < 0.0 or v:3 < 0.0
+					call PageBind.DomError: 'IndexSizeError' 'A radius can\\'t be negative';
+				;;
+				call work.Clear;
+				call ArcSteps: work v:0 v:1 v:2 v:3 v:4 v:5 v:6 (JsOps.ToBool: (Js.Arg: args argc 7));
+				call Mapped: p work m true;
+			;;
+			is P_ARC_TO
+				if not (Nums: args argc 5 addr v:0) return;
+				if v:4 < 0.0
+					call PageBind.DomError: 'IndexSizeError' 'The radius can\\'t be negative';
+				;;
+				call ArcTo: p work m v:0 v:1 v:2 v:3 v:4;
+			;;
+		;;
+	[end]
+
+	# an arc of an ellipse (a canvas's arc and ellipse): its start joined to what comes before, and
+	# the angles as the standard reads them
+	[ArcSteps: ptr<VgPath> p: 0; f64 cx: 0.0; f64 cy: 0.0; f64 rx: 0.0; f64 ry: 0.0; f64 tilt: 0.0; f64 a0: 0.0; f64 a1: 0.0; bln ccw: false;]
+		f64 tau: Vg.PI * 2.0;
+		f64 sweep: a1 - a0;
+		if not ccw and sweep >= tau
+			sweep is tau;
+		;;
+		elif ccw and a0 - a1 >= tau
+			sweep is 0.0 - tau;
+		;;
+		else
+			f64 s0: a0 - (Float.Floor: a0 / tau) * tau;
+			f64 s1: a1 - (Float.Floor: a1 / tau) * tau;
+			sweep is s1 - s0;
+			if not ccw and sweep < 0.0
+				sweep is sweep + tau;
+			;;
+			if ccw and sweep > 0.0
+				sweep is sweep - tau;
+			;;
+		;;
+		f64 ct: (Float.Cos: tilt);
+		f64 st: (Float.Sin: tilt);
+		f64 ex: rx * (Float.Cos: a0);
+		f64 ey: ry * (Float.Sin: a0);
+		call p.MoveTo: cx + ex * ct - ey * st cy + ex * st + ey * ct;
+		if sweep is not 0.0
+			call p.Turn: cx cy rx ry tilt a0 sweep;
+		;;
+	[end]
+
+	# arcTo: from the pen toward (x1, y1) and on toward (x2, y2), round the corner with radius r
+	[ArcTo: ptr<VgPath> p: 0; ptr<VgPath> work: 0; VgMatrix m; f64 x1: 0.0; f64 y1: 0.0; f64 x2: 0.0; f64 y2: 0.0; f64 r: 0.0;]
+		if not p.begun
+			call p.MoveTo: (m.X: x1 y1) (m.Y: x1 y1);
+			return;
+		;;
+		# the pen, back in the units the points are in
+		VgMatrix back;
+		if not (m.Invert: back)
+			return;
+		;;
+		f64 x0: (back.X: p.x p.y);
+		f64 y0: (back.Y: p.x p.y);
+		f64 dx0: x0 - x1;
+		f64 dy0: y0 - y1;
+		f64 dx2: x2 - x1;
+		f64 dy2: y2 - y1;
+		f64 l0: (Float.Sqrt: dx0 * dx0 + dy0 * dy0);
+		f64 l2: (Float.Sqrt: dx2 * dx2 + dy2 * dy2);
+		f64 cross: dx0 * dy2 - dy0 * dx2;
+		if l0 is 0.0 or l2 is 0.0 or r is 0.0 or (Float.Abs: cross) < 1e-9 * l0 * l2
+			call p.LineTo: (m.X: x1 y1) (m.Y: x1 y1);
+			return;
+		;;
+		# the corner's half angle, and how far along each line the arc touches it
+		f64 cosine: (dx0 * dx2 + dy0 * dy2) / (l0 * l2);
+		f64 half: (Vg.Atan2: (Float.Sqrt: (Vg.Max: 0.0 1.0 - cosine * cosine)) cosine) / 2.0;
+		f64 along: r / (Vg.Tan: half);
+		f64 tx0: x1 + dx0 / l0 * along;
+		f64 ty0: y1 + dy0 / l0 * along;
+		f64 tx2: x1 + dx2 / l2 * along;
+		f64 ty2: y1 + dy2 / l2 * along;
+		# the center: from the first touch, r along the normal toward the inside of the corner
+		f64 nx: 0.0 - dy0 / l0;
+		f64 ny: dx0 / l0;
+		if cross > 0.0
+			nx is 0.0 - nx;
+			ny is 0.0 - ny;
+		;;
+		f64 cx: tx0 + nx * r;
+		f64 cy: ty0 + ny * r;
+		f64 a0: (Vg.Atan2: ty0 - cy tx0 - cx);
+		f64 a1: (Vg.Atan2: ty2 - cy tx2 - cx);
+		call p.LineTo: (m.X: tx0 ty0) (m.Y: tx0 ty0);
+		call work.Clear;
+		call ArcSteps: work cx cy r r 0.0 a0 a1 cross > 0.0;
+		call Mapped: p work m true;
+	[end]
+
+	[BeginPath: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		call c.path.Clear;
+	[end: JsV.UNDEF]
+
+	# ---- drawing ----
+
+	# the rule an argument names ("nonzero", "evenodd")
+	[RuleOf: u64 v: 0;]
+		if v is JsV.UNDEF return Vg.NONZERO;
+		ptr<JsStr> s: (Str: v);
+		if (Is: s 'evenodd') return Vg.EVEN_ODD;
+		if not (Is: s 'nonzero')
+			call JsErr.Type: 'The fill rule must be "nonzero" or "evenodd"';
+		;;
+	[end: Vg.NONZERO]
+
+	[Ready: ptr<PageCanvasCtx> c: 0;]
+		c.vc.alpha is c.s.alpha;
+		if c.s.dash_n > 0
+			call c.vc.SetDash: addr c.s.dash:0 c.s.dash_n c.s.dash_offset;
+		;;
+		else
+			call c.vc.SetDash: 0 0 0.0;
+		;;
+	[end]
+
+	# fill (0), stroke (1) or clip (2), of the context's path or a Path2D given first
+	[Draw: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		ptr<VgPath> given: 0;
+		int first_arg: 0;
+		if argc > 0 and (JsV.IsObj: args:0) and (JsV.AsObj: args:0).cls is path_class
+			given is (JsV.AsObj: args:0).data as ptr<VgPath>;
+			first_arg is 1;
+		;;
+		int rule: Vg.NONZERO;
+		if self.magic is not 1
+			rule is (RuleOf: (Js.Arg: args argc first_arg));
+		;;
+		call Ready: c;
+		if self.magic is not 2
+			changes++;
+		;;
+		VgPaint paint;
+		VgMatrix none;
+		call none.Identity;
+		if self.magic is 0
+			if given is not 0
+				call c.vc.m.Copy: c.s.m;
+				call PaintOf: c false addr paint none;
+				call c.vc.Fill: given paint rule;
+			;;
+			else
+				call c.vc.m.Identity;
+				call PaintOf: c false addr paint c.s.m;
+				call c.vc.Fill: c.path paint rule;
+			;;
+		;;
+		elif self.magic is 1
+			call c.vc.m.Copy: c.s.m;
+			call PaintOf: c true addr paint none;
+			if given is not 0
+				call c.vc.Stroke: given paint c.s.line_width c.s.join c.s.cap c.s.miter;
+			;;
+			else
+				# the path, back in the transform's units, outlined through it
+				VgMatrix back;
+				if (c.s.m.Invert: back)
+					call c.work.Clear;
+					call Mapped: c.work c.path back false;
+					call c.vc.Stroke: c.work paint c.s.line_width c.s.join c.s.cap c.s.miter;
+				;;
+			;;
+		;;
+		else
+			if given is not 0
+				call c.vc.m.Copy: c.s.m;
+				call c.vc.ClipPath: given rule;
+			;;
+			else
+				call c.vc.m.Identity;
+				call c.vc.ClipPath: c.path rule;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	# clearRect (0), fillRect (1), strokeRect (2)
+	[Rects: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		f64 v[4];
+		if not (Nums: args argc 4 addr v:0) return JsV.UNDEF;
+		changes++;
+		if self.magic is 0
+			call ClearArea: c v:0 v:1 v:2 v:3;
+			return JsV.UNDEF;
+		;;
+		if self.magic is 1 and (v:2 is 0.0 or v:3 is 0.0) return JsV.UNDEF;
+		call c.work.Clear;
+		call c.work.Rect: v:0 v:1 v:2 v:3;
+		call Ready: c;
+		call c.vc.m.Copy: c.s.m;
+		VgPaint paint;
+		VgMatrix none;
+		call none.Identity;
+		if self.magic is 1
+			call PaintOf: c false addr paint none;
+			call c.vc.Fill: c.work paint Vg.NONZERO;
+		;;
+		else
+			call PaintOf: c true addr paint none;
+			call c.vc.Stroke: c.work paint c.s.line_width c.s.join c.s.cap c.s.miter;
+		;;
+	[end: JsV.UNDEF]
+
+	# the pixels a rectangle covers (its box, when the transform turns it) back to transparent, within the clip
+	[ClearArea: ptr<PageCanvasCtx> c: 0; f64 x: 0.0; f64 y: 0.0; f64 w: 0.0; f64 h: 0.0;]
+		ptr<VgMatrix> m: addr c.s.m;
+		f64 xs[4];
+		f64 ys[4];
+		xs:0 is (m.X: x y);
+		ys:0 is (m.Y: x y);
+		xs:1 is (m.X: x + w y);
+		ys:1 is (m.Y: x + w y);
+		xs:2 is (m.X: x y + h);
+		ys:2 is (m.Y: x y + h);
+		xs:3 is (m.X: x + w y + h);
+		ys:3 is (m.Y: x + w y + h);
+		f64 x0: xs:0;
+		f64 x1: xs:0;
+		f64 y0: ys:0;
+		f64 y1: ys:0;
+		while int i: 1; i < 4; i++;
+			x0 is (Vg.Min: x0 xs:i);
+			x1 is (Vg.Max: x1 xs:i);
+			y0 is (Vg.Min: y0 ys:i);
+			y1 is (Vg.Max: y1 ys:i);
+		;;
+		int ix0: (Clamp: (Float.Round: x0) 0 c.w);
+		int ix1: (Clamp: (Float.Round: x1) 0 c.w);
+		int iy0: (Clamp: (Float.Round: y0) 0 c.h);
+		int iy1: (Clamp: (Float.Round: y1) 0 c.h);
+		ix0 is (Math.Max: ix0 c.vc.clip_x0);
+		iy0 is (Math.Max: iy0 c.vc.clip_y0);
+		ix1 is (Math.Min: ix1 c.vc.clip_x1);
+		iy1 is (Math.Min: iy1 c.vc.clip_y1);
+		while int py: iy0; py < iy1; py++;
+			while int px: ix0; px < ix1; px++;
+				if c.vc.mask is 0 or c.vc.mask:(py * c.w + px) >= 128
+					c.pixels:(py * c.w + px) is 0;
+				;;
+			;;
+		;;
+	[end]
+
+	[Clamp: f64 v: 0.0; int lo: 0; int hi: 0;]
+		if v < lo as f64 return lo;
+		if v > hi as f64 return hi;
+	[end: v as int]
+
+	# isPointInPath (0) and isPointInStroke (1): the point is in if a pixel centered on it is mostly covered
+	[PointIn: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		if self.magic is 1 return JsV.FALSE;
+		ptr<VgPath> given: 0;
+		int at_: 0;
+		if argc > 0 and (JsV.IsObj: args:0) and (JsV.AsObj: args:0).cls is path_class
+			given is (JsV.AsObj: args:0).data as ptr<VgPath>;
+			at_ is 1;
+		;;
+		f64 x: (Num: args argc at_);
+		f64 y: (Num: args argc at_ + 1);
+		if not (Finite: x) or not (Finite: y) return JsV.FALSE;
+		int rule: (RuleOf: (Js.Arg: args argc at_ + 2));
+		u32 one: 0;
+		VgCanvas probe;
+		call probe.Start: addr one 1 1 1;
+		call probe.m.Translate: 0.5 - x 0.5 - y;
+		ptr<VgPath> shape: c.path;
+		if given is not 0
+			call probe.m.Multiply: c.s.m;
+			shape is given;
+		;;
+		VgPaint white;
+		call white.Solid: 0xFFFFFFFF;
+		call probe.Fill: shape white rule;
+		call probe.Done;
+	[end: (JsV.Bool: (one >> 24) >= 128)]
+
+	# ---- text, through the browser ----
+
+	# a string's outlines in the font (target outline, if it isn't 0), with its width, ascent and descent in size:
+	# false if the browser can't
+	[Shape: ptr<PageCanvasCtx> c: 0; ptr<JsStr> text: 0; ptr<VgPath> outline: 0; ptr<f64> size: 0;]
+		ptr<Page> page: Page.current;
+		size:0 is 0.0;
+		size:1 is 0.0;
+		size:2 is 0.0;
+		if page is 0 or page.host.canvas_text is 0 return false;
+		ptr<JsStr> font: (JsStrs.Flat: (JsV.AsStr: c.s.font));
+		ptr<u8> fz: (WlText.Dup: font.data font.bytes);
+	[end: (Shaped: page fz text outline size)]
+
+	[Shaped: ptr<Page> page: 0; ptr<u8> fz: 0; ptr<JsStr> text: 0; ptr<VgPath> outline: 0; ptr<f64> size: 0;]
+		bln ok: (page.host.canvas_text: page fz text.data text.bytes outline size);
+		free fz;
+	[end: ok]
+
+	# fillText (0) and strokeText (1)
+	[Text: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		ptr<JsStr> text: (Str: (Js.Arg: args argc 0));
+		f64 x: (Num: args argc 1);
+		f64 y: (Num: args argc 2);
+		if not (Finite: x) or not (Finite: y) return JsV.UNDEF;
+		f64 size[3];
+		call c.work.Clear;
+		if not (Shape: c text c.work addr size:0) return JsV.UNDEF;
+		f64 sx: 1.0;
+		u64 most: (Js.Arg: args argc 3);
+		if most is not JsV.UNDEF
+			f64 limit: (JsOps.ToNumber: most);
+			if not (Finite: limit) or limit <= 0.0 return JsV.UNDEF;
+			if size:0 > limit
+				sx is limit / size:0;
+			;;
+		;;
+		# where its start goes, by textAlign (left to right) and textBaseline
+		f64 dx: 0.0;
+		int al: c.s.align;
+		if al is 1 or al is 3
+			dx is 0.0 - size:0 * sx;
+		;;
+		elif al is 4
+			dx is 0.0 - size:0 * sx / 2.0;
+		;;
+		f64 dy: 0.0;
+		int bl: c.s.baseline;
+		if bl is 1 or bl is 2
+			dy is size:1;
+		;;
+		elif bl is 3
+			dy is (size:1 - size:2) / 2.0;
+		;;
+		elif bl is 4 or bl is 5
+			dy is 0.0 - size:2;
+		;;
+		call Ready: c;
+		changes++;
+		call c.vc.m.Copy: c.s.m;
+		call c.vc.m.Translate: x + dx y + dy;
+		call c.vc.m.Scale: sx 1.0;
+		VgPaint paint;
+		VgMatrix units;
+		call units.Identity;
+		call units.Scale: 1.0 / sx 1.0;
+		call units.Translate: 0.0 - x - dx 0.0 - y - dy;
+		if self.magic is 0
+			call PaintOf: c false addr paint units;
+			call c.vc.Fill: c.work paint Vg.NONZERO;
+		;;
+		else
+			call PaintOf: c true addr paint units;
+			call c.vc.Stroke: c.work paint c.s.line_width c.s.join c.s.cap c.s.miter;
+		;;
+	[end: JsV.UNDEF]
+
+	[MeasureText: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		ptr<JsStr> text: (Str: (Js.Arg: args argc 0));
+		f64 size[3];
+		call Shape: c text 0 addr size:0;
+		ptr<JsObj> o: (JsObjs.NewWithProto: metrics_proto);
+		call Js.Define: o 'width' (JsV.Num: size:0) JsObjs.WEC;
+		call Js.Define: o 'actualBoundingBoxLeft' (JsV.Num: 0.0) JsObjs.WEC;
+		call Js.Define: o 'actualBoundingBoxRight' (JsV.Num: size:0) JsObjs.WEC;
+		call Js.Define: o 'actualBoundingBoxAscent' (JsV.Num: size:1) JsObjs.WEC;
+		call Js.Define: o 'actualBoundingBoxDescent' (JsV.Num: size:2) JsObjs.WEC;
+		call Js.Define: o 'fontBoundingBoxAscent' (JsV.Num: size:1) JsObjs.WEC;
+		call Js.Define: o 'fontBoundingBoxDescent' (JsV.Num: size:2) JsObjs.WEC;
+	[end: (JsV.Obj: o)]
+
+	# ---- pictures ----
+
+	# an <img>'s pixels (from the browser) or another canvas's: false if there are none to draw
+	[PictureOf: u64 v: 0; ptr<PageBitmap> target: 0;]
+		ptr<DomNode> n: (PageBind.NodeOf: v);
+		if n is 0
+			if (JsV.IsObj: v) and (JsV.AsObj: v).cls is ctx_class
+				ptr<PageCanvasCtx> held: (JsV.AsObj: v).data as ptr<PageCanvasCtx>;
+				n is held.node;
+			;;
+		;;
+		if n is 0
+			call JsErr.Type: 'That can\\'t be drawn: it isn\\'t an image or a canvas';
+		;;
+		if (IsCanvas: n)
+			ptr<PageCanvasCtx> other: (Of: n);
+			if other is 0 return false;
+			target.pixels is other.pixels;
+			target.w is other.w;
+			target.h is other.h;
+			return target.w > 0 and target.h > 0;
+		;;
+		ptr<Page> page: Page.current;
+		if page is 0 or page.host.image_pixels is 0 return false;
+		if not (page.host.image_pixels: page n target) return false;
+	[end: target.pixels is not 0 and target.w > 0 and target.h > 0]
+
+	# drawImage(image, dx, dy), (image, dx, dy, dw, dh) or (image, sx, sy, sw, sh, dx, dy, dw, dh)
+	[DrawImage: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		PageBitmap pic;
+		if not (PictureOf: (Js.Arg: args argc 0) addr pic) return JsV.UNDEF;
+		f64 v[8];
+		f64 sx: 0.0;
+		f64 sy: 0.0;
+		f64 sw: pic.w as f64;
+		f64 sh: pic.h as f64;
+		f64 dx: 0.0;
+		f64 dy: 0.0;
+		f64 dw: sw;
+		f64 dh: sh;
+		if argc >= 9
+			if not (Nums: args + 8 argc - 1 8 addr v:0) return JsV.UNDEF;
+			sx is v:0;
+			sy is v:1;
+			sw is v:2;
+			sh is v:3;
+			dx is v:4;
+			dy is v:5;
+			dw is v:6;
+			dh is v:7;
+		;;
+		elif argc >= 5
+			if not (Nums: args + 8 argc - 1 4 addr v:0) return JsV.UNDEF;
+			dx is v:0;
+			dy is v:1;
+			dw is v:2;
+			dh is v:3;
+		;;
+		else
+			if not (Nums: args + 8 argc - 1 2 addr v:0) return JsV.UNDEF;
+			dx is v:0;
+			dy is v:1;
+		;;
+		if sw < 0.0
+			sx is sx + sw;
+			sw is 0.0 - sw;
+		;;
+		if sh < 0.0
+			sy is sy + sh;
+			sh is 0.0 - sh;
+		;;
+		# the part of the picture asked for, kept inside it
+		int ix: (Clamp: (Float.Floor: sx) 0 pic.w);
+		int iy: (Clamp: (Float.Floor: sy) 0 pic.h);
+		int ix2: (Clamp: (Float.Ceil: sx + sw) 0 pic.w);
+		int iy2: (Clamp: (Float.Ceil: sy + sh) 0 pic.h);
+		if ix2 <= ix or iy2 <= iy or sw is 0.0 or sh is 0.0 return JsV.UNDEF;
+		# the destination box shrinks as the source did
+		f64 kx: dw / sw;
+		f64 ky: dh / sh;
+		f64 bx: dx + (ix as f64 - sx) * kx;
+		f64 by: dy + (iy as f64 - sy) * ky;
+		f64 bw: (ix2 - ix) as f64 * kx;
+		f64 bh: (iy2 - iy) as f64 * ky;
+		call Ready: c;
+		call c.vc.m.Copy: c.s.m;
+		# (a copy, as the picture may be this canvas's own pixels)
+		int pw: ix2 - ix;
+		int ph: iy2 - iy;
+		ptr<u32> copy: new u32[pw * ph + 1];
+		if copy is 0
+			throw 'outline of memory';
+		;;
+		while int row: 0; row < ph; row++;
+			call Mem.Copy: (copy + row * pw * 4) as ptr<u8> (pic.pixels + ((iy + row) * pic.w + ix) * 4) as ptr<u8> pw * 4;
+		;;
+		call c.vc.Picture: copy pw ph pw bx by bw bh c.s.smoothing;
+		free copy;
+		changes++;
+	[end: JsV.UNDEF]
+
+	# ---- ImageData ----
+
+	[MakeImageData: int w: 0; int h: 0; u64 data: 0;]
+		if w <= 0 or h <= 0
+			call PageBind.DomError: 'IndexSizeError' 'The width and height must be more than 0';
+		;;
+		if data is JsV.UNDEF
+			ptr<JsNativeFn> u8c: (JsV.AsObj: (JsTyped.IntrinsicCtor: JsTyped.UINT8C)) as ptr<JsNativeFn>;
+			data is (JsV.Obj: (JsTyped.MakeSized: JsTyped.UINT8C (w * h * 4) as f64 (JsV.AsObj: u8c.data)));
+		;;
+		call Js.Push: data;
+		ptr<JsObj> o: (JsObjs.NewWithProto: image_data_proto);
+		call Js.Define: o 'width' (JsV.Int: w) JsObjs.E;
+		call Js.Define: o 'height' (JsV.Int: h) JsObjs.E;
+		call Js.Define: o 'data' data JsObjs.E;
+		call Js.Define: o 'colorSpace' (Js.NewStringZ: 'srgb') JsObjs.E;
+	[end: (JsV.Obj: o)]
+
+	# new ImageData(width, height) or (data, width[, height])
+	[NewImageData: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'ImageData requires new';
+		;;
+		u64 first: (Js.Arg: args argc 0);
+		if (JsTyped.IsClass: first JsTyped.array_class)
+			ptr<JsViewData> view: (JsTyped.ViewOf: (JsV.AsObj: first));
+			if view.kind is not JsTyped.UINT8C
+				call JsErr.Type: 'ImageData takes a Uint8ClampedArray';
+			;;
+			u32 n: (JsTyped.LenNow: view);
+			int w: (JsOps.ToNumber: (Js.Arg: args argc 1)) as int;
+			if n is 0 or (n % 4) is not 0 or w <= 0 or ((n / 4) % (w as u32)) is not 0
+				call PageBind.DomError: 'IndexSizeError' 'The data isn\\'t a whole number of rows';
+			;;
+			int h: ((n / 4) / (w as u32)) as int;
+			if (Js.Arg: args argc 2) is not JsV.UNDEF and (JsOps.ToNumber: args:2) as int is not h
+				call PageBind.DomError: 'IndexSizeError' 'The height doesn\\'t fit the data';
+			;;
+			return (MakeImageData: w h first);
+		;;
+		int w2: (JsOps.ToNumber: first) as int;
+		int h2: (JsOps.ToNumber: (Js.Arg: args argc 1)) as int;
+	[end: (MakeImageData: w2 h2 JsV.UNDEF)]
+
+	[CreateImageData: ptr<u64> args: 0; int argc: 0;]
+		call ThisCtx: args;
+		u64 first: (Js.Arg: args argc 0);
+		if (JsV.IsObj: first)
+			int ow: (JsOps.ToNumber: (JsObjs.GetV: first (JsObjs.KeyZ: 'width'))) as int;
+			int oh: (JsOps.ToNumber: (JsObjs.GetV: first (JsObjs.KeyZ: 'height'))) as int;
+			return (MakeImageData: ow oh JsV.UNDEF);
+		;;
+		f64 w: (Float.Abs: (JsOps.ToNumber: first));
+		f64 h: (Float.Abs: (JsOps.ToNumber: (Js.Arg: args argc 1)));
+		if not (Finite: w) or not (Finite: h) or w * h * 4.0 > 1000000000.0
+			call PageBind.DomError: 'IndexSizeError' 'That ImageData is too big';
+		;;
+	[end: (MakeImageData: w as int h as int JsV.UNDEF)]
+
+	# the bytes of an ImageData, RGBA
+	[BytesOf: u64 image: 0; ptr<int> w: 0; ptr<int> h: 0;]
+		if not (JsV.IsObj: image)
+			call JsErr.Type: 'That isn\\'t an ImageData';
+		;;
+		u64 data: (JsObjs.GetV: image (JsObjs.KeyZ: 'data'));
+		if not (JsTyped.IsClass: data JsTyped.array_class)
+			call JsErr.Type: 'That isn\\'t an ImageData';
+		;;
+		w:0 is (JsOps.ToNumber: (JsObjs.GetV: image (JsObjs.KeyZ: 'width'))) as int;
+		h:0 is (JsOps.ToNumber: (JsObjs.GetV: image (JsObjs.KeyZ: 'height'))) as int;
+		ptr<JsViewData> view: (JsTyped.ViewOf: (JsV.AsObj: data));
+		if w:0 <= 0 or h:0 <= 0 or (JsTyped.LenNow: view) < (w:0 * h:0 * 4) as u32
+			call JsErr.Type: 'That ImageData is detached or too short';
+		;;
+	[end: (JsTyped.At: view 0)]
+
+	[GetImageData: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		f64 v[4];
+		if not (Nums: args argc 4 addr v:0)
+			call JsErr.Type: 'The numbers must be finite';
+		;;
+		int sx: (Float.Floor: v:0) as int;
+		int sy: (Float.Floor: v:1) as int;
+		int sw: (Float.Floor: v:2) as int;
+		int sh: (Float.Floor: v:3) as int;
+		if sw < 0
+			sx is sx + sw;
+			sw is 0 - sw;
+		;;
+		if sh < 0
+			sy is sy + sh;
+			sh is 0 - sh;
+		;;
+		if sw is 0 or sh is 0
+			call PageBind.DomError: 'IndexSizeError' 'The width and height must not be 0';
+		;;
+		u64 made: (MakeImageData: sw sh JsV.UNDEF);
+		call Js.Push: made;
+		int iw: 0;
+		int ih: 0;
+		ptr<u8> b: (BytesOf: made addr iw addr ih);
+		while int y: 0; y < sh; y++;
+			int py: sy + y;
+			if py < 0 or py >= c.h continue;
+			while int x: 0; x < sw; x++;
+				int px: sx + x;
+				if px < 0 or px >= c.w continue;
+				u32 p: c.pixels:(py * c.w + px);
+				ptr<u8> q: b + (y * sw + x) * 4;
+				q:0 is ((p >> 16) & 255) as u8;
+				q:1 is ((p >> 8) & 255) as u8;
+				q:2 is (p & 255) as u8;
+				q:3 is (p >> 24) as u8;
+			;;
+		;;
+	[end: made]
+
+	[PutImageData: ptr<u64> args: 0; int argc: 0;]
+		ptr<PageCanvasCtx> c: (ThisCtx: args);
+		int iw: 0;
+		int ih: 0;
+		ptr<u8> b: (BytesOf: (Js.Arg: args argc 0) addr iw addr ih);
+		f64 v[6];
+		if not (Nums: args + 8 argc - 1 2 addr v:0) return JsV.UNDEF;
+		int dx: (Float.Floor: v:0) as int;
+		int dy: (Float.Floor: v:1) as int;
+		int x0: 0;
+		int y0: 0;
+		int x1: iw;
+		int y1: ih;
+		if argc >= 7
+			if not (Nums: args + 24 argc - 3 4 addr v:2) return JsV.UNDEF;
+			int ddx: (Float.Floor: v:2) as int;
+			int ddy: (Float.Floor: v:3) as int;
+			int ddw: (Float.Floor: v:4) as int;
+			int ddh: (Float.Floor: v:5) as int;
+			if ddw < 0
+				ddx is ddx + ddw;
+				ddw is 0 - ddw;
+			;;
+			if ddh < 0
+				ddy is ddy + ddh;
+				ddh is 0 - ddh;
+			;;
+			x0 is (Math.Max: ddx 0);
+			y0 is (Math.Max: ddy 0);
+			x1 is (Math.Min: ddx + ddw iw);
+			y1 is (Math.Min: ddy + ddh ih);
+		;;
+		while int y: y0; y < y1; y++;
+			int py: dy + y;
+			if py < 0 or py >= c.h continue;
+			while int x: x0; x < x1; x++;
+				int px: dx + x;
+				if px < 0 or px >= c.w continue;
+				ptr<u8> q: b + (y * iw + x) * 4;
+				c.pixels:(py * c.w + px) is ((q:3 as u32) << 24) | ((q:0 as u32) << 16) | ((q:1 as u32) << 8) | (q:2 as u32);
+			;;
+		;;
+		changes++;
+	[end: JsV.UNDEF]
+
+	# ---- the element's toDataURL ----
+
+	[ToDataUrl: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (PageBind.ThisElement: args);
+		if not (IsCanvas: n) return (Js.NewStringZ: 'data:,');
+		int w: (Size: n 'width' 300);
+		int h: (Size: n 'height' 150);
+		if w is 0 or h is 0 return (Js.NewStringZ: 'data:,');
+		ptr<Page> page: Page.current;
+		if page is 0 or page.host.encode_png is 0 return (Js.NewStringZ: 'data:,');
+		ptr<u32> pixels: 0;
+		ptr<u32> blank: 0;
+		ptr<PageCanvasCtx> c: (Of: n);
+		if c is not 0
+			pixels is c.pixels;
+		;;
+		else
+			blank is new u32[w * h + 1];
+			if blank is 0
+				throw 'outline of memory';
+			;;
+			call Mem.Fill: blank as ptr<u8> 0 (w * h + 1) * 4;
+			pixels is blank;
+		;;
+		WlBuf png;
+		bln ok: (page.host.encode_png: page pixels w h addr png);
+		if blank is not 0
+			free blank;
+		;;
+		if not ok
+			call png.Free;
+			return (Js.NewStringZ: 'data:,');
+		;;
+		WlBuf b;
+		call b.AddZ: 'data:image/png;base64,';
+		call Base64: png.data png.len addr b;
+		call png.Free;
+		u64 v: (JsV.Str: (JsStrs.New: b.data b.len));
+		call b.Free;
+	[end: v]
+
+	[Base64: ptr<u8> p: 0; u32 n: 0; ptr<WlBuf> b: 0;]
+		ptr<u8> table: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+		u32 i: 0;
+		while i < n
+			u32 b0: p:i;
+			u32 b1: 0;
+			u32 b2: 0;
+			if i + 1 < n
+				b1 is p:(i + 1);
+			;;
+			if i + 2 < n
+				b2 is p:(i + 2);
+			;;
+			u32 x: (b0 << 16) | (b1 << 8) | b2;
+			call b.Add: table:((x >> 18) & 63);
+			call b.Add: table:((x >> 12) & 63);
+			if i + 1 < n
+				call b.Add: table:((x >> 6) & 63);
+			;;
+			else
+				call b.Add: '=';
+			;;
+			if i + 2 < n
+				call b.Add: table:(x & 63);
+			;;
+			else
+				call b.Add: '=';
+			;;
+			i++ 3;
+		;;
+	[end]
+}

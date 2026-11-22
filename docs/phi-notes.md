@@ -122,3 +122,11 @@ came in one build of the decoder and not in the small case above. **Here:** the 
 variables apart, and a scan of every `.phi` file in this repo and PHI OS for the pattern (a name
 declared in a block, again at the method's level, then in `[end: ...]`) found no other. **For PHI:** a
 silent wrong value, so a candidate for "something that demands a fix".
+
+**`net.tls13` offers no ALPN, so a client on it can't speak HTTP/2.** Its ClientHello's extensions are
+fixed (server_name, the groups, key_share and the rest), and an extension a program wants to add, or a
+server's EncryptedExtensions to read, has no way in. netlib has HTTP/2 now (`WireH2`), and its own TLS
+1.2 client offers `h2` by ALPN, but PHI OS's browser tries `net.tls13` first, as it should, so it stays
+on HTTP/1.1 with every server that speaks TLS 1.3. What would do: a list of ALPN names on the session
+before the ClientHello is made (`application_layer_protocol_negotiation`, extension 16), and the name
+the server chose, from its EncryptedExtensions, after the handshake (2026-11-21).

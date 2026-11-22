@@ -3,11 +3,11 @@
 @{
 	Libraries = @(
 		@{ Name = 'corelib'; Folder = 'libs\core'; Uses = @() }
-		@{ Name = 'weblib'; Folder = 'libs\web'; Uses = @() }
 		@{ Name = 'imagelib'; Folder = 'libs\image'; Uses = @('corelib') }
 		@{ Name = 'fontlib'; Folder = 'libs\font'; Uses = @('corelib') }
 		@{ Name = 'editlib'; Folder = 'libs\edit'; Uses = @() }
 		@{ Name = 'vectorlib'; Folder = 'libs\vector'; Uses = @() }
+		@{ Name = 'weblib'; Folder = 'libs\web'; Uses = @('vectorlib') }
 		@{ Name = 'encodinglib'; Folder = 'libs\encoding'; Uses = @() }
 		@{ Name = 'netlib'; Folder = 'libs\net'; Uses = @('corelib') }
 	)

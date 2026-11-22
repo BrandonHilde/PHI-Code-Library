@@ -1,0 +1,24 @@
+same context: true, webgl: null, size 64x32, other 300x150
+defaults: #000000 1 butt 10px sans-serif start 1
+fillRect: 255,0,0,255 outside 0,0,0,0 style #ff0000
+half blue over red: 127,0,128,255 style rgba(0, 0, 255, 0.5)
+translated and scaled: 0,255,0,255 0,0,0,0 restored style rgba(0, 0, 255, 0.5)
+cleared: 0,0,0,0 kept 255,0,0,255
+circle: center 0,0,0,255 corner 0,0,0,1 in path true false
+gradient: 253,253,253,255 126,126,126,255 2,2,2,255 is gradient true
+stroke: 0,0,255,255 0,0,255,255 0,0,0,0
+put: 1,2,3,255 250,251,252,128
+Path2D: 255,255,0,255
+clipped: 0,255,255,255 outside 0,0,0,0
+measure: 18
+text: 0,0,0,255
+dash: 2,3, transform 1
+drawImage(canvas): 63,0,64,255 0,0,0,255
+drawImage(img): 232,12,12,255 255,255,255,255
+dataURL: data:image/png;base64,iVBORw==
+reset by width: 0,0,0,0 style #000000
+getImageData(0 wide): IndexSizeError
+addColorStop(2): IndexSizeError
+instanceof: true true true
+second canvas: 300x150, pixels sum to 1240614646
+done

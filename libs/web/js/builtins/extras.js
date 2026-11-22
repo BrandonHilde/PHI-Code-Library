@@ -1,6 +1,6 @@
-// DisposableStack, AsyncDisposableStack (explicit resource management) and Array.fromAsync. JsLazy
-// (lazy.phi) runs this the first time one is called; extrasx.phi makes the natives scripts see, and the
-// two constructors, whose prototypes' methods are here.
+// DisposableStack, AsyncDisposableStack (explicit resource management), Array.fromAsync and
+// Math.sumPrecise. JsLazy (lazy.phi) runs this the first time one is called; extrasx.phi makes the
+// natives scripts see, and the two constructors, whose prototypes' methods are here.
 (function (global, exports) {
   "use strict";
 
@@ -286,6 +286,96 @@
       return undefined;
     }
     return disposeAllAsync(cap, { threw: threw, value: value });
+  };
+
+  // ---- Math.sumPrecise: the exact sum, rounded once ----
+
+  var bitsView = new DataView(new ArrayBuffer(8));
+  var BigIntCtor = BigInt;
+
+  // a finite double as an integer times 2^-1074, exactly
+  function scaled(x) {
+    bitsView.setFloat64(0, x);
+    var hi = bitsView.getUint32(0);
+    var lo = bitsView.getUint32(4);
+    var exp = (hi >>> 20) & 0x7FF;
+    var mant = (BigIntCtor(hi & 0xFFFFF) << 32n) | BigIntCtor(lo);
+    if (exp !== 0) mant = mant | (1n << 52n);
+    var v = mant << BigIntCtor(exp === 0 ? 0 : exp - 1);
+    return hi >>> 31 ? -v : v;
+  }
+
+  function bitLength(v) {
+    var n = 0;
+    while (v > 0n) {
+      var step = v >> 64n;
+      if (step > 0n) {
+        v = step;
+        n += 64;
+      } else {
+        v = v >> 1n;
+        n += 1;
+      }
+    }
+    return n;
+  }
+
+  exports.sumPrecise = function (items) {
+    if (items === undefined || items === null) throw new TypeError("Math.sumPrecise takes an iterable");
+    var m = items[SymbolIterator];
+    if (!isCallable(m)) throw new TypeError("Math.sumPrecise takes an iterable");
+    var it = apply(m, items, []);
+    if (!isObject(it)) throw new TypeError("The iterator is not an object");
+    var next = it.next;
+    var sum = 0n;
+    var plusInf = false, minusInf = false, nan = false, allMinusZero = true;
+    for (;;) {
+      var r = apply(next, it, []);
+      if (!isObject(r)) throw new TypeError("Iterator result is not an object");
+      if (r.done) break;
+      var x = r.value;
+      if (typeof x !== "number") {
+        try { var ret = it["return"]; if (ret !== undefined && ret !== null) apply(ret, it, []); } catch (e) {}
+        throw new TypeError("Math.sumPrecise adds numbers only");
+      }
+      if (x !== x) {
+        nan = true;
+      } else if (x === Infinity) {
+        plusInf = true;
+      } else if (x === -Infinity) {
+        minusInf = true;
+      } else if (!(x === 0 && 1 / x < 0)) {
+        allMinusZero = false;
+        if (x !== 0) sum += scaled(x);
+      }
+    }
+    if (nan || (plusInf && minusInf)) return NaN;
+    if (plusInf) return Infinity;
+    if (minusInf) return -Infinity;
+    if (allMinusZero) return -0;
+    if (sum === 0n) return 0;
+    var negative = sum < 0n;
+    var mag = negative ? -sum : sum;
+    // keep 64 bits and a sticky one below them, so the one rounding Number() does is the right one
+    var shift = bitLength(mag) - 64;
+    if (shift > 0) {
+      var kept = mag >> BigIntCtor(shift);
+      if ((kept << BigIntCtor(shift)) !== mag) kept = kept | 1n;
+      mag = kept;
+    } else {
+      shift = 0;
+    }
+    var result = Number(mag);
+    // times 2^(shift - 1074), in two steps so nothing in between overflows or underflows early
+    var e = shift - 1074;
+    if (e > 0) {
+      result = result * Math.pow(2, Math.min(e, 1000));
+      if (e > 1000) result = result * Math.pow(2, e - 1000);
+    } else {
+      result = result * Math.pow(2, Math.max(e, -1000));
+      if (e < -1000) result = result * Math.pow(2, e + 1000);
+    }
+    return negative ? -result : result;
   };
 
   // ---- Array.fromAsync ----

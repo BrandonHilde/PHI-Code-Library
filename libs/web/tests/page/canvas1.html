@@ -1,0 +1,82 @@
+<!doctype html>
+<html><body>
+<canvas id="c" width="64" height="32"></canvas>
+<canvas id="d"></canvas>
+<img id="pic" src="pic.png">
+<script>
+function px(ctx, x, y) { var d = ctx.getImageData(x, y, 1, 1).data; return d[0] + ',' + d[1] + ',' + d[2] + ',' + d[3]; }
+var c = document.getElementById('c');
+var ctx = c.getContext('2d');
+console.log('same context: ' + (c.getContext('2d') === ctx) + ', webgl: ' + c.getContext('webgl') + ', size ' + c.width + 'x' + c.height + ', other ' + document.getElementById('d').width + 'x' + document.getElementById('d').height);
+console.log('defaults: ' + ctx.fillStyle + ' ' + ctx.lineWidth + ' ' + ctx.lineCap + ' ' + ctx.font + ' ' + ctx.textAlign + ' ' + ctx.globalAlpha);
+ctx.fillStyle = 'red';
+ctx.fillRect(0, 0, 10, 10);
+console.log('fillRect: ' + px(ctx, 5, 5) + ' outside ' + px(ctx, 15, 5) + ' style ' + ctx.fillStyle);
+ctx.fillStyle = 'rgba(0, 0, 255, 0.5)';
+ctx.fillRect(5, 0, 10, 10);
+console.log('half blue over red: ' + px(ctx, 7, 5) + ' style ' + ctx.fillStyle);
+ctx.save();
+ctx.translate(20, 0);
+ctx.scale(2, 1);
+ctx.fillStyle = '#0f0';
+ctx.fillRect(0, 0, 5, 5);
+ctx.restore();
+console.log('translated and scaled: ' + px(ctx, 29, 2) + ' ' + px(ctx, 31, 2) + ' restored style ' + ctx.fillStyle);
+ctx.clearRect(0, 0, 3, 3);
+console.log('cleared: ' + px(ctx, 1, 1) + ' kept ' + px(ctx, 4, 4));
+ctx.beginPath();
+ctx.arc(48, 16, 10, 0, Math.PI * 2);
+ctx.fillStyle = 'black';
+ctx.fill();
+console.log('circle: center ' + px(ctx, 48, 16) + ' corner ' + px(ctx, 40, 8) + ' in path ' + ctx.isPointInPath(48, 16) + ' ' + ctx.isPointInPath(40, 8));
+var g = ctx.createLinearGradient(0, 0, 64, 0);
+g.addColorStop(0, 'white');
+g.addColorStop(1, 'black');
+ctx.fillStyle = g;
+ctx.fillRect(0, 20, 64, 4);
+console.log('gradient: ' + px(ctx, 0, 21) + ' ' + px(ctx, 32, 21) + ' ' + px(ctx, 63, 21) + ' is gradient ' + (ctx.fillStyle === g));
+ctx.strokeStyle = 'blue';
+ctx.lineWidth = 2;
+ctx.beginPath();
+ctx.moveTo(0, 28);
+ctx.lineTo(64, 28);
+ctx.stroke();
+console.log('stroke: ' + px(ctx, 10, 28) + ' ' + px(ctx, 10, 27) + ' ' + px(ctx, 10, 30));
+var img = ctx.createImageData(2, 1);
+img.data.set([1, 2, 3, 255, 250, 251, 252, 128]);
+ctx.putImageData(img, 60, 0);
+console.log('put: ' + px(ctx, 60, 0) + ' ' + px(ctx, 61, 0));
+var p = new Path2D('M 0 30 h 4 v 2 h -4 z');
+ctx.fillStyle = 'yellow';
+ctx.fill(p);
+console.log('Path2D: ' + px(ctx, 2, 31));
+ctx.save();
+ctx.beginPath();
+ctx.rect(40, 0, 4, 4);
+ctx.clip();
+ctx.fillStyle = 'cyan';
+ctx.fillRect(38, 0, 10, 10);
+ctx.restore();
+console.log('clipped: ' + px(ctx, 41, 1) + ' outside ' + px(ctx, 46, 1));
+ctx.fillStyle = 'magenta';
+ctx.fillRect(0, 0, 1, 1);
+ctx.fillStyle = 'black';
+ctx.font = '10px sans-serif';
+console.log('measure: ' + ctx.measureText('abc').width);
+ctx.fillText('ab', 0, 10);
+console.log('text: ' + px(ctx, 1, 8));
+ctx.setLineDash([2, 3]);
+console.log('dash: ' + ctx.getLineDash() + ', transform ' + JSON.stringify(ctx.getTransform().a));
+var d = document.getElementById('d').getContext('2d');
+d.drawImage(c, 0, 0);
+console.log('drawImage(canvas): ' + px(d, 5, 5) + ' ' + px(d, 48, 16));
+d.drawImage(document.getElementById('pic'), 100, 100, 20, 20);
+console.log('drawImage(img): ' + px(d, 105, 105) + ' ' + px(d, 115, 115));
+console.log('dataURL: ' + c.toDataURL().slice(0, 30));
+c.width = 64;
+console.log('reset by width: ' + px(ctx, 5, 5) + ' style ' + ctx.fillStyle);
+try { ctx.getImageData(0, 0, 0, 1); } catch (e) { console.log('getImageData(0 wide): ' + e.name); }
+try { g.addColorStop(2, 'red'); } catch (e) { console.log('addColorStop(2): ' + e.name); }
+console.log('instanceof: ' + (ctx instanceof CanvasRenderingContext2D) + ' ' + (g instanceof CanvasGradient) + ' ' + (img instanceof ImageData));
+</script>
+</body></html>

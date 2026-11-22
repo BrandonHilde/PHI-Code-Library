@@ -110,6 +110,7 @@ phi.PageBind:Library
 		call InstallDocument;
 		call InstallTokens: keep;
 		call InstallStyle: keep;
+		call PageCanvas.Install: keep;
 		call PageWindow.Install: p keep;
 	[end]
 
@@ -772,8 +773,9 @@ phi.PageBind:Library
 		call Method: p 'insertAdjacentElement' addr InsertAdjacentNode 2 0;
 		call Method: p 'insertAdjacentText' addr InsertAdjacentText 2 0;
 		call Method: p 'getBoundingClientRect' addr BoundingRect 0 0;
-		# (a <canvas> can't be drawn on: its context is null, which is how a page is told so)
-		call Method: p 'getContext' addr NoContext 1 0;
+		# a <canvas>'s 2D context (page/canvas.phi); null on anything else, or for another kind
+		call Method: p 'getContext' addr PageCanvas.GetContext 1 0;
+		call Method: p 'toDataURL' addr PageCanvas.ToDataUrl 0 0;
 		call Method: p 'getClientRects' addr ClientRects 0 0;
 		call Method: p 'remove' addr RemoveSelf 0 0;
 		call Method: p 'focus' addr Focus 0 1;
@@ -876,9 +878,6 @@ phi.PageBind:Library
 
 	[Nothing: ptr<u64> args: 0; int argc: 0;]
 	[end: JsV.UNDEF]
-
-	[NoContext: ptr<u64> args: 0; int argc: 0;]
-	[end: JsV.NULL]
 
 	[Zero: ptr<u64> args: 0; int argc: 0;]
 	[end: JsV.INT_BASE]
@@ -1080,7 +1079,12 @@ phi.PageBind:Library
 
 	[ReflectSet: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (ThisElement: args);
-		call SetAttrFrom: n (CalleeAtom: args) (Js.Arg: args argc 0);
+		ptr<WlAtom> name: (CalleeAtom: args);
+		call SetAttrFrom: n name (Js.Arg: args argc 0);
+		# setting a canvas's width or height starts its drawing again, even to the same size
+		if (PageCanvas.IsCanvas: n) and (name is (WlAtoms.GetZ: 'width') or name is (WlAtoms.GetZ: 'height'))
+			call PageCanvas.Resized: n;
+		;;
 	[end: JsV.UNDEF]
 
 	[BoolGet: ptr<u64> args: 0; int argc: 0;]
@@ -1102,7 +1106,17 @@ phi.PageBind:Library
 
 	[NumberAttr: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (ThisElement: args);
-		ptr<DomAttr> a: (Dom.Attr: n (CalleeAtom: args));
+		ptr<WlAtom> name: (CalleeAtom: args);
+		# a canvas's size, 300 by 150 unless it says
+		if (PageCanvas.IsCanvas: n)
+			if name is (WlAtoms.GetZ: 'width')
+				return (JsV.Int: (PageCanvas.Size: n 'width' 300));
+			;;
+			if name is (WlAtoms.GetZ: 'height')
+				return (JsV.Int: (PageCanvas.Size: n 'height' 150));
+			;;
+		;;
+		ptr<DomAttr> a: (Dom.Attr: n name);
 		if a is 0
 			return JsV.INT_BASE;
 		;;

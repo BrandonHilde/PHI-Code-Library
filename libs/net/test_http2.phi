@@ -1,0 +1,202 @@
+# netlib's HTTP/2 client, with no network. First HPACK on its own: RFC 7541's examples of answers
+# (C.6: Huffman strings, and a dynamic table of 256 bytes that has to let entries go). Then an exchange
+# with Node.js's HTTP/2 server, recorded by tools/net/check_http2.js: this client's requests must be the
+# bytes it sent then (tests/http2/client.bin), and the server's answer (server.bin), fed whole and a
+# byte at a time, must give the same answers.
+#
+#   test_http2            the test
+#   test_http2 write      writes tests/http2/client.bin, for check_http2.js to send
+use netlib;
+
+phi.TestHttp2:Program
+{
+	ptr<u8> bytes: 0;
+
+	call NetLib.Start;
+	call CoreLib.Start;
+	ptr<WireH2> c: new WireH2;
+	if c is 0
+		log 'no memory\n';
+		exit 1;
+	;;
+	ptr<u8> args: (OS.Arguments);
+	if args is not 0 and args:0 is 'w'
+		call Requests: c;
+		int wrote: (OS.WriteFile: 'tests/http2/client.bin' (WireH2.Outgoing: c) (WireH2.Pending: c) as int);
+		log 'wrote ' wrote ' bytes\n';
+		exit 0;
+	;;
+	call Hpack: c;
+	call Alpn;
+	call Replay: c 0;
+	call Replay: c 1;
+	call WireH2.Free: c;
+	log 'done\n';
+	exit 0;
+
+	# ---- RFC 7541 C.6 ----
+
+	[Hex: ptr<u8> text: 0; ptr<u8> target: 0; : u32]
+		u32 n: 0;
+		u32 i: 0;
+		while text:i is not 0
+			if text:i is ' '
+				i++;
+				continue;
+			;;
+			target:n is ((Digit: text:i) * 16 + (Digit: text:(i + 1))) as u8;
+			n++;
+			i++ 2;
+		;;
+	[end: n]
+
+	[Digit: u8 c: 0; : u32]
+		if c >= 'a'
+			return c - 'a' + 10;
+		;;
+	[end: c - '0']
+
+	[Hpack: ptr<WireH2> c: 0;]
+		call WireH2.Start: c 1000000;
+		c.table_max is 256;
+		u8 block[256];
+		call One: c 'C.6.1' '488264025885aec3771a4b6196d07abe941054d444a8200595040b8166e082a62d1bff6e919d29ad171863c78f0b97c8e9ae82ae43d3' addr block:0;
+		call One: c 'C.6.2' '4883640effc1c0bf' addr block:0;
+		call One: c 'C.6.3' '88c16196d07abe941054d444a8200595040b8166e084a62d1bffc05a839bd9ab77ad94e7821dd7f2e6c7b335dfdfcd5b3960d5af27087f3672c1ab270fb5291f9587316065c003ed4ee5b1063d5007' addr block:0;
+		call WireH2.Free: c;
+	[end]
+
+	[One: ptr<WireH2> c: 0; ptr<u8> name: 0; ptr<u8> hex: 0; ptr<u8> block: 0;]
+		u32 n: (Hex: hex block);
+		c.lines_length is 0;
+		c.status is 0;
+		bln ok: (WireH2.Decode: c block n);
+		log name ': ' ok ', status ' c.status ', table ' c.table_size ' bytes in ' c.table_count ' entries\n';
+		if c.lines_length > 0
+			c.lines:(c.lines_length - 2) is 0;
+			log c.lines '\n';
+		;;
+		if not ok
+			log '  ' c.error '\n';
+		;;
+	[end]
+
+	# ---- ALPN in netlib's TLS 1.2: offered when asked for, and the server's choice read ----
+
+	u8 fixed_random[64];
+
+	[Random: ptr<u8> buffer: 0; u32 length: 0;]
+		while u32 i: 0; i < length; i++;
+			buffer:i is (i * 13 + 7) as u8;
+		;;
+	[end]
+
+	[Alpn]
+		WireTls.random is addr Random;
+		ptr<WireTlsSession> s: new WireTlsSession;
+		bln ok: (WireTls.Client: s 'example.com' false true);
+		ptr<u8> hello: (WireTls.Outgoing: s);
+		u32 n: (WireTls.Pending: s);
+		bln offered: false;
+		while u32 i: 0; i + 12 <= n; i++;
+			if hello:i is 2 and hello:(i + 1) is 'h' and hello:(i + 2) is '2' and hello:(i + 3) is 8 and (Mem.Equal: hello + i + 4 'http/1.1' 8)
+				offered is true;
+			;;
+		;;
+		# a ServerHello choosing h2: version, random, no session id, a suite, no compression, ALPN
+		u8 sh[64];
+		u32 shn: (Hex: '0303 0000000000000000000000000000000000000000000000000000000000000000 00 c02b 00 0009 0010 0005 0003 02 6832' addr sh:0);
+		bln read: (WireTls.ReadServerHello: s addr sh:0 shn);
+		log 'ALPN: hello made ' ok ', offers h2 and http/1.1 ' offered ', a ServerHello choosing h2 read ' read ', so h2 ' s.h2 '\n';
+		call WireTls.Free: s;
+		free s;
+	[end]
+
+	# ---- an exchange with a server ----
+
+	WireTarget t;
+	int ids[6];
+
+	[Requests: ptr<WireH2> c: 0;]
+		call WireH2.Start: c 1000000;
+		bln ok: (WireHttp.Split: 'http://localhost:8443/hello' addr t);
+		ids:0 is (WireH2.Request: c 'GET' addr t 'Accept: text/plain\r\nX-Test: one\r\nConnection: keep-alive\r\n' 0 0);
+		call Path: '/gzip';
+		ids:1 is (WireH2.Request: c 'GET' addr t 0 0 0);
+		call Path: '/hello';
+		ids:2 is (WireH2.Request: c 'HEAD' addr t 0 0 0);
+		call Path: '/echo';
+		ids:3 is (WireH2.Request: c 'POST' addr t 'Content-Type: text/plain\r\n' 'posted over HTTP/2' 18);
+		call Path: '/missing';
+		ids:4 is (WireH2.Request: c 'GET' addr t 0 0 0);
+		call Path: '/big';
+		ids:5 is (WireH2.Request: c 'GET' addr t 0 0 0);
+	[end]
+
+	[Path: ptr<u8> p: 0;]
+		u32 i: 0;
+		while p:i is not 0
+			t.path:i is p:i;
+			i++;
+		;;
+		t.path:i is 0;
+	[end]
+
+	[Replay: ptr<WireH2> c: 0; int bytewise: 0;]
+		call Requests: c;
+		int size: (OS.FileSize: 'tests/http2/client.bin');
+		if bytes is 0
+			bytes is new u8[2000000];
+		;;
+		int got: (OS.ReadFile: 'tests/http2/client.bin' bytes 2000000);
+		bln same: got is (WireH2.Pending: c) as int and (Mem.Equal: bytes (WireH2.Outgoing: c) got as u32);
+		log '--- replay ' bytewise ': the requests are the bytes sent then: ' same ' (' got ' bytes, ids ' ids:0 ' ' ids:5 ')\n';
+		call WireH2.Sent: c (WireH2.Pending: c);
+		int n: (OS.ReadFile: 'tests/http2/server.bin' bytes 2000000);
+		if n <= 0
+			log 'no server.bin\n';
+			return;
+		;;
+		if bytewise is 1
+			while int i: 0; i < n; i++;
+				call WireH2.Take: c bytes + i 1;
+			;;
+		;;
+		else
+			call WireH2.Take: c bytes n as u32;
+		;;
+		log 'connection failed ' c.failed ' ' c.error ', to send back ' (WireH2.Pending: c) ' bytes\n';
+		while int k: 0; k < 6; k++;
+			ptr<WireAnswer> a: (WireH2.Answer: c ids:k);
+			if a is 0
+				log k ': no answer\n';
+				continue;
+			;;
+			u8 v[200];
+			int vl: (WireHttp.Header: a 'content-type' addr v:0 200);
+			log k ': status ' a.status ' done ' a.done ' failed ' a.failed ' body ' a.body_length;
+			if vl >= 0
+				log ' type ' addr v:0;
+			;;
+			int cl: (WireHttp.HeaderAt: a 'set-cookie' 1 addr v:0 200);
+			if cl >= 0
+				log ' second cookie ' addr v:0;
+			;;
+			if a.done and a.body_length > 0 and a.body_length < 100
+				bln unpacked: (WireHttp.Unpack: a);
+				a.body:(a.body_length) is 0;
+				log ' unpacked ' unpacked ': ' a.body;
+			;;
+			elif a.body_length >= 100
+				u32 sum: 0;
+				while u32 j: 0; j < a.body_length; j++;
+					sum is sum * 31 + a.body:j;
+				;;
+				log ' sum ' sum;
+			;;
+			log '\n';
+			call WireH2.Done: c ids:k;
+		;;
+		call WireH2.Free: c;
+	[end]
+}

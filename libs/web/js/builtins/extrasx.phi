@@ -1,4 +1,4 @@
-# DisposableStack, AsyncDisposableStack and Array.fromAsync: written in JavaScript (extras.js, made into
+# DisposableStack, AsyncDisposableStack, Array.fromAsync and Math.sumPrecise: written in JavaScript (extras.js, made into
 # extrasjs.phi by tools/web/js_to_phi.py) and loaded the first time one is called (JsLazy). Here are the
 # constructors and the natives scripts see.
 
@@ -41,6 +41,8 @@ phi.JsExtras:Library
 
 		ptr<JsProp> arr: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: 'Array') as ptr<u8>);
 		call JsLazy.Method: (JsV.AsObj: arr.value) 'fromAsync' 1 ex 'fromAsync';
+		ptr<JsProp> math: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: 'Math') as ptr<u8>);
+		call JsLazy.Method: (JsV.AsObj: math.value) 'sumPrecise' 1 ex 'sumPrecise';
 	[end]
 
 	# new DisposableStack() (magic 0) and new AsyncDisposableStack() (1)

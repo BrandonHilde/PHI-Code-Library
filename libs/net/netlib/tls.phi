@@ -56,6 +56,8 @@ struct.WireTlsSession
 	bln fallback;               # TLS 1.3 was tried first
 	bln ems;                    # the extended master secret is in use
 	bln asked;                  # the server asked for a client certificate
+	bln offer_h2;               # ALPN offers h2, then http/1.1 (Client's h2)
+	bln h2;                     # and the server chose h2
 	str error: [120];
 	u32 alert;                  # the alert the server sent, if it sent one
 	u32 suite;                  # the cipher suite agreed
@@ -154,6 +156,7 @@ phi.WireTls:Library
 	const u32 ALERT_DECRYPT_ERROR: 51;
 	const u32 ALERT_PROTOCOL_VERSION: 70;
 	const u32 ALERT_INTERNAL_ERROR: 80;
+	const u32 ALERT_NO_APPLICATION_PROTOCOL: 120;
 
 	# random bytes (buffer, how many): the program's to give, from its system's generator
 	method<ptr<u8> u32> random;
@@ -182,9 +185,11 @@ phi.WireTls:Library
 	# s, a client of host (the name the certificate must be for: a DNS name or an IPv4
 	# address), with its ClientHello ready to send; fallback: TLS 1.3 was tried first. False if
 	# there's no memory for it, or no random numbers (WireTls.random)
-	[Client: ptr<WireTlsSession> s: 0; ptr<u8> host: 0; bln fallback: false;]
+	# h2: offer HTTP/2 by ALPN (then s.h2 says if the server chose it)
+	[Client: ptr<WireTlsSession> s: 0; ptr<u8> host: 0; bln fallback: false; bln h2: false;]
 		if not (Begin: s) return false;
 		s.fallback is fallback;
+		s.offer_h2 is h2;
 		if (Length: host) > s.host.max return (Fail: s 'the host name is too long' ALERT_INTERNAL_ERROR);
 		s.host is host;
 		if random is 0 return (Fail: s 'no random numbers: the program must set WireTls.random' ALERT_INTERNAL_ERROR);
@@ -694,6 +699,17 @@ phi.WireTls:Library
 		call Put16: h + pos + 2 1;
 		h:(pos + 4) is 0;
 		pos++ 5;
+		# application_layer_protocol_negotiation: h2, then http/1.1
+		if s.offer_h2
+			call Put16: h + pos 16;
+			call Put16: h + pos + 2 14;
+			call Put16: h + pos + 4 12;
+			h:(pos + 6) is 2;
+			call Bytes.Copy: h + pos + 7 'h2' 2;
+			h:(pos + 9) is 8;
+			call Bytes.Copy: h + pos + 10 'http/1.1' 8;
+			pos++ 18;
+		;;
 		call Put16: h + extensions pos - extensions - 2;
 
 		h:0 is CLIENT_HELLO;
@@ -727,6 +743,19 @@ phi.WireTls:Library
 				if pos + size > stop return (Fail: s 'a ServerHello that can\'t be read' ALERT_DECODE_ERROR);
 				if type is 23
 					s.ems is true;
+				;;
+				if type is 16
+					# the protocol it chose: one of those offered
+					if not s.offer_h2 or size < 3 or body:(pos + 2) + 3 is not size
+						return (Fail: s 'the server chose a protocol that wasn\'t offered' ALERT_ILLEGAL_PARAMETER);
+					;;
+					u32 pl: body:(pos + 2);
+					if pl is 2 and body:(pos + 3) is 'h' and body:(pos + 4) is '2'
+						s.h2 is true;
+					;;
+					elif not (pl is 8 and (Bytes.Equal: body + pos + 3 'http/1.1' 8))
+						return (Fail: s 'the server chose a protocol that wasn\'t offered' ALERT_NO_APPLICATION_PROTOCOL);
+					;;
 				;;
 				if type is 0xFF01 and (size is not 1 or body:pos is not 0)
 					return (Fail: s 'the server\'s renegotiation_info is for another handshake' ALERT_HANDSHAKE_FAILURE);

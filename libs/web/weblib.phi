@@ -4,6 +4,7 @@
 #
 # See README.md for how to use it and docs/DESIGN.md for how it's built.
 
+use vectorlib;
 use core.text;
 use core.buf;
 use core.atoms;
@@ -47,6 +48,7 @@ phi.Weblib:Library
 		call WlSetFpu;
 		if started return;
 		started is true;
+		call VectorLib.Start;
 		call Dom.Start;
 	[end]
 }

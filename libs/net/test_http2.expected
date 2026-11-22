@@ -1,0 +1,32 @@
+C.6.1: 1, status 302, table 222 bytes in 4 entries
+cache-control: private
+date: Mon, 21 Oct 2013 20:13:21 GMT
+location: https://www.example.com
+C.6.2: 1, status 307, table 222 bytes in 4 entries
+cache-control: private
+date: Mon, 21 Oct 2013 20:13:21 GMT
+location: https://www.example.com
+C.6.3: 1, status 200, table 215 bytes in 3 entries
+cache-control: private
+date: Mon, 21 Oct 2013 20:13:22 GMT
+location: https://www.example.com
+content-encoding: gzip
+set-cookie: foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1
+ALPN: hello made 1, offers h2 and http/1.1 1, a ServerHello choosing h2 read 1, so h2 1
+--- replay 0: the requests are the bytes sent then: 1 (524 bytes, ids 1 11)
+connection failed 0 , to send back 9 bytes
+0: status 200 done 1 failed 0 body 17 type text/plain; charset=utf-8 second cookie b=2; HttpOnly unpacked 1: Hello over HTTP/2
+1: status 200 done 1 failed 0 body 37 type text/plain unpacked 1: this came gzipped
+2: status 200 done 1 failed 0 body 0 type text/plain; charset=utf-8 second cookie b=2; HttpOnly
+3: status 201 done 1 failed 0 body 23 type text/plain unpacked 1: got: posted over HTTP/2
+4: status 404 done 1 failed 0 body 17 type text/html unpacked 1: <h1>not here</h1>
+5: status 200 done 1 failed 0 body 300000 type application/octet-stream sum 821271184
+--- replay 1: the requests are the bytes sent then: 1 (524 bytes, ids 1 11)
+connection failed 0 , to send back 9 bytes
+0: status 200 done 1 failed 0 body 17 type text/plain; charset=utf-8 second cookie b=2; HttpOnly unpacked 1: Hello over HTTP/2
+1: status 200 done 1 failed 0 body 37 type text/plain unpacked 1: this came gzipped
+2: status 200 done 1 failed 0 body 0 type text/plain; charset=utf-8 second cookie b=2; HttpOnly
+3: status 201 done 1 failed 0 body 23 type text/plain unpacked 1: got: posted over HTTP/2
+4: status 404 done 1 failed 0 body 17 type text/html unpacked 1: <h1>not here</h1>
+5: status 200 done 1 failed 0 body 300000 type application/octet-stream sum 821271184
+done

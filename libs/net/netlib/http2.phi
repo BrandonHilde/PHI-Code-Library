@@ -1,0 +1,1156 @@
+# HTTP/2 (RFC 9113) for a client, with HPACK (RFC 7541): requests made into frames, and the frames that
+# come back made into answers, each a WireAnswer as HTTP/1.1's are (so WireHttp.Header and Unpack read
+# them as they read those). Many requests share the connection at once. Like the rest of netlib it opens
+# no connections: the program sends what Outgoing has and gives Take what comes. The connection must
+# have chosen "h2" (TLS's ALPN), or be one the program knows speaks it.
+#
+#   ptr<WireH2> c: new WireH2;                       # (big: on the heap)
+#   call WireH2.Start: c 8000000;                    # the preface and settings, to send first
+#   int id: (WireH2.Request: c 'GET' addr t 0 0 0);  # -1 if it can't take another now
+#   ... send WireH2.Pending: c bytes at WireH2.Outgoing: c, then WireH2.Sent: c n;
+#   ... bln ok: (WireH2.Take: c bytes got);          # what came; false once the connection failed
+#   ptr<WireAnswer> a: (WireH2.Answer: c id);        # a.head_done, a.done, a.failed, a.status ...
+#   call WireH2.Done: c id;                          # finished with it (cancels it if it isn't done)
+#   call WireH2.Free: c;
+#
+# It asks for no server push, keeps no request headers in HPACK's table (each is sent as a literal,
+# named from the static table where it can be), and takes what the server's table holds.
+
+use netlib.hpacktables;
+
+struct.WireH2Stream
+{
+	u32 id;
+	bln used;
+	WireAnswer a;
+	int send_window;
+	ptr<u8> body;               # what's still to send of the request's body (the program's, kept till it's sent)
+	u32 body_left;
+	u32 unacked;                # bytes taken since its last WINDOW_UPDATE
+	int code;                   # RST_STREAM's error code, when the server reset it
+}
+
+struct.WireH2Entry
+{
+	ptr<u8> name;
+	u32 name_length;
+	ptr<u8> value;
+	u32 value_length;
+}
+
+struct.WireH2
+{
+	bln failed;
+	str error: [120];
+	bln goaway;                 # the server is closing: no more requests
+	u32 last_good;              # the last stream GOAWAY said it took
+	ptr<u8> output;
+	u32 out_length;
+	u32 out_room;
+	ptr<u8> input;
+	u32 in_length;
+	u32 in_room;
+	u32 peer_frame;             # the server's SETTINGS_MAX_FRAME_SIZE
+	int peer_window;            # its SETTINGS_INITIAL_WINDOW_SIZE
+	u32 peer_streams;           # its SETTINGS_MAX_CONCURRENT_STREAMS
+	int send_window;            # the connection's, for what's sent
+	u32 unacked;                # bytes taken since the connection's last WINDOW_UPDATE
+	u32 next_id;
+	u32 most;                   # the most an answer's body may be
+	WireH2Stream streams[32];
+	# HPACK's dynamic table, newest first
+	WireH2Entry table[128];
+	u32 table_count;
+	u32 table_size;
+	u32 table_max;
+	# a header block as it comes (HEADERS, then CONTINUATIONs)
+	ptr<u8> block;
+	u32 block_length;
+	u32 block_room;
+	u32 block_stream;
+	bln block_end;
+	bln in_block;
+	# a header block being made (a request's), and the headers being taken (an answer's)
+	ptr<u8> made;
+	u32 made_length;
+	u32 made_room;
+	ptr<u8> lines;
+	u32 lines_length;
+	u32 lines_room;
+	int status;
+	ptr<u8> scratch;            # the last string read, decoded
+	u32 scratch_length;
+	u32 scratch_cap;
+}
+
+phi.WireH2:Library
+{
+	const u32 DATA: 0;
+	const u32 HEADERS: 1;
+	const u32 PRIORITY: 2;
+	const u32 RST_STREAM: 3;
+	const u32 SETTINGS: 4;
+	const u32 PUSH_PROMISE: 5;
+	const u32 PING: 6;
+	const u32 GOAWAY: 7;
+	const u32 WINDOW_UPDATE: 8;
+	const u32 CONTINUATION: 9;
+
+	const u32 END_STREAM: 1;
+	const u32 ACK: 1;
+	const u32 END_HEADERS: 4;
+	const u32 PADDED: 8;
+	const u32 PRIORITY_FLAG: 32;
+
+	const int WINDOW: 4194304;          # each stream's window (SETTINGS_INITIAL_WINDOW_SIZE)
+	const int CONN_WINDOW: 16777216;    # the connection's
+	const u32 MOST_STREAMS: 32;
+	const u32 MOST_FRAME: 16384;        # what's taken (the default, not raised)
+	const u32 MOST_HEAD: 262144;        # the most an answer's headers may be, as text
+
+	# ---- the connection ----
+
+	[Start: ptr<WireH2> c: 0; u32 most: 8000000;]
+		call Mem.Fill: c as ptr<u8> 0 sizeof WireH2;
+		c.error is '';
+		c.peer_frame is 16384;
+		c.peer_window is 65535;
+		c.peer_streams is 100;
+		c.send_window is 65535;
+		c.next_id is 1;
+		c.table_max is 4096;
+		c.most is most;
+		call Put: c 'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n' 24;
+		# no push, and room for much of an answer at once
+		u8 s[12];
+		call Setting: addr s:0 2 0;
+		call Setting: addr s:6 4 WINDOW as u32;
+		call Frame: c SETTINGS 0 0 addr s:0 12;
+		call WindowUpdate: c 0 (CONN_WINDOW - 65535) as u32;
+	[end]
+
+	[Setting: ptr<u8> p: 0; u32 id: 0; u32 value: 0;]
+		p:0 is (id >> 8) as u8;
+		p:1 is id as u8;
+		p:2 is (value >> 24) as u8;
+		p:3 is (value >> 16) as u8;
+		p:4 is (value >> 8) as u8;
+		p:5 is value as u8;
+	[end]
+
+	[Free: ptr<WireH2> c: 0;]
+		while u32 i: 0; i < MOST_STREAMS; i++;
+			call WireHttp.Free: addr c.streams:i.a;
+			c.streams:i.used is false;
+		;;
+		call ClearTable: c;
+		if c.output is not 0
+			free c.output;
+		;;
+		if c.input is not 0
+			free c.input;
+		;;
+		if c.block is not 0
+			free c.block;
+		;;
+		if c.made is not 0
+			free c.made;
+		;;
+		if c.lines is not 0
+			free c.lines;
+		;;
+		if c.scratch is not 0
+			free c.scratch;
+		;;
+		c.output is 0;
+		c.input is 0;
+		c.block is 0;
+		c.made is 0;
+		c.lines is 0;
+		c.scratch is 0;
+	[end]
+
+	[Fail: ptr<WireH2> c: 0; ptr<u8> why: 0;]
+		if c.failed return false;
+		c.failed is true;
+		c.error is why;
+		while u32 i: 0; i < MOST_STREAMS; i++;
+			ptr<WireH2Stream> s: addr c.streams:i;
+			if s.used and not s.a.done and not s.a.failed
+				call WireHttp.Fail: addr s.a why;
+			;;
+		;;
+	[end: false]
+
+	# the connection closed
+	[Ended: ptr<WireH2> c: 0;]
+		call Fail: c 'the connection closed';
+	[end]
+
+	# whether another request can go now
+	[CanRequest: ptr<WireH2> c: 0;]
+		if c.failed or c.goaway return false;
+		u32 open: 0;
+		bln free_slot: false;
+		while u32 i: 0; i < MOST_STREAMS; i++;
+			if c.streams:i.used
+				if not c.streams:i.a.done and not c.streams:i.a.failed
+					open++;
+				;;
+			;;
+			else
+				free_slot is true;
+			;;
+		;;
+	[end: free_slot and open < c.peer_streams and c.next_id < 0x7FFFFFF0]
+
+	# ---- what's to send ----
+
+	[Pending: ptr<WireH2> c: 0; : u32]
+	[end: c.out_length]
+
+	[Outgoing: ptr<WireH2> c: 0; : ptr<u8>]
+	[end: c.output]
+
+	[Sent: ptr<WireH2> c: 0; u32 n: 0;]
+		if n > c.out_length
+			n is c.out_length;
+		;;
+		call Mem.Move: c.output c.output + n c.out_length - n;
+		c.out_length is c.out_length - n;
+	[end]
+
+	# room for n more bytes in a buffer of the connection's
+	[Grow: ptr<ptr<u8>> buf: 0; ptr<u32> length: 0; ptr<u32> room: 0; u32 n: 0;]
+		if length:0 + n <= room:0 return true;
+		u32 want: room:0 * 2 + n + 256;
+		ptr<u8> grown: new u8[want];
+		if grown is 0 return false;
+		if buf:0 is not 0
+			call Mem.Copy: grown buf:0 length:0;
+			free buf:0;
+		;;
+		buf:0 is grown;
+		room:0 is want;
+	[end: true]
+
+	[Put: ptr<WireH2> c: 0; ptr<u8> p: 0; u32 n: 0;]
+		if not (Grow: addr c.output addr c.out_length addr c.out_room n)
+			call Fail: c 'out of memory';
+			return;
+		;;
+		call Mem.Copy: c.output + c.out_length p n;
+		c.out_length is c.out_length + n;
+	[end]
+
+	[Frame: ptr<WireH2> c: 0; u32 type: 0; u32 flags: 0; u32 stream: 0; ptr<u8> payload: 0; u32 n: 0;]
+		u8 h[9];
+		h:0 is (n >> 16) as u8;
+		h:1 is (n >> 8) as u8;
+		h:2 is n as u8;
+		h:3 is type as u8;
+		h:4 is flags as u8;
+		h:5 is ((stream >> 24) & 0x7F) as u8;
+		h:6 is (stream >> 16) as u8;
+		h:7 is (stream >> 8) as u8;
+		h:8 is stream as u8;
+		call Put: c addr h:0 9;
+		if n > 0
+			call Put: c payload n;
+		;;
+	[end]
+
+	[WindowUpdate: ptr<WireH2> c: 0; u32 stream: 0; u32 increment: 0;]
+		u8 p[4];
+		p:0 is ((increment >> 24) & 0x7F) as u8;
+		p:1 is (increment >> 16) as u8;
+		p:2 is (increment >> 8) as u8;
+		p:3 is increment as u8;
+		call Frame: c WINDOW_UPDATE 0 stream addr p:0 4;
+	[end]
+
+	[Reset: ptr<WireH2> c: 0; u32 stream: 0; u32 code: 0;]
+		u8 p[4];
+		p:0 is (code >> 24) as u8;
+		p:1 is (code >> 16) as u8;
+		p:2 is (code >> 8) as u8;
+		p:3 is code as u8;
+		call Frame: c RST_STREAM 0 stream addr p:0 4;
+	[end]
+
+	# ---- requests ----
+
+	# A request: its headers (the method, t, User-Agent, Accept-Encoding, a Content-Length when there's a
+	# body, then extra: whole header lines, each ending \r\n, or 0) and its body (length bytes at body,
+	# which must stay until they're sent). Its stream's number, or -1 if it can't go now.
+	[Request: ptr<WireH2> c: 0; ptr<u8> verb: 0; ptr<WireTarget> t: 0; ptr<u8> extra: 0; ptr<u8> body: 0; u32 length: 0; : int]
+		if not (CanRequest: c) return -1;
+		ptr<WireH2Stream> s: 0;
+		while u32 i: 0; i < MOST_STREAMS; i++;
+			if not c.streams:i.used
+				s is addr c.streams:i;
+				break;
+			;;
+		;;
+		u32 id: c.next_id;
+		c.next_id is c.next_id + 2;
+		s.used is true;
+		s.id is id;
+		s.send_window is c.peer_window;
+		s.unacked is 0;
+		s.code is 0;
+		s.body is body;
+		s.body_left is length;
+		bln head_only: ((WireHttp.Count: verb) is 4 and (WireHttp.StartsNoCase: verb 'HEAD'));
+		call WireHttp.Begin: addr s.a head_only c.most;
+		c.made_length is 0;
+		call Field: c ':method' verb (WireHttp.Count: verb);
+		if t.secure
+			call Field: c ':scheme' 'https' 5;
+		;;
+		else
+			call Field: c ':scheme' 'http' 4;
+		;;
+		u8 authority[300];
+		u32 an: (Authority: t addr authority:0 300);
+		call Field: c ':authority' addr authority:0 an;
+		call Field: c ':path' t.path (WireHttp.Count: t.path);
+		call Field: c 'user-agent' WireHttp.agent (WireHttp.Count: WireHttp.agent);
+		if WireHttp.brotli
+			call Field: c 'accept-encoding' 'gzip, deflate, br' 17;
+		;;
+		else
+			call Field: c 'accept-encoding' 'gzip, deflate' 13;
+		;;
+		if length > 0
+			u8 digits[12];
+			u32 dn: (Digits: length addr digits:0);
+			call Field: c 'content-length' addr digits:0 dn;
+		;;
+		if extra is not 0
+			call ExtraFields: c extra;
+		;;
+		# the block, in frames no bigger than the server takes
+		u32 at_: 0;
+		bln first: true;
+		while first or at_ < c.made_length
+			u32 n: c.made_length - at_;
+			if n > c.peer_frame
+				n is c.peer_frame;
+			;;
+			u32 flags: 0;
+			if at_ + n is c.made_length
+				flags is END_HEADERS;
+			;;
+			u32 type: CONTINUATION;
+			if first
+				type is HEADERS;
+				if length is 0
+					flags is flags | END_STREAM;
+				;;
+			;;
+			call Frame: c type flags id c.made + at_ n;
+			at_ is at_ + n;
+			first is false;
+		;;
+		call FlushBodies: c;
+		if c.failed return -1;
+	[end: id as int]
+
+	[Authority: ptr<WireTarget> t: 0; ptr<u8> target: 0; u32 size: 0; : u32]
+		u32 n: 0;
+		bln v6: false;
+		u32 hn: (WireHttp.Count: t.host);
+		while u32 k: 0; k < hn; k++;
+			if t.host:k is ':'
+				v6 is true;
+			;;
+		;;
+		if v6
+			target:n is '[';
+			n++;
+		;;
+		while u32 i: 0; i < hn and n + 10 < size; i++;
+			target:n is t.host:i;
+			n++;
+		;;
+		if v6
+			target:n is ']';
+			n++;
+		;;
+		if (t.secure and t.port is not 443) or (not t.secure and t.port is not 80)
+			target:n is ':';
+			n++;
+			n is n + (Digits: t.port as u32 target + n);
+		;;
+	[end: n]
+
+	[Digits: u32 v: 0; ptr<u8> target: 0; : u32]
+		u8 rev[12];
+		u32 n: 0;
+		while true
+			rev:n is ('0' + v % 10) as u8;
+			n++;
+			v is v / 10;
+			if v is 0 break;
+		;;
+		while u32 i: 0; i < n; i++;
+			target:i is rev:(n - 1 - i);
+		;;
+	[end: n]
+
+	# extra header lines, "Name: value\r\n" each: lower-cased, and not those HTTP/2 has no place for
+	[ExtraFields: ptr<WireH2> c: 0; ptr<u8> extra: 0;]
+		u32 i: 0;
+		while extra:i is not 0
+			u32 start: i;
+			while extra:i is not 0 and extra:i is not ':' and extra:i is not 13 and extra:i is not 10
+				i++;
+			;;
+			u32 name_end: i;
+			if extra:i is ':'
+				i++;
+				while extra:i is ' ' or extra:i is 9
+					i++;
+				;;
+				u32 vstart: i;
+				while extra:i is not 0 and extra:i is not 13 and extra:i is not 10
+					i++;
+				;;
+				u32 vend: i;
+				while vend > vstart and (extra:(vend - 1) is ' ' or extra:(vend - 1) is 9)
+					vend--;
+				;;
+				u8 name[64];
+				u32 nn: name_end - start;
+				if nn > 0 and nn < 64
+					while u32 k: 0; k < nn; k++;
+						name:k is (WireHttp.Lower: extra:(start + k)) as u8;
+					;;
+					name:nn is 0;
+					bln skip: (Same: addr name:0 nn 'connection') or (Same: addr name:0 nn 'keep-alive') or (Same: addr name:0 nn 'transfer-encoding') or (Same: addr name:0 nn 'upgrade') or (Same: addr name:0 nn 'host') or (Same: addr name:0 nn 'proxy-connection') or (Same: addr name:0 nn 'te');
+					if not skip
+						call Field: c addr name:0 extra + vstart vend - vstart;
+					;;
+				;;
+			;;
+			while extra:i is 13 or extra:i is 10
+				i++;
+			;;
+			if i is start
+				i++;
+			;;
+		;;
+	[end]
+
+	[Same: ptr<u8> a: 0; u32 n: 0; ptr<u8> word: 0;]
+		u32 k: 0;
+		while k < n
+			if word:k is 0 or a:k is not word:k return false;
+			k++;
+		;;
+	[end: word:n is 0]
+
+	# a header into the block being made: a literal not indexed, its name from the static table if it's there
+	[Field: ptr<WireH2> c: 0; ptr<u8> name: 0; ptr<u8> value: 0; u32 value_length: 0;]
+		u32 nn: (WireHttp.Count: name);
+		u32 index: 0;
+		while u32 i: 1; i <= 61; i++;
+			ptr<u8> sn: (StaticName: i);
+			if (WireHttp.Count: sn) is nn and (Mem.Equal: sn name nn)
+				index is i;
+				break;
+			;;
+		;;
+		if index > 0
+			call MadeInt: c index 4 0x00;
+		;;
+		else
+			call MadeByte: c 0x00;
+			call MadeInt: c nn 7 0x00;
+			call Made: c name nn;
+		;;
+		call MadeInt: c value_length 7 0x00;
+		call Made: c value value_length;
+	[end]
+
+	[Made: ptr<WireH2> c: 0; ptr<u8> p: 0; u32 n: 0;]
+		if not (Grow: addr c.made addr c.made_length addr c.made_room n)
+			call Fail: c 'out of memory';
+			return;
+		;;
+		call Mem.Copy: c.made + c.made_length p n;
+		c.made_length is c.made_length + n;
+	[end]
+
+	[MadeByte: ptr<WireH2> c: 0; u32 b: 0;]
+		u8 one[1];
+		one:0 is b as u8;
+		call Made: c addr one:0 1;
+	[end]
+
+	# HPACK's integer: v with a prefix of bits bits, under the pattern's high bits
+	[MadeInt: ptr<WireH2> c: 0; u32 v: 0; u32 bits: 0; u32 pattern: 0;]
+		u32 most: (1 << bits) - 1;
+		if v < most
+			call MadeByte: c pattern | v;
+			return;
+		;;
+		call MadeByte: c pattern | most;
+		v is v - most;
+		while v >= 128
+			call MadeByte: c (v & 127) | 128;
+			v is v >> 7;
+		;;
+		call MadeByte: c v;
+	[end]
+
+	# the request bodies, as far as the windows let them go
+	[FlushBodies: ptr<WireH2> c: 0;]
+		while u32 i: 0; i < MOST_STREAMS; i++;
+			ptr<WireH2Stream> s: addr c.streams:i;
+			while s.used and s.body_left > 0 and not s.a.failed
+				int room: s.send_window;
+				if c.send_window < room
+					room is c.send_window;
+				;;
+				if (c.peer_frame as int) < room
+					room is c.peer_frame as int;
+				;;
+				if room <= 0 break;
+				u32 n: s.body_left;
+				if n > room as u32
+					n is room as u32;
+				;;
+				u32 flags: 0;
+				if n is s.body_left
+					flags is END_STREAM;
+				;;
+				call Frame: c DATA flags s.id s.body n;
+				s.body is s.body + n;
+				s.body_left is s.body_left - n;
+				s.send_window is s.send_window - n as int;
+				c.send_window is c.send_window - n as int;
+			;;
+		;;
+	[end]
+
+	# ---- answers ----
+
+	[Find: ptr<WireH2> c: 0; u32 id: 0; : ptr<WireH2Stream>]
+		if id is 0 return 0;
+		while u32 i: 0; i < MOST_STREAMS; i++;
+			if c.streams:i.used and c.streams:i.id is id
+				return addr c.streams:i;
+			;;
+		;;
+	[end: 0]
+
+	[Answer: ptr<WireH2> c: 0; int id: 0; : ptr<WireAnswer>]
+		ptr<WireH2Stream> s: (Find: c id as u32);
+		if s is 0 return 0;
+	[end: addr s.a]
+
+	# finished with an answer: its memory goes back, and if it hadn't all come, the server's told to stop
+	[Done: ptr<WireH2> c: 0; int id: 0;]
+		ptr<WireH2Stream> s: (Find: c id as u32);
+		if s is 0 return;
+		if not s.a.done and not s.a.failed and not c.failed
+			call Reset: c s.id 8;
+		;;
+		call WireHttp.Free: addr s.a;
+		s.used is false;
+		s.id is 0;
+		s.body_left is 0;
+	[end]
+
+	# ---- what comes ----
+
+	# bytes that came: false once the connection's failed (c.error says why)
+	[Take: ptr<WireH2> c: 0; ptr<u8> data: 0; u32 length: 0;]
+		if c.failed return false;
+		if not (Grow: addr c.input addr c.in_length addr c.in_room length)
+			return (Fail: c 'out of memory');
+		;;
+		call Mem.Copy: c.input + c.in_length data length;
+		c.in_length is c.in_length + length;
+		u32 at_: 0;
+		while c.in_length - at_ >= 9 and not c.failed
+			ptr<u8> h: c.input + at_;
+			u32 n: (h:0 << 16) | (h:1 << 8) | h:2;
+			if n > MOST_FRAME
+				return (Fail: c 'a frame was bigger than allowed');
+			;;
+			if c.in_length - at_ < 9 + n break;
+			u32 stream: ((h:5 & 0x7F) << 24) | (h:6 << 16) | (h:7 << 8) | h:8;
+			call OneFrame: c h:3 h:4 stream h + 9 n;
+			at_ is at_ + 9 + n;
+		;;
+		if at_ > 0
+			call Mem.Move: c.input c.input + at_ c.in_length - at_;
+			c.in_length is c.in_length - at_;
+		;;
+		call FlushBodies: c;
+	[end: not c.failed]
+
+	[OneFrame: ptr<WireH2> c: 0; u32 type: 0; u32 flags: 0; u32 stream: 0; ptr<u8> p: 0; u32 n: 0;]
+		if c.in_block and type is not CONTINUATION
+			call Fail: c 'a header block was cut off';
+			return;
+		;;
+		when type
+			is DATA
+				call OnData: c flags stream p n;
+			;;
+			is HEADERS
+				if stream is 0
+					call Fail: c 'HEADERS on stream 0';
+					return;
+				;;
+				u32 skip: 0;
+				u32 pad: 0;
+				if (flags & PADDED) is not 0
+					if n < 1
+						call Fail: c 'a padded frame too short';
+						return;
+					;;
+					pad is p:0;
+					skip is 1;
+				;;
+				if (flags & PRIORITY_FLAG) is not 0
+					skip is skip + 5;
+				;;
+				if skip + pad > n
+					call Fail: c 'a padded frame too short';
+					return;
+				;;
+				c.block_length is 0;
+				c.block_stream is stream;
+				c.block_end is ((flags & END_STREAM) is not 0);
+				call BlockAdd: c p + skip n - skip - pad;
+				c.in_block is true;
+				if (flags & END_HEADERS) is not 0
+					call BlockDone: c;
+				;;
+			;;
+			is CONTINUATION
+				if not c.in_block or stream is not c.block_stream
+					call Fail: c 'a CONTINUATION out of place';
+					return;
+				;;
+				call BlockAdd: c p n;
+				if (flags & END_HEADERS) is not 0
+					call BlockDone: c;
+				;;
+			;;
+			is RST_STREAM
+				ptr<WireH2Stream> rs: (Find: c stream);
+				if rs is not 0 and n >= 4 and not rs.a.done
+					rs.code is ((p:0 << 24) | (p:1 << 16) | (p:2 << 8) | p:3) as int;
+					call WireHttp.Fail: addr rs.a 'the server reset the stream';
+				;;
+			;;
+			is SETTINGS
+				if stream is not 0 or (n % 6) is not 0
+					call Fail: c 'a bad SETTINGS frame';
+					return;
+				;;
+				if (flags & ACK) is not 0 return;
+				u32 i: 0;
+				while i + 6 <= n
+					u32 id: (p:i << 8) | p:(i + 1);
+					u32 v: (p:(i + 2) << 24) | (p:(i + 3) << 16) | (p:(i + 4) << 8) | p:(i + 5);
+					when id
+						is 3
+							c.peer_streams is v;
+						;;
+						is 4
+							if v > 0x7FFFFFFF
+								call Fail: c 'a window too big';
+								return;
+							;;
+							int delta: v as int - c.peer_window;
+							c.peer_window is v as int;
+							while u32 k: 0; k < MOST_STREAMS; k++;
+								if c.streams:k.used
+									c.streams:k.send_window is c.streams:k.send_window + delta;
+								;;
+							;;
+						;;
+						is 5
+							if v < 16384 or v > 16777215
+								call Fail: c 'a bad frame size';
+								return;
+							;;
+							c.peer_frame is v;
+						;;
+					;;
+					i is i + 6;
+				;;
+				call Frame: c SETTINGS ACK 0 0 0;
+			;;
+			is PUSH_PROMISE
+				call Fail: c 'a push the client didn\'t allow';
+			;;
+			is PING
+				if n is not 8 or stream is not 0
+					call Fail: c 'a bad PING';
+					return;
+				;;
+				if (flags & ACK) is 0
+					call Frame: c PING ACK 0 p 8;
+				;;
+			;;
+			is GOAWAY
+				if n >= 8
+					c.goaway is true;
+					c.last_good is ((p:0 & 0x7F) << 24) | (p:1 << 16) | (p:2 << 8) | p:3;
+					while u32 g: 0; g < MOST_STREAMS; g++;
+						ptr<WireH2Stream> gs: addr c.streams:g;
+						if gs.used and gs.id > c.last_good and not gs.a.done
+							call WireHttp.Fail: addr gs.a 'the server went away before this was answered';
+						;;
+					;;
+				;;
+			;;
+			is WINDOW_UPDATE
+				if n is not 4
+					call Fail: c 'a bad WINDOW_UPDATE';
+					return;
+				;;
+				int inc: (((p:0 & 0x7F) << 24) | (p:1 << 16) | (p:2 << 8) | p:3) as int;
+				if stream is 0
+					c.send_window is c.send_window + inc;
+				;;
+				else
+					ptr<WireH2Stream> ws: (Find: c stream);
+					if ws is not 0
+						ws.send_window is ws.send_window + inc;
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	[OnData: ptr<WireH2> c: 0; u32 flags: 0; u32 stream: 0; ptr<u8> p: 0; u32 n: 0;]
+		if stream is 0
+			call Fail: c 'DATA on stream 0';
+			return;
+		;;
+		u32 skip: 0;
+		u32 pad: 0;
+		if (flags & PADDED) is not 0
+			if n < 1
+				call Fail: c 'a padded frame too short';
+				return;
+			;;
+			pad is p:0;
+			skip is 1;
+		;;
+		if skip + pad > n
+			call Fail: c 'a padded frame too short';
+			return;
+		;;
+		# the whole frame counts against the windows, padding and all
+		c.unacked is c.unacked + n;
+		if c.unacked >= (CONN_WINDOW / 2) as u32
+			call WindowUpdate: c 0 c.unacked;
+			c.unacked is 0;
+		;;
+		ptr<WireH2Stream> s: (Find: c stream);
+		if s is 0 or s.a.failed return;
+		if not s.a.head_done
+			call WireHttp.Fail: addr s.a 'a body before its headers';
+			return;
+		;;
+		u32 m: n - skip - pad;
+		if s.a.body_length + m > s.a.body_max
+			call WireHttp.Fail: addr s.a 'the body is bigger than allowed';
+			call Reset: c s.id 8;
+			return;
+		;;
+		if not (Grow: addr s.a.body addr s.a.body_length addr s.a.body_room m)
+			call WireHttp.Fail: addr s.a 'out of memory';
+			return;
+		;;
+		call Mem.Copy: s.a.body + s.a.body_length p + skip m;
+		s.a.body_length is s.a.body_length + m;
+		if (flags & END_STREAM) is not 0
+			s.a.done is true;
+			return;
+		;;
+		s.unacked is s.unacked + n;
+		if s.unacked >= (WINDOW / 2) as u32
+			call WindowUpdate: c s.id s.unacked;
+			s.unacked is 0;
+		;;
+	[end]
+
+	[BlockAdd: ptr<WireH2> c: 0; ptr<u8> p: 0; u32 n: 0;]
+		if c.block_length + n > MOST_HEAD
+			call Fail: c 'a header block too big';
+			return;
+		;;
+		if not (Grow: addr c.block addr c.block_length addr c.block_room n)
+			call Fail: c 'out of memory';
+			return;
+		;;
+		call Mem.Copy: c.block + c.block_length p n;
+		c.block_length is c.block_length + n;
+	[end]
+
+	# A whole header block: decoded whatever stream it's for (HPACK's table is the connection's), and
+	# made the answer's head ("HTTP/2 200" then a line for each header) if it's a stream's first.
+	[BlockDone: ptr<WireH2> c: 0;]
+		c.in_block is false;
+		c.lines_length is 0;
+		c.status is 0;
+		if not (Decode: c c.block c.block_length) return;
+		ptr<WireH2Stream> s: (Find: c c.block_stream);
+		if s is 0 or s.a.failed return;
+		if s.a.head_done
+			# trailers: nothing in them is kept, but they end it
+			if c.block_end
+				s.a.done is true;
+			;;
+			return;
+		;;
+		if c.status >= 100 and c.status < 200
+			return;
+		;;
+		if c.status < 200 or c.status > 999
+			call WireHttp.Fail: addr s.a 'an answer without a status';
+			return;
+		;;
+		s.a.status is c.status;
+		s.a.head_length is 0;
+		u8 first[16];
+		call Mem.Copy: addr first:0 'HTTP/2 ' 7;
+		u32 fn: 7 + (Digits: c.status as u32 addr first:7);
+		first:fn is 13;
+		first:(fn + 1) is 10;
+		call HeadAdd: addr s.a addr first:0 fn + 2;
+		call HeadAdd: addr s.a c.lines c.lines_length;
+		u8 crlf[2];
+		crlf:0 is 13;
+		crlf:1 is 10;
+		call HeadAdd: addr s.a addr crlf:0 2;
+		if s.a.head is not 0
+			s.a.head:(s.a.head_length) is 0;
+		;;
+		s.a.head_done is true;
+		s.a.keep is true;
+		if c.block_end or s.a.no_body or s.a.status is 204 or s.a.status is 304
+			s.a.done is true;
+		;;
+	[end]
+
+	[HeadAdd: ptr<WireAnswer> a: 0; ptr<u8> p: 0; u32 n: 0;]
+		u32 room: a.head_room;
+		u32 length: a.head_length;
+		if length + n + 1 > room
+			u32 want: room * 2 + n + 64;
+			ptr<u8> grown: new u8[want];
+			if grown is 0
+				call WireHttp.Fail: a 'out of memory';
+				return;
+			;;
+			if a.head is not 0
+				call Mem.Copy: grown a.head length;
+				free a.head;
+			;;
+			a.head is grown;
+			a.head_room is want;
+		;;
+		call Mem.Copy: a.head + a.head_length p n;
+		a.head_length is a.head_length + n;
+	[end]
+
+	# ---- HPACK ----
+
+	# where static entry i's name is (its value follows its zero)
+	[StaticName: u32 i: 0; : ptr<u8>]
+	[end: (addr WireHpackTables.static_text:0) + WireHpackTables.static_at:(i - 1)]
+
+	u32 pos: 0;
+
+	[Decode: ptr<WireH2> c: 0; ptr<u8> p: 0; u32 n: 0;]
+		pos is 0;
+		bln first: true;
+		while pos < n
+			u32 b: p:pos;
+			if (b & 0x80) is not 0
+				u32 index: (Int: c p n 7);
+				if c.failed return false;
+				ptr<u8> nm: 0;
+				u32 nl: 0;
+				ptr<u8> vl: 0;
+				u32 vn: 0;
+				if not (Entry: c index addr nm addr nl addr vl addr vn) return false;
+				call Field2: c nm nl vl vn;
+			;;
+			elif (b & 0xC0) is 0x40 or (b & 0xF0) is 0x00 or (b & 0xF0) is 0x10
+				bln keep: (b & 0xC0) is 0x40;
+				u32 bits: 4;
+				if keep
+					bits is 6;
+				;;
+				u32 ni: (Int: c p n bits);
+				if c.failed return false;
+				# the name, from a table or written; the value written
+				ptr<u8> name: 0;
+				u32 name_length: 0;
+				ptr<u8> name_copy: 0;
+				if ni > 0
+					ptr<u8> v0: 0;
+					u32 v0n: 0;
+					if not (Entry: c ni addr name addr name_length addr v0 addr v0n) return false;
+					name_copy is (Copy: name name_length);
+				;;
+				else
+					if not (Text: c p n) return false;
+					name_copy is (Copy: c.scratch c.scratch_length);
+					name_length is c.scratch_length;
+				;;
+				if name_copy is 0
+					return (Fail: c 'out of memory');
+				;;
+				if not (Text: c p n)
+					free name_copy;
+					return false;
+				;;
+				call Field2: c name_copy name_length c.scratch c.scratch_length;
+				if keep
+					call Remember: c name_copy name_length c.scratch c.scratch_length;
+				;;
+				free name_copy;
+			;;
+			elif (b & 0xE0) is 0x20
+				# a change of the table's size, only at a block's start
+				if not first
+					return (Fail: c 'a table size change out of place');
+				;;
+				u32 size: (Int: c p n 5);
+				if c.failed return false;
+				if size > 4096
+					return (Fail: c 'a table bigger than allowed');
+				;;
+				c.table_max is size;
+				call Evict: c 0;
+				continue;
+			;;
+			else
+				return (Fail: c 'a bad header field');
+			;;
+			first is false;
+		;;
+	[end: true]
+
+	# HPACK's integer, with a prefix of bits bits, from p at pos
+	[Int: ptr<WireH2> c: 0; ptr<u8> p: 0; u32 n: 0; u32 bits: 0; : u32]
+		u32 most: (1 << bits) - 1;
+		u32 v: p:pos & most;
+		pos++;
+		if v < most return v;
+		u32 shift: 0;
+		while true
+			if pos >= n
+				call Fail: c 'a header number cut off';
+				return 0;
+			;;
+			u32 b: p:pos;
+			pos++;
+			if shift > 21
+				call Fail: c 'a header number too big';
+				return 0;
+			;;
+			v is v + ((b & 127) << shift);
+			shift is shift + 7;
+			if (b & 128) is 0 break;
+		;;
+	[end: v]
+
+	# a string, into c.scratch (c.scratch_length of it)
+	[Text: ptr<WireH2> c: 0; ptr<u8> p: 0; u32 n: 0;]
+		if pos >= n
+			return (Fail: c 'a header string cut off');
+		;;
+		bln huffman: (p:pos & 0x80) is not 0;
+		u32 length: (Int: c p n 7);
+		if c.failed return false;
+		if length > n - pos
+			return (Fail: c 'a header string cut off');
+		;;
+		u32 need: length * 2 + 16;
+		if need > c.scratch_cap or c.scratch is 0
+			if c.scratch is not 0
+				free c.scratch;
+			;;
+			c.scratch is new u8[need];
+			if c.scratch is 0
+				c.scratch_cap is 0;
+				return (Fail: c 'out of memory');
+			;;
+			c.scratch_cap is need;
+		;;
+		if not huffman
+			call Mem.Copy: c.scratch p + pos length;
+			c.scratch_length is length;
+			pos is pos + length;
+			return true;
+		;;
+		# canonical Huffman: a code of each length is the first of that length plus its place
+		u32 made_n: 0;
+		u32 code: 0;
+		u32 bits: 0;
+		u32 i: 0;
+		while i < length
+			u32 byte: p:(pos + i);
+			while int k: 7; k >= 0; k--;
+				code is (code << 1) | ((byte >> k) & 1);
+				bits++;
+				if bits > 30
+					return (Fail: c 'a bad Huffman code');
+				;;
+				u32 cnt: WireHpackTables.count:bits;
+				if cnt > 0 and code - WireHpackTables.first:bits < cnt and code >= WireHpackTables.first:bits
+					u32 sym: WireHpackTables.symbols:(WireHpackTables.offset:bits + code - WireHpackTables.first:bits);
+					if sym is 256
+						return (Fail: c 'EOS in a header string');
+					;;
+					if made_n >= c.scratch_cap
+						return (Fail: c 'a header string too long');
+					;;
+					c.scratch:made_n is sym as u8;
+					made_n++;
+					code is 0;
+					bits is 0;
+				;;
+			;;
+			i++;
+		;;
+		# what's left must be padding: under 8 bits, all ones
+		if bits > 7 or code is not (1 << bits) - 1
+			return (Fail: c 'bad padding in a Huffman string');
+		;;
+		c.scratch_length is made_n;
+		pos is pos + length;
+	[end: true]
+
+	[Copy: ptr<u8> p: 0; u32 n: 0; : ptr<u8>]
+		ptr<u8> q: new u8[n + 1];
+		if q is 0 return 0;
+		if n > 0
+			call Mem.Copy: q p n;
+		;;
+		q:n is 0;
+	[end: q]
+
+	# entry i of the tables: static (1 to 61), then dynamic, newest first
+	[Entry: ptr<WireH2> c: 0; u32 i: 0; ptr<ptr<u8>> name: 0; ptr<u32> name_length: 0; ptr<ptr<u8>> value: 0; ptr<u32> value_length: 0;]
+		if i is 0
+			return (Fail: c 'header index 0');
+		;;
+		if i <= 61
+			ptr<u8> sn: (StaticName: i);
+			u32 nl: (WireHttp.Count: sn);
+			name:0 is sn;
+			name_length:0 is nl;
+			value:0 is sn + nl + 1;
+			value_length:0 is (WireHttp.Count: sn + nl + 1);
+			return true;
+		;;
+		u32 d: i - 62;
+		if d >= c.table_count
+			return (Fail: c 'a header index past the table');
+		;;
+		ptr<WireH2Entry> e: addr c.table:d;
+		name:0 is e.name;
+		name_length:0 is e.name_length;
+		value:0 is e.value;
+		value_length:0 is e.value_length;
+	[end: true]
+
+	# a header taken: :status read, other pseudo-headers left, the rest as "name: value" lines
+	[Field2: ptr<WireH2> c: 0; ptr<u8> name: 0; u32 nl: 0; ptr<u8> value: 0; u32 vl: 0;]
+		if nl > 0 and name:0 is ':'
+			if nl is 7 and (Mem.Equal: name ':status' 7)
+				int v: 0;
+				while u32 i: 0; i < vl and i < 4; i++;
+					if value:i < '0' or value:i > '9'
+						v is -1;
+						break;
+					;;
+					v is v * 10 + (value:i - '0');
+				;;
+				c.status is v;
+			;;
+			return;
+		;;
+		if c.lines_length + nl + vl + 4 > MOST_HEAD
+			call Fail: c 'headers too big';
+			return;
+		;;
+		if not (Grow: addr c.lines addr c.lines_length addr c.lines_room nl + vl + 4)
+			call Fail: c 'out of memory';
+			return;
+		;;
+		ptr<u8> w: c.lines + c.lines_length;
+		call Mem.Copy: w name nl;
+		w:nl is ':';
+		w:(nl + 1) is ' ';
+		call Mem.Copy: w + nl + 2 value vl;
+		w:(nl + 2 + vl) is 13;
+		w:(nl + 3 + vl) is 10;
+		c.lines_length is c.lines_length + nl + vl + 4;
+	[end]
+
+	# a header into the dynamic table, newest first: the oldest go to make room (all, if it's too big)
+	[Remember: ptr<WireH2> c: 0; ptr<u8> name: 0; u32 nl: 0; ptr<u8> value: 0; u32 vl: 0;]
+		u32 size: nl + vl + 32;
+		if size > c.table_max
+			call ClearTable: c;
+			return;
+		;;
+		call Evict: c size;
+		if c.table_count >= 128
+			call Drop: c;
+		;;
+		ptr<u8> n2: (Copy: name nl);
+		ptr<u8> v2: (Copy: value vl);
+		if n2 is 0 or v2 is 0
+			call Fail: c 'out of memory';
+			return;
+		;;
+		call Mem.Move: (addr c.table:1) as ptr<u8> (addr c.table:0) as ptr<u8> c.table_count * sizeof WireH2Entry;
+		c.table:0.name is n2;
+		c.table:0.name_length is nl;
+		c.table:0.value is v2;
+		c.table:0.value_length is vl;
+		c.table_count++;
+		c.table_size is c.table_size + size;
+	[end]
+
+	# the oldest go until there's room for room more
+	[Evict: ptr<WireH2> c: 0; u32 room: 0;]
+		while c.table_count > 0 and c.table_size + room > c.table_max
+			call Drop: c;
+		;;
+	[end]
+
+	[Drop: ptr<WireH2> c: 0;]
+		if c.table_count is 0 return;
+		c.table_count--;
+		ptr<WireH2Entry> e: addr c.table:(c.table_count);
+		c.table_size is c.table_size - (e.name_length + e.value_length + 32);
+		free e.name;
+		free e.value;
+	[end]
+
+	[ClearTable: ptr<WireH2> c: 0;]
+		while c.table_count > 0
+			call Drop: c;
+		;;
+		c.table_size is 0;
+	[end]
+}

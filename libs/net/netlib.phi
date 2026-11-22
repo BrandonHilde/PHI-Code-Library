@@ -9,6 +9,8 @@
 use corelib;
 use netlib.tls;
 use netlib.http;
+use netlib.hpacktables;
+use netlib.http2;
 use netlib.cookies;
 
 phi.NetLib:Library

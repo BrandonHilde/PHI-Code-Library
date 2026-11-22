@@ -25,6 +25,7 @@ use page.events;
 use page.window;
 use page.observers;
 use page.pmodules;
+use page.canvas;
 
 # what's asked of PageHost.load
 enum.PageLoad
@@ -55,6 +56,14 @@ struct.PageHost
 	# the page sets ("name=value; Path=/..."). Without them, a page sees what it set, this session.
 	method<ptr<Page> ptr<u8> int: int> cookies;
 	method<ptr<Page> ptr<u8>> set_cookie;
+	# for a <canvas>: a string's outlines in a CSS font (font, text, its length; into the path if it isn't
+	# 0, at a baseline through the origin, with width, ascent and descent into the three numbers: false
+	# if it can't); an <img>'s pixels (into the bitmap: false if it has none yet); and pixels as a PNG
+	# file (pixels, width, height, into the buffer: false if it can't). Without them, text and pictures
+	# don't draw, and toDataURL gives "data:,".
+	method<ptr<Page> ptr<u8> ptr<u8> u32 ptr<VgPath> ptr<f64>: bln> canvas_text;
+	method<ptr<Page> ptr<DomNode> ptr<PageBitmap>: bln> image_pixels;
+	method<ptr<Page> ptr<u32> int int ptr<WlBuf>: bln> encode_png;
 	ptr<u8> user;           # the browser's own
 }
 
@@ -157,6 +166,9 @@ phi.Page:Library
 			p.host.alert is host.alert;
 			p.host.cookies is host.cookies;
 			p.host.set_cookie is host.set_cookie;
+			p.host.canvas_text is host.canvas_text;
+			p.host.image_pixels is host.image_pixels;
+			p.host.encode_png is host.encode_png;
 			p.host.user is host.user;
 		;;
 		p.width is width;

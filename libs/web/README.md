@@ -36,7 +36,7 @@ From the repo's root, as its [README](../../README.md) says:
 
 `build.ps1` sets `NASMENV=-O1`, which assembles 80 times quicker for a program 3.5% bigger.
 
-A program with `weblib.philib` beside it says `use weblib;` and needs none of the source. Use a `.philib` built by the same build of `phi`.
+A program with `weblib.philib` beside it says `use weblib;` and needs none of the source. Use a `.philib` built by the same build of `phi`. weblib uses vectorlib (for `<canvas>`), so `vectorlib.philib` goes beside it too, and a program that names vectorlib's types (as a `PageHost` that draws a canvas's text does) says `use vectorlib;` as well.
 
 ## What's in it
 
@@ -47,9 +47,16 @@ A program with `weblib.philib` beside it says `use weblib;` and needs none of th
 | HTML | `html/` | the WHATWG parsing algorithm in full, a serializer, `document.write` and incremental parsing |
 | CSS | `css/` | parsing, selectors up to `:has()`, the cascade, `@media`, `@supports`, `@layer`, `var()`, `calc()`, 285 longhand properties, typed computed values |
 | JavaScript | `js/` | a bytecode VM with a precise garbage collector, and the standard library |
-| Page | `page/` | the DOM as JS sees it, events, timers, `fetch`, and the document's lifecycle |
+| Page | `page/` | the DOM as JS sees it, events, timers, `fetch`, `<canvas>`, and the document's lifecycle |
 
-**JavaScript** is ES2020 and some of what's come since: classes with private fields, generators, async functions, destructuring, optional chaining, `Proxy`, `Reflect`, `Map` and `Set` with the new set operations, `WeakRef`, typed arrays, `RegExp` with lookbehind and named groups, `Date` and `JSON`; and since 2026-11-21, `BigInt` (with `BigInt64Array`, `BigUint64Array` and DataView's BigInt methods) and modules (`<script type=module>`, `import`/`export`, `import()` from any script, `import.meta`, top-level `await`).
+**JavaScript** is ES2020 and some of what's come since: classes with private fields, generators, async functions, destructuring, optional chaining, `Proxy`, `Reflect`, `Map` and `Set` with the new set operations, `WeakRef`, typed arrays, `RegExp` with lookbehind and named groups, `Date` and `JSON`; and since 2026-11-21, `BigInt` (with `BigInt64Array`, `BigUint64Array` and DataView's BigInt methods), modules (`<script type=module>`, `import`/`export`, `import()` from any script, `import.meta`, top-level `await`), and:
+
+- **RegExp**: every Unicode property ECMAScript names in `\p{...}` (general categories, scripts and their extensions, the binary properties, and with the `v` flag the emoji properties of strings), from Unicode 17's character database (`tools/web/js_gen_props.py` makes `js/uniprops.phi`, 88 KB); the `v` flag's classes (nested, `&&`, `--`, `\q{...}`); `(?i:...)` and the other modifiers; the same group name in separate alternatives; `RegExp.escape`.
+- **Iterator** and its helpers (`map`, `filter`, `take`, `drop`, `flatMap`, `reduce`, `toArray`, `forEach`, `some`, `every`, `find`), `Iterator.from` and `concat`, and from the proposals test262 has, `zip`, `zipKeyed`, `includes`, `join`, `chunks` and `windows`.
+- **Buffers**: resizable `ArrayBuffer`s and growable `SharedArrayBuffer`s, `transfer` and detaching, immutable buffers (`transferToImmutable`, `sliceToImmutable`), typed arrays and DataViews that track a buffer's length, `Float16Array` and `Math.f16round`, `toSorted`, `toReversed` and `with`, `Atomics` (one thread: `wait` doesn't block, `waitAsync` is woken by `notify`), and `Uint8Array`'s base64 and hex.
+- **Resources**: `using` and `await using` (in blocks, functions, modules and `for` heads), `DisposableStack`, `AsyncDisposableStack`, `SuppressedError`, `Symbol.dispose`; and `Array.fromAsync` and `Error.isError`.
+
+The newer builtins that are mostly choosing among options are JavaScript (`js/builtins/iterator.js`, `typedarray.js`, `extras.js`, made into PHI by `tools/web/js_to_phi.py`), loaded the first time one of them is called (`js/builtins/lazy.phi`), so a page that never uses them pays nothing; what scripts see are natives with the builtins' own names, lengths and identity.
 
 **Modules** (2026-11-21): the compiler makes a module a function whose parameters are the namespaces it imports from, so an import is a live binding (a read of the other module's namespace) and assigning one is a TypeError; its own exports are getters on its namespace, defined as it starts, and reading one before then is a ReferenceError. `js/modules.phi` keeps the modules by address, asks its host for each (`JsModules.load` and `resolve`), and runs a graph imports first; `page/pmodules.phi` fetches them as SCRIPT requests and runs a page's module scripts in document order once it's parsed, before `DOMContentLoaded`, as the HTML standard has it. A `nomodule` script doesn't run. Not yet: link-time errors for importing a name a module doesn't export (it reads undefined), JSON modules, import maps, the namespace object's own rules (its keys come in the order they were defined, not sorted, and its properties are getters), and a module with top-level `await` doesn't hold up the ones that import it.
 
@@ -85,8 +92,10 @@ figures are the same on Windows and Linux, except for `built-ins`, which was cou
 | html5lib / WPT tree construction | 14,792 of 14,792 runs |
 | html5lib tokenizer | 14,084 of 14,084 runs |
 | CSS parsing tests | 8,331 of 8,338 |
-| test262, `language`, modules included (Linux, 2026-11-21) | 22,484 of 23,832 (94.3%), no crashes |
-| test262, `built-ins`, all of it (Linux, 2026-11-21) | 15,366 of 23,861 (64.4%), no crashes |
+| test262, `language`, modules included (Linux, 2026-11-21, evening) | 22,613 of 23,832 (94.9%), no crashes |
+| test262, `built-ins`, all of it (Linux, 2026-11-21, evening) | 18,519 of 23,861 (77.6%), no crashes |
+| test262, `built-ins` without `Temporal`'s 4,613 (none of which pass) | 18,519 of 19,248 (96.2%) |
+| (that morning, before RegExp's properties, the iterator helpers, the new buffers and `using`) | `language` 22,484 (94.3%); `built-ins` 15,366 (64.4%) |
 | test262, `intl402` without Temporal's 2,029 (Linux, 2026-11-21) | 1,140 of 1,353 (84.3%), no crashes |
 | (before BigInt and modules, 2026-11-07: `language` without its 817 module tests, and `built-ins`) | 21,487 of 23,015 (93.4%); 14,577 of 23,848 (61.1%) |
 | test262, `built-ins`, without the families that weren't built on 2026-11-07 (`Temporal`, `Atomics`, `SharedArrayBuffer`, `BigInt`, `ShadowRealm`, the disposable stacks, `SuppressedError`, `Iterator`) | 14,561 of 17,702 (82.3%), then |
@@ -96,9 +105,9 @@ which families those were wasn't written down. `Intl` is in test262's `intl402`,
 its failures there are tests of other locales' formats, of calendars and numbering systems other than
 Gregorian and Latin digits, and of Temporal's objects.)
 
-Most of the test262 failures are things deliberately not here (see below), and whole families are at or near 100%: `Reflect`, `parseInt`, `Number`, `Object`, `String`, `Date`.
+Most of the test262 failures are things deliberately not here (see below): `Temporal`, `with` (298 tests outside its own folder use it), realms (181), `ShadowRealm`, decorators and `accessor` fields, and `Atomics` tests that need other agents (112). Whole families are at or near 100%: `Reflect`, `parseInt`, `Number`, `Object`, `String`, `Date`, `RegExp` (98.6%), `TypedArray` (99.7%), `Iterator` (99.7%), `ArrayBuffer`, `DataView`, `Uint8Array`.
 
-Every JS fixture also runs with a garbage collection at every safepoint, which is how missing roots are found, and the HTML, CSS and JS parsers are fuzzed with fixed seeds. `test_page` runs a whole page, normally and under that stress, and insists the two come out the same.
+Every JS fixture also runs with a garbage collection at every safepoint, which is how missing roots are found, and the HTML, CSS and JS parsers are fuzzed with fixed seeds. `test_page` runs a whole page, normally and under that stress, and insists the two come out the same. `test_canvas` draws on a canvas from a page (rectangles, transforms, a circle, a gradient, a stroke, `putImageData`, `Path2D`, a clip, text and pictures from a pretend browser, `toDataURL`) and checks the pixels through `getImageData`, with the values a browser gives.
 
 **Observers** (2026-11-21): `MutationObserver` is the DOM standard's (records' `previousSibling` and `nextSibling` are always null); `IntersectionObserver` reports every target wholly in view, once, as a browser that shows the whole page and scrolls it itself would want; `ResizeObserver` reports each target's size once. They're `page/observers.js`, run in every page (`tools/web/make_observers.py` makes `observersjs.phi` from it), with the DOM's `on_mutation` hook telling it of changes while anything observes.
 
@@ -106,12 +115,14 @@ Every JS fixture also runs with a garbage collection at every safepoint, which i
 
 **Cookies** are the browser's (`PageHost.cookies` and `set_cookie`, which PHI OS answers from netlib's jar); a host without them gives a page what it set in this session.
 
+**`<canvas>`** (2026-11-21, `page/canvas.phi`): its 2D context, drawn with vectorlib onto pixels the canvas keeps (`0xAARRGGBB`, straight alpha), which a browser paints where layout put it (`PageCanvas.Of: node` gives them, and `PageCanvas.changes` goes up whenever a script draws). Paths (lines, curves, `arc`, `arcTo`, `ellipse`, `rect`, `roundRect`), `Path2D` (with SVG path data), fill by either rule, stroke with joins, caps and dashes, `clip`, transforms, `save` and `restore`, solid colors, linear and radial gradients and patterns, `globalAlpha`, `drawImage` (another canvas, or an `<img>`), `getImageData`, `putImageData`, `ImageData`, `fillText`, `strokeText`, `measureText`, `isPointInPath` and `toDataURL`. Text and other pictures are the browser's: `PageHost.canvas_text` gives a string's outlines in a CSS font, `image_pixels` an `<img>`'s pixels, and `encode_png` a PNG for `toDataURL`. A path made on the context is placed by the transform when each point is added, as the standard has it. Not done: shadows, filters, compositing other than `source-over` (the setting is kept), a radial gradient's starting circle (its center is the focus), conic gradients (drawn with their first color), and `isPointInStroke` (false).
+
 ## What it doesn't do yet
 
-- **JavaScript:** no `with`, and direct `eval` runs as global code. `Intl` has only English (above). `String.normalize` returns text as it is. `\p{...}` knows the general categories but not scripts. No resizable or detached buffers, no `SharedArrayBuffer`, and the `v` regex flag is read as `u`, without its set notation.
+- **JavaScript:** no `with`, and direct `eval` runs as global code. `Intl` has only English (above). `String.normalize` returns text as it is. No `Temporal`, no `ShadowRealm`, and no `Error.prototype.stack` accessor (an error has a `stack` of its own, as in browsers now).
 - **CSS:** no nesting, no `@container`, `@property` or `@counter-style`. Animations and transitions are parsed and kept, but don't run. `ex` and `ch` are 0.5em. Colours are 8-bit sRGB. Logical properties assume left-to-right text.
 - **HTML:** input is always read as UTF-8, with no `<meta charset>` or encoding sniffing. No declarative shadow DOM.
-- **DOM:** no shadow DOM at all, no custom elements, no `<canvas>`, no `Range` or `Selection`. `Date`'s local time is one fixed offset (`JsDate.tz_minutes`), UTC until a browser sets it, with no daylight saving (`Intl.DateTimeFormat` knows the named zones' rules). `localStorage` lasts as long as the page. `attributes` is a snapshot, not live.
+- **DOM:** no shadow DOM at all, no custom elements, no WebGL, no `Range` or `Selection`. `Date`'s local time is one fixed offset (`JsDate.tz_minutes`), UTC until a browser sets it, with no daylight saving (`Intl.DateTimeFormat` knows the named zones' rules). `localStorage` lasts as long as the page. `attributes` is a snapshot, not live.
 - **Nodes aren't freed until their document is.** A long-lived page that makes and drops many nodes keeps growing until it's left.
 - **PHI OS is a separate project.** The library builds for it, but it's only tested on Windows. Its 64 KB program stack would limit how deeply scripts can nest.
 
