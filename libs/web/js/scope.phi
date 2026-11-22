@@ -284,7 +284,7 @@ phi.JsScopes:Library
 			u32 k: t.kind;
 			if k is JsN.VARDECL and t.op is not JsT.K_VAR as u16
 				u32 vk: V_LET;
-				if t.op is JsT.K_CONST as u16
+				if t.op is JsT.K_CONST as u16 or t.op is JsN.USING as u16 or t.op is JsN.AWAIT_USING as u16
 					vk is V_CONST;
 				;;
 				ptr<JsNode> d: t.a;
@@ -746,7 +746,7 @@ phi.JsScopes:Library
 		n.info is b as ptr<u8>;
 		cur is b;
 		u32 vk: V_LET;
-		if init.op is JsT.K_CONST as u16
+		if init.op is JsT.K_CONST as u16 or init.op is JsN.USING as u16 or init.op is JsN.AWAIT_USING as u16
 			vk is V_CONST;
 		;;
 		ptr<JsNode> d: init.a;

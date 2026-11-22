@@ -1,0 +1,56 @@
+# The Iterator global, and its helpers: Iterator.prototype.map and the rest, Iterator.from, concat, zip and
+# zipKeyed. They're written in JavaScript (iterator.js, made into iteratorjs.phi by tools/web/js_to_phi.py)
+# and loaded the first time one is called (JsLazy); what's here is what has to be there from the start.
+
+phi.JsIteratorHelpers:Library
+{
+	[Init]
+		ptr<JsObj> ip: JsRt.P.iterator;
+		ptr<JsNativeFn> c: (Js.DefineClass: 'Iterator' addr Construct 0 ip);
+		ptr<JsObj> co: c as ptr<JsObj>;
+		JsRt.P.iterator_ctor is co;
+		u32 it: JsLazy.ITERATOR;
+		call JsLazy.Method: co 'from' 1 it 'from';
+		call JsLazy.Method: co 'concat' 0 it 'concat';
+		call JsLazy.Method: co 'zip' 1 it 'zip';
+		call JsLazy.Method: co 'zipKeyed' 1 it 'zipKeyed';
+		call JsLazy.Method: ip 'map' 1 it 'map';
+		call JsLazy.Method: ip 'filter' 1 it 'filter';
+		call JsLazy.Method: ip 'take' 1 it 'take';
+		call JsLazy.Method: ip 'drop' 1 it 'drop';
+		call JsLazy.Method: ip 'flatMap' 1 it 'flatMap';
+		call JsLazy.Method: ip 'reduce' 1 it 'reduce';
+		call JsLazy.Method: ip 'toArray' 0 it 'toArray';
+		call JsLazy.Method: ip 'forEach' 1 it 'forEach';
+		call JsLazy.Method: ip 'some' 1 it 'some';
+		call JsLazy.Method: ip 'every' 1 it 'every';
+		call JsLazy.Method: ip 'find' 1 it 'find';
+		call JsLazy.Method: ip 'includes' 1 it 'includes';
+		call JsLazy.Method: ip 'join' 1 it 'join';
+		call JsLazy.Method: ip 'chunks' 1 it 'chunks';
+		call JsLazy.Method: ip 'windows' 1 it 'windows';
+		call JsLazy.SymbolMethod: ip JsRt.S.dispose '[Symbol.dispose]' 0 it 'dispose';
+		# constructor and [Symbol.toStringTag] are accessors, so that setting them on an iterator that
+		# inherits them makes a property of its own instead of failing
+		u64 cg: (JsLazy.AccessorFn: addr ConstructorGet 'get constructor' 0 it 0);
+		u64 cs: (JsLazy.AccessorFn: addr JsLazy.Forward 'set constructor' 1 it 'setConstructor');
+		call JsObjs.DefineGetter: ip JsRt.A.constructor as ptr<u8> cg cs JsObjs.C;
+		u64 tg: (JsLazy.AccessorFn: addr TagGet 'get [Symbol.toStringTag]' 0 it 0);
+		u64 ts: (JsLazy.AccessorFn: addr JsLazy.Forward 'set [Symbol.toStringTag]' 1 it 'setToStringTag');
+		call JsObjs.DefineGetter: ip JsRt.S.toStringTag as ptr<u8> tg ts JsObjs.C;
+	[end]
+
+	# Iterator is abstract: only a class that extends it can make one
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt) or (JsV.AsObj: nt) is (Js.CalleeOf: args) as ptr<JsObj>
+			call JsErr.Type: 'Iterator cannot be constructed directly';
+		;;
+	[end: (JsV.Obj: (JsObjs.NewWithProto: (JsOps.ProtoFromCtor: nt JsRt.P.iterator)))]
+
+	[ConstructorGet: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Obj: JsRt.P.iterator_ctor)]
+
+	[TagGet: ptr<u64> args: 0; int argc: 0;]
+	[end: (Js.NewStringZ: 'Iterator')]
+}

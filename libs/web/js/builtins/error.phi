@@ -11,11 +11,13 @@ phi.JsErrorBuiltins:Library
 	const u32 M_URI: 6;
 	const u32 M_INTERNAL: 7;
 	const u32 M_AGGREGATE: 8;
+	const u32 M_SUPPRESSED: 9;
 
 	[Init]
 		ptr<JsObj> base: (JsObjs.NewObject);
 		JsRt.P.error is base;
 		ptr<JsNativeFn> ec: (Js.DefineClass: 'Error' addr Construct 1 base);
+		call Js.DefineNative: ec as ptr<JsObj> 'isError' addr IsError 1;
 		call Js.DefineNative: base 'toString' addr ToString 0;
 		call JsObjs.DefineValue: base JsRt.A.name as ptr<u8> (Js.NewStringZ: 'Error') JsObjs.WC;
 		call JsObjs.DefineValue: base JsRt.A.message as ptr<u8> (JsV.Str: JsRt.blank) JsObjs.WC;
@@ -28,13 +30,23 @@ phi.JsErrorBuiltins:Library
 		P.uri_error is (Kind: 'URIError' M_URI ec);
 		P.internal_error is (Kind: 'InternalError' M_INTERNAL ec);
 		P.aggregate_error is (Kind: 'AggregateError' M_AGGREGATE ec);
+		P.suppressed_error is (Kind: 'SuppressedError' M_SUPPRESSED ec);
 	[end]
+
+	# whether it's an error object, of any realm or kind: what it is, not what it inherits
+	[IsError: ptr<u64> args: 0; int argc: 0;]
+		u64 v: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: v) return JsV.FALSE;
+	[end: (JsV.Bool: (JsV.AsObj: v).kind is JsGc.K_ERROR)]
 
 	[Kind: ptr<u8> name: 0; u32 magic: 0; ptr<JsNativeFn> base_ctor: 0;]
 		ptr<JsObj> proto: (JsObjs.NewWithProto: JsRt.P.error);
 		int nargs: 1;
 		if magic is M_AGGREGATE
 			nargs is 2;
+		;;
+		if magic is M_SUPPRESSED
+			nargs is 3;
 		;;
 		ptr<JsNativeFn> c: (Js.DefineClass: name addr Construct nargs proto);
 		c.magic is magic;
@@ -71,6 +83,9 @@ phi.JsErrorBuiltins:Library
 			is M_AGGREGATE
 				return P.aggregate_error;
 			;;
+			is M_SUPPRESSED
+				return P.suppressed_error;
+			;;
 		;;
 	[end: P.error]
 
@@ -87,9 +102,19 @@ phi.JsErrorBuiltins:Library
 		if magic is M_AGGREGATE
 			at_arg is 1;
 		;;
+		if magic is M_SUPPRESSED
+			at_arg is 2;
+		;;
 		u64 msg: (Js.Arg: args argc at_arg);
 		if msg is not JsV.UNDEF
 			call JsObjs.AddProp: e JsRt.A.message as ptr<u8> (JsV.Str: (JsOps.ToStr: msg)) JsObjs.WC;
+		;;
+		# SuppressedError(error, suppressed, message): the two errors, and no options
+		if magic is M_SUPPRESSED
+			call JsObjs.AddProp: e (JsStrs.InternZ: 'error') as ptr<u8> (Js.Arg: args argc 0) JsObjs.WC;
+			call JsObjs.AddProp: e (JsStrs.InternZ: 'suppressed') as ptr<u8> (Js.Arg: args argc 1) JsObjs.WC;
+			call JsErr.AddStack: e;
+			return (JsV.Obj: e);
 		;;
 		u64 opts: (Js.Arg: args argc at_arg + 1);
 		if (JsV.IsObj: opts)

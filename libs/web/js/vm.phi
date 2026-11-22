@@ -2809,6 +2809,11 @@ phi.JsVm:Library
 					call JsErr.Type: 'Derived constructors may only return object or undefined';
 				;;
 			;;
+			is JsOp.INTRINSIC
+				u64 entry: (JsLazy.Entry: JsLazy.EXTRAS (JsV.AsStr: K:a));
+				sp:0 is entry;
+				sp++ 8;
+			;;
 			is JsOp.GET_METHOD_ELEM
 				# [o k] -> [fn o]
 				u64 mo2: sp:(-2);

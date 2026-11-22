@@ -52,6 +52,7 @@ struct.JsAtomSet
 	ptr<JsStr> await;
 	ptr<JsStr> yield;
 	ptr<JsStr> let;
+	ptr<JsStr> using;
 	ptr<JsStr> static;
 	ptr<JsStr> of;
 	ptr<JsStr> target;
@@ -85,6 +86,8 @@ struct.JsSymSet
 	ptr<JsSym> search;
 	ptr<JsSym> split;
 	ptr<JsSym> unscopables;
+	ptr<JsSym> dispose;
+	ptr<JsSym> asyncDispose;
 }
 
 # the objects the engine needs by name. All are marked by the collector, so a builtin's author
@@ -108,6 +111,7 @@ struct.JsProtoSet
 	ptr<JsObj> uri_error;
 	ptr<JsObj> internal_error;
 	ptr<JsObj> aggregate_error;
+	ptr<JsObj> suppressed_error;
 	ptr<JsObj> iterator;
 	ptr<JsObj> async_iterator;
 	ptr<JsObj> array_iterator;
@@ -142,6 +146,12 @@ struct.JsProtoSet
 	ptr<JsObj> arraybuffer;
 	ptr<JsObj> dataview;
 	ptr<JsObj> proxy_ctor;
+	ptr<JsObj> lazy_exports;       # what the builtins written in JS (JsLazy) gave, by name
+	ptr<JsObj> iterator_ctor;      # Iterator
+	ptr<JsObj> shared_buffer;      # SharedArrayBuffer.prototype
+	ptr<JsObj> typed_ctors;        # an array of the typed array constructors, by JsTyped's kind
+	ptr<JsObj> disposable_stack;
+	ptr<JsObj> async_disposable_stack;
 }
 
 struct.JsRootFn
@@ -351,6 +361,7 @@ phi.JsRt:Library
 		a.await is (JsStrs.InternZ: 'await');
 		a.yield is (JsStrs.InternZ: 'yield');
 		a.let is (JsStrs.InternZ: 'let');
+		a.using is (JsStrs.InternZ: 'using');
 		a.static is (JsStrs.InternZ: 'static');
 		a.of is (JsStrs.InternZ: 'of');
 		a.target is (JsStrs.InternZ: 'target');
@@ -388,5 +399,7 @@ phi.JsRt:Library
 		s.search is (NewSym: 'Symbol.search');
 		s.split is (NewSym: 'Symbol.split');
 		s.unscopables is (NewSym: 'Symbol.unscopables');
+		s.dispose is (NewSym: 'Symbol.dispose');
+		s.asyncDispose is (NewSym: 'Symbol.asyncDispose');
 	[end]
 }

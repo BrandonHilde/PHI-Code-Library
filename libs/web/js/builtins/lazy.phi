@@ -1,0 +1,137 @@
+# Builtins written in JavaScript, which a runtime compiles the first time a script calls one of them, so a
+# page that never does pays nothing. Each such script is a function expression,
+#
+#     (function (global, exports) { ... exports.name = function () { ... }; ... })
+#
+# that's given the global object and an object of its own to fill in. What scripts see are natives made
+# here, each named for an entry in that object: called, it runs the script if it hasn't run (once per
+# runtime), then calls the entry with the same this and arguments. So their names, lengths and identity
+# are those of builtins, and they can be on prototypes and the global object from the start.
+#
+# A native is gc_safe: everything it holds is on the value stack, so what the script's function does can
+# collect. Only running the script itself happens with collection held off.
+#
+# A script is an entry in Source. Intl came first and has a loader of its own (intl.phi).
+
+use js.builtins.iteratorjs;
+use js.builtins.typedarrayjs;
+use js.builtins.extrasjs;
+
+phi.JsLazy:Library
+{
+	const u32 ITERATOR: 0;
+	const u32 TYPED: 1;
+	const u32 EXTRAS: 2;
+
+	bln loading: false;
+
+	[Init]
+		ptr<JsObj> ex: (JsObjs.NewWithProto: 0);
+		JsRt.P.lazy_exports is ex;
+		# the well-known symbols as they are, whatever a script has done to Symbol by the time one loads
+		ptr<JsSymSet> s: JsRt.S;
+		call JsObjs.DefineZ: ex '%Symbol.iterator' (JsV.Sym: s.iterator) 0;
+		call JsObjs.DefineZ: ex '%Symbol.asyncIterator' (JsV.Sym: s.asyncIterator) 0;
+		call JsObjs.DefineZ: ex '%Symbol.toPrimitive' (JsV.Sym: s.toPrimitive) 0;
+		call JsObjs.DefineZ: ex '%Symbol.toStringTag' (JsV.Sym: s.toStringTag) 0;
+		call JsObjs.DefineZ: ex '%Symbol.dispose' (JsV.Sym: s.dispose) 0;
+		call JsObjs.DefineZ: ex '%Symbol.asyncDispose' (JsV.Sym: s.asyncDispose) 0;
+	[end]
+
+	[Source: u32 which: 0; : str]
+		if which is TYPED
+			str t: (JsTypedarrayJs.Source);
+			return t;
+		;;
+		if which is EXTRAS
+			str x: (JsExtrasJs.Source);
+			return x;
+		;;
+		str js: (JsIteratorJs.Source);
+	[end: js]
+
+	[ScriptName: u32 which: 0;]
+		if which is TYPED return 'typedarray.js';
+		if which is EXTRAS return 'extras.js';
+	[end: 'iterator.js']
+
+	# a method on o, calling the script's entry `key`
+	[Method: ptr<JsObj> o: 0; ptr<u8> name: 0; int nargs: 0; u32 which: 0; ptr<u8> key: 0;]
+		ptr<JsNativeFn> f: (Js.DefineNativeSafe: o name addr Forward nargs);
+		f.magic is which;
+		f.data is (JsV.Str: (JsStrs.InternZ: key));
+	[end: f]
+
+	# the same under a symbol: name is how it's called, as '[Symbol.dispose]'
+	[SymbolMethod: ptr<JsObj> o: 0; ptr<JsSym> sym: 0; ptr<u8> name: 0; int nargs: 0; u32 which: 0; ptr<u8> key: 0;]
+		ptr<JsNativeFn> f: (JsObjs.NewNative: addr Forward name nargs true);
+		f.magic is which;
+		f.data is (JsV.Str: (JsStrs.InternZ: key));
+		call JsObjs.DefineValue: o sym as ptr<u8> (JsV.Obj: f as ptr<JsObj>) JsObjs.WC;
+	[end: f]
+
+	# a function for an accessor, named as one ('set constructor'): the script's entry, or a native's
+	[AccessorFn: method<ptr<u64> int: u64> fn: 0; ptr<u8> label: 0; int nargs: 0; u32 which: 0; ptr<u8> key: 0;]
+		ptr<JsNativeFn> f: (JsObjs.NewNative: fn 0 nargs true);
+		f.magic is which;
+		if key is not 0
+			f.data is (JsV.Str: (JsStrs.InternZ: key));
+		;;
+		ptr<JsObj> fo: f as ptr<JsObj>;
+		call JsObjs.Materialize: fo;
+		call JsObjs.DefineValue: fo JsRt.A.name as ptr<u8> (Js.NewStringZ: label) JsObjs.C;
+	[end: (JsV.Obj: fo)]
+
+	[Forward: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u64 fn: (Entry: self.magic (JsV.AsStr: self.data));
+		u64 this_val: args:(-1);
+		while int i: 0; i < argc; i++;
+			call Js.Push: args:i;
+		;;
+	[end: (Js.CallThrowing: fn this_val argc)]
+
+	[Entry: u32 which: 0; ptr<JsStr> key: 0;]
+		ptr<JsObj> ex: JsRt.P.lazy_exports;
+		ptr<JsProp> p: (JsObjs.Find: ex key as ptr<u8>);
+		if p is 0
+			call Load: which;
+			p is (JsObjs.Find: ex key as ptr<u8>);
+		;;
+		if p is 0 or not (JsOps.IsCallable: p.value)
+			call JsErr.Type: 'This builtin could not be loaded';
+		;;
+	[end: p.value]
+
+	# runs the script, once per runtime (its entries are there after)
+	[Load: u32 which: 0;]
+		if loading return;
+		ptr<JsObj> ex: JsRt.P.lazy_exports;
+		ptr<u8> done_key: (JsStrs.InternZ: '%loaded') as ptr<u8>;
+		ptr<JsProp> seen: (JsObjs.Find: ex done_key);
+		if seen is not 0 and ((JsV.AsInt: seen.value) as u32 & (1 << which)) is not 0
+			return;
+		;;
+		u32 mask: 1 << which;
+		if seen is not 0
+			mask is mask | (JsV.AsInt: seen.value) as u32;
+		;;
+		call JsObjs.DefineValue: ex done_key (JsV.Int: mask as int) JsObjs.WC;
+		loading is true;
+		# this can happen in the middle of anything, so nothing collects meanwhile
+		JsGc.no_gc++;
+		bln failed_before: Js.failed;
+		u64 exception_before: Js.exception;
+		str js: (Source: which);
+		u64 f: (Js.Eval: addr js:0 js.len as u32 (ScriptName: which));
+		if not Js.failed and (JsOps.IsCallable: f)
+			call Js.Push: (JsV.Obj: JsRt.r.global);
+			call Js.Push: (JsV.Obj: ex);
+			call Js.Call: f JsV.UNDEF 2;
+		;;
+		Js.failed is failed_before;
+		Js.exception is exception_before;
+		JsGc.no_gc--;
+		loading is false;
+	[end]
+}

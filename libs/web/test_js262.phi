@@ -21,6 +21,7 @@ struct.JsT262Meta
 	bln raw;
 	bln is_async;
 	bln is_module;
+	bln cannot_block;      # CanBlockIsFalse: for a host whose main thread can't wait, which this one can
 	bln is_negative;
 	bln neg_parse;
 	bln has_includes;
@@ -194,6 +195,7 @@ phi.TestJs262:Program
 		m.raw is (ListHas: addr flags 'raw');
 		m.is_async is (ListHas: addr flags 'async');
 		m.is_module is (ListHas: addr flags 'module');
+		m.cannot_block is (ListHas: addr flags 'CanBlockIsFalse');
 		call ReadList: fm fn 'includes:' addr m.includes 1024;
 		call ReadList: fm fn 'features:' addr m.features 1024;
 		int neg: (Find: fm fn 'negative:' 0);
@@ -253,8 +255,12 @@ phi.TestJs262:Program
 	[end: JsV.UNDEF]
 
 	[DetachArrayBuffer: ptr<u64> args: 0; int argc: 0;]
-		call JsErr.Type: '$262.detachArrayBuffer is not supported';
-	[end: JsV.UNDEF]
+		u64 b: (Js.Arg: args argc 0);
+		if not (JsTyped.IsClass: b JsTyped.buffer_class)
+			call JsErr.Type: '$262.detachArrayBuffer takes an ArrayBuffer';
+		;;
+		call JsTyped.Detach: b;
+	[end: JsV.NULL]
 
 	[TimeUp]
 	[end: (OS.GetTicks) > deadline]
@@ -633,6 +639,10 @@ phi.TestJs262:Program
 		bln pass: true;
 		test_path is path;
 		test_n is n as u32;
+		if m.cannot_block
+			log 'R SKIP ' path '\n';
+			return;
+		;;
 		if m.is_module
 			pass is (RunMode: file_buf n as u32 addr m true);
 			if pass

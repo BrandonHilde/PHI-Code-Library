@@ -95,7 +95,9 @@ phi.JsN:Library
 	const u32 DEFAULT: 38;     # a: target, b: its default
 	const u32 REST: 39;
 	const u32 DECLARATOR: 41;  # a: target, b: init
-	const u32 VARDECL: 42;     # op: K_VAR, K_CONST or 1 for let; a: list of DECLARATOR
+	const u32 VARDECL: 42;     # op: K_VAR, K_CONST, 1 for let, USING or AWAIT_USING; a: list of DECLARATOR
+	const u32 USING: 2;        # a VARDECL's op for `using`
+	const u32 AWAIT_USING: 3;  # and for `await using`
 	const u32 BLOCK: 43;
 	const u32 EMPTY: 44;
 	const u32 EXPR: 45;
@@ -259,6 +261,7 @@ phi.JsParse:Library
 		ctx is c;
 		no_in is false;
 		cover_err_msg is 0;
+		using_here is false;
 		JsLex.strict is starts_strict;
 		call JsLex.Next;
 		ptr<JsNode> f: (Node: JsN.FUNC);
@@ -353,6 +356,21 @@ phi.JsParse:Library
 		if k >= JsT.KW and k is not JsT.K_IN and k is not JsT.K_INSTANCEOF return not JsLex.peeked.nl_before;
 	[end: false]
 
+	# using x or await using x (not at a line's end): which, or 0
+	[UsingStartsDecl]
+		if (IsWord: JsRt.A.using)
+			if (JsLex.Peek) is JsT.IDENT and not JsLex.peeked.nl_before
+				return JsN.USING;
+			;;
+			return 0;
+		;;
+		if (IsWord: JsRt.A.await) and (ctx.is_async or (module_mode and ctx.parent is 0))
+			if (JsLex.Peek2) is JsT.IDENT and JsLex.peeked.kind is JsT.IDENT and JsLex.peeked.text is JsRt.A.using and not JsLex.peeked.escaped and not JsLex.peeked.nl_before and not JsLex.peeked2.nl_before
+				return JsN.AWAIT_USING;
+			;;
+		;;
+	[end: 0 as u32]
+
 	[StatementItem]
 		call WlStack.Check;
 		u32 k: JsLex.tok.kind;
@@ -368,6 +386,16 @@ phi.JsParse:Library
 		if k is JsT.IDENT
 			if (LetStartsDecl)
 				return (VarStatement: 1);
+			;;
+			u32 uk: (UsingStartsDecl);
+			if uk is not 0
+				if not using_here
+					call Fail: 'A using declaration can only be in a block, a function or a module';
+				;;
+				if uk is JsN.AWAIT_USING
+					call Next;
+				;;
+				return (VarStatement: uk);
 			;;
 			if (IsWord: JsRt.A.async)
 				u32 p: (JsLex.Peek);
@@ -537,10 +565,16 @@ phi.JsParse:Library
 		call Expect: JsT.RBRACE;
 	[end: (Done: n)]
 
+	# whether a using declaration can be here: in a block, a function's body or a module, but not at a
+	# script's top or right in a case
+	bln using_here: false;
+
 	# statements up to a }
 	[StatementList]
 		ptr<JsNode> head: 0;
 		ptr<JsNode> tail: 0;
+		bln was_using: using_here;
+		using_here is true;
 		while JsLex.tok.kind is not JsT.RBRACE
 			if JsLex.tok.kind is JsT.EOF
 				call Unexpected;
@@ -554,6 +588,7 @@ phi.JsParse:Library
 			;;
 			tail is s;
 		;;
+		using_here is was_using;
 	[end: head]
 
 	[LoopBody]
@@ -745,7 +780,10 @@ phi.JsParse:Library
 				if JsLex.tok.kind is JsT.EOF
 					call Unexpected;
 				;;
+				bln was_using: using_here;
+				using_here is false;
 				ptr<JsNode> s: (StatementItem);
+				using_here is was_using;
 				if stail is 0
 					c.b is s;
 				;;
@@ -802,7 +840,7 @@ phi.JsParse:Library
 		ptr<JsNode> d: decl.a;
 		while d is not 0
 			if d.b is 0
-				if decl.op is JsT.K_CONST or d.a.kind is not JsN.IDENT
+				if decl.op is JsT.K_CONST or decl.op is JsN.USING or decl.op is JsN.AWAIT_USING or d.a.kind is not JsN.IDENT
 					call FailAt: 'Missing initializer in declaration' d.line;
 				;;
 			;;
@@ -826,10 +864,34 @@ phi.JsParse:Library
 		u32 k: JsLex.tok.kind;
 		bln saw_let: (IsWord: JsRt.A.let);
 		bln starts_async: (IsWord: JsRt.A.async);
+		u32 uk: (ForUsingKind);
 		if k is JsT.SEMI
 			if is_await
 				call Unexpected;
 			;;
+		;;
+		elif uk is not 0
+			if uk is JsN.AWAIT_USING
+				call Next;
+			;;
+			no_in is true;
+			ptr<JsNode> decl: (VarDeclarations: uk);
+			no_in is false;
+			if JsLex.tok.kind is JsT.K_IN
+				call Fail: 'A using declaration can\'t be the left side of a for-in loop';
+			;;
+			if (IsWord: JsRt.A.of)
+				return (ForUsingOf: n decl is_await);
+			;;
+			if is_await
+				call Unexpected;
+			;;
+			call RequireInits: decl;
+			# for (using x = ...; ...) is { using x = ...; for (; ...) }: they last as long as the loop
+			ptr<JsNode> outer: (Node: JsN.BLOCK);
+			outer.a is decl;
+			decl.next is (ForRest: n);
+			return (Done: outer);
 		;;
 		elif k is JsT.K_VAR or k is JsT.K_CONST or (saw_let and (ForLetIsDecl))
 			u32 kind: k;
@@ -885,6 +947,10 @@ phi.JsParse:Library
 			cover_err_msg is saved_msg;
 		;;
 		n.a is init;
+	[end: (ForRest: n)]
+
+	# from the first ; of for (...; ...; ...) on
+	[ForRest: ptr<JsNode> n: 0;]
 		call Expect: JsT.SEMI;
 		if JsLex.tok.kind is not JsT.SEMI
 			n.b is (Expression);
@@ -896,6 +962,53 @@ phi.JsParse:Library
 		call Expect: JsT.RPAREN;
 		n.d is (LoopBody);
 	[end: (Done: n)]
+
+	# for (using ... or for (await using ...: which, or 0. for (using of of x) has a variable called using,
+	# and for (using of = ...; ...) declares one called of.
+	[ForUsingKind]
+		if (IsWord: JsRt.A.using)
+			if (JsLex.Peek) is not JsT.IDENT or JsLex.peeked.nl_before return 0;
+			if JsLex.peeked.text is JsRt.A.of and not JsLex.peeked.escaped
+				u32 p2: (JsLex.Peek2);
+				if p2 is not JsT.ASSIGN and p2 is not JsT.SEMI return 0;
+			;;
+			return JsN.USING;
+		;;
+		if (IsWord: JsRt.A.await) and ctx.is_async
+			if (JsLex.Peek2) is JsT.IDENT and JsLex.peeked.kind is JsT.IDENT and JsLex.peeked.text is JsRt.A.using and not JsLex.peeked.escaped and not JsLex.peeked.nl_before and not JsLex.peeked2.nl_before
+				return JsN.AWAIT_USING;
+			;;
+		;;
+	[end: 0 as u32]
+
+	# for (using x of ...) body is for (const x of ...) { using %resource = x; body }: each value is the
+	# resource of its iteration
+	[ForUsingOf: ptr<JsNode> n: 0; ptr<JsNode> decl: 0; bln is_await: false;]
+		ptr<JsNode> first: decl.a;
+		if first.next is not 0
+			call Fail: 'Invalid left-hand side in for-loop: must have a single binding';
+		;;
+		if first.b is not 0
+			call Fail: 'for-of loop variable declaration may not have an initializer';
+		;;
+		u16 how: decl.op;
+		decl.op is JsT.K_CONST as u16;
+		ptr<JsNode> loop: (ForInOf: n decl true is_await);
+		ptr<JsNode> taking: (Node: JsN.VARDECL);
+		taking.op is how;
+		ptr<JsNode> d: (Node: JsN.DECLARATOR);
+		ptr<JsNode> target: (Node: JsN.IDENT);
+		target.name is (JsStrs.InternZ: '%resource');
+		d.a is (Done: target);
+		ptr<JsNode> value: (Node: JsN.IDENT);
+		value.name is first.a.name;
+		d.b is (Done: value);
+		taking.a is (Done: d);
+		ptr<JsNode> body: (Node: JsN.BLOCK);
+		body.a is (Done: taking);
+		taking.next is loop.d;
+		loop.d is (Done: body);
+	[end: loop]
 
 	# in `for (let ...`: whether let starts a declaration
 	[ForLetIsDecl]
@@ -973,6 +1086,10 @@ phi.JsParse:Library
 	[BindingTargetFor: u32 kind: 0;]
 		call WlStack.Check;
 		u32 k: JsLex.tok.kind;
+		bln using: kind is JsN.USING or kind is JsN.AWAIT_USING;
+		if using and (k is JsT.LBRACK or k is JsT.LBRACE)
+			call Fail: 'A using declaration names its resource: it can\'t destructure';
+		;;
 		if k is JsT.LBRACK
 			return (ArrayBinding: kind);
 		;;
@@ -982,7 +1099,7 @@ phi.JsParse:Library
 		ptr<JsNode> n: (Node: JsN.IDENT);
 		n.name is (BindingName);
 		call CheckNotEvalArgs: n.name;
-		if n.name is JsRt.A.let and (kind is 1 or kind is JsT.K_CONST)
+		if n.name is JsRt.A.let and (kind is 1 or kind is JsT.K_CONST or using)
 			call FailAt: 'let is disallowed as a lexically bound name' n.line;
 		;;
 		if kind is JsT.K_VAR
@@ -2456,6 +2573,8 @@ phi.JsParse:Library
 	[end]
 
 	[BodyStatements: ptr<JsNode> f: 0;]
+		bln was_using: using_here;
+		using_here is true;
 		ptr<JsNode> head: (Directives: f);
 		ptr<JsNode> tail: head;
 		if tail is not 0
@@ -2476,6 +2595,7 @@ phi.JsParse:Library
 			;;
 			tail is s;
 		;;
+		using_here is was_using;
 	[end: head]
 
 	# the rules that depend on the whole function: only known once the body has said whether it's strict
@@ -3238,6 +3358,7 @@ phi.JsParse:Library
 		module_ctx is ctx;
 		ptr<JsNode> head: 0;
 		ptr<JsNode> tail: 0;
+		using_here is true;
 		while JsLex.tok.kind is not JsT.EOF
 			ptr<JsNode> s: (ModuleItem);
 			if head is 0

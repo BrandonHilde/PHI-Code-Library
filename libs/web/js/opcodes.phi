@@ -253,7 +253,8 @@ phi.JsOp:Library
 	const u32 ASYNC_DELEGATE_DONE: 159;
 	const u32 AWAIT_CHECK: 161;
 	const u32 STRICT_EVAL: 162;
-	const u32 OP_COUNT: 163;
+	const u32 INTRINSIC: 163;      # A: an atom: the function JsLazy's extras.js gave by that name
+	const u32 OP_COUNT: 164;
 
 	# how much each changes the stack's depth (what depends on A is worked out by the compiler)
 	ptr<u8> effects: 0;
@@ -293,6 +294,7 @@ phi.JsOp:Library
 		call Set: REGEX 1;
 		call Set: CALLEE 1;
 		call Set: NEWTARGET 1;
+		call Set: INTRINSIC 1;
 		call Set: HOME 1;
 		call Set: CALLNEXT 1;
 		call Set: ITER_REST 1;

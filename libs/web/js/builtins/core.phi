@@ -62,6 +62,10 @@ phi.JsBuiltins:Library
 		call JsTyped.Init;
 		call InitConsole;
 		call JsIntl.Init;
+		call JsLazy.Init;
+		call JsIteratorHelpers.Init;
+		call JsTypedMore.Init;
+		call JsExtras.Init;
 		r.oom_error is (JsV.Obj: (JsErr.Make: JsRt.P.range_error 'Out of memory'));
 	[end]
 

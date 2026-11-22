@@ -71,6 +71,7 @@ struct.JsFnState
 	int cpl;               # a script's completion value: its slot, or -1
 	u32 opt_list;          # the optional chain being compiled: where short circuits go
 	u32 ret_list;          # a derived constructor's returns: all to the same place
+	u32 using_cap;         # the local holding the resources of the statements being compiled (using)
 	bln strict;
 }
 
@@ -2391,7 +2392,7 @@ phi.JsCompile:Library
 			if (f.flags & JsN.FN_CTOR) is not 0 and (f.flags & JsN.FN_DERIVED) is 0
 				call Op: JsOp.RUN_FIELDS_SELF;
 			;;
-			call Statements: f.b;
+			call BodyStatements: f.b;
 			# falling off the end
 			call Op: JsOp.UNDEF;
 			call ReturnFromHere;
@@ -2674,6 +2675,10 @@ phi.JsCompile:Library
 
 	[StmtVar: ptr<JsNode> n: 0;]
 		bln is_var: n.op is JsT.K_VAR as u16;
+		if n.op is JsN.USING as u16 or n.op is JsN.AWAIT_USING as u16
+			call StmtUsing: n;
+			return;
+		;;
 		ptr<JsNode> d: n.a;
 		while d is not 0
 			if d.b is not 0
@@ -2697,6 +2702,146 @@ phi.JsCompile:Library
 			;;
 			d is d.next;
 		;;
+	[end]
+
+	# using x = ... and await using x = ...: each value is added to the resources of the statements around
+	# (DisposingStatements), then bound as a const
+	[StmtUsing: ptr<JsNode> n: 0;]
+		u32 mark: cf.nlocals;
+		u32 tmp: (AllocLocal);
+		ptr<JsNode> d: n.a;
+		while d is not 0
+			call Expr: d.b;
+			call OpA: JsOp.SETLOC tmp;
+			call IntrinsicCall: 'usingAdd';
+			call OpA: JsOp.GETLOC cf.using_cap;
+			call OpA: JsOp.GETLOC tmp;
+			if n.op is JsN.AWAIT_USING as u16
+				call Op: JsOp.TRUE;
+			;;
+			else
+				call Op: JsOp.FALSE;
+			;;
+			call Line: d.line;
+			call OpFx: JsOp.CALL 3 -4;
+			call StoreIdent: d.a M_INIT;
+			d is d.next;
+		;;
+		cf.nlocals is mark;
+	[end]
+
+	# [fn undefined]: what JsLazy's extras.js gave as `name`, to be called
+	[IntrinsicCall: ptr<u8> name: 0;]
+		call OpA: JsOp.INTRINSIC (Atom: (JsStrs.InternZ: name));
+		call Op: JsOp.UNDEF;
+	[end]
+
+	# whether statements have using declarations of their own: 0 none, 1 using, 2 await using as well
+	[UsingKind: ptr<JsNode> s: 0;]
+		u32 how: 0;
+		while s is not 0
+			if s.kind is JsN.VARDECL
+				if s.op is JsN.AWAIT_USING as u16 return 2;
+				if s.op is JsN.USING as u16
+					how is 1;
+				;;
+			;;
+			s is s.next;
+		;;
+	[end: how]
+
+	# Statements whose resources (using and await using) are disposed of, last first, however they're left:
+	# as a try with a finally, whose finally calls extras.js's usingEnd with how it was left.
+	[DisposingStatements: ptr<JsNode> s: 0; bln async: false;]
+		u32 saved_cap: cf.using_cap;
+		u32 cap: (AllocLocal);
+		call IntrinsicCall: 'usingNew';
+		call OpFx: JsOp.CALL 0 -1;
+		call OpA: JsOp.SETLOC cap;
+		u32 saved_scope: (AllocLocal);
+		call OpA: JsOp.SAVE_SCOPE saved_scope;
+		ptr<JsCtl> finl: (PushCtl: C_FINALLY);
+		finl.slot is (AllocLocal);
+		finl.val_slot is (AllocLocal);
+		call Op: JsOp.UNDEF;
+		call OpA: JsOp.SETLOC finl.val_slot;
+		cf.using_cap is cap;
+		u32 start: (Here);
+		call Statements: s;
+		u32 all_stop: (Here);
+		cf.using_cap is saved_cap;
+		# normal completion: kind 0
+		call OpA: JsOp.INT 0;
+		call OpA: JsOp.SETLOC finl.slot;
+		u32 to_fin: (Jump: JsOp.JMP finl.fin_list);
+		u32 handler: (Here);
+		call AddTry: start all_stop handler;
+		call Adjust: 1;
+		call OpA: JsOp.RESTORE_SCOPE saved_scope;
+		call OpA: JsOp.SETLOC finl.val_slot;
+		call OpA: JsOp.INT 1;
+		call OpA: JsOp.SETLOC finl.slot;
+		call PopCtl;
+		call Bind: to_fin;
+		# the resources go; what that throws, or what brought us here, goes on
+		if async
+			call IntrinsicCall: 'usingEndAsync';
+		;;
+		else
+			call IntrinsicCall: 'usingEnd';
+		;;
+		call OpA: JsOp.GETLOC cap;
+		call OpA: JsOp.GETLOC finl.slot;
+		call OpA: JsOp.INT 1;
+		call Op: JsOp.SEQ;
+		call OpA: JsOp.GETLOC finl.val_slot;
+		call OpFx: JsOp.CALL 3 -4;
+		if async
+			# a promise if there was something to wait for, and undefined if not
+			u32 to_await: (Jump: JsOp.JNOTUNDEF 0);
+			call Adjust: -1;
+			u32 past: (Jump: JsOp.JMP 0);
+			call Bind: to_await;
+			call Adjust: 1;
+			call EmitAwait;
+			call Op: JsOp.POP;
+			call Bind: past;
+		;;
+		else
+			call Op: JsOp.POP;
+		;;
+		call OpA: JsOp.GETLOC finl.slot;
+		call OpA: JsOp.INT 1;
+		call Op: JsOp.SEQ;
+		u32 not_throw: (Jump: JsOp.JF 0);
+		call OpA: JsOp.GETLOC finl.val_slot;
+		call Op: JsOp.THROW;
+		call Bind: not_throw;
+		ptr<JsExit> e: finl.exits;
+		while e is not 0
+			call OpA: JsOp.GETLOC finl.slot;
+			call OpA: JsOp.INT e.id;
+			call Op: JsOp.SEQ;
+			u32 next_exit: (Jump: JsOp.JF 0);
+			if e.how is 2
+				call OpA: JsOp.GETLOC finl.val_slot;
+			;;
+			call ExitTo: finl.parent e.target e.how;
+			call Bind: next_exit;
+			e is e.next;
+		;;
+	[end]
+
+	# a block's or a body's statements, with their resources disposed of if they have any
+	[BodyStatements: ptr<JsNode> s: 0;]
+		u32 how: (UsingKind: s);
+		if how is 0
+			call Statements: s;
+			return;
+		;;
+		u32 mark: cf.nlocals;
+		call DisposingStatements: s how is 2;
+		cf.nlocals is mark;
 	[end]
 
 	[StmtFuncDecl: ptr<JsNode> n: 0;]
@@ -2725,7 +2870,7 @@ phi.JsCompile:Library
 		if b is not 0
 			call Hoist: n.a b;
 		;;
-		call Statements: n.a;
+		call BodyStatements: n.a;
 		call LeaveBlock: b;
 		cf.nlocals is mark;
 	[end]

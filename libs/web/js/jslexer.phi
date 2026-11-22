@@ -1359,4 +1359,26 @@ phi.JsLex:Library
 		last_start is saved_last_start;
 		last_line is saved_last_line;
 	[end: peeked.kind]
+
+	# the kind of the token after the next one, which is in peeked2 (and the next in peeked)
+	JsTok peeked2;
+
+	[Peek2]
+		JsTok s0: tok;
+		u32 p0: pos;
+		u32 l0: line;
+		u32 ls0: last_stop;
+		u32 lst0: last_start;
+		u32 ll0: last_line;
+		call Next;
+		peeked is tok;
+		call Next;
+		peeked2 is tok;
+		tok is s0;
+		pos is p0;
+		line is l0;
+		last_stop is ls0;
+		last_start is lst0;
+		last_line is ll0;
+	[end: peeked2.kind]
 }

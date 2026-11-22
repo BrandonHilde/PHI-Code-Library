@@ -11,6 +11,8 @@ struct.JsSortState
 phi.JsArrayMore:Library
 {
 	const u32 EACH: 0;
+	# added to a native's magic when it serves as a typed array's method (JsTyped.Checked)
+	const u32 TYPED_CALL: 0x100;
 	const u32 MAP: 1;
 	const u32 FILTER: 2;
 	const u32 SOME: 3;
@@ -81,7 +83,8 @@ phi.JsArrayMore:Library
 
 	[Iterate: ptr<u64> args: 0; int argc: 0;]
 		ptr<JsNativeFn> self: (Js.CalleeOf: args);
-		u32 kind: self.magic;
+		u32 kind: self.magic & 0xFF;
+		bln typed_call: (self.magic & TYPED_CALL) is not 0;
 		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
 		u64 ov: (JsV.Obj: o);
 		call Js.Push: ov;
@@ -107,7 +110,9 @@ phi.JsArrayMore:Library
 		call Js.Push: JsV.UNDEF;
 		f64 to: 0.0;
 		bln backward: kind is FIND_LAST or kind is FIND_LAST_INDEX;
-		bln all: kind >= FIND;        # the find family looks at holes too
+		# the find family looks at holes too, and a typed array's methods read each element (one that's gone,
+		# with its buffer shrunk, is undefined)
+		bln all: kind >= FIND or typed_call;
 		f64 i: 0.0;
 		if backward
 			i is len - 1.0;
@@ -174,7 +179,8 @@ phi.JsArrayMore:Library
 
 	[Reduce: ptr<u64> args: 0; int argc: 0;]
 		ptr<JsNativeFn> self: (Js.CalleeOf: args);
-		bln backward: self.magic is 1;
+		bln backward: (self.magic & 1) is 1;
+		bln typed: (self.magic & TYPED_CALL) is not 0;
 		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
 		u64 ov: (JsV.Obj: o);
 		call Js.Push: ov;
@@ -199,7 +205,7 @@ phi.JsArrayMore:Library
 			while i >= 0.0 and i < len and not have
 				call Js.Checkpoint;
 				u64 k0: (Key: i);
-				if (JsObjs.Has: o k0)
+				if typed or (JsObjs.Has: o k0)
 					acc:0 is (JsObjs.Get: o k0 ov);
 					have is true;
 				;;
@@ -212,7 +218,7 @@ phi.JsArrayMore:Library
 		while i >= 0.0 and i < len
 			call Js.Checkpoint;
 			u64 k: (Key: i);
-			if (JsObjs.Has: o k)
+			if typed or (JsObjs.Has: o k)
 				call Js.Push: acc:0;
 				call Js.Push: (JsObjs.Get: o k ov);
 				call Js.Push: (JsV.Num: i);

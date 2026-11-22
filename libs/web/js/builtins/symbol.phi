@@ -21,6 +21,8 @@ phi.JsSymbolBuiltins:Library
 		call Js.Define: co 'search' (JsV.Sym: s.search) 0;
 		call Js.Define: co 'split' (JsV.Sym: s.split) 0;
 		call Js.Define: co 'unscopables' (JsV.Sym: s.unscopables) 0;
+		call Js.Define: co 'dispose' (JsV.Sym: s.dispose) 0;
+		call Js.Define: co 'asyncDispose' (JsV.Sym: s.asyncDispose) 0;
 		call Js.DefineNative: co 'for' addr For 1;
 		call Js.DefineNative: co 'keyFor' addr KeyFor 1;
 		call Js.DefineNative: proto 'toString' addr ToString 0;

@@ -36,6 +36,7 @@ use js.builtins.generator;
 use js.builtins.promise;
 use js.builtins.iter;
 use js.casemap;
+use js.uniprops;
 use js.builtins.math;
 use js.builtins.arrayx;
 use js.builtins.stringx;
@@ -47,6 +48,10 @@ use js.builtins.proxy;
 use js.builtins.date;
 use js.builtins.typed;
 use js.builtins.intl;
+use js.builtins.lazy;
+use js.builtins.iterhelpers;
+use js.builtins.typedx;
+use js.builtins.extrasx;
 
 # what Js.TryBegin keeps, so a native can catch what a call throws: see JS-INTERNALS.md
 struct.JsTryState

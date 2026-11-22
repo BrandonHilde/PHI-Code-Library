@@ -77,6 +77,10 @@ phi.JsArrayBuiltins:Library
 		if o.kind is JsGc.K_ARRAY
 			return o.length as f64;
 		;;
+		# a typed array's own, whatever its prototype's length getter says
+		if o.cls is JsTyped.array_class and o.cls is not 0
+			return (JsTyped.LengthOf: o) as f64;
+		;;
 	[end: (JsOps.ToLength: (JsObjs.GetAtom: o JsRt.A.length as ptr<u8> (JsV.Obj: o)))]
 
 	[SetLength: ptr<JsObj> o: 0; f64 n: 0.0;]
@@ -305,6 +309,11 @@ phi.JsArrayBuiltins:Library
 			return (JsBuiltins.IterResult: JsV.UNDEF true);
 		;;
 		ptr<JsObj> o: (JsV.AsObj: ai.target);
+		if o.cls is JsTyped.array_class and o.cls is not 0
+			if (JsTyped.OutOfBounds: (JsTyped.ViewOf: o) false)
+				call JsErr.Type: 'The typed array is detached or out of bounds';
+			;;
+		;;
 		f64 len: (LengthOf: o);
 		u32 i: ai.index;
 		if (i as f64) >= len

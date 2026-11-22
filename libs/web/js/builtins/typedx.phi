@@ -1,0 +1,65 @@
+# What's of the typed arrays in JavaScript (typedarray.js, made into typedarrayjs.phi by
+# tools/web/js_to_phi.py): Atomics, and Uint8Array's base64 and hex. Here are the natives scripts see, which
+# load it the first time one is called (JsLazy), the one native of the engine's it needs, and
+# Math.f16round.
+
+phi.JsTypedMore:Library
+{
+	[Init]
+		u32 ty: JsLazy.TYPED;
+		ptr<JsNativeFn> k: (JsObjs.NewNative: addr TypedKind '%typedKind' 3 false);
+		call JsObjs.DefineZ: JsRt.P.lazy_exports '%typedKind' (JsV.Obj: k as ptr<JsObj>) JsObjs.WC;
+
+		ptr<JsObj> a: (JsObjs.NewObject);
+		call JsObjs.DefineZ: JsRt.r.global 'Atomics' (JsV.Obj: a) JsObjs.WC;
+		call JsObjs.DefineValue: a JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'Atomics') JsObjs.C;
+		call JsLazy.Method: a 'add' 3 ty 'atomicsAdd';
+		call JsLazy.Method: a 'and' 3 ty 'atomicsAnd';
+		call JsLazy.Method: a 'compareExchange' 4 ty 'atomicsCompareExchange';
+		call JsLazy.Method: a 'exchange' 3 ty 'atomicsExchange';
+		call JsLazy.Method: a 'isLockFree' 1 ty 'atomicsIsLockFree';
+		call JsLazy.Method: a 'load' 2 ty 'atomicsLoad';
+		call JsLazy.Method: a 'notify' 3 ty 'atomicsNotify';
+		call JsLazy.Method: a 'or' 3 ty 'atomicsOr';
+		call JsLazy.Method: a 'pause' 0 ty 'atomicsPause';
+		call JsLazy.Method: a 'store' 3 ty 'atomicsStore';
+		call JsLazy.Method: a 'sub' 3 ty 'atomicsSub';
+		call JsLazy.Method: a 'wait' 4 ty 'atomicsWait';
+		call JsLazy.Method: a 'waitAsync' 4 ty 'atomicsWaitAsync';
+		call JsLazy.Method: a 'xor' 3 ty 'atomicsXor';
+
+		ptr<JsNativeFn> u8c: (JsV.AsObj: (JsTyped.IntrinsicCtor: JsTyped.UINT8)) as ptr<JsNativeFn>;
+		ptr<JsObj> u8p: (JsV.AsObj: u8c.data);
+		call JsLazy.Method: u8c as ptr<JsObj> 'fromBase64' 1 ty 'fromBase64';
+		call JsLazy.Method: u8c as ptr<JsObj> 'fromHex' 1 ty 'fromHex';
+		call JsLazy.Method: u8p 'toBase64' 0 ty 'toBase64';
+		call JsLazy.Method: u8p 'toHex' 0 ty 'toHex';
+		call JsLazy.Method: u8p 'setFromBase64' 1 ty 'setFromBase64';
+		call JsLazy.Method: u8p 'setFromHex' 1 ty 'setFromHex';
+
+		ptr<JsProp> m: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: 'Math') as ptr<u8>);
+		if m is not 0 and (JsV.IsObj: m.value)
+			call Js.DefineNative: (JsV.AsObj: m.value) 'f16round' addr F16Round 1;
+		;;
+	[end]
+
+	# a typed array's kind, or -1; a TypeError if it's out of bounds, unless the second argument is true,
+	# or if the third is true and its buffer is immutable
+	[TypedKind: ptr<u64> args: 0; int argc: 0;]
+		u64 v: (Js.Arg: args argc 0);
+		if not (JsTyped.IsClass: v JsTyped.array_class)
+			return (JsV.Int: -1);
+		;;
+		ptr<JsViewData> view: (JsTyped.ViewOf: (JsV.AsObj: v));
+		if (Js.Arg: args argc 1) is not JsV.TRUE and (JsTyped.OutOfBounds: view false)
+			call JsErr.Type: 'The typed array is detached or out of bounds';
+		;;
+		if (Js.Arg: args argc 2) is JsV.TRUE and (JsTyped.ReadOnly: view)
+			call JsErr.Type: 'The typed array\'s buffer is immutable';
+		;;
+	[end: (JsV.Int: view.kind as int)]
+
+	[F16Round: ptr<u64> args: 0; int argc: 0;]
+		f64 x: (JsOps.ToNumber: (Js.Arg: args argc 0));
+	[end: (JsV.Num: (JsTyped.FromHalf: (JsTyped.ToHalf: x)))]
+}

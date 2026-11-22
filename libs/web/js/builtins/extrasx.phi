@@ -1,0 +1,66 @@
+# DisposableStack, AsyncDisposableStack and Array.fromAsync: written in JavaScript (extras.js, made into
+# extrasjs.phi by tools/web/js_to_phi.py) and loaded the first time one is called (JsLazy). Here are the
+# constructors and the natives scripts see.
+
+phi.JsExtras:Library
+{
+	[Init]
+		u32 ex: JsLazy.EXTRAS;
+		ptr<JsObj> exports: JsRt.P.lazy_exports;
+		ptr<JsNativeFn> ic: (JsObjs.NewNative: addr IsConstructor '%isConstructor' 1 false);
+		call JsObjs.DefineZ: exports '%isConstructor' (JsV.Obj: ic as ptr<JsObj>) JsObjs.WC;
+
+		ptr<JsObj> dp: (JsObjs.NewObject);
+		JsRt.P.disposable_stack is dp;
+		ptr<JsNativeFn> dc: (Js.DefineClass: 'DisposableStack' addr Construct 0 dp);
+		call JsObjs.DefineZ: exports '%DisposableStack' (JsV.Obj: dc as ptr<JsObj>) JsObjs.WC;
+		call JsLazy.Method: dp 'adopt' 2 ex 'stackAdopt';
+		call JsLazy.Method: dp 'defer' 1 ex 'stackDefer';
+		ptr<JsNativeFn> dd: (JsLazy.Method: dp 'dispose' 0 ex 'stackDispose');
+		call JsObjs.DefineValue: dp JsRt.S.dispose as ptr<u8> (JsV.Obj: dd as ptr<JsObj>) JsObjs.WC;
+		call JsLazy.Method: dp 'move' 0 ex 'stackMove';
+		call JsLazy.Method: dp 'use' 1 ex 'stackUse';
+		u64 dg: (JsLazy.AccessorFn: addr JsLazy.Forward 'get disposed' 0 ex 'stackDisposed');
+		call JsObjs.DefineGetter: dp (JsStrs.InternZ: 'disposed') as ptr<u8> dg JsV.UNDEF JsObjs.C;
+		call JsObjs.DefineValue: dp JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'DisposableStack') JsObjs.C;
+
+		ptr<JsObj> ap: (JsObjs.NewObject);
+		JsRt.P.async_disposable_stack is ap;
+		ptr<JsNativeFn> ac: (Js.DefineClass: 'AsyncDisposableStack' addr Construct 0 ap);
+		ac.magic is 1;
+		call JsObjs.DefineZ: exports '%AsyncDisposableStack' (JsV.Obj: ac as ptr<JsObj>) JsObjs.WC;
+		call JsLazy.Method: ap 'adopt' 2 ex 'asyncAdopt';
+		call JsLazy.Method: ap 'defer' 1 ex 'asyncDefer';
+		ptr<JsNativeFn> ad: (JsLazy.Method: ap 'disposeAsync' 0 ex 'asyncDispose');
+		call JsObjs.DefineValue: ap JsRt.S.asyncDispose as ptr<u8> (JsV.Obj: ad as ptr<JsObj>) JsObjs.WC;
+		call JsLazy.Method: ap 'move' 0 ex 'asyncMove';
+		call JsLazy.Method: ap 'use' 1 ex 'asyncUse';
+		u64 ag: (JsLazy.AccessorFn: addr JsLazy.Forward 'get disposed' 0 ex 'asyncDisposed');
+		call JsObjs.DefineGetter: ap (JsStrs.InternZ: 'disposed') as ptr<u8> ag JsV.UNDEF JsObjs.C;
+		call JsObjs.DefineValue: ap JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: 'AsyncDisposableStack') JsObjs.C;
+
+		ptr<JsProp> arr: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: 'Array') as ptr<u8>);
+		call JsLazy.Method: (JsV.AsObj: arr.value) 'fromAsync' 1 ex 'fromAsync';
+	[end]
+
+	# new DisposableStack() (magic 0) and new AsyncDisposableStack() (1)
+	[Construct: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		u64 nt: (Js.NewTarget);
+		if not (JsV.IsObj: nt)
+			call JsErr.Type: 'This constructor requires new';
+		;;
+		ptr<JsObj> fallback: JsRt.P.disposable_stack;
+		if self.magic is 1
+			fallback is JsRt.P.async_disposable_stack;
+		;;
+		ptr<JsObj> o: (JsObjs.NewWithProto: (JsOps.ProtoFromCtor: nt fallback));
+		u64 init: (JsLazy.Entry: JsLazy.EXTRAS (JsStrs.InternZ: 'initStack'));
+		call Js.Push: (JsV.Obj: o);
+		call Js.Push: (JsV.Bool: self.magic is 1);
+		call Js.CallThrowing: init JsV.UNDEF 2;
+	[end: (JsV.Obj: o)]
+
+	[IsConstructor: ptr<u64> args: 0; int argc: 0;]
+	[end: (JsV.Bool: (JsOps.IsConstructor: (Js.Arg: args argc 0)))]
+}

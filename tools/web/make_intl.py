@@ -17,6 +17,9 @@ import os
 import sys
 import unicodedata
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import js_to_phi  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HERE = os.path.join(ROOT, 'libs', 'web', 'js', 'builtins')
 ZONEINFO = '/usr/share/zoneinfo'
@@ -109,20 +112,6 @@ def make_data():
     print('intl_data.js: %d zones, %d rules, %d letters' % (len(pairs), len(rules), len(fold)))
 
 
-def phi_text(line):
-    # PHI's text is bytes: anything past ASCII is written as \u escapes for the script to read
-    out = []
-    for ch in line:
-        if ord(ch) < 128:
-            out.append(ch)
-        elif ord(ch) < 0x10000:
-            out.append('\\u%04x' % ord(ch))
-        else:
-            v = ord(ch) - 0x10000
-            out.append('\\u%04x\\u%04x' % (0xD800 + (v >> 10), 0xDC00 + (v & 0x3FF)))
-    return ''.join(out).replace('\\', '\\\\').replace("'", "\\'")
-
-
 def make_phi():
     script = open(os.path.join(HERE, 'intl.js'), encoding='utf-8').read().split('\n')
     data = open(os.path.join(HERE, 'intl_data.js'), encoding='utf-8').read().split('\n')
@@ -132,26 +121,7 @@ def make_phi():
             lines += data
         else:
             lines.append(line)
-    out = ['# Made by tools/web/make_intl.py from intl.js and intl_data.js: change those, then run it.',
-           '', 'phi.JsIntlJs:Library', '{', '\t[Source: : str]', "\t\tstr js: '';"]
-    count = 0
-    # a few long pieces, not a statement a line: each statement is code, and 3,500 of them were most
-    # of what this added to a program
-    piece = ''
-    for line in lines:
-        code = line.strip()
-        if not code or code.startswith('//'):
-            continue
-        piece += phi_text(code) + '\\n'
-        count += len(code) + 1
-        if len(piece) > 2000:
-            out.append("\t\tjs++ '%s';" % piece)
-            piece = ''
-    if piece:
-        out.append("\t\tjs++ '%s';" % piece)
-    out += ['\t[end: js]', '}', '']
-    open(os.path.join(HERE, 'intljs.phi'), 'w').write('\n'.join(out))
-    print('intljs.phi: %d lines, %d bytes of script' % (len(out), count))
+    js_to_phi.make(lines, 'intljs.phi', 'JsIntlJs', 'make_intl.py from intl.js and intl_data.js')
 
 
 if '--data' in sys.argv:
