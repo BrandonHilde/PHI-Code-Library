@@ -99,6 +99,9 @@ phi.CssSel:Library
 	const u32 P_HOST_CONTEXT: 0xFFF0;
 	const u32 P_SLOTTED: 0xFFF1;
 
+	# whether the rule being matched is a shadow tree's (the cascade says): :host matches only then
+	bln in_shadow: false;
+
 	const u32 MAX_NEST: 32;
 	const u32 MAX_COMPOUNDS: 512;
 	const u32 MAX_SPEC: 1023;
@@ -1121,13 +1124,14 @@ phi.CssSel:Library
 				return (Ask: e ST_VALID) is 0;
 			;;
 			is CssK.HOST
-				# a shadow host, as its own shadow tree's sheets see it (the cascade tries those rules on it)
-				if e.shadow is 0 or (e.shadow.flags & Dom.SHADOW_ROOT) is 0 return false;
+				# a shadow host, as its own shadow tree's sheets see it (the cascade tries those rules on it);
+				# outside them, nothing
+				if not in_shadow or e.shadow is 0 or (e.shadow.flags & Dom.SHADOW_ROOT) is 0 return false;
 				if s.sub is not 0 return (AnyOf: s.sub e);
 				return true;
 			;;
 			is P_HOST_CONTEXT
-				if e.shadow is 0 or (e.shadow.flags & Dom.SHADOW_ROOT) is 0 return false;
+				if not in_shadow or e.shadow is 0 or (e.shadow.flags & Dom.SHADOW_ROOT) is 0 return false;
 				ptr<DomNode> up: e;
 				while up is not 0
 					if up.type is DomType.ELEMENT and (AnyOf: s.sub up) return true;

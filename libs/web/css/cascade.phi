@@ -790,11 +790,13 @@ phi.CssCascade:Library
 			if aim is AIM_HOST or aim is AIM_SLOTTED
 				rank is RANK_HINTS;
 			;;
+			CssSel.in_shadow is (x.scope is not 0 or x.adopt_key is not 0);
 			if for_it and (CssSel.MatchFrom: c.right node)
 				call AddHit: x.decls c.spec x.order rank c.pseudo;
 			;;
 			x is x.next;
 		;;
+		CssSel.in_shadow is false;
 	[end]
 
 	# whether a tree (a shadow root, or 0 for the document) has adopted the sheet with this key
