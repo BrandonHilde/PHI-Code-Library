@@ -194,3 +194,10 @@ a position (`at_`). The language guide lists them (Reserved words: 85 of them, w
 and the port words among them), and the error names the word, so it costs only a rename; but a web
 library is full of standard names it would like to keep. For PHI: contextual keywords (`method` only
 where a type can stand, the port words only in their statements) would spare most of these (2026-11-22).
+
+**A PHI OS program's heap is a fixed 124 MB.** It's the range `0x40400000`–`0x47FFFFFF` whatever
+the machine has (PHI's `docs/memory-map.md`), and `Heap.most_bytes` can't raise it. weblib meets it
+on PHI OS with Wikipedia's Golden ratio article: 36 MB to load, past 116 MB with its pictures and
+MathJax typesetting, and then "RangeError: Out of memory" from the JS engine (on the Mac the same
+page is fine). For PHI: a heap that grows with the machine, or a way to ask for more. PHI OS
+FINDINGS #36 (2026-11-22).
