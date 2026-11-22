@@ -1,5 +1,12 @@
 <!doctype html><html><head><title>modules</title>
 <script>console.log('classic script in head, document parsing');</script>
+<script type="importmap">{"imports": {"greeting": "./mod/a.js", "lib/": "./mod/", "unused": 5}, "scopes": {"./mod/": {"greeting": "./mod/b.js"}}}</script>
+<script type="module">
+import greetByName from 'greeting';
+import * as viaPrefix from 'lib/b.js';
+import { keys } from 'lib/scoped.js';
+console.log('import map: greeting is a.js ' + (typeof greetByName === 'function') + ', lib/b.js ' + typeof viaPrefix.twice + ', under mod/ greeting is b.js: ' + keys);
+</script>
 <script type="module">
 import greet, { counter, bump, name as who } from './mod/a.js';
 import * as b from './mod/b.js';
@@ -7,7 +14,7 @@ console.log('inline module: ' + greet(who) + ', counter ' + counter);
 bump();
 console.log('after bump, the import sees ' + counter + ' (a live binding)');
 console.log('namespace keys: ' + Object.keys(b).join(','));
-console.log('import.meta.url ends with #module-0: ' + import.meta.url.endsWith('#module-0'));
+console.log('import.meta.url ends with #module-1 (the second inline module): ' + import.meta.url.endsWith('#module-1'));
 console.log('readyState when a module runs: ' + document.readyState);
 try { counter = 5; } catch (e) { console.log('assigning an import: ' + e.constructor.name); }
 </script>

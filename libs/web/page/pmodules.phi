@@ -49,24 +49,132 @@ phi.PageModules:Library
 		u32 id: (Page.Request: p url (WlText.LenZ: url) PageLoad.SCRIPT 0 as ptr<DomNode> (JsV.Int: MARK) JsV.UNDEF);
 	[end]
 
-	# a specifier against the module (or script) that names it; a script with no address of its own
-	# (an inline one) is the page's
+	# A specifier against the module (or script) that names it; a script with no address of its own (an
+	# inline one) is the page's. The page's import maps come first, as the standard has it: the most
+	# specific scope the base is in, then the top level; in each, the specifier itself, or the longest
+	# prefix ending in / that it starts with.
 	[Resolve: ptr<u8> base: 0; ptr<u8> spec: 0; u32 n: 0; ptr<WlBuf> target: 0;]
 		ptr<Page> p: Page.current;
 		ptr<u8> from: base;
-		bln has_scheme: false;
-		u32 i: 0;
-		while from:i is not 0 and from:i is not '/' and from:i is not ' '
-			if from:i is ':'
-				has_scheme is true;
-				break;
-			;;
-			i++;
-		;;
-		if not has_scheme and p is not 0
+		if not (HasScheme: from) and p is not 0
 			from is p.url;
 		;;
+		# what it is as an address (relative, or with a scheme of its own), or itself if it's bare
+		WlBuf as_url;
+		if n > 0 and (spec:0 is '/' or (n > 1 and spec:0 is '.' and spec:1 is '/') or (n > 2 and spec:0 is '.' and spec:1 is '.' and spec:2 is '/') or (HasSchemeN: spec n))
+			call CssUrl.Join: from spec n addr as_url;
+		;;
+		else
+			call as_url.AddN: spec n;
+		;;
+		call as_url.Add: 0 as u8;
+		if p is not 0 and p.map_key.len > 0
+			int found: (Mapped: p from as_url.data target);
+			if found >= 0
+				call as_url.Free;
+				return;
+			;;
+		;;
+		call as_url.Free;
 		call CssUrl.Join: from spec n target;
+	[end]
+
+	[HasScheme: ptr<u8> s: 0;]
+	[end: (HasSchemeN: s (WlText.LenZ: s))]
+
+	[HasSchemeN: ptr<u8> s: 0; u32 n: 0;]
+		u32 i: 0;
+		while i < n and s:i is not '/' and s:i is not ' ' and s:i is not '?' and s:i is not '#'
+			if s:i is ':' return i > 0;
+			i++;
+		;;
+	[end: false]
+
+	# the import maps' answer for spec (zero-terminated) from base, into target: the entry it used, or -1
+	[Mapped: ptr<Page> p: 0; ptr<u8> base: 0; ptr<u8> spec: 0; ptr<WlBuf> target: 0;]
+		u32 base_len: (WlText.LenZ: base);
+		u32 spec_len: (WlText.LenZ: spec);
+		# the scopes the base is in, the longest first; the top level ('') is the shortest of them
+		int done_len: 100000;
+		while true
+			int best_scope: -1;
+			u32 best_scope_len: 0;
+			while u32 i: 0; i < p.map_scope.len; i++;
+				ptr<u8> sc: p.map_scope:i;
+				u32 sl: (WlText.LenZ: sc);
+				if sl as int >= done_len continue;
+				if best_scope >= 0 and sl <= best_scope_len continue;
+				bln in_it: sl is 0 or (sl <= base_len and (Mem.Equal: sc base sl) and (sl is base_len or sc:(sl - 1) is '/'));
+				if in_it
+					best_scope is i as int;
+					best_scope_len is sl;
+				;;
+			;;
+			if best_scope < 0 return -1;
+			# in that scope: the specifier, or its longest prefix ending in /
+			ptr<u8> scope: p.map_scope:best_scope;
+			int pick: -1;
+			u32 pick_len: 0;
+			while u32 j: 0; j < p.map_key.len; j++;
+				if not (WlText.EqZ: p.map_scope:j (WlText.LenZ: p.map_scope:j) scope) continue;
+				ptr<u8> k: p.map_key:j;
+				u32 kl: (WlText.LenZ: k);
+				bln exact: kl is spec_len and (Mem.Equal: k spec kl);
+				bln prefix: kl > 0 and k:(kl - 1) is '/' and kl <= spec_len and (Mem.Equal: k spec kl);
+				if exact
+					pick is j as int;
+					pick_len is kl;
+					break;
+				;;
+				if prefix and kl > pick_len
+					pick is j as int;
+					pick_len is kl;
+				;;
+			;;
+			if pick >= 0
+				call target.AddZ: p.map_url:pick;
+				if pick_len < spec_len
+					call target.AddN: spec + pick_len spec_len - pick_len;
+				;;
+				return pick;
+			;;
+			done_len is best_scope_len as int;
+			if best_scope_len is 0 return -1;
+		;;
+	[end: -1]
+
+	# <script type=importmap>: its JSON, read by the page's %importMap (platform.js) into entries
+	[ImportMap: ptr<Page> p: 0; ptr<DomNode> s: 0;]
+		ptr<JsProp> found: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: '%importMap') as ptr<u8>);
+		if found is 0 or not (JsOps.IsCallable: found.value) return;
+		WlBuf text;
+		call Dom.TextContent: s text;
+		call Js.Push: (Js.NewString: text.data text.len);
+		call Js.Push: (Js.NewStringZ: p.url);
+		call text.Free;
+		u64 r: (Js.Call: found.value JsV.UNDEF 2);
+		if Js.failed
+			call Page.ReportException: p;
+			return;
+		;;
+		if not (JsV.IsObj: r) return;
+		ptr<JsObj> list: (JsV.AsObj: r);
+		u32 i: 0;
+		while i + 2 < list.length and p.map_key.len < p.map_key.max
+			WlBuf a;
+			WlBuf b;
+			WlBuf c;
+			call Js.TextOf: list.elems:i addr a;
+			call Js.TextOf: list.elems:(i + 1) addr b;
+			call Js.TextOf: list.elems:(i + 2) addr c;
+			call a.Add: 0 as u8;
+			call b.Add: 0 as u8;
+			call c.Add: 0 as u8;
+			p.map_scope++ (a.Take);
+			p.map_key++ (b.Take);
+			p.map_url++ (c.Take);
+			i++ 3;
+		;;
 	[end]
 
 	# a module's fetch came back (Page.DeliverNow, for a SCRIPT request with no element)

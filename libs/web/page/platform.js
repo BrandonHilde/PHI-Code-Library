@@ -1257,6 +1257,154 @@
     Object.defineProperty(global, "crypto", { get: function () { return crypto; }, configurable: true, enumerable: true });
   }
 
+  // ---- constructable stylesheets, and adoptedStyleSheets ----
+  // A CSSStyleSheet a script makes is parsed by the page once (%sheetSet), and styles each tree that
+  // adopts it (%adopt): the document, or a shadow root. Its cssRules are the text of each rule.
+
+  var sheetNew = global["%sheetNew"], sheetSet = global["%sheetSet"], adopt = global["%adopt"];
+  delete global["%sheetNew"]; delete global["%sheetSet"]; delete global["%adopt"];
+
+  // a sheet's text, cut into its rules at the top level (strings and comments looked past)
+  function splitRules(text) {
+    var rules = [], depth = 0, start = 0, i = 0, n = text.length;
+    while (i < n) {
+      var c = text.charAt(i);
+      if (c === "/" && text.charAt(i + 1) === "*") {
+        var end = text.indexOf("*/", i + 2);
+        i = end < 0 ? n : end + 2;
+        // (a comment between rules is no rule's)
+        if (depth === 0 && text.slice(start, i).replace(/\/\*[\s\S]*?(\*\/|$)/g, "").trim() === "") start = i;
+        continue;
+      }
+      if (c === "\"" || c === "'") {
+        i++;
+        while (i < n && text.charAt(i) !== c) i += text.charAt(i) === "\\" ? 2 : 1;
+        i++;
+        continue;
+      }
+      if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) { var r = text.slice(start, i + 1).trim(); if (r) rules.push(r); start = i + 1; }
+      } else if (c === ";" && depth === 0) {
+        var at = text.slice(start, i + 1).trim();
+        if (at) rules.push(at);
+        start = i + 1;
+      }
+      i++;
+    }
+    return rules;
+  }
+
+  class CSSRule {
+    constructor(text, sheet) { hidden(this, "_text", text); hidden(this, "_sheet", sheet); }
+    get cssText() { return this._text; }
+    get parentStyleSheet() { return this._sheet; }
+    get selectorText() { var b = this._text.indexOf("{"); return b < 0 ? "" : this._text.slice(0, b).trim(); }
+    get type() { return this._text.charAt(0) === "@" ? 0 : 1; }
+  }
+  class StyleSheet { }
+  class CSSStyleSheet extends StyleSheet {
+    constructor(options) {
+      super();
+      options = options || {};
+      hidden(this, "_key", sheetNew());
+      hidden(this, "_rules", []);
+      hidden(this, "_media", options.media === undefined ? "" : String(options.media));
+      hidden(this, "_disabled", !!options.disabled);
+    }
+    _set() { sheetSet(this._key, this._disabled ? "" : this._rules.join("\n")); }
+    get cssRules() { var self = this; return this._rules.map(function (t) { return new CSSRule(t, self); }); }
+    get rules() { return this.cssRules; }
+    get type() { return "text/css"; }
+    get href() { return null; }
+    get ownerNode() { return null; }
+    get ownerRule() { return null; }
+    get parentStyleSheet() { return null; }
+    get title() { return null; }
+    get media() { return { mediaText: this._media, length: this._media ? 1 : 0 }; }
+    get disabled() { return this._disabled; }
+    set disabled(v) { this._disabled = !!v; this._set(); }
+    replaceSync(text) {
+      this._rules = splitRules(String(text)).filter(function (r) { return !/^@import\b/i.test(r); });
+      this._set();
+    }
+    replace(text) {
+      try { this.replaceSync(text); } catch (e) { return Promise.reject(e); }
+      return Promise.resolve(this);
+    }
+    insertRule(rule, index) {
+      index = index === undefined ? 0 : index >>> 0;
+      if (index > this._rules.length) throw new DOMException("The index is past the sheet's end", "IndexSizeError");
+      var parts = splitRules(String(rule));
+      if (parts.length !== 1) throw new DOMException("insertRule takes one rule", "SyntaxError");
+      this._rules.splice(index, 0, parts[0]);
+      this._set();
+      return index;
+    }
+    deleteRule(index) {
+      index = index >>> 0;
+      if (index >= this._rules.length) throw new DOMException("There's no rule there", "IndexSizeError");
+      this._rules.splice(index, 1);
+      this._set();
+    }
+    addRule(selector, style, index) {
+      return this.insertRule(String(selector) + " { " + String(style === undefined ? "" : style) + " }", index === undefined ? this._rules.length : index);
+    }
+    removeRule(index) { this.deleteRule(index === undefined ? 0 : index); }
+  }
+  define("CSSRule", CSSRule);
+  define("StyleSheet", StyleSheet);
+  define("CSSStyleSheet", CSSStyleSheet);
+
+  var adopted = new WeakMap();
+  function adoptedAccessor(proto) {
+    if (!proto) return;
+    Object.defineProperty(proto, "adoptedStyleSheets", {
+      get: function () { return adopted.get(this) || []; },
+      set: function (list) {
+        var sheets = Array.from(list);
+        for (var i = 0; i < sheets.length; i++) {
+          if (!(sheets[i] instanceof CSSStyleSheet)) throw new TypeError("adoptedStyleSheets takes CSSStyleSheets");
+        }
+        adopted.set(this, sheets);
+        adopt(this, sheets.map(function (s) { return s._key; }));
+      },
+      configurable: true, enumerable: true
+    });
+  }
+  adoptedAccessor(global.Document && global.Document.prototype);
+  adoptedAccessor(global.ShadowRoot && global.ShadowRoot.prototype);
+
+  // ---- import maps: <script type=importmap>'s JSON, as the page keeps it (page/pmodules.phi) ----
+  // [scope, specifier, address, ...]: scope "" for the top level; specifiers that are addresses, and
+  // every address and scope, resolved against the page's; what isn't a string is left out
+
+  hidden(global, "%importMap", function (text, base) {
+    var map;
+    try { map = JSON.parse(text); } catch (e) { throw new TypeError("An import map isn't JSON: " + e.message); }
+    var out = [];
+    function add(scope, imports) {
+      if (!imports || typeof imports !== "object") return;
+      for (var key of Object.keys(imports)) {
+        var value = imports[key];
+        if (typeof value !== "string") continue;
+        var k = key;
+        if (/^(\/|\.\/|\.\.\/)/.test(key) || URL.canParse(key)) k = new URL(key, base).href;
+        var v = URL.parse(value, base);
+        if (v !== null) out.push(scope, k, v.href);
+      }
+    }
+    add("", map.imports);
+    if (map.scopes && typeof map.scopes === "object") {
+      for (var scope of Object.keys(map.scopes)) {
+        var su = URL.parse(scope, base);
+        if (su !== null) add(su.href, map.scopes[scope]);
+      }
+    }
+    return out;
+  });
+
   // ---- el.attributes: a NamedNodeMap (an array of Attrs, made by the page) ----
 
   if (global.NamedNodeMap) {

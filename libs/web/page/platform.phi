@@ -9,8 +9,111 @@ phi.PagePlatform:Library
 {
 	[Install: ptr<Page> p: 0;]
 		call Js.DefineNative: JsRt.r.global '%randomBytes' addr RandomBytes 1;
+		call Js.DefineNative: JsRt.r.global '%sheetNew' addr SheetNew 0;
+		call Js.DefineNative: JsRt.r.global '%sheetSet' addr SheetSet 2;
+		call Js.DefineNative: JsRt.r.global '%adopt' addr Adopt 2;
 		str js: (PagePlatformJs.Source);
 		call Page.RunSource: p addr js:0 js.len as u32 'platform';
+	[end]
+
+	# ---- constructable stylesheets (new CSSStyleSheet), and the trees that adopt them
+
+	# %sheetNew(): a new sheet's key (its place in the page's list, plus one), empty
+	[SheetNew: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		if p.made_sheets.len >= p.made_sheets.max
+			call PageBind.DomError: 'QuotaExceededError' 'This page has made too many stylesheets';
+		;;
+		p.made_sheets++ (0 as ptr<CssSheet>);
+	[end: (JsV.Int: p.made_sheets.len as int)]
+
+	# %sheetSet(key, text): what the sheet says now (replaceSync)
+	[SheetSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		int key: (JsOps.ToInt32: (Js.Arg: args argc 0));
+		if key < 1 or key > p.made_sheets.len as int return JsV.UNDEF;
+		WlBuf text;
+		call Js.TextOf: (Js.Arg: args argc 1) addr text;
+		ptr<CssSheet> old: p.made_sheets:(key - 1);
+		if old is not 0
+			call p.css.RemoveSheet: old;
+			call Css.FreeSheet: old;
+		;;
+		ptr<CssSheet> made: (Css.ParseSheet: text.data text.len p.url);
+		call text.Free;
+		p.made_sheets:(key - 1) is made;
+		if made is not 0
+			made.adopt_key is key as u32;
+			call p.css.AddSheet: made;
+		;;
+		p.doc.version++;
+	[end: JsV.UNDEF]
+
+	# %adopt(document or shadow root, [keys]): the sheets that tree has adopted, from now on
+	[Adopt: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		ptr<DomNode> tree: (PageBind.NodeOf: (Js.Arg: args argc 0));
+		if tree is 0 return JsV.UNDEF;
+		u64 lv: (Js.Arg: args argc 1);
+		if not (JsV.IsObj: lv) return JsV.UNDEF;
+		ptr<JsObj> list: (JsV.AsObj: lv);
+		ptr<CssAdopted> a: new CssAdopted;
+		if a is 0
+			throw 'out of memory for adopted sheets';
+		;;
+		a.count is list.length;
+		if a.count > 0
+			a.keys is new u32[a.count];
+			if a.keys is 0
+				throw 'out of memory for adopted sheets';
+			;;
+			while u32 i: 0; i < a.count; i++;
+				a.keys:i is (JsOps.ToInt32: list.elems:i) as u32;
+			;;
+		;;
+		ptr<CssAdopted> was: 0;
+		if tree.type is DomType.DOCUMENT
+			was is p.css.doc_adopted;
+			p.css.doc_adopted is a;
+		;;
+		elif (Dom.IsShadowRoot: tree)
+			was is tree.sheets as ptr<CssAdopted>;
+			tree.sheets is a as ptr<u8>;
+		;;
+		else
+			call FreeAdopted: a;
+			return JsV.UNDEF;
+		;;
+		call FreeAdopted: was;
+		p.css.all_dirty is true;
+		p.doc.version++;
+	[end: JsV.UNDEF]
+
+	[FreeAdopted: ptr<CssAdopted> a: 0;]
+		if a is 0 return;
+		if a.keys is not 0
+			free a.keys;
+		;;
+		free a;
+	[end]
+
+	# a page that's going: its constructable sheets, and the lists of who adopted them
+	[Forget: ptr<Page> p: 0;]
+		while u32 i: 0; i < p.made_sheets.len; i++;
+			if p.made_sheets:i is not 0
+				call Css.FreeSheet: p.made_sheets:i;
+			;;
+		;;
+		call FreeAdopted: p.css.doc_adopted;
+		p.css.doc_adopted is 0;
+		ptr<DomNode> n: p.doc.all;
+		while n is not 0
+			if n.sheets is not 0
+				call FreeAdopted: n.sheets as ptr<CssAdopted>;
+				n.sheets is 0;
+			;;
+			n is n.all_next;
+		;;
 	[end]
 
 	# %randomBytes(u8array): fills it (platform.js has checked it's a Uint8Array of at most 64 KB)

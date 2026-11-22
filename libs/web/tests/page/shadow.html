@@ -60,5 +60,22 @@ log("a div can be a host:", div.shadowRoot !== null, div.childNodes.length, HTML
 var again = dsd.attachShadow({ mode: "open" });
 log("attachShadow on it:", again === dsd.shadowRoot, again.childNodes.length);
 var parsed = new DOMParser().parseFromString("<title>t</title><p class=x>parsed</p><div><template shadowrootmode=open><b>in</b></template></div>", "text/html");
+var shared = new CSSStyleSheet();
+shared.replaceSync(":host { color: rgb(20, 30, 40) } p { font-size: 33px } /* a comment { } */ .q { content: \"}\" }");
+customElements.define("x-adopt", class extends HTMLElement { constructor() { super(); var r = this.attachShadow({ mode: "open" }); r.adoptedStyleSheets = [shared]; r.innerHTML = "<p id='ap' class='docadopt'>adopted</p>"; } });
+var xa = document.createElement("x-adopt"), xb = document.createElement("x-adopt");
+document.body.appendChild(xa);
+document.body.appendChild(xb);
+var docSheet = new CSSStyleSheet();
+docSheet.replaceSync(".docadopt { color: rgb(50, 60, 70) }");
+document.adoptedStyleSheets = [docSheet];
+var plain = document.createElement("p");
+plain.className = "docadopt";
+document.body.appendChild(plain);
+log("adopted:", style(xa, "color"), style(xb.shadowRoot.getElementById("ap"), "font-size"), style(xa.shadowRoot.getElementById("ap"), "color"), style(plain, "color"), shared.cssRules.length, shared.cssRules[2].selectorText, xa.shadowRoot.adoptedStyleSheets[0] === shared, "adoptedStyleSheets" in Document.prototype, "replace" in CSSStyleSheet.prototype);
+shared.insertRule("p { font-size: 11px }", 3);
+log("insertRule:", style(xa.shadowRoot.getElementById("ap"), "font-size"), shared.cssRules.length);
+xb.shadowRoot.adoptedStyleSheets = [];
+log("unadopted:", style(xb, "color"), style(xa, "color"));
 log("DOMParser:", parsed.title, parsed.body.innerHTML.length > 0, parsed.querySelector(".x").textContent, parsed.querySelector("div").shadowRoot !== null, parsed === document);
 </script></body></html>

@@ -145,6 +145,12 @@ struct.Page
 
 	# everything the page's objects need kept alive that isn't reachable some other way, in one JS array
 	ptr<DomDocument> docs[atmost 256];    # documents a script made (document.implementation), freed with it
+	# the import maps' entries (page/pmodules.phi): a scope ('' for the top level), a specifier or a
+	# prefix of one, and the address it maps to, each on the heap
+	ptr<CssSheet> made_sheets[atmost 4096];   # new CSSStyleSheet()'s, by their keys (page/platform.phi)
+	ptr<u8> map_scope[atmost 1024];
+	ptr<u8> map_key[atmost 1024];
+	ptr<u8> map_url[atmost 1024];
 	bln observing;          # a MutationObserver is watching (page/observers.phi)
 	bln custom_elements;    # a custom element is defined (page/elements.phi)
 
@@ -234,6 +240,7 @@ phi.Page:Library
 
 	[Free: ptr<Page> p: 0;]
 		call PageElements.Forget;
+		call PagePlatform.Forget: p;
 		while u32 mu: 0; mu < p.mod_urls.len; mu++;
 			free p.mod_urls:mu;
 		;;
@@ -250,6 +257,11 @@ phi.Page:Library
 		call Dom.FreeDocument: p.doc;
 		while each d in p.docs
 			call Dom.FreeDocument: d;
+		;;
+		while u32 mi: 0; mi < p.map_key.len; mi++;
+			free p.map_scope:mi;
+			free p.map_key:mi;
+			free p.map_url:mi;
 		;;
 		while each r in p.requests
 			if r.url is not 0
@@ -438,6 +450,10 @@ phi.Page:Library
 		if t is not 0 and (Same: t 'module')
 			call ScanSheets: p;
 			call PageModules.Script: p s;
+			return;
+		;;
+		if t is not 0 and (Same: t 'importmap')
+			call PageModules.ImportMap: p s;
 			return;
 		;;
 		# a browser with modules leaves nomodule scripts (the fallback for one without) alone

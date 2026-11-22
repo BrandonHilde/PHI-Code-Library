@@ -31,6 +31,7 @@ struct.CssIdx
 	u32 order;
 	u32 rank;
 	ptr<DomNode> scope;     # its sheet's tree: 0 for the document's (CssSheet.scope)
+	u32 adopt_key;          # its sheet's CssSheet.adopt_key: for the trees that adopt it, if not 0
 	u8 aim;                 # CssCascade.AIM_*: what in or around that tree it's for
 }
 
@@ -112,6 +113,8 @@ struct.CssEngine
 	ptr<ptr<CssKeyframes>> frames;
 	u32 frame_count;
 	u32 frame_cap;
+
+	ptr<CssAdopted> doc_adopted;     # the constructable sheets the document has adopted
 
 	# asked once for each @import that applies: answer now or later, with Css.ImportDone
 	method<ptr<CssEngine> ptr<CssImport>> on_import;
@@ -242,6 +245,8 @@ phi.CssCascade:Library
 	const u32 AIM_SLOTTED: 3;
 
 	ptr<DomNode> cur_scope: 0;      # the sheet being indexed
+	u32 cur_key: 0;
+	ptr<CssEngine> cur_engine: 0;   # the engine styling an element
 	ptr<DomNode> cur_tree: 0;       # the tree of the element being styled (0: the document's)
 
 	const u32 RANK_UA: 0;
@@ -392,12 +397,15 @@ phi.CssCascade:Library
 		;;
 		call RankLayers: e;
 		cur_scope is 0;
+		cur_key is 0;
 		call Walk: e ua_sheet.first RANK_UA 0 0;
 		while u32 i: 0; i < e.sheet_count; i++;
 			cur_scope is e.sheets:i.scope;
+			cur_key is e.sheets:i.adopt_key;
 			call Walk: e e.sheets:i.first RANK_UNLAYERED 0 0;
 		;;
 		cur_scope is 0;
+		cur_key is 0;
 		# (an @import answered during that was seen by it)
 		e.needs_index is false;
 	[end]
@@ -608,6 +616,7 @@ phi.CssCascade:Library
 				x.order is e.rule_order;
 				x.rank is rank;
 				x.scope is cur_scope;
+				x.adopt_key is cur_key;
 				x.aim is (AimOf: c rank) as u8;
 				e.rule_order++;
 				if c.pseudo is not 0
@@ -756,7 +765,19 @@ phi.CssCascade:Library
 			u32 aim: x.aim;
 			bln for_it: true;
 			u32 rank: x.rank;
-			if aim is AIM_TREE
+			if x.adopt_key is not 0
+				# a constructable sheet's rule: for the trees that adopted it
+				if aim is AIM_TREE
+					for_it is (Adopts: cur_tree x.adopt_key);
+				;;
+				elif aim is AIM_HOST
+					for_it is (node.shadow is not 0 and (Adopts: node.shadow x.adopt_key));
+				;;
+				elif aim is AIM_SLOTTED
+					for_it is (node.parent is not 0 and node.parent.shadow is not 0 and (Adopts: node.parent.shadow x.adopt_key));
+				;;
+			;;
+			elif aim is AIM_TREE
 				for_it is (x.scope is cur_tree);
 			;;
 			elif aim is AIM_HOST
@@ -775,6 +796,22 @@ phi.CssCascade:Library
 			x is x.next;
 		;;
 	[end]
+
+	# whether a tree (a shadow root, or 0 for the document) has adopted the sheet with this key
+	[Adopts: ptr<DomNode> tree: 0; u32 key: 0;]
+		ptr<CssAdopted> list: 0;
+		if tree is 0
+			if cur_engine is 0 return false;
+			list is cur_engine.doc_adopted;
+		;;
+		else
+			list is tree.sheets as ptr<CssAdopted>;
+		;;
+		if list is 0 return false;
+		while u32 i: 0; i < list.count; i++;
+			if list.keys:i is key return true;
+		;;
+	[end: false]
 
 	# which elements a rule is for, from what's at its right: :host, ::slotted(), or neither
 	[AimOf: ptr<CssComplex> c: 0; u32 rank: 0;]
@@ -808,6 +845,7 @@ phi.CssCascade:Library
 	[Collect: ptr<CssEngine> e: 0; ptr<DomNode> node: 0;]
 		hit_n is 0;
 		cur_tree is (TreeOf: node);
+		cur_engine is e;
 		if node.id_atom is not 0
 			call TryKey: e node.id_atom K_ID node;
 		;;

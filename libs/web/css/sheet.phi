@@ -88,6 +88,15 @@ struct.CssSheet
 	ptr<CssDecls> all_decls;    # every block in it, to free them
 	u32 rule_count;
 	ptr<DomNode> scope;         # the shadow root whose sheet it is: its rules are for that tree (0: the document)
+	u32 adopt_key;              # a constructable sheet's (not 0): its rules are for the trees that adopt it
+}
+
+# the constructable sheets a tree has adopted, by their keys: a shadow root's (DomNode.sheets), or the
+# document's (CssEngine.doc_adopted)
+struct.CssAdopted
+{
+	ptr<u32> keys;
+	u32 count;
 }
 
 # ---- media queries
