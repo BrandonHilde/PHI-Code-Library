@@ -27,6 +27,9 @@ phi.PageElements:Library
 	ptr<PageReaction> queue: 0;
 	u32 queued: 0;
 	u32 room: 0;
+	# while the DOM is telling the page of a change (Page.Mutated), which it does before the change is
+	# made: reactions wait, as a MutationObserver's script may run then and a native it calls return
+	int holding: 0;
 
 	[Install: ptr<Page> p: 0;]
 		call Js.DefineNative: JsRt.r.global '%ceNew' addr NewElement 1;
@@ -172,6 +175,8 @@ phi.PageElements:Library
 	[Mutated: ptr<DomNode> target: 0; int kind: 0; ptr<DomNode> node: 0; ptr<WlAtom> name: 0; ptr<u8> old: 0; int old_length: 0;]
 		# (an element on its own that isn't a candidate can't matter: the parser's, as it puts each in)
 		if kind is Dom.ADDED
+			# (put somewhere: a copy of a template's isn't inert any more)
+			node.flags is node.flags & (0xFFFFFFFF ^ Dom.INERT);
 			if (Matters: node)
 				call Add: CONNECTED node 0 0 0;
 			;;
@@ -249,6 +254,11 @@ phi.PageElements:Library
 	[Drain]
 		JsVm.after_native is 0;
 		if queued is 0 return;
+		if holding > 0
+			# (in the middle of a change: the attribute isn't removed yet, say. They go once it's made.)
+			JsVm.after_native is addr Drain;
+			return;
+		;;
 		ptr<Page> p: Page.current;
 		if p is 0
 			call Forget;

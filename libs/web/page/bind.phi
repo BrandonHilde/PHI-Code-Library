@@ -689,7 +689,19 @@ phi.PageBind:Library
 			call DomError: 'NotSupportedError' 'A shadow root cannot be cloned';
 		;;
 		ptr<DomNode> c: (Clone: n (JsOps.ToBool: (Js.Arg: args argc 0)));
-		call PageElements.Cloned: c;
+		# A copy is in the same document as what it's a copy of: of what's in a <template>, that's the
+		# standard's inert document, where custom elements aren't upgraded (they are once it's put in
+		# the page, or imported). Elsewhere, what's in it is upgraded now.
+		ptr<DomNode> root: (Dom.TreeRoot: n);
+		if root.type is DomType.FRAGMENT and (root.content is not 0 or (root.flags & Dom.INERT) is not 0)
+			c.flags is c.flags | Dom.INERT;
+		;;
+		elif root.type is DomType.ELEMENT and (root.flags & Dom.INERT) is not 0
+			c.flags is c.flags | Dom.INERT;
+		;;
+		else
+			call PageElements.Cloned: c;
+		;;
 	[end: (Wrap: c)]
 
 	# a <template>'s contents, made the first time they're wanted if the parser didn't make them
@@ -945,9 +957,9 @@ phi.PageBind:Library
 		call Method: p 'getElementsByTagName' addr ByTag 1 0;
 		call Method: p 'getElementsByClassName' addr ByClass 1 0;
 		ptr<JsObj> h: html_proto;
-		call Getter: h 'style' addr ElementProp 0 E_STYLE;
+		call Getter: h 'style' addr ElementProp addr StyleSet E_STYLE;
 		call Getter: h 'dataset' addr ElementProp 0 E_DATASET;
-		call Getter: svg_proto 'style' addr ElementProp 0 E_STYLE;
+		call Getter: svg_proto 'style' addr ElementProp addr StyleSet E_STYLE;
 		call Getter: h 'offsetWidth' addr BoxGet 0 B_WIDTH;
 		call Getter: h 'offsetHeight' addr BoxGet 0 B_HEIGHT;
 		call Getter: h 'offsetLeft' addr BoxGet 0 B_LEFT;
@@ -1138,13 +1150,13 @@ phi.PageBind:Library
 				return (AttrList: n);
 			;;
 			is E_CLASSLIST
-				return (Cached: n 'classList' token_class token_proto);
+				return (Cached: n '%classList' token_class token_proto);
 			;;
 			is E_STYLE
-				return (Cached: n 'style' style_class style_proto);
+				return (Cached: n '%style' style_class style_proto);
 			;;
 			is E_DATASET
-				return (Cached: n 'dataset' dataset_class dataset_proto);
+				return (Cached: n '%dataset' dataset_class dataset_proto);
 			;;
 		;;
 	[end: JsV.UNDEF]
@@ -1211,6 +1223,12 @@ phi.PageBind:Library
 			return JsV.NULL;
 		;;
 	[end: (Js.NewString: a.value a.value_len)]
+
+	# el.style = 'color: red': what's given is its cssText, as the standard has it ([PutForwards=cssText])
+	[StyleSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+		call SetAttrFrom: n (WlAtoms.GetZ: 'style') (Js.Arg: args argc 0);
+	[end: JsV.UNDEF]
 
 	[SetAttrFrom: ptr<DomNode> n: 0; ptr<WlAtom> name: 0; u64 value: 0;]
 		WlBuf b;

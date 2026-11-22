@@ -54,6 +54,9 @@ after abort: 0
 sent: GET http://test.example/nowhere
 document.all: undefined true true true false true true true f [object HTMLAllCollection]
 root size: 800 600 function function
+popover: none | block true | none | NotSupportedError
+style assigned: color: red | rgb(255, 0, 0) | -1
+read only threw: TypeError Cannot assign to read only property 'a' of object
 script ends
 blob text: blob text
 play: NotSupportedError
@@ -69,6 +72,8 @@ xhr 404: 404 ""
 post answer: POST
 made with: made with
 --- a timer
+toggle: closed open
+toggle: open closed
 message: 7 false
 --- a frame
 --- later

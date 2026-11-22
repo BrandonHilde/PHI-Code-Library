@@ -91,6 +91,12 @@ bad.onerror = function (e) { log("img error:", e.type); };
 good.src = "/api/echo";
 bad.src = "/nowhere.png";
 t("root size", function () { return [document.documentElement.clientWidth, document.documentElement.clientHeight, typeof IntersectionObserverEntry, typeof ResizeObserverEntry].join(" "); });
+// popovers, el.style assigned, and the name of what can't be assigned
+var pop = document.createElement("div"); pop.setAttribute("popover", ""); document.body.appendChild(pop);
+pop.addEventListener("toggle", function (e) { log("toggle:", e.oldState, e.newState); });
+t("popover", function () { var before = getComputedStyle(pop).display; pop.showPopover(); var shown = [getComputedStyle(pop).display, pop.matches(":popover-open")]; pop.hidePopover(); var err = ""; try { document.body.showPopover(); } catch (e) { err = e.name; } return [before, shown.join(" "), getComputedStyle(pop).display, err].join(" | "); });
+t("style assigned", function () { "use strict"; var d = document.createElement("div"); d.style = "color: red"; return [d.getAttribute("style"), d.style.color, Object.getOwnPropertyNames(d).indexOf("style")].join(" | "); });
+t("read only", function () { "use strict"; var o = Object.freeze({ a: 1 }); o.a = 2; });
 var ch = new MessageChannel();
 ch.port2.onmessage = function (e) { log("message:", e.data.n, e.data === sent); };
 var sent = {n: 7};

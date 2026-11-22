@@ -69,4 +69,22 @@ log("x-late after:", getComputedStyle(document.querySelector("x-late")).color);
 </script>
 <x-late id="parsed-after">parsed after</x-late>
 <script>log("parsed after define:", document.getElementById("parsed-after") instanceof XLate);</script>
+<template id="tpl"><x-inert a="1"></x-inert></template>
+<script>
+// a copy of a template's contents is in the standard's inert document: nothing in it is upgraded
+// until it's imported or put in the page
+class XInert extends HTMLElement { static get observedAttributes() { return ["a"]; } attributeChangedCallback(n, o, v) { log("x-inert told:", n, o, "->", v, this.isConnected); } }
+customElements.define("x-inert", XInert);
+var tpl = document.getElementById("tpl");
+var copy = tpl.content.cloneNode(true);
+log("template copy upgraded:", copy.firstChild instanceof XInert, "copy of the copy:", copy.cloneNode(true).firstChild instanceof XInert);
+log("imported upgraded:", document.importNode(tpl.content, true).firstChild instanceof XInert);
+document.body.appendChild(copy);
+log("copy put in, upgraded:", document.body.lastChild instanceof XInert);
+// an attribute removed while a MutationObserver watches: the reaction sees it gone
+var watched = new MutationObserver(function () {});
+watched.observe(document.body, { attributes: true, subtree: true });
+document.body.lastChild.removeAttribute("a");
+watched.disconnect();
+</script>
 </body></html>

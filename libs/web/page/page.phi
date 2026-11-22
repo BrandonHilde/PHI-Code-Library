@@ -205,6 +205,7 @@ phi.Page:Library
 		p.parser.host_data is p as ptr<u8>;
 		p.parser.on_script is addr OnScript;
 		p.css is (Css.NewEngine: p.doc);
+		CssSel.on_state is addr CssState;
 		p.css.on_import is addr OnImport;
 		call p.css.SetViewport: width height;
 		p.rt is (Js.New);
@@ -231,12 +232,14 @@ phi.Page:Library
 		ptr<Page> p: current;
 		if p is 0 return;
 		call Pictures: p target kind node name;
+		PageElements.holding++;
 		if p.custom_elements
 			call PageElements.Mutated: target kind node name old old_length;
 		;;
 		if p.observing
 			call PageObservers.Mutated: target kind node name old old_length;
 		;;
+		PageElements.holding--;
 	[end]
 
 	# An <img> of the page's document asks for its picture (a PageLoad.IMAGE request) when it's put in
@@ -272,6 +275,29 @@ phi.Page:Library
 		img.flags is img.flags | Dom.PICTURE_ASKED;
 		u32 id: (Request: p src.value src.value_len PageLoad.IMAGE img);
 	[end]
+
+	# What CSS asks of the page (CssSel.on_state): whether a popover is showing, and what has the
+	# focus (and so is inside :focus-within). Anything else, the attributes say.
+	[CssState: ptr<DomNode> e: 0; u32 what: 0;]
+		if what is CssSel.ST_POPOVER_OPEN
+			if (e.flags & Dom.POPOVER_OPEN) is not 0 return 1;
+			return 0;
+		;;
+		ptr<Page> p: current;
+		if p is 0 return -1;
+		if what is CssSel.ST_FOCUS
+			if e is p.focused return 1;
+			return 0;
+		;;
+		if what is CssSel.ST_FOCUS_WITHIN
+			ptr<DomNode> n: p.focused;
+			while n is not 0
+				if n is e return 1;
+				n is (Dom.FlatParent: n);
+			;;
+			return 0;
+		;;
+	[end: -1]
 
 	[Use: ptr<Page> p: 0;]
 		if current is not p

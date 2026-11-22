@@ -12,9 +12,25 @@ phi.PagePlatform:Library
 		call Js.DefineNative: JsRt.r.global '%sheetNew' addr SheetNew 0;
 		call Js.DefineNative: JsRt.r.global '%sheetSet' addr SheetSet 2;
 		call Js.DefineNative: JsRt.r.global '%adopt' addr Adopt 2;
+		call Js.DefineNative: JsRt.r.global '%popover' addr Popover 2;
 		str js: (PagePlatformJs.Source);
 		call Page.RunSource: p addr js:0 js.len as u32 'platform';
 	[end]
+
+	# %popover(element, open): whether it's showing (CSS's :popover-open); its style is worked out again
+	[Popover: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (PageBind.NodeOf: (Js.Arg: args argc 0));
+		bln open: (JsOps.ToBool: (Js.Arg: args argc 1));
+		if n is 0 return JsV.UNDEF;
+		if open
+			n.flags is n.flags | Dom.POPOVER_OPEN;
+		;;
+		else
+			n.flags is n.flags & (0xFFFFFFFF ^ Dom.POPOVER_OPEN);
+		;;
+		ptr<Page> p: Page.current;
+		call p.css.MarkDirty: n;
+	[end: JsV.UNDEF]
 
 	# ---- constructable stylesheets (new CSSStyleSheet), and the trees that adopt them
 

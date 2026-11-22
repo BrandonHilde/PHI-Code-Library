@@ -144,6 +144,9 @@ phi.Dom:Library
 	const u32 SCRIPT_RAN: 0x10000;   # the page's: a <script> that has run, or been put in by a script
 	const u32 SHADOW_DECLARATIVE: 0x20000;  # a shadow root the parser made from <template shadowrootmode>
 	const u32 PICTURE_ASKED: 0x40000;       # the page's: an <img> that has asked for its picture
+	const u32 POPOVER_OPEN: 0x80000;        # the page's: a popover that's showing (CSS's :popover-open)
+	const u32 INERT: 0x100000;              # the page's: a copy of what's in a <template> (the standard's
+	                                        # inert document, where nothing is upgraded), until it's put in
 
 	ptr<WlAtom> A_ID: 0;
 	ptr<WlAtom> A_CLASS: 0;

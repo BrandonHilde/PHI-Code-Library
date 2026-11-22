@@ -14,6 +14,7 @@
 //   URL attributes                 a.href, img.src and the rest resolved; <a>'s and <area>'s parts
 //   XMLHttpRequest                 made of fetch, which sends the method, headers and body it's given
 //   HTMLMediaElement               under <video> and <audio>: what a browser that plays nothing says
+//   popovers                       showPopover, hidePopover, togglePopover, ToggleEvent (:popover-open)
 //   CSS.supports and CSS.escape, PerformanceObserver, requestIdleCallback, reportError,
 //   crypto.getRandomValues and randomUUID (from %randomBytes: PHI's crypto.random), visualViewport,
 //   and the names of the classes the window's own objects are made from (History, Location ...)
@@ -22,6 +23,8 @@
   "use strict";
   var randomBytes = global["%randomBytes"];
   delete global["%randomBytes"];
+  var popoverNative = global["%popover"];
+  delete global["%popover"];
 
   function hidden(o, name, value) {
     Object.defineProperty(o, name, { value: value, writable: true, configurable: true, enumerable: false });
@@ -2023,5 +2026,48 @@
         Object.defineProperty(global.HTMLVideoElement.prototype, k, { get: function () { return 0; }, enumerable: true, configurable: true });
       });
     }
+  }
+
+  // ---- popovers ----
+  // An element with a popover attribute is hidden until it's shown (css/ua.phi:
+  // [popover]:not(:popover-open)); showPopover, hidePopover and togglePopover say which, with the
+  // beforetoggle and toggle events the standard has. Not kept: light dismiss (a click outside
+  // closing an "auto" one), and closing other auto popovers when one opens.
+  if (global.HTMLElement && !global.HTMLElement.prototype.showPopover) {
+    if (typeof global.ToggleEvent === "undefined") {
+      class ToggleEvent extends Event {
+        constructor(type, init) {
+          super(type, init);
+          init = init || {};
+          hidden(this, "_old", String(init.oldState || ""));
+          hidden(this, "_new", String(init.newState || ""));
+        }
+        get oldState() { return this._old; }
+        get newState() { return this._new; }
+      }
+      define("ToggleEvent", ToggleEvent);
+    }
+    var openPopovers = new WeakSet();
+    var settle = function (el, open, force) {
+      if (!el.hasAttribute("popover")) {
+        throw new DOMException("Not supported on elements that do not have a valid value for the 'popover' attribute.", "NotSupportedError");
+      }
+      var was = openPopovers.has(el);
+      if (was === open) return was;
+      var before = new global.ToggleEvent("beforetoggle", { cancelable: open, oldState: was ? "open" : "closed", newState: open ? "open" : "closed" });
+      if (!el.dispatchEvent(before) && open) return was;
+      if (open) openPopovers.add(el); else openPopovers.delete(el);
+      popoverNative(el, open);
+      var after = new global.ToggleEvent("toggle", { oldState: was ? "open" : "closed", newState: open ? "open" : "closed" });
+      setTimeout(function () { el.dispatchEvent(after); }, 0);
+      return open;
+    };
+    var hp = global.HTMLElement.prototype;
+    hidden(hp, "showPopover", function showPopover() { settle(this, true); });
+    hidden(hp, "hidePopover", function hidePopover() { settle(this, false); });
+    hidden(hp, "togglePopover", function togglePopover(force) {
+      var open = force === undefined ? !openPopovers.has(this) : !!force;
+      return settle(this, open);
+    });
   }
 })(this);

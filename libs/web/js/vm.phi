@@ -1148,10 +1148,34 @@ phi.JsVm:Library
 		sp:(-1) is r;
 	[end]
 
-	[StrictSetFailed]
-		if (fr.code.flags & JsCodes.F_STRICT) is not 0
-			call JsErr.Type: 'Cannot assign to read only property';
+	# (strict code only: sloppy code's failed assignment is quiet) The message names the property, as
+	# browsers' do: "Cannot assign to read only property 'x' of object".
+	[StrictSetFailed: u64 key: 0; u64 target: 0;]
+		if (fr.code.flags & JsCodes.F_STRICT) is 0 return;
+		WlBuf b;
+		call b.AddZ: 'Cannot assign to read only property';
+		if (JsV.IsStr: key) or (key >> 48) as u32 is JsV.TAG_INT
+			ptr<JsStr> name: (JsStrs.Flat: (JsOps.ToStr: key));
+			call b.AddZ: ' \'';
+			u32 shown: name.bytes;
+			if shown > 80
+				shown is 80;
+			;;
+			call b.AddN: name.data shown;
+			call b.AddZ: '\' of object';
+			if (JsV.IsObj: target)
+				ptr<JsObj> to: (JsV.AsObj: target);
+				if to.cls is not 0 and to.cls.name is not 0
+					call b.AddZ: ' \'#<';
+					call b.AddZ: to.cls.name;
+					call b.AddZ: '>\'';
+				;;
+			;;
 		;;
+		call b.Add: 0 as u8;
+		ptr<JsObj> e: (JsErr.Make: JsRt.P.type_error b.data);
+		call b.Free;
+		call JsErr.Throw: (JsV.Obj: e);
 	[end]
 
 	# [o v] -> [v]
@@ -1161,7 +1185,7 @@ phi.JsVm:Library
 		if (target >> 48) as u32 is JsV.TAG_OBJ
 			ptr<JsObj> o: (target & JsV.PTR_MASK) as ptr<JsObj>;
 			if not (JsObjs.SetAtom: o (key & JsV.PTR_MASK) as ptr<u8> v)
-				call StrictSetFailed;
+				call StrictSetFailed: key target;
 			;;
 		;;
 		else
@@ -1169,7 +1193,7 @@ phi.JsVm:Library
 				call JsErr.Type: 'Cannot set properties of undefined or null';
 			;;
 			if not (JsObjs.SetV: target key v)
-				call StrictSetFailed;
+				call StrictSetFailed: key target;
 			;;
 		;;
 		sp-- 8;
@@ -1201,7 +1225,7 @@ phi.JsVm:Library
 			ok is (JsObjs.SetV: target k v);
 		;;
 		if not ok
-			call StrictSetFailed;
+			call StrictSetFailed: k target;
 		;;
 		sp-- 16;
 		sp:(-1) is v;
@@ -2463,7 +2487,7 @@ phi.JsVm:Library
 				u64 skey2: (JsObjs.KeyOf: sp:(-2));
 				sp:(-2) is skey2;
 				if not (JsObjs.Set: sp2 skey2 sp:(-1) sp:(-3))
-					call StrictSetFailed;
+					call StrictSetFailed: skey2 sp:(-3);
 				;;
 				u64 sw: sp:(-1);
 				sp-- 16;

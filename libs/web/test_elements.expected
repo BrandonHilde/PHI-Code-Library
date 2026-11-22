@@ -1,7 +1,7 @@
 template: true 0 2 a
 div is HTMLDivElement: true true
 made template: 0 1 <i>x</i>
-cloned template: 2 in a template 
+cloned template: 2 in a template
 before define: false
 XEarly constructor, children: 1
 XEarly attribute data-n  1
@@ -32,6 +32,12 @@ x-late after: rgb(0, 128, 0)
 whenDefined x-late: XLate
 XLate connected rgb(0, 128, 0)
 parsed after define: true
+template copy upgraded: false copy of the copy: false
+x-inert told: a  -> 1 false
+imported upgraded: true
+x-inert told: a  -> 1 true
+copy put in, upgraded: true
+x-inert told: a 1 ->  true
 --- a timer
 --- a frame
 --- later
