@@ -159,3 +159,24 @@ for macOS is 41 MB (27 MB stripped); as a PHI OS program it's 3.7 MB, and as a 6
 15.6 MB of `__DATA_CONST,__const` and 20 MB of `__LINKEDIT` (a `phi_line_N` symbol for each line).
 Not looked into further; it runs (2026-11-22).
 
+**PHI 1.0's floating-point maths stops at `Sin` and `Cos`, and the libraries have each filled the gap
+their own way.** The builtins are `Float.Abs`, `Sqrt`, `Sin`, `Cos`, `Floor`, `Ceil`, `Round` and
+`Trunc`; there's no log, exp, pow, tan, atan, atan2, asin or acos. So:
+
+- weblib (JavaScript's `Math`) computes `log`, `log2`, `log10`, `log1p`, `exp`, `expm1`, `tan`, `atan2`
+  and `**` in assembly: the x87's own instructions (`fyl2x`, `f2xm1`, `fptan`, `fpatan`) in 32- and
+  64-bit x86 code, and since 2026-11-22 calls to the Mac's C library in ARM code (`libs/web/docs/DESIGN.md`,
+  "Assembly: the x87"). That assembly is all that tied weblib to x86, and it means a result can
+  differ in its last bit between an x86 build and a Mac one, and from browsers' (they use fdlibm).
+- vectorlib has its own `Vg.Tan` (`Sin` over `Cos`) and `Vg.Atan2` in PHI, which canvas uses too.
+- weblib also sets the x87's control word to double precision in assembly (`WlSetFpu`, `JsSetFpu`):
+  a 32-bit program's `f64` arithmetic is done on the x87, which keeps 80 bits unless told otherwise,
+  so a result could be rounded twice where JavaScript allows once. PHI has no way to say this itself.
+
+**For PHI:** the rest of C's `<math.h>` as `Float.` builtins (`Log`, `Log2`, `Log10`, `Log1p`, `Exp`,
+`Expm1`, `Pow`, `Tan`, `Atan`, `Atan2`, `Asin`, `Acos`, `Sinh`, `Cosh`, `Tanh`, `Cbrt`, `Hypot`), the
+same to the bit on every system (fdlibm's algorithms, in PHI, would be), and `f64` arithmetic in 32-bit
+programs rounded to double precision as a matter of course. Then weblib would need no assembly at
+all, and vectorlib's own versions could go. Until then, porting fdlibm into a library here is the way
+to the same results everywhere (2026-11-22).
+
