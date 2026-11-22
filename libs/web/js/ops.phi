@@ -372,7 +372,11 @@ phi.JsOps:Library
 		u32 tag: (v >> 48) as u32;
 		if tag is JsV.TAG_SPECIAL return v is JsV.TRUE;
 		if tag is JsV.TAG_INT return (v as u32) is not 0;
-		if tag is JsV.TAG_OBJ or tag is JsV.TAG_SYM return true;
+		if tag is JsV.TAG_OBJ
+			ptr<JsObj> o: (JsV.AsObj: v);
+			return (o.flags & JsObjs.F_HTMLDDA) is 0;
+		;;
+		if tag is JsV.TAG_SYM return true;
 		if tag is JsV.TAG_BIG return not (JsBig.IsZero: v);
 		if tag is JsV.TAG_STR
 			ptr<JsStr> s: (JsV.AsStr: v);
@@ -486,6 +490,8 @@ phi.JsOps:Library
 				if (JsV.IsNil: a) or (JsV.IsNil: b) return false;
 				return a is b;
 			;;
+			if (JsV.IsNil: a) and tb is JsV.TAG_OBJ return (IsHTMLDDA: b);
+			if (JsV.IsNil: b) and ta is JsV.TAG_OBJ return (IsHTMLDDA: a);
 			if (JsV.IsNil: a) or (JsV.IsNil: b) return false;
 			if ta is JsV.TAG_OBJ and tb is JsV.TAG_OBJ return a is b;
 			if ta is JsV.TAG_SYM and tb is JsV.TAG_SYM return a is b;
@@ -678,12 +684,19 @@ phi.JsOps:Library
 		if tag is JsV.TAG_BIG return JsRt.A.bigint;
 		if tag is JsV.TAG_OBJ
 			ptr<JsObj> o: (JsV.AsObj: v);
+			if (o.flags & JsObjs.F_HTMLDDA) is not 0 return JsRt.A.undefined;
 			if (o.flags & JsObjs.F_CALLABLE) is not 0 return JsRt.A.function;
 			return JsRt.A.object;
 		;;
 		if v is JsV.UNDEF return JsRt.A.undefined;
 		if v is JsV.NULL return JsRt.A.object;
 	[end: JsRt.A.boolean]
+
+	# an object that's document.all (JsObjs.F_HTMLDDA)
+	[IsHTMLDDA: u64 v: 0;]
+		if (v >> 48) as u32 is not JsV.TAG_OBJ return false;
+		ptr<JsObj> o: (JsV.AsObj: v);
+	[end: (o.flags & JsObjs.F_HTMLDDA) is not 0]
 
 	[IsCallable: u64 v: 0;]
 		if (v >> 48) as u32 is not JsV.TAG_OBJ return false;

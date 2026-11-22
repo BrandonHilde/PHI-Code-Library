@@ -130,6 +130,8 @@ phi.JsObjs:Library
 	const u32 F_SPECIAL: 64;   # the quick lookups must look closer: arrays, boxes, lazies, hooks
 	const u32 F_HOOKS: 128;
 	const u32 F_CLASS: 256;    # a class constructor
+	const u32 F_HTMLDDA: 512;  # document.all, as the HTML standard has it ([[IsHTMLDDA]]): typeof says
+	                           # "undefined", it's false, and it == null and undefined (but === neither)
 
 	u64 MAPPED: 0xFFF9000000000005;
 

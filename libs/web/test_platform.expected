@@ -1,3 +1,4 @@
+sent: GET http://test.example/pics/p.png
 url: https://user:pw@example.com/a/c?x=1&y=2#frag | https://example.com | example.com |  | /a/c | ?x=1&y=2 | #frag | user
 relative: http://h.com/a/d?q | https://other.org/x | http://h.com/p?z | http://h.com/p?q#n
 special: http://h.com/ | http://h.com/ | http://h.com/a%20b | 127.0.0.1 | file:///C:/y
@@ -51,10 +52,16 @@ sent: GET http://test.example/api/slow
 xhr abort: 4 0
 after abort: 0
 sent: GET http://test.example/nowhere
+document.all: undefined true true true false true true true f [object HTMLAllCollection]
+root size: 800 600 function function
 script ends
 blob text: blob text
 play: NotSupportedError
 response json: 2
+sent: GET http://test.example/api/echo
+img load: load true
+sent: GET http://test.example/nowhere.png
+img error: error
 post: 201 Created application/json yes false
 xhr: 201 Created PUT yes "content-type: application/json\r\nx-answer: yes\r\n" 1,2,3,4 true 15
 xhr loadend 4

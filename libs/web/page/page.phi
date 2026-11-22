@@ -134,6 +134,7 @@ struct.Page
 	int next_timer;
 
 	PageRequest requests[atmost 1024];
+	ptr<DomNode> new_srcs[atmost 512];  # <img>s given a src, which ask for it once the script's done
 	u32 next_request;
 	int blocking;           # requests the parser is waiting for
 	int nest;               # how deep in running JS we are: microtasks and answers wait for 0
@@ -198,6 +199,7 @@ phi.Page:Library
 		p.next_timer is 1;
 		p.next_request is 1;
 		p.doc is (Dom.NewDocument);
+		call HookMutations: p;
 		p.parser is (HtmlParser.New: p.doc);
 		p.parser.scripting is true;
 		p.parser.host_data is p as ptr<u8>;
@@ -220,24 +222,55 @@ phi.Page:Library
 
 	# The document tells Mutated of each change while a MutationObserver watches or a custom element is
 	# defined, and nothing otherwise.
+	# (always on: an <img> asks for its picture when it's given one, Pictures)
 	[HookMutations: ptr<Page> p: 0;]
-		if p.observing or p.custom_elements
-			p.doc.on_mutation is addr Mutated;
-		;;
-		else
-			p.doc.on_mutation is 0;
-		;;
+		p.doc.on_mutation is addr Mutated;
 	[end]
 
 	[Mutated: ptr<DomNode> target: 0; int kind: 0; ptr<DomNode> node: 0; ptr<WlAtom> name: 0; ptr<u8> old: 0; int old_length: 0;]
 		ptr<Page> p: current;
 		if p is 0 return;
+		call Pictures: p target kind node name;
 		if p.custom_elements
 			call PageElements.Mutated: target kind node name old old_length;
 		;;
 		if p.observing
 			call PageObservers.Mutated: target kind node name old old_length;
 		;;
+	[end]
+
+	# An <img> of the page's document asks for its picture (a PageLoad.IMAGE request) when it's put in
+	# with a src, or given another: its load or error event comes when the host answers. (The
+	# browser draws pictures itself, from layout; this is what the page's scripts are told.)
+	[Pictures: ptr<Page> p: 0; ptr<DomNode> target: 0; int kind: 0; ptr<DomNode> node: 0; ptr<WlAtom> name: 0;]
+		if kind is Dom.ATTRIBUTE
+			# (told before the new value's in place: it asks once what's running is done, RunJobs)
+			if target.doc is p.doc and target.tag is (WlAtoms.GetZ: 'img') and target.ns is DomNs.HTML and name is (WlAtoms.GetZ: 'src')
+				while u32 q: 0; q < p.new_srcs.len; q++;
+					if p.new_srcs:q is target return;
+				;;
+				if p.new_srcs.len < p.new_srcs.max
+					p.new_srcs++ target;
+				;;
+			;;
+			return;
+		;;
+		if kind is not Dom.ADDED or node is 0 or node.doc is not p.doc return;
+		# (what came in may hold pictures of its own)
+		ptr<DomNode> n: node;
+		while n is not 0
+			if n.type is DomType.ELEMENT and (n.flags & Dom.PICTURE_ASKED) is 0 and n.tag is (WlAtoms.GetZ: 'img') and n.ns is DomNs.HTML
+				call AskPicture: p n;
+			;;
+			n is (Dom.Next: n node);
+		;;
+	[end]
+
+	[AskPicture: ptr<Page> p: 0; ptr<DomNode> img: 0;]
+		ptr<DomAttr> src: (Dom.Attr: img (WlAtoms.GetZ: 'src'));
+		if src is 0 or src.value_len is 0 return;
+		img.flags is img.flags | Dom.PICTURE_ASKED;
+		u32 id: (Request: p src.value src.value_len PageLoad.IMAGE img);
 	[end]
 
 	[Use: ptr<Page> p: 0;]
@@ -380,6 +413,15 @@ phi.Page:Library
 			call ReportException: p;
 		;;
 		p.nest--;
+		# pictures given a new src
+		while p.new_srcs.len > 0
+			ptr<DomNode> img: p.new_srcs:0;
+			while u32 q: 1; q < p.new_srcs.len; q++;
+				p.new_srcs:(q - 1) is p.new_srcs:q;
+			;;
+			p.new_srcs.len--;
+			call AskPicture: p img;
+		;;
 		while u32 i: 0; i < p.requests.len; i++;
 			if p.requests:i.waiting
 				p.requests:i.waiting is false;

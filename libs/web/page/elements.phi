@@ -35,6 +35,7 @@ phi.PageElements:Library
 		call Js.DefineNative: JsRt.r.global '%ceDefined' addr Defined 1;
 		call Js.DefineNative: JsRt.r.global '%newDocument' addr NewDocument 2;
 		call Js.DefineNative: JsRt.r.global '%parseDocument' addr ParseDocument 1;
+		call Js.DefineNative: JsRt.r.global '%markHTMLDDA' addr MarkHTMLDDA 1;
 		p.parser.after_token is addr AfterToken;
 		str js: (PageElementsJs.Source);
 		call Page.RunSource: p addr js:0 js.len as u32 'elements';
@@ -54,6 +55,16 @@ phi.PageElements:Library
 	# ---- natives for elements.js
 
 	# %ceNew(name): a new element of that name in the document, for HTMLElement's constructor
+	# %markHTMLDDA(object): it's document.all from now on (JsObjs.F_HTMLDDA): typeof says "undefined",
+	# it's false, and it == null and undefined
+	[MarkHTMLDDA: ptr<u64> args: 0; int argc: 0;]
+		u64 v: (Js.Arg: args argc 0);
+		if (JsV.IsObj: v)
+			ptr<JsObj> o: (JsV.AsObj: v);
+			o.flags is (o.flags | JsObjs.F_HTMLDDA) as u16;
+		;;
+	[end: v]
+
 	[NewElement: ptr<u64> args: 0; int argc: 0;]
 		ptr<Page> p: Page.current;
 		WlBuf b;

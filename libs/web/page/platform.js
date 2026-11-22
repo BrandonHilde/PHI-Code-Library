@@ -1619,6 +1619,20 @@
     });
   }
 
+  // an <img>'s state: its picture is the browser's to draw, so as far as a script can tell it has
+  // come once asked for (its load event says so), with no size of its own to report
+  if (global.HTMLImageElement) {
+    var imgProto = global.HTMLImageElement.prototype;
+    [["complete", function () { return true; }], ["naturalWidth", function () { return 0; }],
+     ["naturalHeight", function () { return 0; }], ["currentSrc", function () { return this.src; }]
+    ].forEach(function (p) {
+      if (!Object.getOwnPropertyDescriptor(imgProto, p[0])) {
+        Object.defineProperty(imgProto, p[0], { get: p[1], enumerable: true, configurable: true });
+      }
+    });
+    if (!imgProto.decode) hidden(imgProto, "decode", function decode() { return Promise.resolve(); });
+  }
+
   ["HTMLAnchorElement", "HTMLAreaElement"].forEach(function (name) {
     var C = global[name];
     if (!C) return;

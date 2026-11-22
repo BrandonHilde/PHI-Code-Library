@@ -143,6 +143,7 @@ phi.Dom:Library
 	const u32 FIRST_PARSER_FLAG: 0x100;   # flags from here to 0x8000 are the HTML parser's own
 	const u32 SCRIPT_RAN: 0x10000;   # the page's: a <script> that has run, or been put in by a script
 	const u32 SHADOW_DECLARATIVE: 0x20000;  # a shadow root the parser made from <template shadowrootmode>
+	const u32 PICTURE_ASKED: 0x40000;       # the page's: an <img> that has asked for its picture
 
 	ptr<WlAtom> A_ID: 0;
 	ptr<WlAtom> A_CLASS: 0;

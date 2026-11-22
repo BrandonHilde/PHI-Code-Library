@@ -23,6 +23,8 @@
   delete global["%ceWatch"];
   delete global["%ceFind"];
   delete global["%ceDefined"];
+  var markHTMLDDA = global["%markHTMLDDA"];
+  delete global["%markHTMLDDA"];
 
   function report(error) {
     setTimeout(function () { throw error; }, 0);
@@ -520,6 +522,66 @@
     }
   }
   hidden(global, "DOMParser", DOMParser);
+
+  // ---- document.all ----
+  // Every element of the document, as an HTMLAllCollection: by index, by id or name, and called as a
+  // function. Old pages tested it to find old browsers, so it's the one object that's false, whose
+  // typeof is "undefined" and that == undefined (the HTML standard's [[IsHTMLDDA]], which the
+  // engine has as a flag); code that tests `x === document.all` gets false for undefined, as it would
+  // in any browser.
+  if (global.Document && !Object.getOwnPropertyDescriptor(global.Document.prototype, "all")) {
+    var HTMLAllCollection = function HTMLAllCollection() { throw new TypeError("Illegal constructor"); };
+    hidden(global, "HTMLAllCollection", HTMLAllCollection);
+    var allOf = new WeakMap();
+    var named = function (list, name) {
+      name = String(name);
+      var found = [];
+      for (var i = 0; i < list.length; i++) {
+        var e = list[i];
+        if (e.id === name || (e.getAttribute("name") === name && /^(a|button|embed|form|frame|frameset|iframe|img|input|map|meta|object|select|textarea)$/.test(e.localName))) found.push(e);
+      }
+      return found.length === 0 ? null : found.length === 1 ? found[0] : found;
+    };
+    var makeAll = function (doc) {
+      var list = doc.getElementsByTagName("*");
+      var item = function (key) {
+        if (key === undefined) return null;
+        var k = String(key);
+        if (/^(0|[1-9][0-9]*)$/.test(k)) return list[+k] || null;
+        return named(list, k);
+      };
+      var call = function all(key) { return item(key); };
+      var proxy = new Proxy(call, {
+        get: function (target, key) {
+          if (typeof key === "string" && /^(0|[1-9][0-9]*)$/.test(key)) return list[+key];
+          if (key === "length") return list.length;
+          if (key === "item") return function item_(k) { return item(k); };
+          if (key === "namedItem") return function namedItem(k) { return named(list, k); };
+          if (key === Symbol.iterator) return function () { return Array.prototype.values.call(list); };
+          if (key === Symbol.toStringTag) return "HTMLAllCollection";
+          if (typeof key === "string" && key !== "prototype" && !(key in Function.prototype)) {
+            var n = named(list, key);
+            if (n !== null) return n;
+          }
+          return Reflect.get(target, key);
+        },
+        has: function (target, key) {
+          if (typeof key === "string" && /^(0|[1-9][0-9]*)$/.test(key)) return +key < list.length;
+          return key === "length" || key === "item" || key === "namedItem" || Reflect.has(target, key);
+        }
+      });
+      markHTMLDDA(proxy);
+      return proxy;
+    };
+    Object.defineProperty(global.Document.prototype, "all", {
+      get: function () {
+        var all = allOf.get(this);
+        if (!all) { all = makeAll(this); allOf.set(this, all); }
+        return all;
+      },
+      enumerable: true, configurable: true
+    });
+  }
 
   // ---- NodeFilter, TreeWalker, NodeIterator ----
 

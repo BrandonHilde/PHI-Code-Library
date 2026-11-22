@@ -18,9 +18,9 @@ mo: 8 records, to itself
 mo2: 1 records
   attributes a @title
 --- a timer
+--- a frame
 io: lazy true 1
 io: a true 1
---- a frame
 ro: a 0x0 0
 --- later
 after disconnect, mo2 still sees: true

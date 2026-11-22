@@ -7,8 +7,10 @@
 // nextSibling (always null), and the parser's own text appended to a text node.
 //
 // IntersectionObserver: the browser shows the whole page and scrolls it itself, so every target is
-// reported as wholly in view, once, soon after it is observed (lazy loading loads; nothing waits).
-// ResizeObserver: each target's size once, after it is observed, as the standard's first delivery.
+// reported as wholly in view (lazy loading loads; nothing waits), soon after it is observed and
+// again when its box changes from none to some (or back), as layout places it.
+// ResizeObserver: each target's size after it is observed, and again whenever it changes, looked at
+// each frame (sizes are where the browser's layout put things: PageHost.box).
 (function (global) {
   "use strict";
   var watch = global["%watchMutations"];
@@ -131,7 +133,7 @@
   } });
 
   function rectOf(element) {
-    var b = element.getBoundingClientRect();
+    var b = element ? element.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
     return { x: b.left, y: b.top, left: b.left, top: b.top, right: b.left + b.width, bottom: b.top + b.height,
              width: b.width, height: b.height, toJSON: function () { return this; } };
   }
@@ -140,13 +142,53 @@
     return { x: 0, y: 0, left: 0, top: 0, right: innerWidth, bottom: innerHeight, width: innerWidth, height: innerHeight };
   }
 
+  // what each observer reports, as the classes a page can test for
+  class IntersectionObserverEntry {
+    constructor(init) {
+      init = init || {};
+      this.time = init.time || 0;
+      this.target = init.target || null;
+      this.rootBounds = init.rootBounds || null;
+      this.boundingClientRect = init.boundingClientRect || rectOf(null);
+      this.intersectionRect = init.intersectionRect || rectOf(null);
+      this.isIntersecting = !!init.isIntersecting;
+      this.isVisible = !!init.isVisible;
+      this.intersectionRatio = init.intersectionRatio || 0;
+    }
+  }
+  class ResizeObserverEntry {
+    constructor(target, box) {
+      var size = Object.freeze([Object.freeze({ inlineSize: box.width, blockSize: box.height })]);
+      this.target = target;
+      this.contentRect = { x: 0, y: 0, left: 0, top: 0, right: box.width, bottom: box.height, width: box.width, height: box.height };
+      this.borderBoxSize = size;
+      this.contentBoxSize = size;
+      this.devicePixelContentBoxSize = size;
+    }
+  }
+
+  // Every IntersectionObserver with targets is looked at each frame, as each target's ResizeObserver
+  // is: a target is reported when it's first looked at, and again when what it shows changes (it
+  // had no size and now has one, or the other way).
+  var intersecting = [];
+  var watching = false;
+  function watchAgain() {
+    if (watching || !intersecting.length) return;
+    watching = true;
+    requestAnimationFrame(function () {
+      watching = false;
+      var all = intersecting.slice();
+      for (var i = 0; i < all.length; i++) all[i]._report();
+      watchAgain();
+    });
+  }
   class IntersectionObserver {
     constructor(callback, options) {
       if (typeof callback !== "function") throw new TypeError("IntersectionObserver needs a function");
       var o = options || {};
       this._callback = callback;
       this._targets = [];
-      this._waiting = [];
+      this._shown = [];             // what was last reported for each target ("" before the first)
       this.root = o.root || null;
       this.rootMargin = o.rootMargin || "0px 0px 0px 0px";
       this.thresholds = Object.freeze([].concat(o.threshold === undefined ? 0 : o.threshold));
@@ -155,69 +197,104 @@
       this.trackVisibility = false;
     }
     observe(target) {
+      if (!(target instanceof Element)) throw new TypeError("IntersectionObserver.observe needs an Element");
       if (this._targets.indexOf(target) >= 0) return;
       this._targets.push(target);
-      this._waiting.push(target);
-      var self = this;
-      if (this._waiting.length === 1) setTimeout(function () { self._report(); }, 0);
+      this._shown.push("");
+      if (intersecting.indexOf(this) < 0) intersecting.push(this);
+      watchAgain();
     }
     _report() {
       var entries = [];
       var now = performance.now();
-      for (var i = 0; i < this._waiting.length; i++) {
-        var target = this._waiting[i];
-        if (this._targets.indexOf(target) < 0) continue;
+      for (var i = 0; i < this._targets.length; i++) {
+        var target = this._targets[i];
         var box = rectOf(target);
-        entries.push({ time: now, target: target, isIntersecting: true, isVisible: true, intersectionRatio: 1,
-                       boundingClientRect: box, intersectionRect: box, rootBounds: view() });
+        var seen = box.width > 0 && box.height > 0;
+        var shown = seen ? "seen" : "flat";
+        if (this._shown[i] === shown) continue;
+        this._shown[i] = shown;
+        entries.push(new IntersectionObserverEntry({ time: now, target: target, isIntersecting: true, isVisible: true, intersectionRatio: 1,
+                                                     boundingClientRect: box, intersectionRect: box, rootBounds: view() }));
       }
-      this._waiting = [];
       if (entries.length) {
         try { this._callback.call(this, entries, this); } catch (e) { report(e); }
       }
     }
     unobserve(target) {
       var at = this._targets.indexOf(target);
-      if (at >= 0) this._targets.splice(at, 1);
+      if (at >= 0) {
+        this._targets.splice(at, 1);
+        this._shown.splice(at, 1);
+      }
+      if (!this._targets.length) this.disconnect();
     }
-    disconnect() { this._targets = []; this._waiting = []; }
+    disconnect() {
+      this._targets = [];
+      this._shown = [];
+      var at = intersecting.indexOf(this);
+      if (at >= 0) intersecting.splice(at, 1);
+    }
     takeRecords() { return []; }
   }
 
+  // Every ResizeObserver with targets is looked at each frame: a target whose size isn't the size
+  // last reported for it (none, at first) is reported, as the standard's observations are.
+  var resizing = [];
+  var looking = false;
+  function lookAgain() {
+    if (looking || !resizing.length) return;
+    looking = true;
+    requestAnimationFrame(function () {
+      looking = false;
+      var all = resizing.slice();
+      for (var i = 0; i < all.length; i++) all[i]._report();
+      lookAgain();
+    });
+  }
   class ResizeObserver {
     constructor(callback) {
       if (typeof callback !== "function") throw new TypeError("ResizeObserver needs a function");
       this._callback = callback;
       this._targets = [];
-      this._waiting = [];
+      this._sizes = [];             // what was last reported for each target: [width, height], or null
     }
     observe(target) {
+      if (!(target instanceof Element)) throw new TypeError("ResizeObserver.observe needs an Element");
       if (this._targets.indexOf(target) >= 0) return;
       this._targets.push(target);
-      this._waiting.push(target);
-      var self = this;
-      if (this._waiting.length === 1) requestAnimationFrame(function () { self._report(); });
+      this._sizes.push(null);
+      if (resizing.indexOf(this) < 0) resizing.push(this);
+      lookAgain();
     }
     _report() {
       var entries = [];
-      for (var i = 0; i < this._waiting.length; i++) {
-        var target = this._waiting[i];
-        if (this._targets.indexOf(target) < 0) continue;
+      for (var i = 0; i < this._targets.length; i++) {
+        var target = this._targets[i];
         var box = rectOf(target);
-        var size = [{ inlineSize: box.width, blockSize: box.height }];
-        entries.push({ target: target, contentRect: { x: 0, y: 0, left: 0, top: 0, right: box.width, bottom: box.height, width: box.width, height: box.height },
-                       borderBoxSize: size, contentBoxSize: size, devicePixelContentBoxSize: size });
+        var last = this._sizes[i];
+        if (last && last[0] === box.width && last[1] === box.height) continue;
+        this._sizes[i] = [box.width, box.height];
+        entries.push(new ResizeObserverEntry(target, box));
       }
-      this._waiting = [];
       if (entries.length) {
         try { this._callback.call(this, entries, this); } catch (e) { report(e); }
       }
     }
     unobserve(target) {
       var at = this._targets.indexOf(target);
-      if (at >= 0) this._targets.splice(at, 1);
+      if (at >= 0) {
+        this._targets.splice(at, 1);
+        this._sizes.splice(at, 1);
+      }
+      if (!this._targets.length) this.disconnect();
     }
-    disconnect() { this._targets = []; this._waiting = []; }
+    disconnect() {
+      this._targets = [];
+      this._sizes = [];
+      var at = resizing.indexOf(this);
+      if (at >= 0) resizing.splice(at, 1);
+    }
   }
 
   function define(name, value) {
@@ -228,4 +305,6 @@
   define("MutationRecord", MutationRecord);
   define("IntersectionObserver", IntersectionObserver);
   define("ResizeObserver", ResizeObserver);
+  define("IntersectionObserverEntry", IntersectionObserverEntry);
+  define("ResizeObserverEntry", ResizeObserverEntry);
 })(this);

@@ -931,8 +931,8 @@ phi.PageBind:Library
 		call Method: p 'scrollIntoView' addr Nothing 0 0;
 		call Method: p 'scrollTo' addr Nothing 0 0;
 		call Method: p 'scrollBy' addr Nothing 0 0;
-		call Getter: p 'clientWidth' addr BoxGet 0 B_WIDTH;
-		call Getter: p 'clientHeight' addr BoxGet 0 B_HEIGHT;
+		call Getter: p 'clientWidth' addr ClientGet 0 B_WIDTH;
+		call Getter: p 'clientHeight' addr ClientGet 0 B_HEIGHT;
 		call Getter: p 'clientLeft' addr Zero 0 0;
 		call Getter: p 'clientTop' addr Zero 0 0;
 		call Getter: p 'scrollWidth' addr BoxGet 0 B_WIDTH;
@@ -1916,6 +1916,26 @@ phi.PageBind:Library
 	[BoxGet: ptr<u64> args: 0; int argc: 0;]
 		ptr<JsNativeFn> self: (Js.CalleeOf: args);
 		ptr<DomNode> n: (ThisElement: args);
+		f64 box[4];
+		call BoxOf: n addr box:0;
+	[end: (JsV.Num: box:(self.magic))]
+
+	# el.clientWidth and clientHeight: its box's, but the root element's (and in quirks mode the
+	# body's) are the window's, as CSSOM View has them
+	[ClientGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<Page> p: Page.current;
+		bln root: n.parent is not 0 and n.parent.type is DomType.DOCUMENT;
+		if n.doc is not 0 and n.doc.quirks and n.tag is (WlAtoms.GetZ: 'body')
+			root is true;
+		;;
+		if root and n.doc is p.doc
+			if self.magic is B_WIDTH
+				return (JsV.Num: p.width);
+			;;
+			return (JsV.Num: p.height);
+		;;
 		f64 box[4];
 		call BoxOf: n addr box:0;
 	[end: (JsV.Num: box:(self.magic))]

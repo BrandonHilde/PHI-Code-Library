@@ -81,6 +81,16 @@ var z = new XMLHttpRequest();
 z.open("GET", "/nowhere");
 z.onload = function () { log("xhr 404:", z.status, JSON.stringify(z.responseText)); };
 z.send();
+// document.all, the one object that's false and == undefined
+t("document.all", function () { var a = document.all; return [typeof a, !a, a == undefined, a == null, a === undefined, a.length === document.getElementsByTagName("*").length, a[0] === document.documentElement, a("link") === document.getElementById("link"), a.namedItem("f").id, Object.prototype.toString.call(a)].join(" "); });
+// pictures: an <img> given a src asks for it, and hears load or error
+var good = new Image(), bad = new Image();
+good.onload = function (e) { log("img load:", e.type, good.complete); };
+good.onerror = function () { log("img error (wrong)"); };
+bad.onerror = function (e) { log("img error:", e.type); };
+good.src = "/api/echo";
+bad.src = "/nowhere.png";
+t("root size", function () { return [document.documentElement.clientWidth, document.documentElement.clientHeight, typeof IntersectionObserverEntry, typeof ResizeObserverEntry].join(" "); });
 var ch = new MessageChannel();
 ch.port2.onmessage = function (e) { log("message:", e.data.n, e.data === sent); };
 var sent = {n: 7};
