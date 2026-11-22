@@ -57,10 +57,10 @@ phi.PageEvents:Library
 		ptr<JsNativeFn> ec: (Js.DefineClass: 'Event' addr EventCtor 1 event_proto);
 		ec.magic is PLAIN;
 		ec.data is (JsV.Obj: event_proto);
-		call Js.Define: event_proto 'NONE' (JsV.Int: 0) JsObjs.E;
-		call Js.Define: event_proto 'CAPTURING_PHASE' (JsV.Int: 1) JsObjs.E;
-		call Js.Define: event_proto 'AT_TARGET' (JsV.Int: 2) JsObjs.E;
-		call Js.Define: event_proto 'BUBBLING_PHASE' (JsV.Int: 3) JsObjs.E;
+		call PageBind.Constant: event_proto 'NONE' 0;
+		call PageBind.Constant: event_proto 'CAPTURING_PHASE' 1;
+		call PageBind.Constant: event_proto 'AT_TARGET' 2;
+		call PageBind.Constant: event_proto 'BUBBLING_PHASE' 3;
 		call Js.DefineNative: event_proto 'preventDefault' addr PreventDefault 0;
 		call Js.DefineNative: event_proto 'stopPropagation' addr StopPropagation 0;
 		call Js.DefineNative: event_proto 'stopImmediatePropagation' addr StopImmediate 0;

@@ -1,5 +1,6 @@
 # The parts of the web platform in platform.js (URL, TextEncoder, fetch's classes ...), on
-# tests/page/platform.html: what each says, worked out from its standard.
+# tests/page/platform.html: what each says, worked out from its standard. Its pretend network
+# shows what fetch and XMLHttpRequest send, and answers /api/echo with headers.
 use weblib;
 
 phi.TestPlatform:Program
@@ -9,6 +10,7 @@ phi.TestPlatform:Program
 	host.logger is addr Print;
 	host.cookies is addr Cookies;
 	host.set_cookie is addr SetCookie;
+	host.load is addr Load;
 	int size: (OS.FileSize: 'tests/page/platform.html');
 	ptr<u8> html: new u8[size + 1];
 	int got: (OS.ReadFile: 'tests/page/platform.html' html size);
@@ -35,6 +37,59 @@ phi.TestPlatform:Program
 		;;
 		target:(c.len) is 0;
 	[end: c.len]
+
+	# /api/echo answers what was sent, with headers; /api/slow never answers; anything else is a 404
+	[Load: ptr<Page> p: 0; ptr<u8> url: 0; PageLoad kind: PageLoad.DOCUMENT; u32 id: 0;]
+		ptr<PageRequest> r: (Page.Find: p id);
+		ptr<u8> verb: r.verb;
+		if verb is 0
+			verb is 'GET';
+		;;
+		log 'sent: ' verb ' ' url '\n';
+		if r.headers is not 0
+			log r.headers;
+		;;
+		if r.body is not 0
+			# (bytes that aren't text, in hex)
+			bln text: true;
+			while u32 i: 0; i < r.body_len; i++;
+				if r.body:i >= 128 or r.body:i is 0
+					text is false;
+				;;
+			;;
+			if text
+				log 'with ' r.body_len ' bytes: ' r.body '\n';
+			;;
+			else
+				log 'with ' r.body_len ' bytes:';
+				while u32 i: 0; i < r.body_len; i++;
+					log ' ' (r.body:i as int);
+				;;
+				log '\n';
+			;;
+		;;
+		if (WlText.EqZ: url (WlText.LenZ: url) 'data:text/plain,made%20with')
+			ptr<u8> said: 'made with';
+			call Page.AnswerHeaders: p id 'HTTP/1.1 200\r\nContent-Type: text/plain\r\n' 40;
+			call Page.Delivered: p id 200 said 9;
+			return;
+		;;
+		if (WlText.EqZ: url (WlText.LenZ: url) 'http://test.example/api/slow')
+			return;
+		;;
+		if (WlText.EqZ: url (WlText.LenZ: url) 'http://test.example/api/echo')
+			ptr<u8> head: 'HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nX-Answer: yes\r\nSet-Cookie: s=1\r\n';
+			call Page.AnswerHeaders: p id head (WlText.LenZ: head);
+			WlBuf b;
+			call b.AddZ: '{"echo": "';
+			call b.AddZ: verb;
+			call b.AddZ: '"}';
+			call Page.Delivered: p id 201 b.data b.len;
+			call b.Free;
+			return;
+		;;
+		call Page.Delivered: p id 404 0 0;
+	[end]
 
 	[SetCookie: ptr<Page> p: 0; ptr<u8> text: 0;]
 		log 'the host is given a cookie: ' text '\n';

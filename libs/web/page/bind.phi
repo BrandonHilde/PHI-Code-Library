@@ -156,6 +156,16 @@ phi.PageBind:Library
 		call JsObjs.DefineValue: proto JsRt.S.toStringTag as ptr<u8> (Js.NewStringZ: name) JsObjs.C;
 	[end: proto]
 
+	# a constant, such as Node.ELEMENT_NODE, on a class's prototype and on its constructor, as the
+	# DOM has them (code that checks `x.nodeType === Node.ELEMENT_NODE` reads the constructor's)
+	[Constant: ptr<JsObj> proto: 0; ptr<u8> name: 0; int value: 0;]
+		call Js.Define: proto name (JsV.Int: value) JsObjs.E;
+		ptr<JsProp> c: (JsObjs.Find: proto JsRt.A.constructor as ptr<u8>);
+		if c is not 0 and (c.flags & JsObjs.ACC) is 0 and (JsV.IsObj: c.value)
+			call Js.Define: (JsV.AsObj: c.value) name (JsV.Int: value) JsObjs.E;
+		;;
+	[end]
+
 	[IllegalCtor: ptr<u64> args: 0; int argc: 0;]
 		call JsErr.Type: 'Illegal constructor';
 	[end: JsV.UNDEF]
@@ -393,19 +403,19 @@ phi.PageBind:Library
 		call Method: p 'getRootNode' addr GetRootNode 0 0;
 		call Method: p 'compareDocumentPosition' addr ComparePosition 1 0;
 		call Method: p 'isSameNode' addr IsSameNode 1 0;
-		call Js.Define: p 'ELEMENT_NODE' (JsV.Int: 1) JsObjs.E;
-		call Js.Define: p 'ATTRIBUTE_NODE' (JsV.Int: 2) JsObjs.E;
-		call Js.Define: p 'TEXT_NODE' (JsV.Int: 3) JsObjs.E;
-		call Js.Define: p 'CDATA_SECTION_NODE' (JsV.Int: 4) JsObjs.E;
-		call Js.Define: p 'COMMENT_NODE' (JsV.Int: 8) JsObjs.E;
-		call Js.Define: p 'DOCUMENT_NODE' (JsV.Int: 9) JsObjs.E;
-		call Js.Define: p 'DOCUMENT_TYPE_NODE' (JsV.Int: 10) JsObjs.E;
-		call Js.Define: p 'DOCUMENT_FRAGMENT_NODE' (JsV.Int: 11) JsObjs.E;
-		call Js.Define: p 'DOCUMENT_POSITION_DISCONNECTED' (JsV.Int: 1) JsObjs.E;
-		call Js.Define: p 'DOCUMENT_POSITION_PRECEDING' (JsV.Int: 2) JsObjs.E;
-		call Js.Define: p 'DOCUMENT_POSITION_FOLLOWING' (JsV.Int: 4) JsObjs.E;
-		call Js.Define: p 'DOCUMENT_POSITION_CONTAINS' (JsV.Int: 8) JsObjs.E;
-		call Js.Define: p 'DOCUMENT_POSITION_CONTAINED_BY' (JsV.Int: 16) JsObjs.E;
+		call Constant: p 'ELEMENT_NODE' 1;
+		call Constant: p 'ATTRIBUTE_NODE' 2;
+		call Constant: p 'TEXT_NODE' 3;
+		call Constant: p 'CDATA_SECTION_NODE' 4;
+		call Constant: p 'COMMENT_NODE' 8;
+		call Constant: p 'DOCUMENT_NODE' 9;
+		call Constant: p 'DOCUMENT_TYPE_NODE' 10;
+		call Constant: p 'DOCUMENT_FRAGMENT_NODE' 11;
+		call Constant: p 'DOCUMENT_POSITION_DISCONNECTED' 1;
+		call Constant: p 'DOCUMENT_POSITION_PRECEDING' 2;
+		call Constant: p 'DOCUMENT_POSITION_FOLLOWING' 4;
+		call Constant: p 'DOCUMENT_POSITION_CONTAINS' 8;
+		call Constant: p 'DOCUMENT_POSITION_CONTAINED_BY' 16;
 		ptr<JsObj> c: character_proto;
 		call Getter: c 'data' addr ValueGet addr ValueSet 0;
 		call Getter: c 'length' addr CharLength 0 0;

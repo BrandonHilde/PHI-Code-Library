@@ -43,7 +43,9 @@ enum.PageLoad
 struct.PageHost
 {
 	# Page, absolute URL, what it's for, the request's number. The answer is Page.Delivered with that number,
-	# from inside this call or at any time after it.
+	# from inside this call or at any time after it (and Page.AnswerHeaders before it, for a fetch's). What a
+	# fetch sends, if it isn't a plain GET, is in (Page.Find: page number): verb, headers and body, which
+	# last until the answer.
 	method<ptr<Page> ptr<u8> PageLoad u32> load;
 	# console.logger and the like, and scripts' uncaught errors: text, length, level (0 log, 1 warning, 2 error)
 	method<ptr<Page> ptr<u8> u32 int> logger;
@@ -87,9 +89,16 @@ struct.PageRequest
 	bln done;
 	ptr<DomNode> node;      # the script or link it's for
 	ptr<CssImport> import;  # a sheet's @import it's for (the kind is STYLE, and there's no node)
-	u64 a;                  # resolve, or the XMLHttpRequest
+	u64 a;                  # resolve
 	u64 b;                  # reject
 	ptr<u8> url;
+	# what fetch and XMLHttpRequest send (the host reads them in PageHost.load, through Page.Find):
+	ptr<u8> verb;           # 'POST' and the like, or 0 for a GET
+	ptr<u8> headers;        # header lines, each "Name: value\r\n", or 0
+	ptr<u8> body;           # what goes after them, or 0
+	u32 body_len;
+	# the answer's status line and header lines, if the host gives them (Page.AnswerHeaders)
+	ptr<u8> answer_headers;
 	# an answer that came while JS was running, which waits until it's finished
 	bln waiting;
 	int answer_status;
@@ -264,9 +273,7 @@ phi.Page:Library
 			free p.map_url:mi;
 		;;
 		while each r in p.requests
-			if r.url is not 0
-				free r.url;
-			;;
+			call Release: addr r;
 			if r.answer is not 0
 				free r.answer;
 			;;
@@ -489,7 +496,9 @@ phi.Page:Library
 
 	# ---- requests ----
 
-	[Request: ptr<Page> p: 0; ptr<u8> url: 0; u32 n: 0; PageLoad kind: PageLoad.FETCH; ptr<DomNode> node: 0; u64 a: 0; u64 b: 0; ptr<CssImport> import: 0;]
+	# a request for the host to answer; a fetch's can say its verb (method), header lines and body (all copied)
+	[Request: ptr<Page> p: 0; ptr<u8> url: 0; u32 n: 0; PageLoad kind: PageLoad.FETCH; ptr<DomNode> node: 0; u64 a: 0; u64 b: 0; ptr<CssImport> import: 0;
+			ptr<u8> verb: 0; ptr<u8> headers: 0; ptr<u8> body: 0; u32 body_len: 0;]
 		if p.requests.len >= p.requests.max
 			call Compact: p;
 			if p.requests.len >= p.requests.max
@@ -509,6 +518,21 @@ phi.Page:Library
 		p.requests:at_.a is a;
 		p.requests:at_.b is b;
 		p.requests:at_.url is (full.Take);
+		p.requests:at_.verb is 0;
+		p.requests:at_.headers is 0;
+		p.requests:at_.body is 0;
+		p.requests:at_.body_len is 0;
+		p.requests:at_.answer_headers is 0;
+		if verb is not 0 and verb:0 is not 0 and not (WlText.EqZ: verb (WlText.LenZ: verb) 'GET')
+			p.requests:at_.verb is (DupZ: verb (WlText.LenZ: verb));
+		;;
+		if headers is not 0 and headers:0 is not 0
+			p.requests:at_.headers is (DupZ: headers (WlText.LenZ: headers));
+		;;
+		if body is not 0
+			p.requests:at_.body is (DupZ: body body_len);
+			p.requests:at_.body_len is body_len;
+		;;
 		ptr<u8> asked: p.requests:at_.url;
 		if p.host.load is 0
 			call Delivered: p id 0 0 0;
@@ -522,10 +546,7 @@ phi.Page:Library
 		u32 w: 0;
 		while u32 r: 0; r < p.requests.len; r++;
 			if p.requests:r.done
-				if p.requests:r.url is not 0
-					free p.requests:r.url;
-				;;
-				p.requests:r.url is 0;
+				call Release: addr p.requests:r;
 			;;
 			else
 				if w is not r
@@ -537,6 +558,31 @@ phi.Page:Library
 		p.requests.len is w;
 	[end]
 
+	# what a request holds besides its answer
+	[Release: ptr<PageRequest> r: 0;]
+		if r.url is not 0
+			free r.url;
+		;;
+		if r.verb is not 0
+			free r.verb;
+		;;
+		if r.headers is not 0
+			free r.headers;
+		;;
+		if r.body is not 0
+			free r.body;
+		;;
+		if r.answer_headers is not 0
+			free r.answer_headers;
+		;;
+		r.url is 0;
+		r.verb is 0;
+		r.headers is 0;
+		r.body is 0;
+		r.answer_headers is 0;
+	[end]
+
+	# a request by its number (0 once it's answered and gone)
 	[Find: ptr<Page> p: 0; u32 id: 0;]
 		while u32 i: 0; i < p.requests.len; i++;
 			if p.requests:i.id is id
@@ -548,6 +594,23 @@ phi.Page:Library
 	[RequestDone: ptr<Page> p: 0; u32 id: 0;]
 		ptr<PageRequest> r: (Find: p id);
 	[end: r is 0 or r.done]
+
+	# The status line and header lines of a fetch's answer ("HTTP/1.1 200 OK\r\nContent-Type: ..."), which
+	# its Response and XMLHttpRequest show: from the host, before Delivered.
+	[AnswerHeaders: ptr<Page> p: 0; u32 id: 0; ptr<u8> text: 0; u32 n: 0;]
+		ptr<PageRequest> r: (Find: p id);
+		if r is 0 or r.done return;
+		if r.answer_headers is not 0
+			free r.answer_headers;
+		;;
+		r.answer_headers is (DupZ: text n);
+	[end]
+
+	# a copy with a zero after it
+	[DupZ: ptr<u8> text: 0; u32 n: 0;]
+		ptr<u8> copy: (WlText.Dup: text n);
+		copy:n is 0;
+	[end: copy]
 
 	# What the browser calls with an answer. status is HTTP's, or 0 if it couldn't be had.
 	[Delivered: ptr<Page> p: 0; u32 id: 0; int status: 0; ptr<u8> bytes: 0; u32 n: 0;]

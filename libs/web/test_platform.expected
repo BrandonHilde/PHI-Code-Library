@@ -24,10 +24,42 @@ css: a\ b\#1 | \31 x | true | false | true | true
 crypto: 16 true true
 clone: true true 0 2 2
 classes: true true true [object Storage] function v
-attributes: 2 a value true  
+attributes: 2 a value true
+link: http://test.example/x/y.html?q=1#frag | http: | test.example | /x/y.html | ?q=1 | #frag | http://test.example | http://test.example/pics/p.png | http://test.example/platform.html
+link setters: http://h.com/q#z | http://h.com/q#z | true
+no link: ["",":","",""]
+constants: 1 11 1 2 4 3
+bodies: text/plain;charset=UTF-8 | application/x-www-form-urlencoded;charset=UTF-8 | true
+get body threw: TypeError Request with GET/HEAD method cannot have body.
+sent: POST http://test.example/api/echo
+X-Thing: 1
+Content-Type: text/plain;charset=UTF-8
+with 7 bytes: {"a":1}
+sent: PUT http://test.example/api/echo
+X-Y: 2
+Content-Type: application/x-www-form-urlencoded;charset=UTF-8
+with 5 bytes: k=v+w
+xhr sent twice threw: InvalidStateError Failed to execute 'send' on 'XMLHttpRequest': the object's state must be OPENED.
+sent: POST http://test.example/api/echo
+with 5 bytes: 104 105 200 0 33
+sent: GET data:text/plain,made%20with
+class names: [object Request] [object Headers] [object Response]
+methods: patch DELETE
+media: true true true 0 true  0.5 4 function 0
+sent: GET http://test.example/api/slow
+xhr abort: 4 0
+after abort: 0
+sent: GET http://test.example/nowhere
 script ends
 blob text: blob text
+play: NotSupportedError
 response json: 2
+post: 201 Created application/json yes false
+xhr: 201 Created PUT yes "content-type: application/json\r\nx-answer: yes\r\n" 1,2,3,4 true 15
+xhr loadend 4
+xhr 404: 404 ""
+post answer: POST
+made with: made with
 --- a timer
 message: 7 false
 --- a frame

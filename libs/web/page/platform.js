@@ -11,6 +11,9 @@
 //                                  the fetching: %fetchText)
 //   events                         the classes pages construct and test for
 //   DOMRect, DOMPoint, DOMMatrix   (a 2D matrix)
+//   URL attributes                 a.href, img.src and the rest resolved; <a>'s and <area>'s parts
+//   XMLHttpRequest                 made of fetch, which sends the method, headers and body it's given
+//   HTMLMediaElement               under <video> and <audio>: what a browser that plays nothing says
 //   CSS.supports and CSS.escape, PerformanceObserver, requestIdleCallback, reportError,
 //   crypto.getRandomValues and randomUUID (from %randomBytes: PHI's crypto.random), visualViewport,
 //   and the names of the classes the window's own objects are made from (History, Location ...)
@@ -863,14 +866,74 @@
     *values() { for (var p of this._sorted()) yield p[1]; }
     [Symbol.iterator]() { return this.entries(); }
   }
+  Object.defineProperty(Headers.prototype, Symbol.toStringTag, { value: "Headers", configurable: true });
   define("Headers", Headers);
 
-  function bodyText(body) {
+  // a body, as text or as bytes (a Uint8Array), with the Content-Type it brings (fetch's "extract a
+  // body"); text goes as UTF-8
+  function extract(body) {
+    if (typeof body === "string") return { text: body, type: "text/plain;charset=UTF-8" };
+    if (body instanceof URLSearchParams) return { text: body.toString(), type: "application/x-www-form-urlencoded;charset=UTF-8" };
+    if (body instanceof FormData) {
+      var boundary = "----formdata-phi-" + Math.random().toString(16).slice(2);
+      var quoted = function (v) { return String(v).replace(/\r/g, "%0D").replace(/\n/g, "%0A").replace(/"/g, "%22"); };
+      var parts = [], text = "", binary = false;
+      body._list.forEach(function (p) {
+        text += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + quoted(p[0]) + "\"";
+        if (p[1] instanceof Blob) {
+          text += "; filename=\"" + quoted(p[1].name) + "\"\r\nContent-Type: " + (p[1].type || "application/octet-stream") + "\r\n\r\n";
+          parts.push(text, p[1]._bytes);
+          text = "\r\n";
+          binary = true;
+        } else {
+          text += "\r\n\r\n" + p[1] + "\r\n";
+        }
+      });
+      text += "--" + boundary + "--\r\n";
+      var type = "multipart/form-data; boundary=" + boundary;
+      if (!binary) return { text: text, type: type };
+      parts.push(text);
+      return { text: new Blob(parts)._bytes, type: type };
+    }
+    if (body instanceof Blob) return { text: body._bytes.slice(), type: body.type || null };
+    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return { text: bytesOf(body), type: null };
+    return { text: String(body), type: "text/plain;charset=UTF-8" };
+  }
+  function asText(body) { return typeof body === "string" ? body : new TextDecoder().decode(body); }
+  function asBuffer(body) { return typeof body === "string" ? new TextEncoder().encode(body).buffer : body.slice().buffer; }
+  // the body (text or bytes), and its Content-Type on the headers unless they say one
+  function takeBody(body, headers) {
     if (body === undefined || body === null) return "";
-    if (typeof body === "string") return body;
-    if (body instanceof URLSearchParams) return body.toString();
-    if (body instanceof Blob || body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return new TextDecoder().decode(bytesOf(body));
-    return String(body);
+    var e = extract(body);
+    if (e.type && !headers.has("content-type")) headers.set("content-type", e.type);
+    return e.text;
+  }
+  // what the browser says itself, or mustn't be told by a page (fetch's forbidden request headers)
+  var forbidden = /^(accept-charset|accept-encoding|access-control-request-headers|access-control-request-method|connection|content-length|cookie|cookie2|date|dnt|expect|host|keep-alive|origin|referer|set-cookie|te|trailer|transfer-encoding|upgrade|user-agent|via|proxy-.*|sec-.*)$/;
+  function headerLines(headers) {
+    var text = "";
+    headers._list.forEach(function (p) {
+      if (forbidden.test(p[0]) || /[\r\n]/.test(p[1])) return;
+      text += p[0].replace(/(^|-)[a-z]/g, function (c) { return c.toUpperCase(); }) + ": " + p[1] + "\r\n";
+    });
+    return text;
+  }
+  // an answer's status line and header lines into its Headers (not its cookies, which are the
+  // browser's): its status text
+  function takeHead(text, headers) {
+    var lines = String(text).split(/\r?\n/);
+    var statusText = "";
+    var start = 0;
+    var m = /^HTTP\/[\d.]+\s+\d+\s*(.*)$/.exec(lines[0]);
+    if (m) { statusText = m[1]; start = 1; }
+    for (var i = start; i < lines.length; i++) {
+      var colon = lines[i].indexOf(":");
+      if (colon <= 0) continue;
+      var name = lines[i].slice(0, colon).trim();
+      if (/^set-cookie2?$/i.test(name)) continue;
+      headers.append(name, lines[i].slice(colon + 1));
+    }
+    return statusText;
   }
 
   // the body's methods, shared by Request and Response: the body is text, or the native answer's
@@ -879,14 +942,14 @@
       if (this._used) return Promise.reject(new TypeError("The body has already been read"));
       this._used = true;
       if (this._native) return this._native.text();
-      return Promise.resolve(this._text);
+      return Promise.resolve(asText(this._text));
     },
     json: function () { return this.text().then(JSON.parse); },
     arrayBuffer: function () {
       if (this._used) return Promise.reject(new TypeError("The body has already been read"));
       this._used = true;
       if (this._native) return this._native.arrayBuffer();
-      return Promise.resolve(new TextEncoder().encode(this._text).buffer);
+      return Promise.resolve(asBuffer(this._text));
     },
     bytes: function () { return this.arrayBuffer().then(function (b) { return new Uint8Array(b); }); },
     blob: function () {
@@ -905,17 +968,25 @@
   class Request {
     constructor(input, init) {
       init = init || {};
+      // (one made from another is made from what that one holds, not what its getters say now: a
+      // page may give a Request a url getter of its own, and fetch still asks for the one it was made with)
       var from = input instanceof Request ? input : null;
-      var base = global.location ? global.location.href : undefined;
-      hidden(this, "_url", from ? from.url : new URL(String(input), base).href);
-      hidden(this, "_method", String(init.method || (from ? from.method : "GET")).toUpperCase());
-      hidden(this, "_headers", new Headers(init.headers || (from ? from.headers : undefined)));
-      hidden(this, "_text", init.body !== undefined ? bodyText(init.body) : from ? from._text : "");
-      hidden(this, "_signal", init.signal || (from ? from.signal : new AbortSignal()));
+      var base = global.document ? documentBase(global.document) : global.location ? global.location.href : undefined;
+      hidden(this, "_url", from ? from._url : new URL(String(input), base).href);
+      var method = init.method !== undefined ? String(init.method) : from ? from._method : "GET";
+      if (/^(delete|get|head|options|post|put)$/i.test(method)) method = method.toUpperCase();
+      if (/^(connect|trace|track)$/i.test(method)) throw new TypeError("'" + method + "' HTTP method is unsupported.");
+      hidden(this, "_method", method);
+      hidden(this, "_headers", new Headers(init.headers || (from ? from._headers : undefined)));
+      if ((this._method === "GET" || this._method === "HEAD") && init.body !== undefined && init.body !== null) {
+        throw new TypeError("Request with GET/HEAD method cannot have body.");
+      }
+      hidden(this, "_text", init.body !== undefined ? takeBody(init.body, this._headers) : from ? from._text : "");
+      hidden(this, "_signal", init.signal || (from ? from._signal : new AbortSignal()));
       hidden(this, "_used", false);
       hidden(this, "_native", null);
-      hidden(this, "_credentials", init.credentials || (from ? from.credentials : "same-origin"));
-      hidden(this, "_mode", init.mode || (from ? from.mode : "cors"));
+      hidden(this, "_credentials", init.credentials || (from ? from._credentials : "same-origin"));
+      hidden(this, "_mode", init.mode || (from ? from._mode : "cors"));
     }
     get url() { return this._url; }
     get method() { return this._method; }
@@ -930,6 +1001,7 @@
     clone() { return new Request(this); }
   }
   Object.assign(Request.prototype, Body);
+  Object.defineProperty(Request.prototype, Symbol.toStringTag, { value: "Request", configurable: true });
   define("Request", Request);
 
   class Response {
@@ -940,7 +1012,7 @@
       hidden(this, "_status", status);
       hidden(this, "_statusText", init.statusText === undefined ? "" : String(init.statusText));
       hidden(this, "_headers", new Headers(init.headers));
-      hidden(this, "_text", bodyText(body));
+      hidden(this, "_text", takeBody(body, this._headers));
       hidden(this, "_url", "");
       hidden(this, "_type", "default");
       hidden(this, "_used", false);
@@ -986,6 +1058,7 @@
     }
   }
   Object.assign(Response.prototype, Body);
+  Object.defineProperty(Response.prototype, Symbol.toStringTag, { value: "Response", configurable: true });
   define("Response", Response);
 
   var nativeFetch = global.fetch;
@@ -993,24 +1066,26 @@
     hidden(global, "fetch", function fetch(input, init) {
       var req;
       try { req = new Request(input, init); } catch (e) { return Promise.reject(e); }
-      if (req.signal.aborted) return Promise.reject(req.signal.reason);
-      if (req.url.slice(0, 5) === "blob:") {
-        var blob = blobs.get(req.url);
+      if (req._signal.aborted) return Promise.reject(req._signal.reason);
+      if (req._url.slice(0, 5) === "blob:") {
+        var blob = blobs.get(req._url);
         if (!blob) return Promise.reject(new TypeError("Failed to fetch"));
         var r = new Response(blob, { headers: { "content-type": blob.type } });
         r._native = { text: function () { return blob.text(); }, arrayBuffer: function () { return blob.arrayBuffer(); } };
         return Promise.resolve(r);
       }
-      var options = { method: req.method, headers: req.headers, body: req._text === "" ? undefined : req._text };
+      var bodied = req._method !== "GET" && req._method !== "HEAD";
+      var options = { method: req._method, headers: headerLines(req._headers), body: bodied ? (typeof req._text === "string" ? req._text : asBuffer(req._text)) : undefined };
       return new Promise(function (resolve, reject) {
         var settled = false;
-        req.signal.addEventListener("abort", function () {
-          if (!settled) { settled = true; reject(req.signal.reason); }
+        req._signal.addEventListener("abort", function () {
+          if (!settled) { settled = true; reject(req._signal.reason); }
         });
-        nativeFetch(req.url, options).then(function (n) {
+        nativeFetch(req._url, options).then(function (n) {
           if (settled) return;
           settled = true;
-          var r = new Response(null, { status: n.status >= 200 && n.status <= 599 ? n.status : 200, statusText: n.statusText });
+          var r = new Response(null, { status: n.status >= 200 && n.status <= 599 ? n.status : 200 });
+          r._statusText = takeHead(n.headers || "", r._headers);
           r._status = n.status;
           r._url = n.url;
           r._type = "basic";
@@ -1493,5 +1568,419 @@
       close() { }
     }
     define("BroadcastChannel", BroadcastChannel);
+  }
+
+  // ---- URLs in attributes ----
+  // a.href, img.src and the others give the attribute as a whole URL, resolved against the
+  // document's base (its first <base href>, else its own URL), or as written when it isn't one;
+  // and <a> and <area> give the parts of theirs (protocol, host, pathname ...), which set the
+  // attribute when they're set, as URL's do.
+
+  function documentBase(d) {
+    var url = d.URL || global.location.href;
+    var head = d.head;
+    var base = head ? head.querySelector("base[href]") : null;
+    if (base) {
+      try { return new global.URL(base.getAttribute("href"), url).href; } catch (e) { }
+    }
+    return url;
+  }
+  function resolved(el, attr) {
+    var v = el.getAttribute(attr);
+    if (v === null) return null;
+    try { return new global.URL(v, documentBase(el.ownerDocument || global.document)); } catch (e) { return v; }
+  }
+  function urlProperty(proto, prop, attr, missing) {
+    if (!proto) return;
+    Object.defineProperty(proto, prop, {
+      get: function () {
+        var u = resolved(this, attr);
+        if (u === null) return missing ? missing(this) : "";
+        return typeof u === "string" ? u : u.href;
+      },
+      set: function (v) { this.setAttribute(attr, String(v)); },
+      enumerable: true, configurable: true
+    });
+  }
+  [["HTMLAnchorElement", "href"], ["HTMLAreaElement", "href"], ["HTMLLinkElement", "href"],
+   ["HTMLScriptElement", "src"], ["HTMLImageElement", "src"], ["HTMLIFrameElement", "src"],
+   ["HTMLInputElement", "src"], ["HTMLVideoElement", "src"], ["HTMLAudioElement", "src"],
+   ["HTMLSourceElement", "src"], ["HTMLEmbedElement", "src"], ["HTMLTrackElement", "src"],
+   ["HTMLVideoElement", "poster"], ["HTMLObjectElement", "data"],
+   ["HTMLInputElement", "formAction", "formaction"], ["HTMLButtonElement", "formAction", "formaction"]
+  ].forEach(function (r) {
+    var C = global[r[0]];
+    urlProperty(C && C.prototype, r[1], r[2] || r[1]);
+  });
+  // (a form without an action sends to its document's URL)
+  if (global.HTMLFormElement) {
+    urlProperty(global.HTMLFormElement.prototype, "action", "action", function (form) {
+      return (form.ownerDocument || global.document).URL;
+    });
+  }
+
+  ["HTMLAnchorElement", "HTMLAreaElement"].forEach(function (name) {
+    var C = global[name];
+    if (!C) return;
+    var proto = C.prototype;
+    ["protocol", "username", "password", "host", "hostname", "port", "pathname", "search", "hash"].forEach(function (part) {
+      Object.defineProperty(proto, part, {
+        get: function () {
+          var u = resolved(this, "href");
+          if (u === null || typeof u === "string") return part === "protocol" ? ":" : "";
+          return u[part];
+        },
+        set: function (v) {
+          var u = resolved(this, "href");
+          if (u === null || typeof u === "string") return;
+          u[part] = v;
+          this.setAttribute("href", u.href);
+        },
+        enumerable: true, configurable: true
+      });
+    });
+    Object.defineProperty(proto, "origin", {
+      get: function () {
+        var u = resolved(this, "href");
+        return u === null || typeof u === "string" ? "" : u.origin;
+      },
+      enumerable: true, configurable: true
+    });
+    hidden(proto, "toString", function toString() { return this.href; });
+  });
+  if (global.HTMLAnchorElement && !Object.getOwnPropertyDescriptor(global.HTMLAnchorElement.prototype, "text")) {
+    Object.defineProperty(global.HTMLAnchorElement.prototype, "text", {
+      get: function () { return this.textContent; },
+      set: function (v) { this.textContent = v; },
+      enumerable: true, configurable: true
+    });
+  }
+
+  // ---- XMLHttpRequest, made of fetch ----
+  // Its states and events as the standard has them, its request headers and body, and its answer
+  // as text, JSON, an ArrayBuffer, a Blob or a document. Not kept: waiting for the answer
+  // (open(method, url, false) answers later all the same), and progress events while sending.
+
+  var xhrEvents = ["readystatechange", "loadstart", "progress", "abort", "error", "load", "timeout", "loadend"];
+  class XMLHttpRequestEventTarget extends EventTarget {
+    constructor() {
+      super();
+      if (new.target === XMLHttpRequestEventTarget) throw new TypeError("Illegal constructor");
+    }
+  }
+  class XMLHttpRequestUpload extends XMLHttpRequestEventTarget {
+    constructor(key) {
+      if (key !== xhrEvents) throw new TypeError("Illegal constructor");
+      super();
+      for (var i = 1; i < xhrEvents.length; i++) this["on" + xhrEvents[i]] = null;
+    }
+  }
+  function xhrState(name) {
+    return new DOMException("Failed to execute '" + name + "' on 'XMLHttpRequest': the object's state must be OPENED.", "InvalidStateError");
+  }
+  class XMLHttpRequest extends XMLHttpRequestEventTarget {
+    constructor() {
+      super();
+      for (var i = 0; i < xhrEvents.length; i++) this["on" + xhrEvents[i]] = null;
+      hidden(this, "_x", {
+        state: 0, sent: false, method: "GET", url: "", headers: new Headers(), status: 0, statusText: "",
+        answer: new Headers(), responseURL: "", type: "", text: "", buffer: null, parsed: undefined,
+        timeout: 0, credentials: false, control: null, turn: 0, upload: new XMLHttpRequestUpload(xhrEvents)
+      });
+    }
+    get readyState() { return this._x.state; }
+    get status() { return this._x.status; }
+    get statusText() { return this._x.statusText; }
+    get responseURL() { return this._x.responseURL; }
+    get upload() { return this._x.upload; }
+    get timeout() { return this._x.timeout; }
+    set timeout(v) { this._x.timeout = Math.max(0, Number(v) || 0); }
+    get withCredentials() { return this._x.credentials; }
+    set withCredentials(v) { this._x.credentials = !!v; }
+    get responseType() { return this._x.type; }
+    set responseType(v) {
+      v = String(v);
+      if (["", "arraybuffer", "blob", "document", "json", "text"].indexOf(v) < 0) return;
+      if (this._x.state === 3 || this._x.state === 4) {
+        throw new DOMException("The response type can't be set once loading has started.", "InvalidStateError");
+      }
+      this._x.type = v;
+    }
+    get responseText() {
+      var x = this._x;
+      if (x.type !== "" && x.type !== "text") {
+        throw new DOMException("responseText is only there when responseType is '' or 'text' (it is '" + x.type + "')", "InvalidStateError");
+      }
+      return x.state === 3 || x.state === 4 ? x.text : "";
+    }
+    get response() {
+      var x = this._x;
+      if (x.type === "" || x.type === "text") return x.state === 3 || x.state === 4 ? x.text : "";
+      if (x.state !== 4 || x.status === 0) return null;
+      if (x.parsed === undefined) {
+        if (x.type === "json") {
+          try { x.parsed = JSON.parse(x.text); } catch (e) { x.parsed = null; }
+        } else if (x.type === "arraybuffer") {
+          x.parsed = x.buffer;
+        } else if (x.type === "blob") {
+          x.parsed = new Blob([x.buffer], { type: x.answer.get("content-type") || "" });
+        } else {
+          x.parsed = this._document();
+        }
+      }
+      return x.parsed;
+    }
+    get responseXML() {
+      var x = this._x;
+      if (x.type !== "" && x.type !== "document") {
+        throw new DOMException("responseXML is only there when responseType is '' or 'document'", "InvalidStateError");
+      }
+      if (x.state !== 4 || x.status === 0) return null;
+      if (x.parsed === undefined) x.parsed = this._document();
+      return x.parsed;
+    }
+    _document() {
+      var kind = (this._x.answer.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      if (kind !== "text/html" && kind !== "text/xml" && kind !== "application/xml" && !/\+xml$/.test(kind)) {
+        return null;
+      }
+      try { return new DOMParser().parseFromString(this._x.text, kind === "text/html" ? "text/html" : "application/xml"); } catch (e) { return null; }
+    }
+    open(method, url) {
+      if (arguments.length < 2) throw new TypeError("Failed to execute 'open' on 'XMLHttpRequest': 2 arguments required.");
+      method = String(method);
+      var upper = method.toUpperCase();
+      if (["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH"].indexOf(upper) >= 0) method = upper;
+      if (upper === "CONNECT" || upper === "TRACE" || upper === "TRACK") {
+        throw new DOMException("'" + method + "' HTTP method is unsupported.", "SecurityError");
+      }
+      var full;
+      try { full = new URL(String(url), documentBase(global.document)).href; } catch (e) {
+        throw new DOMException("Failed to execute 'open' on 'XMLHttpRequest': Invalid URL", "SyntaxError");
+      }
+      var x = this._x;
+      if (x.control) x.control.abort();
+      x.control = null;
+      x.turn++;
+      x.method = method; x.url = full; x.headers = new Headers(); x.sent = false;
+      x.status = 0; x.statusText = ""; x.answer = new Headers(); x.responseURL = "";
+      x.text = ""; x.buffer = null; x.parsed = undefined;
+      if (x.state !== 1) {
+        x.state = 1;
+        this._fire("readystatechange");
+      }
+    }
+    setRequestHeader(name, value) {
+      var x = this._x;
+      if (x.state !== 1 || x.sent) throw xhrState("setRequestHeader");
+      x.headers.append(name, value);
+    }
+    getResponseHeader(name) {
+      if (this._x.state < 2) return null;
+      return this._x.answer.get(name);
+    }
+    getAllResponseHeaders() {
+      if (this._x.state < 2) return "";
+      var text = "";
+      this._x.answer.forEach(function (v, k) { text += k + ": " + v + "\r\n"; });
+      return text;
+    }
+    overrideMimeType(type) {
+      if (this._x.state === 3 || this._x.state === 4) throw new DOMException("overrideMimeType must come before the answer", "InvalidStateError");
+    }
+    send(body) {
+      var x = this._x;
+      if (x.state !== 1 || x.sent) throw xhrState("send");
+      var init = { method: x.method, headers: x.headers, credentials: x.credentials ? "include" : "same-origin" };
+      if (x.method !== "GET" && x.method !== "HEAD" && body !== undefined && body !== null) {
+        if (body instanceof global.Document) {
+          body = body.documentElement ? body.documentElement.outerHTML : "";
+          if (!x.headers.has("content-type")) x.headers.set("content-type", "application/xml;charset=UTF-8");
+        }
+        init.body = body;
+      }
+      x.sent = true;
+      var control = new AbortController();
+      x.control = control;
+      init.signal = control.signal;
+      var turn = x.turn;
+      var self = this;
+      this._fire("loadstart", 0, 0, false);
+      if (x.timeout > 0) {
+        setTimeout(function () {
+          if (x.turn !== turn || x.state === 4) return;
+          control.abort();
+          self._failed("timeout");
+        }, x.timeout);
+      }
+      var binary = x.type === "arraybuffer" || x.type === "blob";
+      fetch(x.url, init).then(function (r) {
+        if (x.turn !== turn) return;
+        x.status = r.status; x.statusText = r.statusText; x.answer = r.headers; x.responseURL = r.url;
+        x.state = 2;
+        self._fire("readystatechange");
+        return (binary ? r.arrayBuffer() : r.text()).then(function (v) {
+          if (x.turn !== turn) return;
+          var n;
+          if (binary) { x.buffer = v; n = v.byteLength; } else { x.text = v; n = v.length; }
+          x.state = 3;
+          self._fire("readystatechange");
+          self._fire("progress", n, n, true);
+          x.state = 4;
+          x.sent = false;
+          x.control = null;
+          self._fire("readystatechange");
+          self._fire("load", n, n, true);
+          self._fire("loadend", n, n, true);
+        });
+      }).catch(function (e) {
+        if (x.turn !== turn) return;
+        self._failed("error");
+      });
+    }
+    abort() {
+      var x = this._x;
+      if (x.control) x.control.abort();
+      x.control = null;
+      var busy = (x.state === 1 && x.sent) || x.state === 2 || x.state === 3;
+      x.turn++;
+      if (busy) this._failed("abort");
+      if (x.state === 4) {
+        x.state = 0;
+        x.status = 0; x.statusText = "";
+      }
+    }
+    _failed(type) {
+      var x = this._x;
+      x.turn++;
+      x.state = 4; x.sent = false; x.control = null;
+      x.status = 0; x.statusText = ""; x.answer = new Headers(); x.text = ""; x.buffer = null; x.parsed = undefined;
+      this._fire("readystatechange");
+      this._fire(type, 0, 0, false);
+      this._fire("loadend", 0, 0, false);
+    }
+    _fire(type, loaded, total, computable) {
+      var e = type === "readystatechange" ? new Event(type)
+        : new ProgressEvent(type, { loaded: loaded || 0, total: total || 0, lengthComputable: !!computable });
+      this.dispatchEvent(e);
+    }
+  }
+  ["UNSENT", "OPENED", "HEADERS_RECEIVED", "LOADING", "DONE"].forEach(function (name, i) {
+    Object.defineProperty(XMLHttpRequest, name, { value: i, enumerable: true });
+    Object.defineProperty(XMLHttpRequest.prototype, name, { value: i, enumerable: true });
+  });
+  hidden(global, "XMLHttpRequestEventTarget", XMLHttpRequestEventTarget);
+  hidden(global, "XMLHttpRequestUpload", XMLHttpRequestUpload);
+  hidden(global, "XMLHttpRequest", XMLHttpRequest);
+
+  // ---- <video> and <audio> ----
+  // HTMLMediaElement, under both, as the standard has it. This browser plays nothing, and says so as
+  // a browser that can't play a file does: canPlayType answers "", play() is refused with a
+  // NotSupportedError, and the state is that of a medium with nothing loaded.
+
+  var Media = global.HTMLMediaElement;
+  if (Media) {
+    ["HTMLVideoElement", "HTMLAudioElement"].forEach(function (name) {
+      var C = global[name];
+      if (!C || C.prototype instanceof Media) return;
+      Object.setPrototypeOf(C.prototype, Media.prototype);
+      Object.setPrototypeOf(C, Media);
+    });
+    var mediaProto = Media.prototype;
+    ["NETWORK_EMPTY", "NETWORK_IDLE", "NETWORK_LOADING", "NETWORK_NO_SOURCE"].forEach(function (k, i) {
+      Object.defineProperty(Media, k, { value: i, enumerable: true });
+      Object.defineProperty(mediaProto, k, { value: i, enumerable: true });
+    });
+    ["HAVE_NOTHING", "HAVE_METADATA", "HAVE_CURRENT_DATA", "HAVE_FUTURE_DATA", "HAVE_ENOUGH_DATA"].forEach(function (k, i) {
+      Object.defineProperty(Media, k, { value: i, enumerable: true });
+      Object.defineProperty(mediaProto, k, { value: i, enumerable: true });
+    });
+    var mediaState = function (el) {
+      if (!el._media) {
+        hidden(el, "_media", { paused: true, time: 0, volume: 1, muted: el.hasAttribute("muted"), rate: 1, defaultRate: 1 });
+      }
+      return el._media;
+    };
+    var noRanges = { length: 0, start: function () { throw new DOMException("There are no ranges", "IndexSizeError"); }, end: function () { throw new DOMException("There are no ranges", "IndexSizeError"); } };
+    var later = function (el, type) { setTimeout(function () { el.dispatchEvent(new Event(type)); }, 0); };
+    var mediaProps = {
+      paused: function () { return mediaState(this).paused; },
+      ended: function () { return false; },
+      seeking: function () { return false; },
+      duration: function () { return NaN; },
+      readyState: function () { return 0; },
+      networkState: function () { return this.hasAttribute("src") || this.querySelector("source") ? 3 : 0; },
+      error: function () { return null; },
+      currentSrc: function () { return ""; },
+      buffered: function () { return noRanges; },
+      seekable: function () { return noRanges; },
+      played: function () { return noRanges; },
+      textTracks: function () { return []; },
+      srcObject: function () { return null; }
+    };
+    Object.keys(mediaProps).forEach(function (k) {
+      Object.defineProperty(mediaProto, k, { get: mediaProps[k], enumerable: true, configurable: true });
+    });
+    [["currentTime", "time", function (v) { return Number(v) || 0; }],
+     ["volume", "volume", function (v) {
+       v = Number(v);
+       if (!(v >= 0 && v <= 1)) throw new DOMException("The volume provided (" + v + ") is outside the range [0, 1].", "IndexSizeError");
+       return v;
+     }],
+     ["muted", "muted", function (v) { return !!v; }],
+     ["playbackRate", "rate", function (v) { return Number(v); }],
+     ["defaultPlaybackRate", "defaultRate", function (v) { return Number(v); }]
+    ].forEach(function (p) {
+      Object.defineProperty(mediaProto, p[0], {
+        get: function () { return mediaState(this)[p[1]]; },
+        set: function (v) {
+          var st = mediaState(this), now = p[2](v);
+          if (st[p[1]] === now) return;
+          st[p[1]] = now;
+          if (p[0] === "volume" || p[0] === "muted") later(this, "volumechange");
+          else if (p[0] === "playbackRate") later(this, "ratechange");
+        },
+        enumerable: true, configurable: true
+      });
+    });
+    ["autoplay", "loop", "controls", "playsInline", "defaultMuted"].forEach(function (k) {
+      var attr = k === "playsInline" ? "playsinline" : k === "defaultMuted" ? "muted" : k;
+      Object.defineProperty(mediaProto, k, {
+        get: function () { return this.hasAttribute(attr); },
+        set: function (v) { if (v) this.setAttribute(attr, ""); else this.removeAttribute(attr); },
+        enumerable: true, configurable: true
+      });
+    });
+    hidden(mediaProto, "load", function load() {
+      var st = mediaState(this);
+      st.paused = true;
+      st.time = 0;
+      if (this.hasAttribute("src") || this.querySelector("source")) {
+        later(this, "loadstart");
+        later(this, "error");
+      } else {
+        later(this, "emptied");
+      }
+    });
+    hidden(mediaProto, "play", function play() {
+      return Promise.reject(new DOMException("The element has no supported sources.", "NotSupportedError"));
+    });
+    hidden(mediaProto, "pause", function pause() {
+      var st = mediaState(this);
+      if (!st.paused) {
+        st.paused = true;
+        later(this, "pause");
+      }
+    });
+    hidden(mediaProto, "canPlayType", function canPlayType(type) { return ""; });
+    hidden(mediaProto, "fastSeek", function fastSeek(t) { this.currentTime = t; });
+    hidden(mediaProto, "addTextTrack", function addTextTrack(kind, label, language) {
+      return { kind: String(kind), label: label === undefined ? "" : String(label), language: language === undefined ? "" : String(language), mode: "hidden", cues: [], addCue: function () { }, removeCue: function () { } };
+    });
+    if (global.HTMLVideoElement) {
+      ["videoWidth", "videoHeight"].forEach(function (k) {
+        Object.defineProperty(global.HTMLVideoElement.prototype, k, { get: function () { return 0; }, enumerable: true, configurable: true });
+      });
+    }
   }
 })(this);

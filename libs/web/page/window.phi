@@ -1,4 +1,4 @@
-# window, and what hangs from it: timers, console, location, navigator, storage, fetch, XMLHttpRequest.
+# window, and what hangs from it: timers, console, location, navigator, storage, fetch.
 
 
 phi.PageWindow:Library
@@ -545,11 +545,11 @@ phi.PageWindow:Library
 	[end: (JsV.Uint: keys.length)]
 }
 
-# fetch and XMLHttpRequest. Both ask PageHost.load, and hear back through Page.Delivered.
+# fetch, which asks PageHost.load and hears back through Page.Delivered (page/platform.js makes its
+# Request and Response of this, and XMLHttpRequest of fetch).
 phi.PageNet:Library
 {
 	ptr<JsObj> response_proto: 0;
-	ptr<JsObj> xhr_proto: 0;
 
 	[Install: ptr<JsObj> keep: 0;]
 		ptr<JsObj> g: JsRt.r.global;
@@ -559,28 +559,7 @@ phi.PageNet:Library
 		call Js.DefineNative: response_proto 'text' addr ResponseText 0;
 		call Js.DefineNative: response_proto 'json' addr ResponseJson 0;
 		call Js.DefineNative: response_proto 'arrayBuffer' addr ResponseBuffer 0;
-		xhr_proto is (JsObjs.NewWithProto: PageEvents.target_proto);
-		call JsObjs.ArrayPush: keep (JsV.Obj: xhr_proto);
-		call Js.DefineClass: 'XMLHttpRequest' addr XhrCtor 0 xhr_proto;
-		call Js.DefineNative: xhr_proto 'open' addr XhrOpen 2;
-		call Js.DefineNative: xhr_proto 'send' addr XhrSend 0;
-		call Js.DefineNative: xhr_proto 'abort' addr PageBind.Nothing 0;
-		call Js.DefineNative: xhr_proto 'setRequestHeader' addr PageBind.Nothing 2;
-		call Js.DefineNative: xhr_proto 'getResponseHeader' addr NullHeader 1;
-		call Js.DefineNative: xhr_proto 'getAllResponseHeaders' addr BlankHeaders 0;
-		call Js.DefineNative: xhr_proto 'overrideMimeType' addr PageBind.Nothing 1;
-		call Js.Define: xhr_proto 'UNSENT' JsV.INT_BASE JsObjs.E;
-		call Js.Define: xhr_proto 'OPENED' (JsV.Int: 1) JsObjs.E;
-		call Js.Define: xhr_proto 'HEADERS_RECEIVED' (JsV.Int: 2) JsObjs.E;
-		call Js.Define: xhr_proto 'LOADING' (JsV.Int: 3) JsObjs.E;
-		call Js.Define: xhr_proto 'DONE' (JsV.Int: 4) JsObjs.E;
 	[end]
-
-	[NullHeader: ptr<u64> args: 0; int argc: 0;]
-	[end: JsV.NULL]
-
-	[BlankHeaders: ptr<u64> args: 0; int argc: 0;]
-	[end: (JsV.Str: JsRt.blank)]
 
 	# a promise, and its two functions dest the array on `holder`
 	[NewPromise: ptr<JsObj> holder: 0;]
@@ -608,10 +587,52 @@ phi.PageNet:Library
 			;;
 		;;
 		call Js.TextOf: arg addr url;
+		# fetch(url, {method, headers, body}): page/platform.js's fetch gives the headers as lines
+		# ("Name: value\r\n" each) and the body as text (sent as UTF-8) or an ArrayBuffer
+		WlBuf verb;
+		WlBuf headers;
+		WlBuf body;
+		bln has_body: false;
+		u64 options: (Js.Arg: args argc 1);
+		if (JsV.IsObj: options)
+			u64 m: (JsObjs.GetV: options (JsObjs.KeyZ: 'method'));
+			if m is not JsV.UNDEF
+				call Js.TextOf: m addr verb;
+			;;
+			u64 h: (JsObjs.GetV: options (JsObjs.KeyZ: 'headers'));
+			if (JsV.IsStr: h)
+				call Js.TextOf: h addr headers;
+			;;
+			u64 bv: (JsObjs.GetV: options (JsObjs.KeyZ: 'body'));
+			if (JsTyped.IsBuffer: bv)
+				# (bytes, as they are: an ArrayBuffer)
+				u32 bn: (JsTyped.BytesLen: bv) as u32;
+				if bn > 0
+					call body.AddN: (JsTyped.BytesOf: bv) bn;
+				;;
+				has_body is true;
+			;;
+			elif bv is not JsV.UNDEF and bv is not JsV.NULL
+				call Js.TextOf: bv addr body;
+				has_body is true;
+			;;
+		;;
+		call verb.Add: 0 as u8;
+		call headers.Add: 0 as u8;
 		ptr<JsObj> holder: (JsObjs.NewArray: 2);
 		u64 promise: (NewPromise: holder);
-		u32 id: (Page.Request: p url.data url.len PageLoad.FETCH 0 holder.elems:0 holder.elems:1);
+		ptr<u8> sent: 0;
+		if has_body
+			sent is body.data;
+			if sent is 0
+				sent is '';
+			;;
+		;;
+		u32 id: (Page.Request: p url.data url.len PageLoad.FETCH 0 holder.elems:0 holder.elems:1 0 verb.data headers.data sent body.len);
 		call url.Free;
+		call verb.Free;
+		call headers.Free;
+		call body.Free;
 		if id is 0
 			call JsVm.Call1: holder.elems:1 JsV.UNDEF (JsV.Obj: (JsErr.Make: JsRt.P.type_error 'Too many requests at once'));
 		;;
@@ -634,28 +655,17 @@ phi.PageNet:Library
 			call Js.Define: resp 'status' (JsV.Int: status) JsObjs.E;
 			call Js.Define: resp 'statusText' (JsV.Str: JsRt.blank) JsObjs.E;
 			call Js.Define: resp 'url' (Js.NewStringZ: url) JsObjs.E;
+			# (its status line and header lines as they came, for platform.js's Response to read)
+			ptr<u8> head: r.answer_headers;
+			if head is 0
+				head is '';
+			;;
+			call Js.Define: resp 'headers' (Js.NewStringZ: head) JsObjs.E;
 			call JsObjs.DefineValue: resp (JsStrs.InternZ: '%body') as ptr<u8> (Js.NewString: bytes n) JsObjs.W;
 			call Js.Push: (JsV.Obj: resp);
 			call Js.Call: a JsV.UNDEF 1;
 			return;
 		;;
-		# XMLHttpRequest
-		ptr<JsObj> x: (JsV.AsObj: a);
-		call Js.Define: x 'status' (JsV.Int: status) JsObjs.WEC;
-		call Js.Define: x 'statusText' (JsV.Str: JsRt.blank) JsObjs.WEC;
-		u64 text: (Js.NewString: bytes n);
-		call Js.Define: x 'responseText' text JsObjs.WEC;
-		call Js.Define: x 'response' text JsObjs.WEC;
-		call Js.Define: x 'responseURL' (Js.NewStringZ: url) JsObjs.WEC;
-		call Js.Define: x 'readyState' (JsV.Int: 4) JsObjs.WEC;
-		call PageEvents.FireOn: a 'readystatechange' false;
-		if status is 0
-			call PageEvents.FireOn: a 'error' false;
-		;;
-		else
-			call PageEvents.FireOn: a 'load' false;
-		;;
-		call PageEvents.FireOn: a 'loadend' false;
 	[end]
 
 	[Body: ptr<u64> args: 0;]
@@ -689,34 +699,4 @@ phi.PageNet:Library
 			call Mem.Copy: (JsTyped.BytesOf: bv) s.data s.bytes;
 		;;
 	[end: (Resolved: bv)]
-
-	[XhrCtor: ptr<u64> args: 0; int argc: 0;]
-		u64 nt: (Js.NewTarget);
-		if not (JsV.IsObj: nt)
-			call JsErr.Type: 'Constructor XMLHttpRequest requires new';
-		;;
-		ptr<JsObj> o: (JsObjs.NewWithProto: (JsOps.ProtoFromCtor: nt xhr_proto));
-		call Js.Define: o 'readyState' JsV.INT_BASE JsObjs.WEC;
-		call Js.Define: o 'status' JsV.INT_BASE JsObjs.WEC;
-		call Js.Define: o 'responseText' (JsV.Str: JsRt.blank) JsObjs.WEC;
-		call Js.Define: o 'response' (JsV.Str: JsRt.blank) JsObjs.WEC;
-		call Js.Define: o 'responseType' (JsV.Str: JsRt.blank) JsObjs.WEC;
-	[end: (JsV.Obj: o)]
-
-	[XhrOpen: ptr<u64> args: 0; int argc: 0;]
-		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
-		call JsObjs.DefineValue: o (JsStrs.InternZ: '%url') as ptr<u8> (JsV.Str: (JsOps.ToStr: (Js.Arg: args argc 1))) JsObjs.W;
-		call Js.Define: o 'readyState' (JsV.Int: 1) JsObjs.WEC;
-		call PageEvents.FireOn: (JsV.Obj: o) 'readystatechange' false;
-	[end: JsV.UNDEF]
-
-	[XhrSend: ptr<u64> args: 0; int argc: 0;]
-		ptr<JsObj> o: (JsOps.ToObject: args:(-1));
-		ptr<JsProp> u: (JsObjs.Find: o (JsStrs.InternZ: '%url') as ptr<u8>);
-		if u is 0
-			call PageBind.DomError: 'InvalidStateError' 'open() has not been called';
-		;;
-		ptr<JsStr> url: (JsStrs.Flat: (JsV.AsStr: u.value));
-		call Page.Request: Page.current url.data url.bytes PageLoad.FETCH 0 (JsV.Obj: o) JsV.UNDEF;
-	[end: JsV.UNDEF]
 }

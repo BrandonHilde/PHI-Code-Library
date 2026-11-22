@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html><head><title>platform</title></head><body>
 <form id="f"><input name="a" value="1"><input name="b" value="two words"><input type="checkbox" name="c" value="x"><input type="checkbox" name="d" value="y" checked></form>
+<a id="link" href="../x/y.html?q=1#frag">a link</a><img id="pic" src="pics/p.png">
 <script>
 var log = function () { console.log(Array.prototype.join.call(arguments, " ")); };
 function t(name, fn) { try { log(name + ":", fn()); } catch (e) { log(name + " threw:", e.name, e.message); } }
@@ -40,6 +41,45 @@ t("crypto", function () { var a = crypto.getRandomValues(new Uint8Array(16)); va
 t("clone", function () { var o = {d: new Date(0), m: new Map([[1, {x: 2}]]), a: [1, [2]]}; o.self = o; var c = structuredClone(o); return [c !== o, c.self === c, c.d.getTime(), c.m.get(1).x, c.a[1][0]].join(" "); });
 t("classes", function () { return [history instanceof History, location instanceof Location, navigator instanceof Navigator, Object.prototype.toString.call(localStorage), typeof requestIdleCallback, new Option("t", "v").value].join(" "); });
 t("attributes", function () { var a = document.getElementById("f").firstChild.attributes; return [a.length, a.getNamedItem("name").value, a.item(1).name, a[0] instanceof Attr, a.getNamedItem("nope"), a.item(9)].join(" "); });
+// URLs in attributes, and a link's parts
+t("link", function () { var a = document.getElementById("link"); return [a.href, a.protocol, a.host, a.pathname, a.search, a.hash, a.origin, document.getElementById("pic").src, document.getElementById("f").action].join(" | "); });
+t("link setters", function () { var a = document.createElement("a"); a.href = "http://h.com/p?x"; a.pathname = "/q"; a.hash = "z"; a.search = ""; return [a.getAttribute("href"), String(a), a.text === ""].join(" | "); });
+t("no link", function () { var a = document.createElement("a"); return JSON.stringify([a.href, a.protocol, a.pathname, a.host]); });
+t("constants", function () { return [Node.ELEMENT_NODE, Node.DOCUMENT_FRAGMENT_NODE, document.ELEMENT_NODE, Event.AT_TARGET, XMLHttpRequest.DONE, new XMLHttpRequest().LOADING].join(" "); });
+// what fetch and XMLHttpRequest send, and what they're answered with
+t("bodies", function () { var f = new FormData(); f.append("n", "1"); return [new Request("/a", {method: "POST", body: "t"}).headers.get("content-type"), new Request("/a", {method: "POST", body: new URLSearchParams("k=v")}).headers.get("content-type"), /^multipart\/form-data; boundary=/.test(new Request("/a", {method: "POST", body: f}).headers.get("content-type"))].join(" | "); });
+t("get body", function () { return new Request("/a", {body: "x"}); });
+fetch("/api/echo", {method: "POST", headers: {"x-thing": "1", "Content-Length": "99", "Cookie": "no"}, body: JSON.stringify({a: 1})}).then(function (r) {
+  log("post:", r.status, r.statusText, r.headers.get("content-type"), r.headers.get("x-answer"), r.headers.has("set-cookie"));
+  return r.json();
+}).then(function (j) { log("post answer:", j.echo); });
+var x = new XMLHttpRequest(), states = [];
+x.onreadystatechange = function () { states.push(x.readyState); };
+x.open("put", "/api/echo");
+x.setRequestHeader("X-Y", "2");
+x.responseType = "json";
+x.onload = function (e) { log("xhr:", x.status, x.statusText, x.response.echo, x.getResponseHeader("x-answer"), JSON.stringify(x.getAllResponseHeaders()), states.join(","), e instanceof ProgressEvent, e.loaded); };
+x.onloadend = function () { log("xhr loadend", x.readyState); };
+x.send(new URLSearchParams({k: "v w"}));
+t("xhr sent twice", function () { x.send(); });
+fetch("/api/echo", {method: "POST", body: new Uint8Array([104, 105, 200, 0, 33])});
+var made = new Request("data:text/plain,made%20with");
+Object.defineProperty(made, "url", {get: function () { return "http://test.example/api/echo"; }});
+fetch(made).then(function (r) { return r.text(); }).then(function (t) { log("made with:", t); });
+t("class names", function () { return [Object.prototype.toString.call(new Request("/")), Object.prototype.toString.call(new Headers()), Object.prototype.toString.call(new Response())].join(" "); });
+t("methods", function () { return [new Request("/", {method: "patch"}).method, new Request("/", {method: "delete"}).method].join(" "); });
+t("media", function () { var v = document.createElement("video"), a = new Audio(); v.volume = 0.5; return [v instanceof HTMLMediaElement, a instanceof HTMLMediaElement, v.paused, v.readyState, isNaN(v.duration), v.canPlayType("video/mp4"), v.volume, HTMLMediaElement.HAVE_ENOUGH_DATA, typeof a.load, v.buffered.length].join(" "); });
+document.createElement("audio").play().catch(function (e) { log("play:", e.name); });
+var y = new XMLHttpRequest();
+y.open("GET", "/api/slow");
+y.addEventListener("abort", function () { log("xhr abort:", y.readyState, y.status); });
+y.send();
+y.abort();
+log("after abort:", y.readyState);
+var z = new XMLHttpRequest();
+z.open("GET", "/nowhere");
+z.onload = function () { log("xhr 404:", z.status, JSON.stringify(z.responseText)); };
+z.send();
 var ch = new MessageChannel();
 ch.port2.onmessage = function (e) { log("message:", e.data.n, e.data === sent); };
 var sent = {n: 7};
