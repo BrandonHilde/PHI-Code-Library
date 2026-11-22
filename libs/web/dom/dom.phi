@@ -91,6 +91,12 @@ struct.DomNode
 	# <template>'s contents: a FRAGMENT of the document (whose own content is the template)
 	ptr<DomNode> content;
 
+	# A shadow host's shadow root, and a shadow root's host: each points at the other. A shadow root is
+	# a FRAGMENT with Dom.SHADOW_ROOT, in no parent, so walks of the tree (Next, Contains) don't enter it;
+	# ShadowNext does.
+	ptr<DomNode> shadow;
+	ptr<u8> sheets;         # a shadow root's stylesheets, as the page keeps them (the DOM never looks)
+
 	# Places for what the other layers keep on a node. The DOM never looks inside them.
 	u64 js_wrapper;         # the JS object for this node (a JsValue; 0 until JS asks), which
 	                        # the JS engine marks: a node's wrapper lives as long as its document
@@ -130,15 +136,24 @@ phi.Dom:Library
 	const u32 DIRTY_CHILD: 2;        # something under it is DIRTY_STYLE
 	const u32 DIRTY_LAYOUT: 4;       # for the browser: it needs laying out again
 	const u32 DIRTY_TREE: 8;         # children were added or taken out (CSS looks at this for :first-child and the like)
-	const u32 FIRST_PARSER_FLAG: 0x100;   # flags from here up are the HTML parser's own
+	const u32 SHADOW_ROOT: 16;       # a FRAGMENT that is an element's shadow root
+	const u32 SHADOW_CLOSED: 32;     # ... made with mode: 'closed'
+	const u32 CE_DEFINED: 64;        # a custom element that has been made or upgraded (CSS's :defined)
+	const u32 CE_SEEN: 128;          # the page's, for a moment, while it goes through what's changed
+	const u32 FIRST_PARSER_FLAG: 0x100;   # flags from here to 0x8000 are the HTML parser's own
+	const u32 SCRIPT_RAN: 0x10000;   # the page's: a <script> that has run, or been put in by a script
 
 	ptr<WlAtom> A_ID: 0;
 	ptr<WlAtom> A_CLASS: 0;
+	ptr<WlAtom> A_SLOT: 0;      # <slot>, and the slot attribute
+	ptr<WlAtom> A_NAME: 0;
 
 	[Start]
 		if A_ID is not 0 return;
 		A_ID is (WlAtoms.GetZ: 'id');
 		A_CLASS is (WlAtoms.GetZ: 'class');
+		A_SLOT is (WlAtoms.GetZ: 'slot');
+		A_NAME is (WlAtoms.GetZ: 'name');
 	[end]
 
 	# ---- making nodes
@@ -352,6 +367,140 @@ phi.Dom:Library
 			node is node.parent;
 		;;
 	[end: 0 as ptr<DomNode>]
+
+	# ---- shadow trees
+
+	[IsShadowRoot: ptr<DomNode> node: 0;]
+	[end: node.type is DomType.FRAGMENT and (node.flags & SHADOW_ROOT) is not 0]
+
+	# the node at the top of node's tree: the document, a shadow root, or something not in either
+	[TreeRoot: ptr<DomNode> node: 0;]
+		while node.parent is not 0
+			node is node.parent;
+		;;
+	[end: node]
+
+	# whether node is in the document, its shadow trees included (the DOM's isConnected)
+	[IsConnected: ptr<DomNode> node: 0;]
+		while node is not 0
+			ptr<DomNode> top: (TreeRoot: node);
+			if top.type is DomType.DOCUMENT return true;
+			if not (IsShadowRoot: top) return false;
+			node is top.shadow;
+		;;
+	[end: false]
+
+	# The parent in the tree that includes shadow trees: a shadow root's is its host.
+	[ShadowParent: ptr<DomNode> node: 0;]
+		if node.parent is 0 and (IsShadowRoot: node) return node.shadow;
+	[end: node.parent]
+
+	# The node after this one in shadow-including order (a host, its shadow tree, then its children),
+	# staying under root; 0 at the end.
+	[ShadowNext: ptr<DomNode> node: 0; ptr<DomNode> root: 0;]
+		if node.type is DomType.ELEMENT and node.shadow is not 0 return node.shadow;
+		if node.first_child is not 0 return node.first_child;
+	[end: (ShadowNextSkipping: node root)]
+
+	# the same, skipping what's under node (its shadow tree too)
+	[ShadowNextSkipping: ptr<DomNode> node: 0; ptr<DomNode> root: 0;]
+		while node is not 0 and node is not root
+			if node.next is not 0 return node.next;
+			if node.parent is 0 and (IsShadowRoot: node)
+				ptr<DomNode> host: node.shadow;
+				if host is root return host.first_child;
+				if host.first_child is not 0 return host.first_child;
+				node is host;
+				continue;
+			;;
+			node is node.parent;
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	# ---- slots, and the flat tree: what's shown, where a shadow tree takes its host's children
+
+	# whether node is a <slot> in a shadow tree
+	[IsSlot: ptr<DomNode> node: 0;]
+		if node.type is not DomType.ELEMENT or node.tag is not A_SLOT or node.ns is not DomNs.HTML return false;
+	[end: (IsShadowRoot: (TreeRoot: node))]
+
+	# what a slot takes and a node is put in by: a slot's name attribute, an element's slot attribute
+	[SlotName: ptr<DomNode> node: 0; ptr<WlAtom> name: 0; ptr<u32> length: 0;]
+		ptr<DomAttr> a: (Attr: node name);
+		if a is 0
+			length:0 is 0;
+			return 0 as ptr<u8>;
+		;;
+		length:0 is a.value_len;
+	[end: a.value]
+
+	# The slot a shadow host's child is shown in (the first of its shadow tree whose name is the child's
+	# slot attribute, or that has no name for text and an element without one), or 0 for none.
+	[AssignedSlot: ptr<DomNode> node: 0;]
+		ptr<DomNode> host: node.parent;
+		if host is 0 or host.type is not DomType.ELEMENT or host.shadow is 0 return 0 as ptr<DomNode>;
+		if node.type is not DomType.ELEMENT and node.type is not DomType.TEXT return 0 as ptr<DomNode>;
+		u32 want_len: 0;
+		ptr<u8> want: 0;
+		if node.type is DomType.ELEMENT
+			want is (SlotName: node A_SLOT addr want_len);
+		;;
+		ptr<DomNode> root: host.shadow;
+		ptr<DomNode> s: root.first_child;
+		while s is not 0
+			if s.type is DomType.ELEMENT and s.tag is A_SLOT and s.ns is DomNs.HTML
+				u32 have_len: 0;
+				ptr<u8> have: (SlotName: s A_NAME addr have_len);
+				if have_len is want_len and (have_len is 0 or (Mem.Equal: have want have_len))
+					return s;
+				;;
+			;;
+			s is (Next: s root);
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	# the host's children a slot takes, one after another: SlotNext with 0 gives the first
+	[SlotNext: ptr<DomNode> slot: 0; ptr<DomNode> after: 0;]
+		ptr<DomNode> root: (TreeRoot: slot);
+		if not (IsShadowRoot: root) return 0 as ptr<DomNode>;
+		ptr<DomNode> c: root.shadow.first_child;
+		if after is not 0
+			c is after.next;
+		;;
+		while c is not 0
+			if (AssignedSlot: c) is slot return c;
+			c is c.next;
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	# A node's first child in the flat tree: a shadow host's is its shadow tree's, and a slot's is the
+	# first node it takes (or its own first child, if it takes none).
+	[FlatFirst: ptr<DomNode> node: 0;]
+		if node.type is DomType.ELEMENT
+			if node.shadow is not 0 return node.shadow.first_child;
+			if node.tag is A_SLOT and (IsSlot: node)
+				ptr<DomNode> taken: (SlotNext: node 0);
+				if taken is not 0 return taken;
+			;;
+		;;
+	[end: node.first_child]
+
+	# the flat tree's next child of parent after child (child came from FlatFirst or FlatNext of parent)
+	[FlatNext: ptr<DomNode> child: 0; ptr<DomNode> parent: 0;]
+		if child.parent is not parent and parent.type is DomType.ELEMENT and parent.tag is A_SLOT
+			return (SlotNext: parent child);
+		;;
+	[end: child.next]
+
+	# a node's parent in the flat tree: the slot it's shown in, a shadow tree's top's host
+	[FlatParent: ptr<DomNode> node: 0;]
+		ptr<DomNode> up: node.parent;
+		if up is 0 return 0 as ptr<DomNode>;
+		if up.type is DomType.ELEMENT and up.shadow is not 0
+			return (AssignedSlot: node);
+		;;
+		if (IsShadowRoot: up) return up.shadow;
+	[end: up]
 
 	[FirstElementChild: ptr<DomNode> node: 0;]
 		ptr<DomNode> c: node.first_child;

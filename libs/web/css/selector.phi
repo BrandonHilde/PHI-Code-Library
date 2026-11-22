@@ -1068,6 +1068,13 @@ phi.CssSel:Library
 				return (Ask: e ST_VALID) is 0;
 			;;
 			is CssK.DEFINED
+				# built in, or a custom element that has been made by its class (a name with a hyphen is a
+				# custom element's)
+				if (e.flags & Dom.CE_DEFINED) is not 0 or e.ns is not DomNs.HTML return true;
+				ptr<WlAtom> t: e.tag;
+				while u32 i: 0; i < t.len; i++;
+					if t.text:i is '-' return false;
+				;;
 				return true;
 			;;
 			is CssK.FULLSCREEN

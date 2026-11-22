@@ -29,6 +29,8 @@ console[0]: events doc capture / list capture 1 / target 2 true / once / list bu
 console[0]: no bubble doc capture / list capture 1 / target 2 true
 console[0]: stop false stopped
 console[2]: Uncaught Error: in a listener
+    at inline script:82
+    at inline script:84
 console[0]: next listener still ran
 console[0]: sync end
 load http://test.example/dir/data.json kind 3
@@ -402,6 +404,8 @@ console[0]: events doc capture / list capture 1 / target 2 true / once / list bu
 console[0]: no bubble doc capture / list capture 1 / target 2 true
 console[0]: stop false stopped
 console[2]: Uncaught Error: in a listener
+    at inline script:82
+    at inline script:84
 console[0]: next listener still ran
 console[0]: sync end
 load http://test.example/dir/data.json kind 3

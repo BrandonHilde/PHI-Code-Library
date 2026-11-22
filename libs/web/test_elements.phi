@@ -1,0 +1,42 @@
+# Custom elements, templates and the tree walkers, on
+# tests/page/elements.html: when each reaction comes, worked out from the HTML standard.
+use weblib;
+
+phi.TestElements:Program
+{
+	call Weblib.Start: 900000;
+	PageHost host;
+	host.logger is addr Print;
+	host.cookies is addr Cookies;
+	host.set_cookie is addr SetCookie;
+	int size: (OS.FileSize: 'tests/page/elements.html');
+	ptr<u8> html: new u8[size + 1];
+	int got: (OS.ReadFile: 'tests/page/elements.html' html size);
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page html got as u32 'http://test.example/elements.html';
+	log '--- a timer\n';
+	call Page.Tick: page 10.0;
+	log '--- a frame\n';
+	call Page.Frame: page 16.0;
+	log '--- later\n';
+	call Page.Tick: page 100.0;
+	call Page.Free: page;
+	log 'done\n';
+	exit 0;
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+
+	[Cookies: ptr<Page> p: 0; ptr<u8> target: 0; int size: 0;]
+		str c: 'fromhost=1; other=2';
+		while int i: 0; i < c.len; i++;
+			target:i is c:i;
+		;;
+		target:(c.len) is 0;
+	[end: c.len]
+
+	[SetCookie: ptr<Page> p: 0; ptr<u8> text: 0;]
+		log 'the host is given a cookie: ' text '\n';
+	[end]
+}

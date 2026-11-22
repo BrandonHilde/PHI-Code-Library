@@ -119,6 +119,7 @@ struct.HtmlParser
 	# ---- for the browser
 	ptr<DomDocument> doc;
 	method<ptr<HtmlParser> ptr<DomNode>> on_script;
+	method<> after_token;   # called after each token, if set (a page runs its custom elements' reactions)
 	bln scripting;
 	bln failed;             # something went wrong (out of memory, usually); error says what
 	str error: [160];
@@ -1052,6 +1053,10 @@ struct.HtmlParser
 			ref.prev is node;
 		;;
 		call Dom.Changed: parent DomChange.CHILDREN;
+		# (a MutationObserver hears of what the parser puts in, and custom elements are upgraded)
+		if node.doc.on_mutation is not 0
+			call node.doc.on_mutation: parent Dom.ADDED node 0 as ptr<WlAtom> 0 as ptr<u8> (-1);
+		;;
 	[end]
 
 	[DocumentHasElement: ptr<DomNode> parent: 0;]
@@ -3397,6 +3402,9 @@ phi.HtmlSink:Library
 	[Token: ptr<HtmlTokenizer> t: 0;]
 		ptr<HtmlParser> p: t.owner as ptr<HtmlParser>;
 		call p.Token;
+		if p.after_token is not 0
+			call p.after_token;
+		;;
 	[end]
 
 	[CdataAllowed: ptr<HtmlTokenizer> t: 0;]

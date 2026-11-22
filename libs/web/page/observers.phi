@@ -16,12 +16,8 @@ phi.PageObservers:Library
 	[Watch: ptr<u64> args: 0; int argc: 0;]
 		ptr<Page> p: Page.current;
 		if p is not 0
-			if (JsOps.ToBool: (Js.Arg: args argc 0))
-				p.doc.on_mutation is addr Mutated;
-			;;
-			else
-				p.doc.on_mutation is 0;
-			;;
+			p.observing is (JsOps.ToBool: (Js.Arg: args argc 0));
+			call Page.HookMutations: p;
 		;;
 	[end: JsV.UNDEF]
 

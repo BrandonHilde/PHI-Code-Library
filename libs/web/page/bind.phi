@@ -42,8 +42,15 @@ phi.PageBind:Library
 	ptr<JsObj> token_proto: 0;
 	ptr<JsObj> style_proto: 0;
 	ptr<JsObj> dataset_proto: 0;
+	ptr<JsObj> attr_proto: 0;
+	ptr<JsObj> namedmap_proto: 0;      # (its methods are platform.js's)
 
 	ptr<WlAtom> keep_style_key: 0;
+
+	# the prototypes of elements with names of their own (HTMLDivElement for <div>), by tag
+	ptr<WlAtom> tag_atoms[atmost 64];
+	ptr<JsObj> tag_protos[atmost 64];
+	ptr<WlAtom> a_template: 0;
 
 	const u32 C_CHILD_NODES: 0;
 	const u32 C_CHILDREN: 1;
@@ -84,30 +91,56 @@ phi.PageBind:Library
 		character_proto is (Class: 'CharacterData' node_proto keep);
 		text_proto is (Class: 'Text' character_proto keep);
 		comment_proto is (Class: 'Comment' character_proto keep);
+		# (no node is made with these, but a page may ask for them by name)
+		call Class: 'CDATASection' text_proto keep;
+		call Class: 'ProcessingInstruction' character_proto keep;
+		attr_proto is (Class: 'Attr' node_proto keep);
+		namedmap_proto is (Class: 'NamedNodeMap' JsRt.P.array keep);
 		document_proto is (Class: 'Document' node_proto keep);
 		fragment_proto is (Class: 'DocumentFragment' node_proto keep);
 		doctype_proto is (Class: 'DocumentType' node_proto keep);
 		element_proto is (Class: 'Element' node_proto keep);
 		html_proto is (Class: 'HTMLElement' element_proto keep);
 		svg_proto is (Class: 'SVGElement' element_proto keep);
-		# names a page may test with instanceof; all behave as HTMLElement
-		ptr<u8> kinds: 'HTMLDivElement HTMLSpanElement HTMLAnchorElement HTMLImageElement HTMLInputElement HTMLButtonElement HTMLFormElement HTMLScriptElement HTMLStyleElement HTMLLinkElement HTMLBodyElement HTMLHeadElement HTMLHtmlElement HTMLParagraphElement HTMLSelectElement HTMLOptionElement HTMLTextAreaElement HTMLTableElement HTMLCanvasElement HTMLIFrameElement HTMLVideoElement HTMLAudioElement HTMLUListElement HTMLOListElement HTMLLIElement HTMLLabelElement HTMLMetaElement HTMLTitleElement ';
+		# Each of these is the prototype of the elements named after the colon, so that a page can test with
+		# instanceof; all behave as HTMLElement, but for what's set on one of them below.
+		ptr<u8> kinds: 'HTMLDivElement:div HTMLSpanElement:span HTMLAnchorElement:a HTMLImageElement:img HTMLInputElement:input HTMLButtonElement:button HTMLFormElement:form HTMLScriptElement:script HTMLStyleElement:style HTMLLinkElement:link HTMLBodyElement:body HTMLHeadElement:head HTMLHtmlElement:html HTMLParagraphElement:p HTMLSelectElement:select HTMLOptionElement:option HTMLTextAreaElement:textarea HTMLTableElement:table HTMLCanvasElement:canvas HTMLIFrameElement:iframe HTMLVideoElement:video HTMLAudioElement:audio HTMLUListElement:ul HTMLOListElement:ol HTMLLIElement:li HTMLLabelElement:label HTMLMetaElement:meta HTMLTitleElement:title HTMLTemplateElement:template HTMLSlotElement:slot HTMLHeadingElement:h1,h2,h3,h4,h5,h6 HTMLPreElement:pre HTMLBRElement:br HTMLHRElement:hr HTMLTableRowElement:tr HTMLTableCellElement:td,th HTMLTableSectionElement:thead,tbody,tfoot HTMLDialogElement:dialog HTMLDetailsElement:details HTMLPictureElement:picture HTMLSourceElement:source HTMLFieldSetElement:fieldset HTMLLegendElement:legend HTMLDListElement:dl HTMLProgressElement:progress HTMLOutputElement:output HTMLAreaElement:area HTMLBaseElement:base HTMLObjectElement:object HTMLEmbedElement:embed HTMLTrackElement:track HTMLMeterElement:meter HTMLDataElement:data HTMLTimeElement:time HTMLOptGroupElement:optgroup HTMLParamElement:param HTMLMediaElement: HTMLUnknownElement: ';
+		tag_atoms.len is 0;
+		tag_protos.len is 0;
 		u32 i: 0;
 		while kinds:i is not 0
 			u32 start: i;
-			while kinds:i is not 32
+			while kinds:i is not ':'
 				i++;
 			;;
 			ptr<JsStr> kind_str: (JsStrs.Intern: kinds + start i - start);
-			call Class: kind_str.data html_proto keep;
+			ptr<JsObj> kind_proto: (Class: kind_str.data html_proto keep);
+			i++;
+			while kinds:i is not 32
+				u32 from: i;
+				while kinds:i is not ',' and kinds:i is not 32
+					i++;
+				;;
+				if i > from and tag_atoms.len < tag_atoms.max
+					tag_atoms++;
+					tag_protos++;
+					tag_atoms:(tag_atoms.len - 1) is (WlAtoms.Get: kinds + from i - from);
+					tag_protos:(tag_protos.len - 1) is kind_proto;
+				;;
+				if kinds:i is ','
+					i++;
+				;;
+			;;
 			i++;
 		;;
+		a_template is (WlAtoms.GetZ: 'template');
 		collection_proto is (ListClass: 'HTMLCollection' keep);
 		call Js.DefineNative: collection_proto 'namedItem' addr NamedItem 1;
 		nodelist_proto is (ListClass: 'NodeList' keep);
 		call InstallNode;
 		call InstallElement;
 		call InstallDocument;
+		call PageShadow.Install: keep;
 		call InstallTokens: keep;
 		call InstallStyle: keep;
 		call PageCanvas.Install: keep;
@@ -173,7 +206,15 @@ phi.PageBind:Library
 		when n.type
 			is DomType.ELEMENT
 				proto is html_proto;
-				if n.ns is DomNs.SVG
+				if n.ns is DomNs.HTML
+					while u32 k: 0; k < tag_atoms.len; k++;
+						if tag_atoms:k is n.tag
+							proto is tag_protos:k;
+							break;
+						;;
+					;;
+				;;
+				elif n.ns is DomNs.SVG
 					proto is svg_proto;
 				;;
 				elif n.ns is DomNs.MATHML
@@ -191,6 +232,9 @@ phi.PageBind:Library
 			;;
 			is DomType.FRAGMENT
 				proto is fragment_proto;
+				if (n.flags & Dom.SHADOW_ROOT) is not 0 and PageShadow.root_proto is not 0
+					proto is PageShadow.root_proto;
+				;;
 			;;
 			is DomType.DOCTYPE
 				proto is doctype_proto;
@@ -212,16 +256,68 @@ phi.PageBind:Library
 	[ThisNode: ptr<u64> args: 0;]
 		ptr<DomNode> n: (NodeOf: args:(-1));
 		if n is 0
-			call JsErr.Type: 'Illegal invocation: this is not a Node';
+			call Illegal: args 'a Node';
 		;;
 	[end: n]
 
 	[ThisElement: ptr<u64> args: 0;]
 		ptr<DomNode> n: (ThisNode: args);
 		if n.type is not DomType.ELEMENT
-			call JsErr.Type: 'Illegal invocation: this is not an Element';
+			call Illegal: args 'an Element';
 		;;
 	[end: n]
+
+	# 'Illegal invocation: firstChild needs this to be a Node, and it was [object Window]': which of the
+	# DOM's functions was called on what, as browsers' messages say
+	[Illegal: ptr<u64> args: 0; ptr<u8> what: 0;]
+		WlBuf b;
+		call b.AddZ: 'Illegal invocation: ';
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		# (its name is in self.name until its 'name' property is made)
+		ptr<JsProp> named: 0;
+		if self is not 0
+			named is (JsObjs.Find: self as ptr<JsObj> JsRt.A.name as ptr<u8>);
+		;;
+		if named is not 0 and (named.flags & JsObjs.ACC) is 0 and (JsV.IsStr: named.value)
+			ptr<JsStr> nm: (JsStrs.Flat: (JsV.AsStr: named.value));
+			call b.AddN: nm.data nm.bytes;
+		;;
+		elif self is not 0 and self.name is not 0
+			call b.AddZ: self.name;
+		;;
+		else
+			call b.AddZ: 'this';
+		;;
+		call b.AddZ: ' needs this to be ';
+		call b.AddZ: what;
+		call b.AddZ: ', and it was ';
+		u64 v: args:(-1);
+		if (JsV.IsObj: v)
+			ptr<JsObj> o: (JsV.AsObj: v);
+			call b.AddZ: '[object ';
+			if o.cls is not 0 and o.cls.name is not 0
+				call b.AddZ: o.cls.name;
+			;;
+			else
+				call b.AddZ: 'Object';
+			;;
+			call b.Add: ']';
+			if o.cls is node_class
+				ptr<DomNode> other: o.data as ptr<DomNode>;
+				call b.AddZ: ' (a node of type ';
+				call b.AddInt: other.type as int;
+				call b.Add: ')';
+			;;
+		;;
+		else
+			ptr<JsStr> t: (JsStrs.Flat: (JsOps.TypeOf: v));
+			call b.AddN: t.data t.bytes;
+		;;
+		call b.Add: 0 as u8;
+		ptr<JsObj> e: (JsErr.Make: JsRt.P.type_error b.data);
+		call b.Free;
+		call JsErr.Throw: (JsV.Obj: e);
+	[end]
 
 	[ArgNode: u64 v: 0;]
 		ptr<DomNode> n: (NodeOf: v);
@@ -361,7 +457,7 @@ phi.PageBind:Library
 				return (Wrap: n.doc.root);
 			;;
 			is N_CONNECTED
-				return (JsV.Bool: (Dom.Contains: n.doc.root n));
+				return (JsV.Bool: (Dom.IsConnected: n));
 			;;
 			is N_BASE_URI
 				return (Js.NewStringZ: Page.current.url);
@@ -524,16 +620,15 @@ phi.PageBind:Library
 		ptr<DomNode> w: n;
 		while w is not 0
 			if w.type is DomType.ELEMENT and w.tag is script_tag and w.ns is DomNs.HTML
-				if (w.flags & RAN_FLAG) is 0
-					w.flags is w.flags | RAN_FLAG;
+				# (one innerHTML made is marked by the parser: it never runs)
+				if (w.flags & (Dom.SCRIPT_RAN | HtmlConst.F_ALREADY_STARTED)) is 0
+					w.flags is w.flags | Dom.SCRIPT_RAN;
 					call Page.Run: p w false;
 				;;
 			;;
 			w is (Dom.Next: w n);
 		;;
 	[end]
-
-	const u32 RAN_FLAG: 0x40;
 
 	[AppendChild: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (ThisNode: args);
@@ -578,17 +673,38 @@ phi.PageBind:Library
 
 	[CloneNode: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (ThisNode: args);
-	[end: (Wrap: (Clone: n (JsOps.ToBool: (Js.Arg: args argc 0))))]
+		if (Dom.IsShadowRoot: n)
+			call DomError: 'NotSupportedError' 'A shadow root cannot be cloned';
+		;;
+		ptr<DomNode> c: (Clone: n (JsOps.ToBool: (Js.Arg: args argc 0)));
+		call PageElements.Cloned: c;
+	[end: (Wrap: c)]
+
+	# a <template>'s contents, made the first time they're wanted if the parser didn't make them
+	[ContentOf: ptr<DomNode> n: 0;]
+		if n.content is 0 and n.type is DomType.ELEMENT and n.tag is a_template and n.ns is DomNs.HTML
+			ptr<DomNode> contents: (Dom.CreateFragment: n.doc);
+			n.content is contents;
+			contents.content is n;
+		;;
+	[end: n.content]
+
+	[TemplateContent: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (ThisElement: args);
+	[end: (Wrap: (ContentOf: n))]
 
 	# a copy; with deep, of everything under it, by a walk and no recursion
 	[Clone: ptr<DomNode> n: 0; bln deep: false;]
 		ptr<DomNode> top: (CloneOne: n);
-		if not deep or n.first_child is 0 return top;
+		if not deep return top;
+		call CloneContents: n top;
+		if n.first_child is 0 return top;
 		ptr<DomNode> from: n.first_child;
 		ptr<DomNode> dest: top;
 		while from is not 0
 			ptr<DomNode> made: (CloneOne: from);
 			call Dom.Append: dest made;
+			call CloneContents: from made;
 			if from.first_child is not 0
 				dest is made;
 				from is from.first_child;
@@ -607,6 +723,18 @@ phi.PageBind:Library
 			;;
 		;;
 	[end: top]
+
+	# a template's contents go with a deep copy of it (a template in them is done when it's reached)
+	[CloneContents: ptr<DomNode> from: 0; ptr<DomNode> to: 0;]
+		if from.type is not DomType.ELEMENT or from.content is 0 return;
+		ptr<DomNode> dest: (ContentOf: to);
+		if dest is 0 return;
+		ptr<DomNode> c: from.content.first_child;
+		while c is not 0
+			call Dom.Append: dest (Clone: c true);
+			c is c.next;
+		;;
+	[end]
 
 	[CloneOne: ptr<DomNode> n: 0;]
 		ptr<DomNode> c: 0;
@@ -675,10 +803,17 @@ phi.PageBind:Library
 		;;
 	[end: JsV.UNDEF]
 
+	# the root of its tree, a shadow root for what's in one; with {composed: true}, through them to the document
 	[GetRootNode: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (ThisNode: args);
-		while n.parent is not 0
-			n is n.parent;
+		u64 options: (Js.Arg: args argc 0);
+		bln composed: false;
+		if (JsV.IsObj: options)
+			composed is (JsOps.ToBool: (JsObjs.GetV: options (JsObjs.KeyZ: 'composed')));
+		;;
+		n is (Dom.TreeRoot: n);
+		while composed and (Dom.IsShadowRoot: n)
+			n is (Dom.TreeRoot: n.shadow);
 		;;
 	[end: (Wrap: n)]
 
@@ -807,55 +942,21 @@ phi.PageBind:Library
 		call Getter: h 'offsetTop' addr BoxGet 0 B_TOP;
 		call Getter: h 'offsetParent' addr OffsetParent 0 0;
 		call Getter: h 'innerText' addr TextContentGet addr TextContentSet 0;
-		ptr<u8> names: 'title lang dir href src alt rel target type name placeholder action method enctype accept htmlFor=for media content charset download hreflang srcset sizes poster role tabIndex=tabindex cols rows maxLength=maxlength minLength=minlength min max step pattern list form autocomplete ';
-		u32 i: 0;
-		while names:i is not 0
-			u32 start: i;
-			u32 eq: 0;
-			while names:i is not 32
-				if names:i is '='
-					eq is i;
-				;;
-				i++;
-			;;
-			if eq is 0
-				ptr<JsStr> prop: (JsStrs.Intern: names + start i - start);
-				call Getter: h prop.data addr ReflectGet addr ReflectSet (AtomMagicN: names + start i - start);
-			;;
-			else
-				ptr<JsStr> prop2: (JsStrs.Intern: names + start eq - start);
-				call Getter: h prop2.data addr ReflectGet addr ReflectSet (AtomMagicN: names + eq + 1 i - eq - 1);
-			;;
-			i++;
-		;;
-		ptr<u8> bools: 'hidden checked disabled readOnly=readonly required selected multiple autofocus defer async open controls loop muted noValidate=novalidate draggable ';
-		i is 0;
-		while bools:i is not 0
-			u32 start2: i;
-			u32 eq2: 0;
-			while bools:i is not 32
-				if bools:i is '='
-					eq2 is i;
-				;;
-				i++;
-			;;
-			if eq2 is 0
-				ptr<JsStr> bprop: (JsStrs.Intern: bools + start2 i - start2);
-				call Getter: h bprop.data addr BoolGet addr BoolSet (AtomMagicN: bools + start2 i - start2);
-			;;
-			else
-				ptr<JsStr> bprop2: (JsStrs.Intern: bools + start2 eq2 - start2);
-				call Getter: h bprop2.data addr BoolGet addr BoolSet (AtomMagicN: bools + eq2 + 1 i - eq2 - 1);
-			;;
-			i++;
-		;;
+		# Attributes as properties, each on the prototypes the HTML standard puts it on ('*' is HTMLElement's),
+		# so that a page's own class or object made from one of them can have a property of that name.
+		call Reflect: 'title,lang,dir,tabIndex=tabindex,accessKey=accesskey,nonce,autocapitalize,enterKeyHint=enterkeyhint,inputMode=inputmode,popover:* role:Element href,target,download,rel,hreflang,type,referrerPolicy=referrerpolicy,ping:a,area href,rel,media,hreflang,type,sizes,as,integrity,crossOrigin=crossorigin,referrerPolicy=referrerpolicy:link src,type,integrity,charset,crossOrigin=crossorigin,referrerPolicy=referrerpolicy:script src,alt,srcset,sizes,useMap=usemap,loading,decoding,crossOrigin=crossorigin,referrerPolicy=referrerpolicy:img src,srcdoc,name,allow,loading,referrerPolicy=referrerpolicy:iframe name,type,placeholder,min,max,step,pattern,accept,alt,src,autocomplete,maxLength=maxlength,minLength=minlength,size,formAction=formaction,dirName=dirname:input name,type,formAction=formaction:button action,method,enctype,target,name,autocomplete,acceptCharset=accept-charset,rel:form name,autocomplete:select label:option name,placeholder,rows,cols,maxLength=maxlength,minLength=minlength,autocomplete,wrap,dirName=dirname:textarea htmlFor=for:label,output name,content,httpEquiv=http-equiv,media:meta src,preload,crossOrigin=crossorigin:video,audio poster:video src,srcset,sizes,media,type:source headers,abbr,scope:td,th type:ol,li media:style name:fieldset,output href,target:base data,type,name:object src,type:embed src,kind,srclang,label:track ' false;
+		call Reflect: 'hidden,draggable,autofocus,inert:* checked,disabled,readOnly=readonly,required,multiple,formNoValidate=formnovalidate:input disabled,formNoValidate=formnovalidate:button disabled,required,multiple:select disabled,selected:option disabled,readOnly=readonly,required:textarea disabled:fieldset,link,optgroup noValidate=novalidate:form defer,async,noModule=nomodule:script open:details,dialog controls,loop,muted,autoplay,playsInline=playsinline:video,audio reversed:ol isMap=ismap:img allowFullscreen=allowfullscreen:iframe default:track ' true;
 		# a form control's value is state of its own, kept under a key, that starts from the attribute
-		call Getter: h 'value' addr ValueProp addr ValuePropSet 0;
-		call Getter: h 'width' addr NumberAttr addr ReflectSet (AtomMagic: 'width');
-		call Getter: h 'height' addr NumberAttr addr ReflectSet (AtomMagic: 'height');
+		call OnTags: 'input select textarea option button output progress meter data li param ' 'value' addr ValueProp addr ValuePropSet 0;
+		call OnTags: 'img canvas video iframe embed object source input ' 'width' addr NumberAttr addr ReflectSet (AtomMagic: 'width');
+		call OnTags: 'img canvas video iframe embed object source input ' 'height' addr NumberAttr addr ReflectSet (AtomMagic: 'height');
 		ptr<u8> events: 'onclick ondblclick onmousedown onmouseup onmouseover onmouseout onmousemove onkeydown onkeyup onkeypress onfocus onblur onchange oninput onsubmit onload onerror onresize onscroll ';
 		call EventProps: h events;
 		call EventProps: document_proto events;
+		ptr<JsObj> tp: (TagProto: a_template);
+		if tp is not 0
+			call Getter: tp 'content' addr TemplateContent 0 0;
+		;;
 		call EventProps: JsRt.r.global events;
 	[end]
 
@@ -878,6 +979,93 @@ phi.PageBind:Library
 
 	[Nothing: ptr<u64> args: 0; int argc: 0;]
 	[end: JsV.UNDEF]
+
+	# A list of 'props:tags' groups, each props a comma-separated list (name=attribute where the two
+	# differ) and tags the prototypes they go on: tag names, '*' for HTMLElement, 'Element' for Element.
+	[Reflect: ptr<u8> spec: 0; bln booleans: false;]
+		u32 i: 0;
+		while spec:i is not 0
+			u32 props_at: i;
+			while spec:i is not ':'
+				i++;
+			;;
+			u32 props_end: i;
+			i++;
+			while spec:i is not 32
+				u32 tag_at: i;
+				while spec:i is not ',' and spec:i is not 32
+					i++;
+				;;
+				ptr<JsObj> proto: html_proto;
+				if spec:tag_at is not '*'
+					if i - tag_at is 7 and (Mem.Equal: spec + tag_at 'Element' 7)
+						proto is element_proto;
+					;;
+					else
+						proto is (TagProto: (WlAtoms.Get: spec + tag_at i - tag_at));
+					;;
+				;;
+				if proto is not 0
+					call ReflectOn: proto spec + props_at props_end - props_at booleans;
+				;;
+				if spec:i is ','
+					i++;
+				;;
+			;;
+			i++;
+		;;
+	[end]
+
+	[ReflectOn: ptr<JsObj> proto: 0; ptr<u8> props: 0; u32 n: 0; bln booleans: false;]
+		u32 i: 0;
+		while i < n
+			u32 start: i;
+			u32 eq: 0;
+			while i < n and props:i is not ','
+				if props:i is '='
+					eq is i;
+				;;
+				i++;
+			;;
+			u32 name_end: i;
+			u32 attr_at: start;
+			if eq is not 0
+				name_end is eq;
+				attr_at is eq + 1;
+			;;
+			ptr<JsStr> prop: (JsStrs.Intern: props + start name_end - start);
+			u32 magic: (AtomMagicN: props + attr_at i - attr_at);
+			if booleans
+				call Getter: proto prop.data addr BoolGet addr BoolSet magic;
+			;;
+			else
+				call Getter: proto prop.data addr ReflectGet addr ReflectSet magic;
+			;;
+			i++;
+		;;
+	[end]
+
+	# one property on the prototypes of these tags (space-separated)
+	[OnTags: ptr<u8> tags: 0; ptr<u8> name: 0; method<ptr<u64> int: u64> getter: 0; method<ptr<u64> int: u64> setter: 0; u32 magic: 0;]
+		u32 i: 0;
+		while tags:i is not 0
+			u32 from: i;
+			while tags:i is not 32
+				i++;
+			;;
+			ptr<JsObj> proto: (TagProto: (WlAtoms.Get: tags + from i - from));
+			if proto is not 0
+				call Getter: proto name getter setter magic;
+			;;
+			i++;
+		;;
+	[end]
+
+	[TagProto: ptr<WlAtom> tag: 0;]
+		while u32 k: 0; k < tag_atoms.len; k++;
+			if tag_atoms:k is tag return tag_protos:k;
+		;;
+	[end: 0 as ptr<JsObj>]
 
 	[Zero: ptr<u64> args: 0; int argc: 0;]
 	[end: JsV.INT_BASE]
@@ -962,15 +1150,29 @@ phi.PageBind:Library
 	[end: (JsV.Obj: o)]
 
 	# a plain array of {name, value}: it isn't live, but it reads right
+	# el.attributes: a NamedNodeMap of Attrs, as they are now (a snapshot, not kept up to date)
 	[AttrList: ptr<DomNode> n: 0;]
 		ptr<JsObj> list: (JsObjs.NewArray: 4);
+		u64 owner: (Wrap: n);
+		if namedmap_proto is not 0
+			list.proto is namedmap_proto;
+		;;
+		call Js.Define: list '%owner' owner 0;
 		ptr<DomAttr> a: n.attrs;
 		while a is not 0
 			ptr<JsObj> one: (JsObjs.NewObject);
+			if attr_proto is not 0
+				one.proto is attr_proto;
+			;;
 			u64 nm: (Js.NewString: a.name.text a.name.len);
 			call Js.Define: one 'name' nm JsObjs.E;
 			call Js.Define: one 'localName' nm JsObjs.E;
+			call Js.Define: one 'nodeName' nm JsObjs.E;
 			call Js.Define: one 'value' (Js.NewString: a.value a.value_len) JsObjs.E | JsObjs.W;
+			call Js.Define: one 'ownerElement' owner JsObjs.E;
+			call Js.Define: one 'namespaceURI' JsV.NULL JsObjs.E;
+			call Js.Define: one 'prefix' JsV.NULL JsObjs.E;
+			call Js.Define: one 'specified' JsV.TRUE JsObjs.E;
 			call JsObjs.ArrayPush: list (JsV.Obj: one);
 			a is a.next;
 		;;
@@ -2020,8 +2222,21 @@ phi.PageBind:Library
 			call b.Free;
 			call DomError: 'InvalidCharacterError' 'The tag name is empty';
 		;;
-		ptr<DomNode> n: (Dom.CreateElement: doc (WlAtoms.GetLower: b.data b.len));
+		ptr<WlAtom> tag: (WlAtoms.GetLower: b.data b.len);
 		call b.Free;
+		# a custom element that's defined is made by its class
+		if Page.current is not 0 and Page.current.custom_elements and doc is Page.current.doc
+			ptr<JsProp> found: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: '%ceCreate') as ptr<u8>);
+			if found is not 0 and (JsOps.IsCallable: found.value)
+				call Js.Push: (Js.NewString: tag.text tag.len);
+				u64 made: (Js.CallThrowing: found.value JsV.UNDEF 1);
+				if (JsV.IsObj: made)
+					return made;
+				;;
+			;;
+		;;
+		ptr<DomNode> n: (Dom.CreateElement: doc tag);
+		call ContentOf: n;
 	[end: (Wrap: n)]
 
 	[CreateElementNs: ptr<u64> args: 0; int argc: 0;]
@@ -2118,7 +2333,9 @@ phi.PageBind:Library
 
 	[ImportNode: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (ArgNode: (Js.Arg: args argc 0));
-	[end: (Wrap: (Clone: n (JsOps.ToBool: (Js.Arg: args argc 1))))]
+		ptr<DomNode> c: (Clone: n (JsOps.ToBool: (Js.Arg: args argc 1)));
+		call PageElements.Cloned: c;
+	[end: (Wrap: c)]
 
 	[AdoptNode: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (ArgNode: (Js.Arg: args argc 0));
@@ -2352,7 +2569,7 @@ phi.PageBind:Library
 		if name.len > 1 and name.data:0 is '-' and name.data:1 is '-'
 			return true;
 		;;
-	[end: (Css.PropertyId: name.data name.len) is not 0]
+	[end: (Css.PropertyId: name.data name.len) >= 0]
 
 	[StyleHookGet: ptr<JsObj> o: 0; u64 key: 0; u64 recv: 0; ptr<u64> output: 0;]
 		WlBuf name;

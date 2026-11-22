@@ -1,0 +1,313 @@
+# Custom elements: elements.js, run in each page once its window is set up (elementsjs.phi holds it),
+# keeps the definitions and makes and upgrades the elements; this is what it needs of the DOM. Once
+# something is defined, the document tells Mutated of each change, and what a custom element must hear
+# of is queued: an element connected, disconnected or given a new attribute value, or made by
+# cloneNode or importNode. The queue is given to the script's %ceReact as soon as the DOM method that
+# made it returns (JsVm.after_native) or the parser has finished a token (HtmlParser.after_token),
+# which is when the HTML standard's custom element reactions run.
+
+use page.elementsjs;
+
+struct.PageReaction
+{
+	int kind;                   # what %ceReact is told: 0 connected, 1 disconnected, 2 an attribute, 3 cloned
+	ptr<DomNode> node;
+	ptr<WlAtom> name;           # the attribute's
+	ptr<u8> old;                # its value before (a copy), or 0 if it had none
+	u32 old_len;
+}
+
+phi.PageElements:Library
+{
+	const int CONNECTED: 0;
+	const int DISCONNECTED: 1;
+	const int ATTRIBUTE: 2;
+	const int CLONED: 3;
+
+	ptr<PageReaction> queue: 0;
+	u32 queued: 0;
+	u32 room: 0;
+
+	[Install: ptr<Page> p: 0;]
+		call Js.DefineNative: JsRt.r.global '%ceNew' addr NewElement 1;
+		call Js.DefineNative: JsRt.r.global '%ceWatch' addr Watch 1;
+		call Js.DefineNative: JsRt.r.global '%ceFind' addr Find 1;
+		call Js.DefineNative: JsRt.r.global '%ceDefined' addr Defined 1;
+		call Js.DefineNative: JsRt.r.global '%newDocument' addr NewDocument 2;
+		p.parser.after_token is addr AfterToken;
+		str js: (PageElementsJs.Source);
+		call Page.RunSource: p addr js:0 js.len as u32 'elements';
+	[end]
+
+	# a page that's going: what it queued goes with it
+	[Forget]
+		while u32 i: 0; i < queued; i++;
+			if queue:i.old is not 0
+				free queue:i.old;
+			;;
+		;;
+		queued is 0;
+		JsVm.after_native is 0;
+	[end]
+
+	# ---- natives for elements.js
+
+	# %ceNew(name): a new element of that name in the document, for HTMLElement's constructor
+	[NewElement: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		ptr<DomNode> n: (Dom.CreateElement: p.doc (WlAtoms.Get: b.data b.len));
+		call b.Free;
+	[end: (PageBind.Wrap: n)]
+
+	# %ceWatch(on): the document tells Mutated of its changes from now on
+	[Watch: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		if p is not 0
+			p.custom_elements is (JsOps.ToBool: (Js.Arg: args argc 0));
+			call Page.HookMutations: p;
+		;;
+	[end: JsV.UNDEF]
+
+	# %ceFind(name): the elements of that name in the document, its shadow trees too, in order
+	[Find: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		ptr<JsObj> list: (Js.NewArray: 0);
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		ptr<WlAtom> tag: (WlAtoms.Get: b.data b.len);
+		call b.Free;
+		ptr<DomNode> n: p.doc.root;
+		while n is not 0
+			if n.type is DomType.ELEMENT and n.tag is tag and n.ns is DomNs.HTML
+				call Js.ArrayPush: list (PageBind.Wrap: n);
+			;;
+			n is (Dom.ShadowNext: n p.doc.root);
+		;;
+	[end: (JsV.Obj: list)]
+
+	# %ceDefined(el): it's a custom element now, for :defined
+	[Defined: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (PageBind.NodeOf: (Js.Arg: args argc 0));
+		if n is not 0
+			n.flags is n.flags | Dom.CE_DEFINED | Dom.DIRTY_STYLE;
+			if n.parent is not 0
+				n.parent.flags is n.parent.flags | Dom.DIRTY_CHILD;
+			;;
+			n.doc.version++;
+		;;
+	[end: JsV.UNDEF]
+
+	# %newDocument(title, html): a new document, for document.implementation: with html, a doctype and
+	# <html><head><title>title</title></head><body></body></html> (no title element if it's undefined)
+	[NewDocument: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		ptr<DomDocument> d: (Page.NewDocument: p);
+		if d is 0
+			call PageBind.DomError: 'NotSupportedError' 'This page has made too many documents';
+		;;
+		if (JsOps.ToBool: (Js.Arg: args argc 1))
+			call Dom.Append: d.root (Dom.CreateDoctype: d (WlAtoms.GetZ: 'html') 0 0 0 0);
+			ptr<DomNode> html: (Dom.CreateElementZ: d 'html');
+			call Dom.Append: d.root html;
+			ptr<DomNode> head: (Dom.CreateElementZ: d 'head');
+			call Dom.Append: html head;
+			u64 title: (Js.Arg: args argc 0);
+			if title is not JsV.UNDEF
+				ptr<DomNode> t: (Dom.CreateElementZ: d 'title');
+				call Dom.Append: head t;
+				WlBuf b;
+				call Js.TextOf: title addr b;
+				call Dom.Append: t (Dom.CreateText: d b.data b.len);
+				call b.Free;
+			;;
+			call Dom.Append: html (Dom.CreateElementZ: d 'body');
+		;;
+	[end: (PageBind.Wrap: d.root)]
+
+	# ---- what the DOM tells
+
+	# whether an element could be a custom element: an HTML one with a hyphen in its name
+	[Candidate: ptr<DomNode> n: 0;]
+		if n.type is not DomType.ELEMENT or n.ns is not DomNs.HTML return false;
+		ptr<WlAtom> t: n.tag;
+		while u32 i: 0; i < t.len; i++;
+			if t.text:i is '-' return true;
+		;;
+	[end: false]
+
+	# one change, from the DOM (through Page.Mutated): what custom elements must hear of, queued
+	[Mutated: ptr<DomNode> target: 0; int kind: 0; ptr<DomNode> node: 0; ptr<WlAtom> name: 0; ptr<u8> old: 0; int old_length: 0;]
+		# (an element on its own that isn't a candidate can't matter: the parser's, as it puts each in)
+		if kind is Dom.ADDED
+			if (Matters: node)
+				call Add: CONNECTED node 0 0 0;
+			;;
+		;;
+		elif kind is Dom.REMOVED
+			# (told before it goes, so whether it was connected can be seen)
+			if (Matters: node) and (Dom.IsConnected: node)
+				call Add: DISCONNECTED node 0 0 0;
+			;;
+		;;
+		elif kind is Dom.ATTRIBUTE
+			if (target.flags & Dom.CE_DEFINED) is not 0
+				ptr<u8> copy: 0;
+				u32 n: 0;
+				if old_length >= 0
+					n is old_length as u32;
+					copy is (WlText.Dup: old n);
+				;;
+				call Add: ATTRIBUTE target name copy n;
+			;;
+		;;
+	[end]
+
+	[Matters: ptr<DomNode> n: 0;]
+		if n.type is DomType.ELEMENT
+			return n.first_child is not 0 or n.shadow is not 0 or (Candidate: n);
+		;;
+	[end: n.type is DomType.FRAGMENT and n.first_child is not 0]
+
+	# a clone or an imported node: what's in it is upgraded, connected or not
+	[Cloned: ptr<DomNode> n: 0;]
+		ptr<Page> p: Page.current;
+		if p is 0 or not p.custom_elements return;
+		call Add: CLONED n 0 0 0;
+	[end]
+
+	[Add: int kind: 0; ptr<DomNode> node: 0; ptr<WlAtom> name: 0; ptr<u8> old: 0; u32 old_len: 0;]
+		if queued >= room
+			u32 more: room * 2;
+			if more < 64
+				more is 64;
+			;;
+			ptr<PageReaction> grown: new PageReaction[more];
+			if grown is 0
+				throw 'out of memory for custom element reactions';
+			;;
+			if queue is not 0
+				call Mem.Copy: grown as ptr<u8> queue as ptr<u8> queued * sizeof PageReaction;
+				free queue;
+			;;
+			queue is grown;
+			room is more;
+		;;
+		ptr<PageReaction> r: addr queue:queued;
+		r.kind is kind;
+		r.node is node;
+		r.name is name;
+		r.old is old;
+		r.old_len is old_len;
+		queued++;
+		JsVm.after_native is addr Drain;
+	[end]
+
+	[AfterToken]
+		if queued > 0
+			call Drain;
+		;;
+	[end]
+
+	# ---- giving them to the script
+
+	# Everything queued, as one list for %ceReact: [kind, element, name, old, ...]. A node connected or
+	# cloned stands for every candidate under it (its shadow trees too), and a node disconnected for every
+	# custom element under it. An element is told of each only once in a list.
+	[Drain]
+		JsVm.after_native is 0;
+		if queued is 0 return;
+		ptr<Page> p: Page.current;
+		if p is 0
+			call Forget;
+			return;
+		;;
+		ptr<JsProp> found: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: '%ceReact') as ptr<u8>);
+		if found is 0 or not (JsOps.IsCallable: found.value)
+			call Forget;
+			return;
+		;;
+		u64 fn: found.value;
+		list is 0;
+		# what's queued while the script runs is the next list's
+		u32 count: queued;
+		ptr<PageReaction> taken: new PageReaction[count];
+		if taken is 0
+			throw 'out of memory for custom element reactions';
+		;;
+		call Mem.Copy: taken as ptr<u8> queue as ptr<u8> count * sizeof PageReaction;
+		queued is 0;
+		while u32 i: 0; i < count; i++;
+			ptr<PageReaction> r: addr taken:i;
+			if r.kind is ATTRIBUTE
+				call Item: ATTRIBUTE r.node;
+				call Js.ArrayPush: list (Js.NewString: r.name.text r.name.len);
+				if r.old is 0
+					call Js.ArrayPush: list JsV.NULL;
+				;;
+				else
+					call Js.ArrayPush: list (Js.NewString: r.old r.old_len);
+					free r.old;
+				;;
+				continue;
+			;;
+			if r.kind is CONNECTED and not (Dom.IsConnected: r.node) continue;
+			call Under: r.kind r.node;
+		;;
+		# the marks that kept an element from being told it's connected twice
+		while u32 j: 0; j < count; j++;
+			if taken:j.kind is CONNECTED or taken:j.kind is CLONED
+				call Unmark: taken:j.node;
+			;;
+		;;
+		free taken;
+		if list is 0 return;
+		ptr<JsObj> made: list;
+		list is 0;
+		call Js.Push: (JsV.Obj: made);
+		u64 ignored: (Js.Call: fn JsV.UNDEF 1);
+		if Js.failed
+			call Page.ReportException: p;
+		;;
+	[end]
+
+	ptr<JsObj> list: 0;             # the list being made, from its first item
+
+	[Item: int kind: 0; ptr<DomNode> n: 0;]
+		if list is 0
+			list is (Js.NewArray: 16);
+		;;
+		call Js.ArrayPush: list (JsV.Int: kind);
+		call Js.ArrayPush: list (PageBind.Wrap: n);
+	[end]
+
+	# each element under top (top too) that this kind is for: a disconnected custom element, or a
+	# candidate connected or cloned (once)
+	[Under: int kind: 0; ptr<DomNode> top: 0;]
+		ptr<DomNode> n: top;
+		while n is not 0
+			if (Candidate: n)
+				bln wanted: (n.flags & Dom.CE_DEFINED) is not 0;
+				if kind is not DISCONNECTED
+					wanted is (n.flags & Dom.CE_SEEN) is 0;
+					n.flags is n.flags | Dom.CE_SEEN;
+				;;
+				if wanted
+					call Item: kind n;
+					call Js.ArrayPush: list JsV.UNDEF;
+					call Js.ArrayPush: list JsV.UNDEF;
+				;;
+			;;
+			n is (Dom.ShadowNext: n top);
+		;;
+	[end]
+
+	[Unmark: ptr<DomNode> top: 0;]
+		ptr<DomNode> n: top;
+		while n is not 0
+			n.flags is n.flags & (0xFFFFFFFF ^ Dom.CE_SEEN);
+			n is (Dom.ShadowNext: n top);
+		;;
+	[end]
+}

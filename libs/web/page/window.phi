@@ -6,8 +6,8 @@ phi.PageWindow:Library
 	[Install: ptr<Page> p: 0; ptr<JsObj> keep: 0;]
 		ptr<JsObj> g: JsRt.r.global;
 		u64 gv: (JsV.Obj: g);
-		# the window is a target too: its prototype gets EventTarget's methods
-		g.proto is PageEvents.target_proto;
+		# the window is a target too: its prototype is Window's, under EventTarget's
+		g.proto is (PageBind.Class: 'Window' PageEvents.target_proto keep);
 		p.rt.console_hook is addr ConsoleLine;
 		call JsObjs.DefineZ: g 'window' gv JsObjs.E | JsObjs.C;
 		call JsObjs.DefineZ: g 'self' gv JsObjs.E | JsObjs.C;

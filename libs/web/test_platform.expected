@@ -1,0 +1,35 @@
+url: https://user:pw@example.com/a/c?x=1&y=2#frag | https://example.com | example.com |  | /a/c | ?x=1&y=2 | #frag | user
+relative: http://h.com/a/d?q | https://other.org/x | http://h.com/p?z | http://h.com/p?q#n
+special: http://h.com/ | http://h.com/ | http://h.com/a%20b | 127.0.0.1 | file:///C:/y
+opaque: mailto:someone@example.com | mailto: | someone@example.com | null | text/plain,hi there
+invalid: false false http://a/x true
+setters: http://b.com:8080/q%20r?k=v%20w#h
+searchParams: ?a=1&b=2&c=x+y%26z | 2 | 1 | true | 3 | a,b,c
+params: x=1&y=%C3%A9 | a=b | a b&c
+encode: 97,195,169,226,130,172,240,159,152,128
+decode: hé😀 | �A | AB | é
+stream: €
+fatal threw: TypeError The data isn't valid UTF-8
+DOMException: NotFoundError gone 8 true 8
+abort: true 1 AbortError 5
+blob: 4 text/plain 2 f.txt
+formdata: a=1&b=two words&d=y&e=5
+headers: text/html | 1, 2 | false | content-type,x-a
+request: http://test.example/api?x=1 | POST | true
+response: 201 true application/json
+events: pointerdown 3 true true m undefined
+rect: -2 1 2 6 {"x":0,"y":0,"width":5,"height":0,"top":0,"right":5,"bottom":0,"left":0}
+matrix: matrix(2, 0, 0, 2, 10, 5) | 12 | 7 | 1
+css: a\ b\#1 | \31 x | true | false | true | true
+crypto: 16 true true
+clone: true true 0 2 2
+classes: true true true [object Storage] function v
+attributes: 2 a value true  
+script ends
+blob text: blob text
+response json: 2
+--- a timer
+message: 7 false
+--- a frame
+--- later
+done

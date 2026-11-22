@@ -24,6 +24,9 @@ use page.bind;
 use page.events;
 use page.window;
 use page.observers;
+use page.elements;
+use page.platform;
+use page.shadow;
 use page.pmodules;
 use page.canvas;
 
@@ -141,6 +144,10 @@ struct.Page
 	bln sheets_scanned;
 
 	# everything the page's objects need kept alive that isn't reachable some other way, in one JS array
+	ptr<DomDocument> docs[atmost 256];    # documents a script made (document.implementation), freed with it
+	bln observing;          # a MutationObserver is watching (page/observers.phi)
+	bln custom_elements;    # a custom element is defined (page/elements.phi)
+
 	u64 keep;
 	u64 window_location;
 	u64 storage;
@@ -190,9 +197,33 @@ phi.Page:Library
 		current is p;
 		call PageBind.Install: p;
 		call PageObservers.Install: p;
+		call PageElements.Install: p;
+		call PagePlatform.Install: p;
 		call PageModules.Hooks;
 		call Js.AddRootFn: addr MarkAll;
 	[end: p]
+
+	# The document tells Mutated of each change while a MutationObserver watches or a custom element is
+	# defined, and nothing otherwise.
+	[HookMutations: ptr<Page> p: 0;]
+		if p.observing or p.custom_elements
+			p.doc.on_mutation is addr Mutated;
+		;;
+		else
+			p.doc.on_mutation is 0;
+		;;
+	[end]
+
+	[Mutated: ptr<DomNode> target: 0; int kind: 0; ptr<DomNode> node: 0; ptr<WlAtom> name: 0; ptr<u8> old: 0; int old_length: 0;]
+		ptr<Page> p: current;
+		if p is 0 return;
+		if p.custom_elements
+			call PageElements.Mutated: target kind node name old old_length;
+		;;
+		if p.observing
+			call PageObservers.Mutated: target kind node name old old_length;
+		;;
+	[end]
 
 	[Use: ptr<Page> p: 0;]
 		if current is not p
@@ -202,6 +233,7 @@ phi.Page:Library
 	[end]
 
 	[Free: ptr<Page> p: 0;]
+		call PageElements.Forget;
 		while u32 mu: 0; mu < p.mod_urls.len; mu++;
 			free p.mod_urls:mu;
 		;;
@@ -216,6 +248,9 @@ phi.Page:Library
 		call p.css.Free;
 		call p.parser.Free;
 		call Dom.FreeDocument: p.doc;
+		while each d in p.docs
+			call Dom.FreeDocument: d;
+		;;
 		while each r in p.requests
 			if r.url is not 0
 				free r.url;
@@ -231,17 +266,31 @@ phi.Page:Library
 	[end]
 
 	# every JS value the page holds outside JS objects
-	[MarkAll]
-		ptr<Page> p: current;
-		call Js.Mark: p.keep;
-		call Js.Mark: p.window_location;
-		call Js.Mark: p.storage;
-		ptr<DomNode> n: p.doc.all;
+	[MarkDocument: ptr<DomDocument> doc: 0;]
+		ptr<DomNode> n: doc.all;
 		while n is not 0
 			if n.js_wrapper is not 0
 				call Js.Mark: n.js_wrapper;
 			;;
 			n is n.all_next;
+		;;
+	[end]
+
+	# a new document for a script, empty, kept until the page goes; 0 if it has made too many
+	[NewDocument: ptr<Page> p: 0;]
+		if p.docs.len >= p.docs.max return 0 as ptr<DomDocument>;
+		ptr<DomDocument> d: (Dom.NewDocument);
+		p.docs++ d;
+	[end: d]
+
+	[MarkAll]
+		ptr<Page> p: current;
+		call Js.Mark: p.keep;
+		call Js.Mark: p.window_location;
+		call Js.Mark: p.storage;
+		call MarkDocument: p.doc;
+		while each d in p.docs
+			call MarkDocument: d;
 		;;
 		while each t in p.timers
 			call Js.Mark: t.fn;
@@ -342,9 +391,17 @@ phi.Page:Library
 	[ReportException: ptr<Page> p: 0;]
 		WlBuf b;
 		call b.AddZ: 'Uncaught ';
+		# an error's stack says what it is and where it came from
+		u64 shown: Js.exception;
+		if (JsV.IsObj: shown)
+			ptr<JsProp> st: (JsObjs.Find: (JsV.AsObj: shown) JsRt.A.stack as ptr<u8>);
+			if st is not 0 and (st.flags & JsObjs.ACC) is 0 and (JsV.IsStr: st.value)
+				shown is st.value;
+			;;
+		;;
 		JsTryState t;
 		call Js.TryBegin: addr t;
-		if call Js.TextOf: Js.exception addr b throws err
+		if call Js.TextOf: shown addr b throws err
 			call Js.TryCatchAll: addr t err;
 			call b.AddZ: '(an error that could not be shown)';
 		;;
@@ -375,6 +432,8 @@ phi.Page:Library
 	[end]
 
 	[Run: ptr<Page> p: 0; ptr<DomNode> s: 0; bln from_parser: false;]
+		# (it has started, as the HTML standard says: moved somewhere else later, it doesn't run again)
+		s.flags is s.flags | Dom.SCRIPT_RAN;
 		ptr<u8> t: (Dom.AttrValue: s 'type');
 		if t is not 0 and (Same: t 'module')
 			call ScanSheets: p;

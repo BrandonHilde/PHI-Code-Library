@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html><head><title>elements</title>
+<style>x-late:not(:defined) { color: red } x-late:defined { color: green }</style>
+</head><body>
+<x-early id="early1" data-n="1">early</x-early>
+<template id="t"><p class="a">in a template <x-inner></x-inner></p><b>two</b></template>
+<script>
+var log = function () { console.log(Array.prototype.join.call(arguments, " ")); };
+var t = document.getElementById("t");
+log("template:", t instanceof HTMLTemplateElement, t.childNodes.length, t.content.childNodes.length, t.content.firstChild.className);
+log("div is HTMLDivElement:", document.createElement("div") instanceof HTMLDivElement, document.createElement("div") instanceof HTMLElement);
+var made = document.createElement("template");
+made.innerHTML = "<i>x</i>";
+log("made template:", made.childNodes.length, made.content.childNodes.length, made.innerHTML);
+var deep = t.cloneNode(true);
+log("cloned template:", deep.content.childNodes.length, deep.content.firstChild.textContent);
+
+class XEarly extends HTMLElement {
+  static get observedAttributes() { return ["data-n"]; }
+  constructor() { super(); this.made = true; log("XEarly constructor, children:", this.childNodes.length); }
+  connectedCallback() { log("XEarly connected", this.id, this.isConnected); }
+  disconnectedCallback() { log("XEarly disconnected", this.id); }
+  attributeChangedCallback(name, was, now) { log("XEarly attribute", name, was, now); }
+  hello() { return "hello from " + this.id; }
+}
+log("before define:", document.getElementById("early1") instanceof XEarly);
+customElements.define("x-early", XEarly);
+var e1 = document.getElementById("early1");
+log("after define:", e1 instanceof XEarly, e1.made, e1.hello(), customElements.get("x-early") === XEarly, customElements.getName(XEarly));
+e1.setAttribute("data-n", "2");
+e1.setAttribute("title", "not observed");
+var e2 = document.createElement("x-early");
+log("createElement:", e2 instanceof XEarly, e2.made, e2.isConnected);
+e2.id = "early2";
+document.body.appendChild(e2);
+e2.remove();
+var e3 = new XEarly();
+log("new:", e3.localName, e3.tagName, e3 instanceof HTMLElement);
+var holder = document.createElement("div");
+holder.innerHTML = "<x-early id='early4'></x-early>";
+log("innerHTML, not connected:", holder.firstChild instanceof XEarly);
+document.body.appendChild(holder);
+log("innerHTML, connected:", holder.firstChild instanceof XEarly);
+customElements.define("x-inner", class extends HTMLElement { constructor() { super(); log("x-inner made"); } });
+var imported = document.importNode(t.content, true);
+log("imported:", imported.querySelector("x-inner").constructor === customElements.get("x-inner"));
+customElements.whenDefined("x-late").then(function (c) { log("whenDefined x-late:", c.name); });
+try { customElements.define("nohyphen", class extends HTMLElement {}); } catch (e) { log("bad name:", e.name); }
+try { customElements.define("x-early", class extends HTMLElement {}); } catch (e) { log("twice:", e.name); }
+try { new HTMLElement(); } catch (e) { log("new HTMLElement:", e.name); }
+var w = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, { acceptNode: function (n) { return n.localName === "x-early" ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP; } });
+var ids = [];
+while (w.nextNode()) ids.push(w.currentNode.id);
+log("walker:", ids.join(","));
+var it = document.createNodeIterator(t.content, NodeFilter.SHOW_TEXT);
+var texts = [], n;
+while ((n = it.nextNode())) texts.push(n.data);
+log("iterator:", texts.join("|"));
+log("script ends");
+</script>
+<x-late>late</x-late>
+<script>
+class XLate extends HTMLElement {
+  connectedCallback() { log("XLate connected", getComputedStyle(this).color); }
+}
+log("x-late before:", getComputedStyle(document.querySelector("x-late")).color);
+customElements.define("x-late", XLate);
+log("x-late after:", getComputedStyle(document.querySelector("x-late")).color);
+</script>
+<x-late id="parsed-after">parsed after</x-late>
+<script>log("parsed after define:", document.getElementById("parsed-after") instanceof XLate);</script>
+</body></html>

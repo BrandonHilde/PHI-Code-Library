@@ -1,0 +1,29 @@
+# The parts of the web platform written in JavaScript (platform.js, held by platformjs.phi): URL,
+# TextEncoder, fetch's Request and Response and the rest, run in each page after the DOM's own
+# scripts. %randomBytes is what crypto.getRandomValues stands on: PHI's crypto.random.
+
+use crypto.random;
+use page.platformjs;
+
+phi.PagePlatform:Library
+{
+	[Install: ptr<Page> p: 0;]
+		call Js.DefineNative: JsRt.r.global '%randomBytes' addr RandomBytes 1;
+		str js: (PagePlatformJs.Source);
+		call Page.RunSource: p addr js:0 js.len as u32 'platform';
+	[end]
+
+	# %randomBytes(u8array): fills it (platform.js has checked it's a Uint8Array of at most 64 KB)
+	[RandomBytes: ptr<u64> args: 0; int argc: 0;]
+		u64 v: (Js.Arg: args argc 0);
+		if not (JsTyped.IsClass: v JsTyped.array_class)
+			call JsErr.Type: 'randomBytes needs a typed array';
+		;;
+		ptr<JsViewData> view: (JsTyped.ViewOf: (JsV.AsObj: v));
+		if (JsTyped.OutOfBounds: view false) return v;
+		u32 n: (JsTyped.LenNow: view) * (JsTyped.SizeOf: view.kind);
+		if n > 0
+			call Random.Fill: (JsTyped.At: view 0) n;
+		;;
+	[end: v]
+}

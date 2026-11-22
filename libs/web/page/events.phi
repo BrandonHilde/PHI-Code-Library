@@ -338,6 +338,8 @@ phi.PageEvents:Library
 		call Js.Define: o 'altKey' JsV.FALSE JsObjs.E;
 		call Js.Define: o 'metaKey' JsV.FALSE JsObjs.E;
 		call Js.Define: o 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
+		# (what the browser sends crosses shadow trees' edges)
+		call Js.Define: o 'composed' JsV.TRUE JsObjs.E;
 	[end: ev]
 
 	[NewKey: ptr<u8> type: 0; ptr<u8> key: 0; bln ctrl: false; bln shift: false; bln alt: false;]
@@ -351,6 +353,7 @@ phi.PageEvents:Library
 		call Js.Define: o 'metaKey' JsV.FALSE JsObjs.E;
 		call Js.Define: o 'repeat' JsV.FALSE JsObjs.E;
 		call Js.Define: o 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
+		call Js.Define: o 'composed' JsV.TRUE JsObjs.E;
 	[end: ev]
 
 	[PreventDefault: ptr<u64> args: 0; int argc: 0;]
@@ -417,18 +420,24 @@ phi.PageEvents:Library
 		d.stop_now is false;
 		call JsObjs.DefineZ: eo 'target' target JsObjs.W | JsObjs.E;
 		call JsObjs.DefineZ: eo 'srcElement' target JsObjs.W | JsObjs.E;
-		# the path, target first
-		ptr<JsObj> path: (BuildPath: target (StrOf: eo 'type'));
+		# the path, target first, and what each place on it sees as the target (a node in a shadow tree
+		# is seen from outside it as its host)
+		bln composed: (JsOps.ToBool: (JsObjs.GetV: ev (JsObjs.KeyZ: 'composed')));
+		ptr<JsObj> path: (BuildPath: target (StrOf: eo 'type') composed);
 		call Js.Push: (JsV.Obj: path);
+		ptr<JsObj> seen: (Retargets: target path);
+		call Js.Push: (JsV.Obj: seen);
 		call JsObjs.DefineValue: eo listeners_key as ptr<u8> (JsV.Obj: path) JsObjs.W;
 		u32 count: path.length;
 		# capture: from the far end down to the target's parent
 		u32 i: count;
 		while i > 1 and not d.stop
 			i--;
+			call SeenAs: eo seen.elems:i;
 			call Phase: path.elems:i ev 1 true;
 		;;
 		if not d.stop and count > 0
+			call SeenAs: eo seen.elems:0;
 			call Phase: path.elems:0 ev 2 true;
 			if not d.stop
 				call Phase: path.elems:0 ev 2 false;
@@ -437,9 +446,18 @@ phi.PageEvents:Library
 		if d.bubbles
 			u32 j: 1;
 			while j < count and not d.stop
-				call Phase: path.elems:j ev 3 false;
+				# (a host whose shadow tree the event came from hears it at the target)
+				u32 phase: 3;
+				if seen.elems:j is path.elems:j
+					phase is 2;
+				;;
+				call SeenAs: eo seen.elems:j;
+				call Phase: path.elems:j ev phase false;
 				j++;
 			;;
+		;;
+		if count > 0
+			call SeenAs: eo seen.elems:(count - 1);
 		;;
 		d.dispatching is false;
 		call JsObjs.DefineZ: eo 'currentTarget' JsV.NULL JsObjs.W | JsObjs.E;
@@ -451,26 +469,76 @@ phi.PageEvents:Library
 		ptr<JsProp> found: (JsObjs.Find: o (JsStrs.InternZ: name) as ptr<u8>);
 	[end: (JsV.AsStr: found.value)]
 
-	# the target, then its ancestors and, for most events, the window
-	[BuildPath: u64 target: 0; ptr<JsStr> type: 0;]
+	# The target, then its ancestors and, for most events, the window. A node shown in a slot goes on to
+	# the slot, and a shadow root to its host if the event is composed (it stops there otherwise).
+	[BuildPath: u64 target: 0; ptr<JsStr> type: 0; bln composed: false;]
 		ptr<JsObj> path: (JsObjs.NewArray: 8);
 		call JsObjs.ArrayPush: path target;
 		ptr<JsObj> to: (JsV.AsObj: target);
 		if to.cls is PageBind.node_class
 			ptr<DomNode> n: to.data as ptr<DomNode>;
-			ptr<DomNode> up: n.parent;
-			while up is not 0
+			ptr<DomNode> at_: n;
+			bln reached: false;         # the document
+			while true
+				ptr<DomNode> up: (Dom.AssignedSlot: at_);
+				if up is 0
+					up is at_.parent;
+				;;
+				if up is 0 and (Dom.IsShadowRoot: at_) and composed
+					up is at_.shadow;
+				;;
+				if up is 0
+					reached is (at_.type is DomType.DOCUMENT);
+					break;
+				;;
 				call JsObjs.ArrayPush: path (PageBind.Wrap: up);
-				up is up.parent;
+				at_ is up;
 			;;
-			ptr<DomDocument> doc: n.doc;
 			# (a document's load doesn't reach the window: it's the window's own)
-			bln connected: (Dom.Contains: doc.root n);
-			if connected and not (JsStrs.EqZ: type 'load')
+			if reached and not (JsStrs.EqZ: type 'load')
 				call JsObjs.ArrayPush: path (JsV.Obj: JsRt.r.global);
 			;;
 		;;
 	[end: path]
+
+	# what each place on the path sees as the target: the target itself, unless it's in a shadow tree that
+	# place isn't in, and then the host of that tree (or of the one around it, and so on)
+	[Retargets: u64 target: 0; ptr<JsObj> path: 0;]
+		ptr<JsObj> seen: (JsObjs.NewArray: path.length);
+		ptr<JsObj> to: (JsV.AsObj: target);
+		ptr<DomNode> t: 0;
+		if to.cls is PageBind.node_class
+			t is to.data as ptr<DomNode>;
+		;;
+		while u32 i: 0; i < path.length; i++;
+			if t is 0
+				call JsObjs.ArrayPush: seen target;
+				continue;
+			;;
+			ptr<DomNode> place: (PageBind.NodeOf: path.elems:i);
+			ptr<DomNode> a: t;
+			while true
+				ptr<DomNode> top: (Dom.TreeRoot: a);
+				if not (Dom.IsShadowRoot: top) break;
+				if place is not 0 and (ShadowIncludes: top place) break;
+				a is top.shadow;
+			;;
+			call JsObjs.ArrayPush: seen (PageBind.Wrap: a);
+		;;
+	[end: seen]
+
+	# whether root is node's shadow-including ancestor (or node itself)
+	[ShadowIncludes: ptr<DomNode> root: 0; ptr<DomNode> node: 0;]
+		while node is not 0
+			if node is root return true;
+			node is (Dom.ShadowParent: node);
+		;;
+	[end: false]
+
+	[SeenAs: ptr<JsObj> eo: 0; u64 target: 0;]
+		call JsObjs.DefineZ: eo 'target' target JsObjs.W | JsObjs.E;
+		call JsObjs.DefineZ: eo 'srcElement' target JsObjs.W | JsObjs.E;
+	[end]
 
 	# the listeners of one target for one phase, each called inside its own catch
 	[Phase: u64 target: 0; u64 ev: 0; int phase: 0; bln capture: false;]

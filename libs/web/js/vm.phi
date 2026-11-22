@@ -74,6 +74,9 @@ phi.JsVm:Library
 	ptr<JsFrame> fr: 0;
 	int fuel: 0;              # counts down at safepoints: at zero, Poll sees what's wanted
 	u64 nt: 0;                # new.target, for the native being called
+	# Run after a native returns, when set: an embedder's reactions to what the native did (a page's
+	# custom elements', which the DOM's methods queue). It clears itself when there's nothing to do.
+	method<> after_native: 0;
 	u64 leave_value: 0;       # what Run gives back when Slow says to stop
 
 	bln last_done: false;     # (from ResumeGen) the generator finished: its result is the return value
@@ -320,6 +323,9 @@ phi.JsVm:Library
 		sp is args - 16;
 		sp:0 is r;
 		sp++ 8;
+		if after_native is not 0
+			call after_native;
+		;;
 	[end]
 
 	# Calls what's on the stack, [fn this args...], from a native or helper: it comes back with the
@@ -448,6 +454,9 @@ phi.JsVm:Library
 				sp is base;
 				sp:0 is r;
 				sp++ 8;
+				if after_native is not 0
+					call after_native;
+				;;
 				return false;
 			;;
 			if k is JsGc.K_BOUND

@@ -1,0 +1,38 @@
+template: true 0 2 a
+div is HTMLDivElement: true true
+made template: 0 1 <i>x</i>
+cloned template: 2 in a template 
+before define: false
+XEarly constructor, children: 1
+XEarly attribute data-n  1
+XEarly connected early1 true
+after define: true true hello from early1 true x-early
+XEarly attribute data-n 1 2
+XEarly constructor, children: 0
+createElement: true true false
+XEarly connected early2 true
+XEarly disconnected early2
+XEarly constructor, children: 0
+new: x-early X-EARLY true
+innerHTML, not connected: false
+XEarly constructor, children: 0
+XEarly connected early4 true
+innerHTML, connected: true
+x-inner made
+imported: true
+bad name: SyntaxError
+twice: NotSupportedError
+new HTMLElement: TypeError
+walker: early1,early4
+iterator: in a template |two
+script ends
+x-late before: rgb(255, 0, 0)
+XLate connected rgb(0, 128, 0)
+x-late after: rgb(0, 128, 0)
+whenDefined x-late: XLate
+XLate connected rgb(0, 128, 0)
+parsed after define: true
+--- a timer
+--- a frame
+--- later
+done

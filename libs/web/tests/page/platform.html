@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html><head><title>platform</title></head><body>
+<form id="f"><input name="a" value="1"><input name="b" value="two words"><input type="checkbox" name="c" value="x"><input type="checkbox" name="d" value="y" checked></form>
+<script>
+var log = function () { console.log(Array.prototype.join.call(arguments, " ")); };
+function t(name, fn) { try { log(name + ":", fn()); } catch (e) { log(name + " threw:", e.name, e.message); } }
+// URL, against the URL standard's own examples
+t("url", function () { var u = new URL("https://user:pw@EXAMPLE.com:443/a/./b/../c?x=1&y=2#frag"); return [u.href, u.origin, u.host, u.port, u.pathname, u.search, u.hash, u.username].join(" | "); });
+t("relative", function () { return [new URL("../d?q", "http://h.com/a/b/c").href, new URL("//other.org/x", "https://h.com/").href, new URL("?z", "http://h.com/p?old#f").href, new URL("#n", "http://h.com/p?q").href].join(" | "); });
+t("special", function () { return [new URL("HTTP://h.com").href, new URL("http://h.com:80/").href, new URL("http://h.com/a b").href, new URL("http://0x7f.1/").host, new URL("file:///C:/x/../y").href].join(" | "); });
+t("opaque", function () { var u = new URL("mailto:someone@example.com"); return [u.href, u.protocol, u.pathname, u.origin, new URL("data:text/plain,hi there").pathname].join(" | "); });
+t("invalid", function () { return [URL.canParse("nope"), URL.canParse("http://"), URL.parse("x", "http://a/"), URL.canParse("/x", "https://a.b")].join(" "); });
+t("setters", function () { var u = new URL("http://a.com/p"); u.pathname = "/q r"; u.search = "k=v w"; u.hash = "h"; u.port = "8080"; u.hostname = "B.com"; return u.href; });
+t("searchParams", function () { var u = new URL("http://a.com/?b=2&a=1&b=3"); var p = u.searchParams; p.append("c", "x y&z"); p.sort(); p.delete("b", "3"); return [u.search, p.get("b"), p.getAll("b").length, p.has("a"), p.size, [...p.keys()].join(",")].join(" | "); });
+t("params", function () { return [new URLSearchParams({x: "1", y: "é"}).toString(), new URLSearchParams([["a", "b"]]).toString(), new URLSearchParams("?q=a+b%26c").get("q")].join(" | "); });
+// text
+t("encode", function () { return Array.from(new TextEncoder().encode("aé€😀")).join(","); });
+t("decode", function () { var d = new TextDecoder(); return [d.decode(new Uint8Array([104, 195, 169, 240, 159, 152, 128])), d.decode(new Uint8Array([0xff, 65])), new TextDecoder("utf-16le").decode(new Uint8Array([65, 0, 66, 0])), new TextDecoder("latin1").decode(new Uint8Array([233]))].join(" | "); });
+t("stream", function () { var d = new TextDecoder(); return d.decode(new Uint8Array([226, 130]), {stream: true}) + d.decode(new Uint8Array([172])); });
+t("fatal", function () { return new TextDecoder("utf-8", {fatal: true}).decode(new Uint8Array([0xc3])); });
+// errors and aborting
+t("DOMException", function () { var e = new DOMException("gone", "NotFoundError"); return [e.name, e.message, e.code, e instanceof Error, DOMException.NOT_FOUND_ERR].join(" "); });
+t("abort", function () { var c = new AbortController(), heard = 0; c.signal.addEventListener("abort", function () { heard++; }); c.abort(); c.abort(); return [c.signal.aborted, heard, c.signal.reason.name, AbortSignal.abort(5).reason].join(" "); });
+// blobs and forms
+t("blob", function () { var b = new Blob(["ab", new Uint8Array([99]), new Blob(["d"])], {type: "Text/Plain"}); return [b.size, b.type, b.slice(1, 3).size, new File(["x"], "f.txt").name].join(" "); });
+t("formdata", function () { var f = new FormData(document.getElementById("f")); f.append("e", "5"); return [...f.entries()].map(function (p) { return p.join("="); }).join("&"); });
+// fetch's classes
+t("headers", function () { var h = new Headers({"Content-Type": "text/html", "X-A": "1"}); h.append("x-a", "2"); return [h.get("content-type"), h.get("X-A"), h.has("x-b"), [...h.keys()].join(",")].join(" | "); });
+t("request", function () { var r = new Request("/api?x=1", {method: "post", body: "hi"}); return [r.url, r.method, r.headers instanceof Headers].join(" | "); });
+var res = new Response('{"a": [1, 2]}', {status: 201, headers: {"content-type": "application/json"}});
+log("response:", res.status, res.ok, res.headers.get("content-type"));
+res.json().then(function (j) { log("response json:", j.a.length); });
+new Blob(["blob text"]).text().then(function (s) { log("blob text:", s); });
+// events and geometry
+t("events", function () { var p = new PointerEvent("pointerdown", {pointerId: 3, bubbles: true}); var e = new ErrorEvent("error", {message: "m"}); return [p.type, p.pointerId, p.bubbles, p instanceof MouseEvent, e.message, typeof TouchEvent].join(" "); });
+t("rect", function () { var r = new DOMRect(1, 2, -3, 4); return [r.left, r.right, r.top, r.bottom, JSON.stringify(DOMRect.fromRect({width: 5}))].join(" "); });
+t("matrix", function () { var m = new DOMMatrix().translate(10, 5).scale(2); var p = m.transformPoint({x: 1, y: 1}); return [m.toString(), p.x, p.y, m.inverse().transformPoint(p).x].join(" | "); });
+t("css", function () { return [CSS.escape("a b#1"), CSS.escape("1x"), CSS.supports("color", "red"), CSS.supports("color", "nope"), CSS.supports("(display: flex)"), CSS.supports("selector(a > b)")].join(" | "); });
+t("crypto", function () { var a = crypto.getRandomValues(new Uint8Array(16)); var u = crypto.randomUUID(); return [a.length, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(u), Array.from(a).some(function (x) { return x !== 0; })].join(" "); });
+t("clone", function () { var o = {d: new Date(0), m: new Map([[1, {x: 2}]]), a: [1, [2]]}; o.self = o; var c = structuredClone(o); return [c !== o, c.self === c, c.d.getTime(), c.m.get(1).x, c.a[1][0]].join(" "); });
+t("classes", function () { return [history instanceof History, location instanceof Location, navigator instanceof Navigator, Object.prototype.toString.call(localStorage), typeof requestIdleCallback, new Option("t", "v").value].join(" "); });
+t("attributes", function () { var a = document.getElementById("f").firstChild.attributes; return [a.length, a.getNamedItem("name").value, a.item(1).name, a[0] instanceof Attr, a.getNamedItem("nope"), a.item(9)].join(" "); });
+var ch = new MessageChannel();
+ch.port2.onmessage = function (e) { log("message:", e.data.n, e.data === sent); };
+var sent = {n: 7};
+ch.port1.postMessage(sent);
+log("script ends");
+</script></body></html>

@@ -1,0 +1,207 @@
+# Shadow trees, as JS sees them: Element.attachShadow, shadowRoot and assignedSlot, ShadowRoot, and a
+# <slot>'s assignedNodes. A shadow root is a FRAGMENT node with Dom.SHADOW_ROOT, linked to its host
+# through each one's `shadow` (dom/dom.phi, which also says which slot a host's child is shown in).
+# Events cross from a shadow tree to its host in page/events.phi; styles are scoped to their tree in
+# css/; and what a browser lays out is the flat tree (Dom.FlatFirst and FlatNext).
+
+phi.PageShadow:Library
+{
+	ptr<JsObj> root_proto: 0;
+	ptr<JsObj> slot_proto: 0;
+
+	[Install: ptr<JsObj> keep: 0;]
+		root_proto is (PageBind.Class: 'ShadowRoot' PageBind.fragment_proto keep);
+		ptr<JsObj> r: root_proto;
+		call PageBind.Getter: r 'host' addr RootProp 0 0;
+		call PageBind.Getter: r 'mode' addr RootProp 0 1;
+		call PageBind.Getter: r 'delegatesFocus' addr RootProp 0 2;
+		call PageBind.Getter: r 'slotAssignment' addr RootProp 0 3;
+		call PageBind.Getter: r 'activeElement' addr RootProp 0 4;
+		call PageBind.Getter: r 'clonable' addr RootProp 0 2;
+		call PageBind.Getter: r 'serializable' addr RootProp 0 2;
+		call PageBind.Getter: r 'innerHTML' addr InnerGet addr InnerSet 0;
+		call PageBind.Method: r 'getElementById' addr ById 1 0;
+		ptr<JsObj> e: PageBind.element_proto;
+		call PageBind.Method: e 'attachShadow' addr Attach 1 0;
+		call PageBind.Getter: e 'shadowRoot' addr ShadowRootGet 0 0;
+		call PageBind.Getter: e 'assignedSlot' addr AssignedSlotGet 0 0;
+		call PageBind.Getter: PageBind.character_proto 'assignedSlot' addr AssignedSlotGet 0 0;
+		slot_proto is (PageBind.TagProto: Dom.A_SLOT);
+		if slot_proto is not 0
+			call PageBind.Getter: slot_proto 'name' addr PageBind.ReflectGet addr PageBind.ReflectSet (PageBind.AtomMagic: 'name');
+			call PageBind.Method: slot_proto 'assignedNodes' addr Assigned 0 0;
+			call PageBind.Method: slot_proto 'assignedElements' addr Assigned 0 1;
+		;;
+	[end]
+
+	[ThisRoot: ptr<u64> args: 0;]
+		ptr<DomNode> n: (PageBind.ThisNode: args);
+		if not (Dom.IsShadowRoot: n)
+			call JsErr.Type: 'Illegal invocation: this is not a ShadowRoot';
+		;;
+	[end: n]
+
+	[RootProp: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> r: (ThisRoot: args);
+		when self.magic
+			is 0
+				return (PageBind.Wrap: r.shadow);
+			;;
+			is 1
+				if (r.flags & Dom.SHADOW_CLOSED) is not 0
+					return (Js.NewStringZ: 'closed');
+				;;
+				return (Js.NewStringZ: 'open');
+			;;
+			is 2
+				return JsV.FALSE;
+			;;
+			is 3
+				return (Js.NewStringZ: 'named');
+			;;
+		;;
+	[end: JsV.NULL]
+
+	[InnerGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> r: (ThisRoot: args);
+		WlBuf b;
+		call Html.Serialize: r b true;
+		u64 v: (Js.NewString: b.data b.len);
+		call b.Free;
+	[end: v]
+
+	[InnerSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> r: (ThisRoot: args);
+		WlBuf b;
+		call PageBind.StringArg: (Js.Arg: args argc 0) addr b;
+		ptr<DomNode> f: (Html.ParseFragment: r.shadow b.data b.len true);
+		call b.Free;
+		call PageBind.RemoveAllChildren: r;
+		if f is not 0
+			while f.first_child is not 0
+				call Dom.Append: r f.first_child;
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	[ById: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> r: (ThisRoot: args);
+		ptr<WlAtom> id: (PageBind.AtomOf: (Js.Arg: args argc 0));
+	[end: (PageBind.Wrap: (Dom.FindById: r id))]
+
+	# The elements that can have a shadow tree: a custom element's name, and these.
+	[CanHost: ptr<DomNode> n: 0;]
+		if n.ns is not DomNs.HTML return false;
+		ptr<WlAtom> t: n.tag;
+		while u32 i: 0; i < t.len; i++;
+			if t.text:i is '-' return true;
+		;;
+		ptr<u8> names: ' article aside blockquote body div footer h1 h2 h3 h4 h5 h6 header main nav p section span ';
+		u32 at_: 1;
+		while names:at_ is not 0
+			u32 from: at_;
+			while names:at_ is not 32
+				at_++;
+			;;
+			if at_ - from is t.len and (Mem.Equal: names + from t.text t.len) return true;
+			at_++;
+		;;
+	[end: false]
+
+	# el.attachShadow({mode}): its shadow root, new and empty
+	[Attach: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (PageBind.ThisElement: args);
+		u64 init: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: init)
+			call JsErr.Type: 'attachShadow needs {mode}';
+		;;
+		WlBuf mode;
+		call Js.TextOf: (JsObjs.GetV: init (JsObjs.KeyZ: 'mode')) addr mode;
+		bln closed: (WlText.EqZ: mode.data mode.len 'closed');
+		bln open: (WlText.EqZ: mode.data mode.len 'open');
+		call mode.Free;
+		if not closed and not open
+			call JsErr.Type: 'The mode of attachShadow must be open or closed';
+		;;
+		if not (CanHost: n)
+			call PageBind.DomError: 'NotSupportedError' 'This element cannot have a shadow root';
+		;;
+		if n.shadow is not 0
+			call PageBind.DomError: 'NotSupportedError' 'This element already has a shadow root';
+		;;
+		ptr<DomNode> r: (Dom.CreateFragment: n.doc);
+		r.flags is r.flags | Dom.SHADOW_ROOT;
+		if closed
+			r.flags is r.flags | Dom.SHADOW_CLOSED;
+		;;
+		r.shadow is n;
+		n.shadow is r;
+		# what's shown of it is its shadow tree's now
+		n.flags is n.flags | Dom.DIRTY_STYLE | Dom.DIRTY_LAYOUT;
+		call Dom.Changed: n DomChange.CHILDREN;
+	[end: (PageBind.Wrap: r)]
+
+	[ShadowRootGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (PageBind.ThisElement: args);
+		if n.shadow is 0 or (n.shadow.flags & Dom.SHADOW_CLOSED) is not 0 return JsV.NULL;
+	[end: (PageBind.Wrap: n.shadow)]
+
+	[AssignedSlotGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (PageBind.ThisNode: args);
+		ptr<DomNode> s: (Dom.AssignedSlot: n);
+		if s is 0 return JsV.NULL;
+		# (a closed shadow tree's slots aren't told)
+		if ((Dom.TreeRoot: s).flags & Dom.SHADOW_CLOSED) is not 0 return JsV.NULL;
+	[end: (PageBind.Wrap: s)]
+
+	# slot.assignedNodes() and assignedElements() (magic 1); with {flatten: true}, a slot among them
+	# stands for what it takes, and a slot that takes nothing for its own children
+	[Assigned: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> s: (PageBind.ThisElement: args);
+		u64 options: (Js.Arg: args argc 0);
+		bln flatten: false;
+		if (JsV.IsObj: options)
+			flatten is (JsOps.ToBool: (JsObjs.GetV: options (JsObjs.KeyZ: 'flatten')));
+		;;
+		ptr<JsObj> list: (Js.NewArray: 0);
+		call Gather: list s flatten self.magic is 1 0;
+	[end: (JsV.Obj: list)]
+
+	[Gather: ptr<JsObj> list: 0; ptr<DomNode> s: 0; bln flatten: false; bln elements: false; u32 depth: 0;]
+		if depth > 64 return;
+		ptr<DomNode> c: (Dom.SlotNext: s 0);
+		bln any: c is not 0;
+		if not any and flatten and depth > 0
+			c is s.first_child;
+		;;
+		while c is not 0
+			if flatten and (Dom.IsSlot: c)
+				call Gather: list c true elements depth + 1;
+			;;
+			elif not elements or c.type is DomType.ELEMENT
+				call Js.ArrayPush: list (PageBind.Wrap: c);
+			;;
+			if any
+				c is (Dom.SlotNext: s c);
+			;;
+			else
+				c is c.next;
+			;;
+		;;
+		if not any and flatten and depth is 0
+			# the slot itself, flattened: its own children
+			ptr<DomNode> own: s.first_child;
+			while own is not 0
+				if (Dom.IsSlot: own)
+					call Gather: list own true elements depth + 1;
+				;;
+				elif not elements or own.type is DomType.ELEMENT
+					call Js.ArrayPush: list (PageBind.Wrap: own);
+				;;
+				own is own.next;
+			;;
+		;;
+	[end]
+}
