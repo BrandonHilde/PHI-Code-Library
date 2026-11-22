@@ -90,25 +90,6 @@ phi.PageShadow:Library
 		ptr<WlAtom> id: (PageBind.AtomOf: (Js.Arg: args argc 0));
 	[end: (PageBind.Wrap: (Dom.FindById: r id))]
 
-	# The elements that can have a shadow tree: a custom element's name, and these.
-	[CanHost: ptr<DomNode> n: 0;]
-		if n.ns is not DomNs.HTML return false;
-		ptr<WlAtom> t: n.tag;
-		while u32 i: 0; i < t.len; i++;
-			if t.text:i is '-' return true;
-		;;
-		ptr<u8> names: ' article aside blockquote body div footer h1 h2 h3 h4 h5 h6 header main nav p section span ';
-		u32 at_: 1;
-		while names:at_ is not 0
-			u32 from: at_;
-			while names:at_ is not 32
-				at_++;
-			;;
-			if at_ - from is t.len and (Mem.Equal: names + from t.text t.len) return true;
-			at_++;
-		;;
-	[end: false]
-
 	# el.attachShadow({mode}): its shadow root, new and empty
 	[Attach: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (PageBind.ThisElement: args);
@@ -124,23 +105,20 @@ phi.PageShadow:Library
 		if not closed and not open
 			call JsErr.Type: 'The mode of attachShadow must be open or closed';
 		;;
-		if not (CanHost: n)
+		if not (Dom.CanHostShadow: n)
 			call PageBind.DomError: 'NotSupportedError' 'This element cannot have a shadow root';
 		;;
 		if n.shadow is not 0
+			# one the parser made from <template shadowrootmode> is given back, emptied, the first time
+			if (n.shadow.flags & Dom.SHADOW_DECLARATIVE) is not 0
+				ptr<DomNode> made: n.shadow;
+				made.flags is made.flags & (0xFFFFFFFF ^ Dom.SHADOW_DECLARATIVE);
+				call PageBind.RemoveAllChildren: made;
+				return (PageBind.Wrap: made);
+			;;
 			call PageBind.DomError: 'NotSupportedError' 'This element already has a shadow root';
 		;;
-		ptr<DomNode> r: (Dom.CreateFragment: n.doc);
-		r.flags is r.flags | Dom.SHADOW_ROOT;
-		if closed
-			r.flags is r.flags | Dom.SHADOW_CLOSED;
-		;;
-		r.shadow is n;
-		n.shadow is r;
-		# what's shown of it is its shadow tree's now
-		n.flags is n.flags | Dom.DIRTY_STYLE | Dom.DIRTY_LAYOUT;
-		call Dom.Changed: n DomChange.CHILDREN;
-	[end: (PageBind.Wrap: r)]
+	[end: (PageBind.Wrap: (Dom.AttachShadow: n closed))]
 
 	[ShadowRootGet: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (PageBind.ThisElement: args);

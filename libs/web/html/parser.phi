@@ -120,6 +120,7 @@ struct.HtmlParser
 	ptr<DomDocument> doc;
 	method<ptr<HtmlParser> ptr<DomNode>> on_script;
 	method<> after_token;   # called after each token, if set (a page runs its custom elements' reactions)
+	bln no_shadow_roots;    # <template shadowrootmode> stays a template (DOMParser's documents)
 	bln scripting;
 	bln failed;             # something went wrong (out of memory, usually); error says what
 	str error: [160];
@@ -1452,8 +1453,29 @@ struct.HtmlParser
 		call Push: n tok.name;
 		place_parent is parent;
 		place_ref is ref;
+		if (Declarative: n parent) return;
 		call InsertAtPlace: n;
 	[end]
+
+	# Declarative shadow DOM: a <template shadowrootmode="open"> (or "closed") that the document's own
+	# parser meets in an element that can have a shadow tree, and hasn't, becomes that element's shadow
+	# root: what's in the template goes there, and the template itself isn't put in the document.
+	[Declarative: ptr<DomNode> n: 0; ptr<DomNode> parent: 0;]
+		if context is not 0 or no_shadow_roots or parent is 0 or parent.type is not DomType.ELEMENT return false;
+		if open_n < 2 or parent is open:0.node return false;
+		ptr<u8> mode: (Dom.AttrValue: n 'shadowrootmode');
+		if mode is 0 return false;
+		u32 len: (WlText.LenZ: mode);
+		bln closed: (WlText.EqNoCaseZ: mode len 'closed');
+		if not closed and not (WlText.EqNoCaseZ: mode len 'open') return false;
+		if parent.shadow is not 0 or not (Dom.CanHostShadow: parent) return false;
+		ptr<DomNode> r: n.content;
+		if closed
+			r.flags is r.flags | Dom.SHADOW_CLOSED;
+		;;
+		r.flags is r.flags | Dom.SHADOW_DECLARATIVE;
+		call Dom.MakeShadowRoot: parent r;
+	[end: true]
 
 	[EndTemplate]
 		if heads:(HtmlTag.TEMPLATE) is 0 return;

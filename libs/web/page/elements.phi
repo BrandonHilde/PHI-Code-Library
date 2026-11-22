@@ -34,6 +34,7 @@ phi.PageElements:Library
 		call Js.DefineNative: JsRt.r.global '%ceFind' addr Find 1;
 		call Js.DefineNative: JsRt.r.global '%ceDefined' addr Defined 1;
 		call Js.DefineNative: JsRt.r.global '%newDocument' addr NewDocument 2;
+		call Js.DefineNative: JsRt.r.global '%parseDocument' addr ParseDocument 1;
 		p.parser.after_token is addr AfterToken;
 		str js: (PageElementsJs.Source);
 		call Page.RunSource: p addr js:0 js.len as u32 'elements';
@@ -124,6 +125,25 @@ phi.PageElements:Library
 			;;
 			call Dom.Append: html (Dom.CreateElementZ: d 'body');
 		;;
+	[end: (PageBind.Wrap: d.root)]
+
+	# %parseDocument(text): a new document of that HTML, as the parser makes one with scripts off and
+	# <template shadowrootmode> left a template (for DOMParser)
+	[ParseDocument: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		ptr<DomDocument> d: (Page.NewDocument: p);
+		if d is 0
+			call PageBind.DomError: 'NotSupportedError' 'This page has made too many documents';
+		;;
+		WlBuf b;
+		call Js.TextOf: (Js.Arg: args argc 0) addr b;
+		ptr<HtmlParser> parser: (HtmlParser.New: d);
+		parser.scripting is false;
+		parser.no_shadow_roots is true;
+		call parser.Feed: b.data b.len;
+		call parser.Finish;
+		call parser.Free;
+		call b.Free;
 	[end: (PageBind.Wrap: d.root)]
 
 	# ---- what the DOM tells

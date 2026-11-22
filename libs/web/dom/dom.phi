@@ -142,6 +142,7 @@ phi.Dom:Library
 	const u32 CE_SEEN: 128;          # the page's, for a moment, while it goes through what's changed
 	const u32 FIRST_PARSER_FLAG: 0x100;   # flags from here to 0x8000 are the HTML parser's own
 	const u32 SCRIPT_RAN: 0x10000;   # the page's: a <script> that has run, or been put in by a script
+	const u32 SHADOW_DECLARATIVE: 0x20000;  # a shadow root the parser made from <template shadowrootmode>
 
 	ptr<WlAtom> A_ID: 0;
 	ptr<WlAtom> A_CLASS: 0;
@@ -418,6 +419,46 @@ phi.Dom:Library
 	[end: 0 as ptr<DomNode>]
 
 	# ---- slots, and the flat tree: what's shown, where a shadow tree takes its host's children
+
+	# The elements that can have a shadow tree: an HTML element with a custom element's name (a hyphen
+	# in it), and these.
+	[CanHostShadow: ptr<DomNode> n: 0;]
+		if n.type is not DomType.ELEMENT or n.ns is not DomNs.HTML return false;
+		ptr<WlAtom> t: n.tag;
+		while u32 i: 0; i < t.len; i++;
+			if t.text:i is '-' return true;
+		;;
+		ptr<u8> names: ' article aside blockquote body div footer h1 h2 h3 h4 h5 h6 header main nav p section span ';
+		u32 at_: 1;
+		while names:at_ is not 0
+			u32 from: at_;
+			while names:at_ is not 32
+				at_++;
+			;;
+			if at_ - from is t.len and (Mem.Equal: names + from t.text t.len) return true;
+			at_++;
+		;;
+	[end: false]
+
+	# host's shadow root, new and empty (host can have one, and hasn't)
+	[AttachShadow: ptr<DomNode> host: 0; bln closed: false;]
+		ptr<DomNode> r: (CreateFragment: host.doc);
+		r.flags is r.flags | SHADOW_ROOT;
+		if closed
+			r.flags is r.flags | SHADOW_CLOSED;
+		;;
+		call MakeShadowRoot: host r;
+	[end: r]
+
+	# fragment r becomes host's shadow root
+	[MakeShadowRoot: ptr<DomNode> host: 0; ptr<DomNode> r: 0;]
+		r.flags is r.flags | SHADOW_ROOT;
+		r.shadow is host;
+		host.shadow is r;
+		# what's shown of it is its shadow tree's now
+		host.flags is host.flags | DIRTY_STYLE | DIRTY_LAYOUT;
+		call Changed: host DomChange.CHILDREN;
+	[end]
 
 	# whether node is a <slot> in a shadow tree
 	[IsSlot: ptr<DomNode> node: 0;]

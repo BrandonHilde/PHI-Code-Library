@@ -8,6 +8,8 @@ x-card.outer { color: rgb(10, 10, 10) }
 </head><body>
 <x-card id="card"><span id="s1">slotted</span><b slot="b" id="named">named</b>text</x-card>
 <x-card id="card2" class="outer"></x-card>
+<x-dsd id="dsd"><template shadowrootmode="open"><style>:host { color: rgb(9, 9, 9) } p { font-size: 25px }</style><p id="dp">declared</p><slot></slot></template>light</x-dsd>
+<div id="notahost"><template shadowrootmode="open"><i>stays a template</i></template></div>
 <script>
 var log = function () { console.log(Array.prototype.join.call(arguments, " ")); };
 var style = function (el, p) { return getComputedStyle(el).getPropertyValue(p); };
@@ -51,4 +53,12 @@ log("closed:", closed.host.shadowRoot, closed.mode);
 try { card.attachShadow({ mode: "open" }); } catch (e) { log("twice:", e.name); }
 try { document.createElement("img").attachShadow({ mode: "open" }); } catch (e) { log("img:", e.name); }
 log("innerHTML:", root.innerHTML.length > 100, card.innerHTML);
+var dsd = document.getElementById("dsd");
+log("declarative:", dsd.shadowRoot !== null, dsd.childNodes.length, dsd.firstChild.nodeName, dsd.shadowRoot.getElementById("dp").textContent, style(dsd, "color"), style(dsd.shadowRoot.getElementById("dp"), "font-size"), document.querySelectorAll("template").length);
+var div = document.getElementById("notahost");
+log("a div can be a host:", div.shadowRoot !== null, div.childNodes.length, HTMLTemplateElement.prototype.hasOwnProperty("shadowRootMode"));
+var again = dsd.attachShadow({ mode: "open" });
+log("attachShadow on it:", again === dsd.shadowRoot, again.childNodes.length);
+var parsed = new DOMParser().parseFromString("<title>t</title><p class=x>parsed</p><div><template shadowrootmode=open><b>in</b></template></div>", "text/html");
+log("DOMParser:", parsed.title, parsed.body.innerHTML.length > 0, parsed.querySelector(".x").textContent, parsed.querySelector("div").shadowRoot !== null, parsed === document);
 </script></body></html>

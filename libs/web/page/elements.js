@@ -508,6 +508,19 @@
   var implementation = new DOMImplementation();
   Object.defineProperty(global.Document.prototype, "implementation", { get: function () { return implementation; }, configurable: true, enumerable: true });
 
+  var parseDocument = global["%parseDocument"];
+  delete global["%parseDocument"];
+  class DOMParser {
+    parseFromString(text, type) {
+      type = String(type);
+      if (["text/html", "text/xml", "application/xml", "application/xhtml+xml", "image/svg+xml"].indexOf(type) < 0) {
+        throw new TypeError("DOMParser can't parse " + type);
+      }
+      return parseDocument(String(text));
+    }
+  }
+  hidden(global, "DOMParser", DOMParser);
+
   // ---- NodeFilter, TreeWalker, NodeIterator ----
 
   var NodeFilter = {

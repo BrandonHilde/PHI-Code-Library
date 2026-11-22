@@ -14,6 +14,10 @@ closed:  closed
 twice: NotSupportedError
 img: NotSupportedError
 innerHTML: true <span id="s1">slotted</span><b slot="b" id="named">named</b>text
+declarative: true 1 #text declared rgb(9, 9, 9) 25px 0
+a div can be a host: true 0 true
+attachShadow on it: true 0
+DOMParser: t true parsed false false
 --- a timer
 --- a frame
 --- later
