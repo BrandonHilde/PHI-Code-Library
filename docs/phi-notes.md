@@ -180,3 +180,9 @@ programs rounded to double precision as a matter of course. Then weblib would ne
 all, and vectorlib's own versions could go. Until then, porting fdlibm into a library here is the way
 to the same results everywhere (2026-11-22).
 
+**A macOS program can't read the count of a local `atmost` array.** `str words[atmost 8];` in a method,
+then `words.len`, stops a macOS build with `Args uses a NameExpr (Length, an atmost array's count
+'words.len') ..., which macOS programs can't do yet`; the same file builds for every other system.
+PHI OS's `render.phi` met it (2026-11-22) and keeps a count of its own. The message says exactly
+what and where, so it's a gap in the ARM code generator rather than a trap.
+
