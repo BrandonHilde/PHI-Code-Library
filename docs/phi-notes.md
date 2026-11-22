@@ -186,3 +186,11 @@ then `words.len`, stops a macOS build with `Args uses a NameExpr (Length, an atm
 PHI OS's `render.phi` met it (2026-11-22) and keeps a count of its own. The message says exactly
 what and where, so it's a gap in the ARM code generator rather than a trap.
 
+
+**Everyday words are keywords, and a library meets them at every turn.** `method`, `into`, `at` and
+`out` can't name a field, a variable or a parameter. In this work all four came up as the plainest
+name for the thing: an HTTP request's method (weblib calls it `verb`), a copy's destination (`dest`),
+a position (`at_`). The language guide lists them (Reserved words: 85 of them, with `in`, `out`, `at`
+and the port words among them), and the error names the word, so it costs only a rename; but a web
+library is full of standard names it would like to keep. For PHI: contextual keywords (`method` only
+where a type can stand, the port words only in their statements) would spare most of these (2026-11-22).
