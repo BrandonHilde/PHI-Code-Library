@@ -29,6 +29,13 @@ x64.WlSetFpu
 	ret
 }
 
+# ARM (a macOS program): its floating point is already double precision, rounded to nearest, with
+# nothing trapping, so there's nothing to set
+arm.WlSetFpu
+{
+	ret
+}
+
 phi.Weblib:Library
 {
 	const int VERSION: 1;

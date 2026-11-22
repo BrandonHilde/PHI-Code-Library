@@ -73,6 +73,13 @@ x64.JsSetFpu
 	ret
 }
 
+# ARM (a macOS program): its floating point is already double precision, rounded to nearest, with
+# nothing trapping, so there's nothing to set
+arm.JsSetFpu
+{
+	ret
+}
+
 phi.Js:Library
 {
 	u16 fpu_control: 0x027F;

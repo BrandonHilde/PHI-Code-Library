@@ -84,7 +84,9 @@ full suite waits for release: the four that check speed and the edges of the sta
 All 19 test programs pass as `windows` and `windows64` programs (2026-11-06). As Linux programs
 (2026-11-07, their first run), all pass on `linux` and `linux64`, once PHI gave 32-bit Linux
 programs the same 128 MB default heap limit as the other systems (see
-[phi-notes.md](../../docs/phi-notes.md)). Where an outside test suite exists, it's the measure. The
+[phi-notes.md](../../docs/phi-notes.md)). As macOS programs (Apple Silicon, 2026-11-22, the first time weblib
+built for it: its x87 routines for `Math.log`, `exp`, `tan`, `atan2` and `**` have ARM versions that
+call the Mac's own C library), all pass too; PHI OS's browser runs on a Mac with it (`mac.sh` there). Where an outside test suite exists, it's the measure. The
 figures are the same on Windows and Linux, except for `built-ins`, which was counted differently:
 
 | Suite | Result |

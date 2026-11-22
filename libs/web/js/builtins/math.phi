@@ -484,6 +484,21 @@ x64.JsX87Ln
 	ret
 }
 
+# ARM (a macOS program): the system's log
+arm.JsX87Ln
+{
+	stp x29, x30, [sp, #-16]!
+	adrp x9, {js_m_x}@PAGE
+	add x9, x9, {js_m_x}@PAGEOFF
+	ldr d0, [x9]
+	bl _log
+	adrp x9, {js_m_r}@PAGE
+	add x9, x9, {js_m_r}@PAGEOFF
+	str d0, [x9]
+	ldp x29, x30, [sp], #16
+	ret
+}
+
 asm.JsX87Log2
 {
 	fldcw [{js_m_ext}]
@@ -503,6 +518,21 @@ x64.JsX87Log2
 	fyl2x
 	fstp qword [rel {js_m_r}]
 	fldcw [rel {js_m_dbl}]
+	ret
+}
+
+# ARM (a macOS program): the system's log2
+arm.JsX87Log2
+{
+	stp x29, x30, [sp, #-16]!
+	adrp x9, {js_m_x}@PAGE
+	add x9, x9, {js_m_x}@PAGEOFF
+	ldr d0, [x9]
+	bl _log2
+	adrp x9, {js_m_r}@PAGE
+	add x9, x9, {js_m_r}@PAGEOFF
+	str d0, [x9]
+	ldp x29, x30, [sp], #16
 	ret
 }
 
@@ -528,6 +558,21 @@ x64.JsX87Log10
 	ret
 }
 
+# ARM (a macOS program): the system's log10
+arm.JsX87Log10
+{
+	stp x29, x30, [sp, #-16]!
+	adrp x9, {js_m_x}@PAGE
+	add x9, x9, {js_m_x}@PAGEOFF
+	ldr d0, [x9]
+	bl _log10
+	adrp x9, {js_m_r}@PAGE
+	add x9, x9, {js_m_r}@PAGEOFF
+	str d0, [x9]
+	ldp x29, x30, [sp], #16
+	ret
+}
+
 asm.JsX87Log1p
 {
 	fldcw [{js_m_ext}]
@@ -547,6 +592,21 @@ x64.JsX87Log1p
 	fyl2xp1
 	fstp qword [rel {js_m_r}]
 	fldcw [rel {js_m_dbl}]
+	ret
+}
+
+# ARM (a macOS program): the system's log1p
+arm.JsX87Log1p
+{
+	stp x29, x30, [sp, #-16]!
+	adrp x9, {js_m_x}@PAGE
+	add x9, x9, {js_m_x}@PAGEOFF
+	ldr d0, [x9]
+	bl _log1p
+	adrp x9, {js_m_r}@PAGE
+	add x9, x9, {js_m_r}@PAGEOFF
+	str d0, [x9]
+	ldp x29, x30, [sp], #16
 	ret
 }
 
@@ -590,6 +650,21 @@ x64.JsX87Exp
 	ret
 }
 
+# ARM (a macOS program): the system's exp
+arm.JsX87Exp
+{
+	stp x29, x30, [sp, #-16]!
+	adrp x9, {js_m_x}@PAGE
+	add x9, x9, {js_m_x}@PAGEOFF
+	ldr d0, [x9]
+	bl _exp
+	adrp x9, {js_m_r}@PAGE
+	add x9, x9, {js_m_r}@PAGEOFF
+	str d0, [x9]
+	ldp x29, x30, [sp], #16
+	ret
+}
+
 asm.JsX87Expm1
 {
 	fldcw [{js_m_ext}]
@@ -611,6 +686,21 @@ x64.JsX87Expm1
 	f2xm1
 	fstp qword [rel {js_m_r}]
 	fldcw [rel {js_m_dbl}]
+	ret
+}
+
+# ARM (a macOS program): the system's expm1
+arm.JsX87Expm1
+{
+	stp x29, x30, [sp, #-16]!
+	adrp x9, {js_m_x}@PAGE
+	add x9, x9, {js_m_x}@PAGEOFF
+	ldr d0, [x9]
+	bl _expm1
+	adrp x9, {js_m_r}@PAGE
+	add x9, x9, {js_m_r}@PAGEOFF
+	str d0, [x9]
+	ldp x29, x30, [sp], #16
 	ret
 }
 
@@ -636,6 +726,21 @@ x64.JsX87Tan
 	ret
 }
 
+# ARM (a macOS program): the system's tan
+arm.JsX87Tan
+{
+	stp x29, x30, [sp, #-16]!
+	adrp x9, {js_m_x}@PAGE
+	add x9, x9, {js_m_x}@PAGEOFF
+	ldr d0, [x9]
+	bl _tan
+	adrp x9, {js_m_r}@PAGE
+	add x9, x9, {js_m_r}@PAGEOFF
+	str d0, [x9]
+	ldp x29, x30, [sp], #16
+	ret
+}
+
 asm.JsX87Atan2
 {
 	fldcw [{js_m_ext}]
@@ -655,5 +760,23 @@ x64.JsX87Atan2
 	fpatan
 	fstp qword [rel {js_m_r}]
 	fldcw [rel {js_m_dbl}]
+	ret
+}
+
+# ARM (a macOS program): the system's atan2
+arm.JsX87Atan2
+{
+	stp x29, x30, [sp, #-16]!
+	adrp x9, {js_m_y}@PAGE
+	add x9, x9, {js_m_y}@PAGEOFF
+	ldr d0, [x9]
+	adrp x9, {js_m_x}@PAGE
+	add x9, x9, {js_m_x}@PAGEOFF
+	ldr d1, [x9]
+	bl _atan2
+	adrp x9, {js_m_r}@PAGE
+	add x9, x9, {js_m_r}@PAGEOFF
+	str d0, [x9]
+	ldp x29, x30, [sp], #16
 	ret
 }

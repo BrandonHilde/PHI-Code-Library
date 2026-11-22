@@ -3243,6 +3243,24 @@ x64.JsPowX87
 	ret
 }
 
+# ARM (a macOS program): the system's pow
+arm.JsPowX87
+{
+	stp x29, x30, [sp, #-16]!
+	adrp x9, {pow_a}@PAGE
+	add x9, x9, {pow_a}@PAGEOFF
+	ldr d0, [x9]
+	adrp x9, {pow_b}@PAGE
+	add x9, x9, {pow_b}@PAGEOFF
+	ldr d1, [x9]
+	bl _pow
+	adrp x9, {pow_result}@PAGE
+	add x9, x9, {pow_result}@PAGEOFF
+	str d0, [x9]
+	ldp x29, x30, [sp], #16
+	ret
+}
+
 # number helpers that weren't worth a file of their own
 phi.JsMathCore:Library
 {

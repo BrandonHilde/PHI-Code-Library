@@ -143,3 +143,19 @@ built a pixel from four `u8`s (a stopped program). **Here:** a `u64` one is shif
 and a byte is made a `u32` before its shift. **For PHI:** an error for a constant shift past its
 width, and a warning when a shift's count may reach 32 in an `int` that's then widened, as the
 silent wrong value is the dangerous half (2026-11-21, checked in 1.0 on macOS arm64).
+
+**A macOS program's window must be made on its first thread, and nothing says so.** PHI OS's browser
+makes its window on a thread of its own, with a big stack. Built for macOS it built cleanly and
+stopped as it opened, with AppKit's `NSInternalInconsistencyException` ("NSWindow should only be
+instantiated on the main thread!"). Neither `window_macos.phi` nor the documentation of macOS programs
+mentions it, and the same program runs on PHI OS, Linux and Windows. `gui.app` could stop with a PHI
+error saying so when it's called on another thread, or the documentation could say it. Related and
+smaller: `OS.ThreadStart` takes a method of no values on PHI OS, but on Linux, Windows and macOS the
+method must take the one value it's given; that error is clear (2026-11-21).
+
+**A macOS program is about ten times the size of the same program for x86.** PHI OS's browser built
+for macOS is 41 MB (27 MB stripped); as a PHI OS program it's 3.7 MB, and as a 64-bit Linux program
+(`render`, the same engine) 4.5 MB. Its `__TEXT` is 4.6 MB, so the code isn't the difference: it's
+15.6 MB of `__DATA_CONST,__const` and 20 MB of `__LINKEDIT` (a `phi_line_N` symbol for each line).
+Not looked into further; it runs (2026-11-22).
+
