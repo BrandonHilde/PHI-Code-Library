@@ -201,3 +201,11 @@ on PHI OS with Wikipedia's Golden ratio article: 36 MB to load, past 116 MB with
 MathJax typesetting, and then "RangeError: Out of memory" from the JS engine (on the Mac the same
 page is fine). For PHI: a heap that grows with the machine, or a way to ask for more. PHI OS
 FINDINGS #36 (2026-11-22).
+
+**Wanted, for later (the user's call, 2026-11-22):** the limit should be something the programmer
+can optionally set with a function call, as `Heap.most_bytes` already is on Linux, macOS and
+Windows: on PHI OS the call would have to reach the kernel, whose `proc.process` stops a heap at
+`HEAP_LIMIT` (`0x48000000`, 124 MB above `USER_TOP`) for every program. YouTube in PHI OS's browser
+meets it too (its scripts fail with "RangeError: Out of memory" at a 92 MB heap, 20 MB of it the
+browser's cache of fetched scripts). Not to be worked round in PHI OS by copying `proc/process.phi`
+next to `os.phi`: it waits for PHI.
