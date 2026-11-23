@@ -71,11 +71,14 @@ phi.PageBind:Library
 			collection_class.finalize is addr FreeData;
 			token_class is (JsObjs.NewClass: 'DOMTokenList');
 			token_class.get is addr TokenIndexGet;
+			token_class.has_key is addr TokenIndexHas;
 			style_class is (JsObjs.NewClass: 'CSSStyleDeclaration');
 			style_class.get is addr StyleHookGet;
 			style_class.set is addr StyleHookSet;
+			style_class.has_key is addr StyleHookHas;
 			computed_class is (JsObjs.NewClass: 'CSSStyleDeclaration');
 			computed_class.get is addr ComputedHookGet;
+			computed_class.has_key is addr StyleHookHas;
 			dataset_class is (JsObjs.NewClass: 'DOMStringMap');
 			dataset_class.get is addr DataGet;
 			dataset_class.set is addr DataSet;
@@ -2480,6 +2483,13 @@ phi.PageBind:Library
 		output:0 is (Js.NewString: c.text c.len);
 	[end: 1]
 
+	# 0 in el.classList: a number is there if there are that many classes
+	[TokenIndexHas: ptr<JsObj> o: 0; u64 key: 0;]
+		if not (JsObjs.IsIndexKey: key) return 0;
+		ptr<DomNode> n: o.data as ptr<DomNode>;
+		if (key as u32) < n.class_count return 1;
+	[end: -1]
+
 	# an argument that must be a class name: not empty, with no spaces
 	[TokenArg: u64 v: 0;]
 		WlBuf b;
@@ -2653,6 +2663,15 @@ phi.PageBind:Library
 		call name.Free;
 		call text.Free;
 	[end: 1]
+
+	# 'opacity' in el.style: every property CSS has is there, set or not. (A script asks this to find
+	# out what it can animate: GSAP gave up on every property, and GitHub's page stayed blank.)
+	[StyleHookHas: ptr<JsObj> o: 0; u64 key: 0;]
+		WlBuf name;
+		bln known: (IsPropertyKey: key addr name);
+		call name.Free;
+		if known return 1;
+	[end: 0]
 
 	[StyleHookSet: ptr<JsObj> o: 0; u64 key: 0; u64 v: 0; u64 recv: 0;]
 		WlBuf name;

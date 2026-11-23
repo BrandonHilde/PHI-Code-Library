@@ -6,6 +6,7 @@ console[0]: lib says 42
 console[0]: tag DIV DIV 1 box
 console[0]: style attr 3px padding: 3px
 console[0]: after set rgb(255, 0, 0) | padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);
+console[0]: in style true true true false true true false
 console[0]: classList 2 true a b
 console[0]: className b c d
 console[0]: dataset ada ["userName"]
@@ -29,8 +30,8 @@ console[0]: events doc capture / list capture 1 / target 2 true / once / list bu
 console[0]: no bubble doc capture / list capture 1 / target 2 true
 console[0]: stop false stopped
 console[2]: Uncaught Error: in a listener
-    at inline script:82
-    at inline script:84
+    at inline script:83
+    at inline script:85
 console[0]: next listener still ran
 console[0]: sync end
 load http://test.example/dir/data.json kind 3
@@ -93,6 +94,7 @@ log('tag', box.tagName, box.nodeName, box.nodeType, box.id);
 log('style attr', box.style.padding, box.getAttribute('style'));
 box.style.backgroundColor = 'red';
 log('after set', box.style.backgroundColor, '|', box.getAttribute('style'));
+log('in style', 'opacity' in box.style, 'backgroundColor' in box.style, 'background-color' in box.style, 'nonsense' in box.style, 'cssText' in box.style, 'opacity' in getComputedStyle(box), 0 in document.documentElement.classList);
 
 var head1 = document.querySelector('#top');
 log('classList', head1.classList.length, head1.classList.contains('b'), head1.classList.value);
@@ -246,6 +248,7 @@ log('tag', box.tagName, box.nodeName, box.nodeType, box.id);
 log('style attr', box.style.padding, box.getAttribute('style'));
 box.style.backgroundColor = 'red';
 log('after set', box.style.backgroundColor, '|', box.getAttribute('style'));
+log('in style', 'opacity' in box.style, 'backgroundColor' in box.style, 'background-color' in box.style, 'nonsense' in box.style, 'cssText' in box.style, 'opacity' in getComputedStyle(box), 0 in document.documentElement.classList);
 
 var head1 = document.querySelector('#top');
 log('classList', head1.classList.length, head1.classList.contains('b'), head1.classList.value);
@@ -381,6 +384,7 @@ console[0]: lib says 42
 console[0]: tag DIV DIV 1 box
 console[0]: style attr 3px padding: 3px
 console[0]: after set rgb(255, 0, 0) | padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);
+console[0]: in style true true true false true true false
 console[0]: classList 2 true a b
 console[0]: className b c d
 console[0]: dataset ada ["userName"]
@@ -404,8 +408,8 @@ console[0]: events doc capture / list capture 1 / target 2 true / once / list bu
 console[0]: no bubble doc capture / list capture 1 / target 2 true
 console[0]: stop false stopped
 console[2]: Uncaught Error: in a listener
-    at inline script:82
-    at inline script:84
+    at inline script:83
+    at inline script:85
 console[0]: next listener still ran
 console[0]: sync end
 load http://test.example/dir/data.json kind 3
@@ -468,6 +472,7 @@ log('tag', box.tagName, box.nodeName, box.nodeType, box.id);
 log('style attr', box.style.padding, box.getAttribute('style'));
 box.style.backgroundColor = 'red';
 log('after set', box.style.backgroundColor, '|', box.getAttribute('style'));
+log('in style', 'opacity' in box.style, 'backgroundColor' in box.style, 'background-color' in box.style, 'nonsense' in box.style, 'cssText' in box.style, 'opacity' in getComputedStyle(box), 0 in document.documentElement.classList);
 
 var head1 = document.querySelector('#top');
 log('classList', head1.classList.length, head1.classList.contains('b'), head1.classList.value);
@@ -621,6 +626,7 @@ log('tag', box.tagName, box.nodeName, box.nodeType, box.id);
 log('style attr', box.style.padding, box.getAttribute('style'));
 box.style.backgroundColor = 'red';
 log('after set', box.style.backgroundColor, '|', box.getAttribute('style'));
+log('in style', 'opacity' in box.style, 'backgroundColor' in box.style, 'background-color' in box.style, 'nonsense' in box.style, 'cssText' in box.style, 'opacity' in getComputedStyle(box), 0 in document.documentElement.classList);
 
 var head1 = document.querySelector('#top');
 log('classList', head1.classList.length, head1.classList.contains('b'), head1.classList.value);
