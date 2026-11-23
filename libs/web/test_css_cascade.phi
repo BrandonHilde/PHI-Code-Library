@@ -230,6 +230,16 @@ phi.TestCssCascade:Program
 	call Absent: 'c' '--a';
 	call Finish;
 
+	# an element that sets no custom property of its own, styled just after one that does, has
+	# var()s that are its own ancestors' (not what the one before set)
+	call Setup: 'html#h(body#b(div#p(span#x) div#q(span#y) div#r(span#z) p#s(b#t)))'
+		'html { --ink: red; } #p { --ink: green; } #r { --ink: blue; } span, b { color: var(--ink); }';
+	call C: 'x' 'color' 'rgb(0, 128, 0)';
+	call C: 'y' 'color' 'rgb(255, 0, 0)';
+	call C: 'z' 'color' 'rgb(0, 0, 255)';
+	call C: 't' 'color' 'rgb(255, 0, 0)';
+	call Finish;
+
 	# a value that grows too big by substitution is invalid, not out of memory
 	WlBuf many;
 	call many.AddZ: '#a { --v0: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; ';

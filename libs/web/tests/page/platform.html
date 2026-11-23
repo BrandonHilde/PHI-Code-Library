@@ -97,6 +97,31 @@ pop.addEventListener("toggle", function (e) { log("toggle:", e.oldState, e.newSt
 t("popover", function () { var before = getComputedStyle(pop).display; pop.showPopover(); var shown = [getComputedStyle(pop).display, pop.matches(":popover-open")]; pop.hidePopover(); var err = ""; try { document.body.showPopover(); } catch (e) { err = e.name; } return [before, shown.join(" "), getComputedStyle(pop).display, err].join(" | "); });
 t("style assigned", function () { "use strict"; var d = document.createElement("div"); d.style = "color: red"; return [d.getAttribute("style"), d.style.color, Object.getOwnPropertyNames(d).indexOf("style")].join(" | "); });
 t("read only", function () { "use strict"; var o = Object.freeze({ a: 1 }); o.a = 2; });
+// <select> and <option>
+t("select", function () { var s = document.createElement("select"); s.innerHTML = "<option>a</option><option value=bee selected>b</option><option>c</option>"; var o = s.options; var before = [o.length, s.selectedIndex, s.value, s.type, o[1].index, o[1].text, o[1].selected, o[1].defaultSelected]; s.value = "c"; var after = [s.selectedIndex, s.selectedOptions.length, s.selectedOptions[0].text]; var extra = document.createElement("option"); extra.text = "d"; s.add(extra, 0); s.remove(3); return [before.join(" "), after.join(" "), s.length, s.item(0).text, s.namedItem("x"), s.value].join(" | "); });
+t("multiple", function () { var s = document.createElement("select"); s.multiple = true; s.innerHTML = "<option selected>a<option>b<option selected>c"; return [s.type, s.selectedOptions.length, s.selectedIndex, s.value].join(" "); });
+// a <style>'s sheet, as styled-components and emotion change it, and document.styleSheets
+t("style sheet", function () {
+  var had = document.styleSheets.length, st = document.createElement("style");
+  var outside = st.sheet;
+  document.head.appendChild(st);
+  var sheet = st.sheet, probe = document.createElement("p"); probe.className = "sheeted"; document.body.appendChild(probe);
+  sheet.insertRule(".sheeted { color: rgb(0, 0, 255) }", 0);
+  sheet.insertRule(".sheeted { margin-left: 3px }", 1);
+  var made = [getComputedStyle(probe).color, getComputedStyle(probe).marginLeft, sheet.cssRules.length, sheet.cssRules[1].cssText];
+  sheet.deleteRule(1);
+  var deleted = [getComputedStyle(probe).marginLeft, sheet.cssRules.length];
+  st.textContent = ".sheeted { color: rgb(1, 2, 3) }";
+  var retold = [getComputedStyle(probe).color, sheet.cssRules.length];
+  var refused = ""; try { sheet.replaceSync(""); } catch (e) { refused = e.name; }
+  return [outside, document.styleSheets.length - had, sheet === st.sheet, sheet.ownerNode === st, sheet instanceof CSSStyleSheet, document.styleSheets.item(had) === sheet, made.join(" "), deleted.join(" "), retold.join(" "), refused].join(" | ");
+});
+t("equal nodes", function () { var a = document.createElement("div"), b = document.createElement("div"); a.innerHTML = b.innerHTML = "<b class=x>hi</b> there"; var same = a.isEqualNode(b); b.firstChild.setAttribute("id", "y"); return [same, a.isEqualNode(b), a.isEqualNode(null), document.createTextNode("x").isEqualNode(document.createTextNode("x")), a.hasAttributeNS(null, "id"), b.firstChild.hasAttributeNS(null, "id")].join(" "); });
+// an <img> with srcset and no src asks for srcset's first
+var set = new Image();
+set.onload = function (e) { log("srcset load (wrong):", e.type); };
+set.onerror = function (e) { log("srcset asked for its first:", e.type); };
+set.srcset = "/first-of-set.png 480w, /api/echo 640w";
 var ch = new MessageChannel();
 ch.port2.onmessage = function (e) { log("message:", e.data.n, e.data === sent); };
 var sent = {n: 7};

@@ -1379,6 +1379,26 @@ phi.PageBind:Library
 		;;
 	[end: (Js.NewString: a.value a.value_len)]
 
+	# What a field says when a script has given it a value (input.value = ...), into b: false if no
+	# script has, when what it says is its value attribute. (For the browser, which draws it.)
+	[LiveValue: ptr<DomNode> n: 0; ptr<WlBuf> b: 0;]
+		if n is 0 or n.js_wrapper is 0 return false;
+		if not (JsV.IsObj: n.js_wrapper) return false;
+		ptr<JsObj> w: (JsV.AsObj: n.js_wrapper);
+		ptr<JsProp> found: (JsObjs.Find: w (JsStrs.InternZ: '%value') as ptr<u8>);
+		if found is 0 return false;
+		call Js.TextOf: found.value b;
+	[end: true]
+
+	# A field's value is what's typed in it now (the browser's): what a script reads as its value,
+	# if a script has a hold of it
+	[SetLiveValue: ptr<DomNode> n: 0; ptr<u8> text: 0; u32 len: 0;]
+		if n is 0 or n.js_wrapper is 0 return;
+		if not (JsV.IsObj: n.js_wrapper) return;
+		ptr<JsObj> w: (JsV.AsObj: n.js_wrapper);
+		call JsObjs.DefineValue: w (JsStrs.InternZ: '%value') as ptr<u8> (Js.NewString: text len) JsObjs.W;
+	[end]
+
 	[ValuePropSet: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (ThisElement: args);
 		ptr<JsObj> w: (JsV.AsObj: (Wrap: n));

@@ -15,6 +15,7 @@
 //   XMLHttpRequest                 made of fetch, which sends the method, headers and body it's given
 //   HTMLMediaElement               under <video> and <audio>: what a browser that plays nothing says
 //   popovers                       showPopover, hidePopover, togglePopover, ToggleEvent (:popover-open)
+//   <select> and <option>          options, selectedIndex, value, add, remove; text, selected, index
 //   CSS.supports and CSS.escape, PerformanceObserver, requestIdleCallback, reportError,
 //   crypto.getRandomValues and randomUUID (from %randomBytes: PHI's crypto.random), visualViewport,
 //   and the names of the classes the window's own objects are made from (History, Location ...)
@@ -1335,12 +1336,17 @@
     Object.defineProperty(global, "crypto", { get: function () { return crypto; }, configurable: true, enumerable: true });
   }
 
-  // ---- constructable stylesheets, and adoptedStyleSheets ----
+  // ---- stylesheets: constructable ones, adoptedStyleSheets, and <style> and <link>'s ----
   // A CSSStyleSheet a script makes is parsed by the page once (%sheetSet), and styles each tree that
   // adopts it (%adopt): the document, or a shadow root. Its cssRules are the text of each rule.
+  // A <style>'s sheet (style.sheet, document.styleSheets) has the rules its text has; once a script
+  // changes them (insertRule, as styled-components and emotion do) they're what styles the page
+  // (%styleText), until the element's text changes, which they're read from again. A <link>'s
+  // rules aren't a script's to see here: its cssRules are empty, and rules put in it do nothing.
 
   var sheetNew = global["%sheetNew"], sheetSet = global["%sheetSet"], adopt = global["%adopt"];
-  delete global["%sheetNew"]; delete global["%sheetSet"]; delete global["%adopt"];
+  var styleText = global["%styleText"];
+  delete global["%sheetNew"]; delete global["%sheetSet"]; delete global["%adopt"]; delete global["%styleText"];
 
   // a sheet's text, cut into its rules at the top level (strings and comments looked past)
   function splitRules(text) {
@@ -1391,19 +1397,37 @@
       hidden(this, "_media", options.media === undefined ? "" : String(options.media));
       hidden(this, "_disabled", !!options.disabled);
     }
-    _set() { sheetSet(this._key, this._disabled ? "" : this._rules.join("\n")); }
-    get cssRules() { var self = this; return this._rules.map(function (t) { return new CSSRule(t, self); }); }
+    _set() {
+      var text = this._disabled ? "" : this._rules.join("\n");
+      if (!this._owner) sheetSet(this._key, text);
+      else if (this._owner.localName === "style") styleText(this._owner, text);
+    }
+    // (a <style>'s: its text again if that's changed since its rules were read)
+    _sync() {
+      var el = this._owner;
+      if (!el || el.localName !== "style") return;
+      var text = el.textContent;
+      if (text !== this._base) {
+        this._base = text;
+        this._rules = splitRules(text);
+      }
+    }
+    get cssRules() { this._sync(); var self = this; return this._rules.map(function (t) { return new CSSRule(t, self); }); }
     get rules() { return this.cssRules; }
     get type() { return "text/css"; }
-    get href() { return null; }
-    get ownerNode() { return null; }
+    get href() { return this._owner && this._owner.localName === "link" ? this._owner.href : null; }
+    get ownerNode() { return this._owner || null; }
     get ownerRule() { return null; }
     get parentStyleSheet() { return null; }
     get title() { return null; }
-    get media() { return { mediaText: this._media, length: this._media ? 1 : 0 }; }
+    get media() {
+      var m = this._owner ? (this._owner.getAttribute("media") || "") : this._media;
+      return { mediaText: m, length: m ? 1 : 0 };
+    }
     get disabled() { return this._disabled; }
     set disabled(v) { this._disabled = !!v; this._set(); }
     replaceSync(text) {
+      if (this._owner) throw new DOMException("Only a sheet a script made can be replaced", "NotAllowedError");
       this._rules = splitRules(String(text)).filter(function (r) { return !/^@import\b/i.test(r); });
       this._set();
     }
@@ -1412,6 +1436,7 @@
       return Promise.resolve(this);
     }
     insertRule(rule, index) {
+      this._sync();
       index = index === undefined ? 0 : index >>> 0;
       if (index > this._rules.length) throw new DOMException("The index is past the sheet's end", "IndexSizeError");
       var parts = splitRules(String(rule));
@@ -1421,6 +1446,7 @@
       return index;
     }
     deleteRule(index) {
+      this._sync();
       index = index >>> 0;
       if (index >= this._rules.length) throw new DOMException("There's no rule there", "IndexSizeError");
       this._rules.splice(index, 1);
@@ -1434,6 +1460,55 @@
   define("CSSRule", CSSRule);
   define("StyleSheet", StyleSheet);
   define("CSSStyleSheet", CSSStyleSheet);
+
+  // a <style> or <link>'s sheet, the same one each time (none while it's out of the document)
+  var ownSheets = new WeakMap();
+  function ownSheet(el) {
+    if (!el.isConnected) return null;
+    if (el.localName === "link" && !/(^|\s)stylesheet(\s|$)/i.test(el.getAttribute("rel") || "")) return null;
+    var sheet = ownSheets.get(el);
+    if (!sheet) {
+      sheet = Object.create(CSSStyleSheet.prototype);
+      hidden(sheet, "_key", 0);
+      hidden(sheet, "_rules", []);
+      hidden(sheet, "_media", "");
+      hidden(sheet, "_disabled", false);
+      hidden(sheet, "_owner", el);
+      hidden(sheet, "_base", null);
+      ownSheets.set(el, sheet);
+    }
+    return sheet;
+  }
+  ["HTMLStyleElement", "HTMLLinkElement"].forEach(function (name) {
+    var ctor = global[name];
+    if (ctor && !Object.getOwnPropertyDescriptor(ctor.prototype, "sheet")) {
+      Object.defineProperty(ctor.prototype, "sheet", {
+        get: function () { return ownSheet(this); }, enumerable: true, configurable: true
+      });
+    }
+  });
+  // document.styleSheets: the document's <style>s and stylesheet <link>s, in order (not its shadow
+  // trees')
+  class StyleSheetList {
+    constructor(list) { for (var i = 0; i < list.length; i++) this[i] = list[i]; hidden(this, "_n", list.length); }
+    get length() { return this._n; }
+    item(i) { i = i >>> 0; return i < this._n ? this[i] : null; }
+    [Symbol.iterator]() { return Array.prototype.slice.call(this, 0, this._n)[Symbol.iterator](); }
+  }
+  define("StyleSheetList", StyleSheetList);
+  if (global.Document && !Object.getOwnPropertyDescriptor(global.Document.prototype, "styleSheets")) {
+    Object.defineProperty(global.Document.prototype, "styleSheets", {
+      get: function () {
+        var found = [], els = this.querySelectorAll("style, link");
+        for (var i = 0; i < els.length; i++) {
+          var sheet = els[i].namespaceURI === "http://www.w3.org/1999/xhtml" ? ownSheet(els[i]) : null;
+          if (sheet) found.push(sheet);
+        }
+        return new StyleSheetList(found);
+      },
+      enumerable: true, configurable: true
+    });
+  }
 
   var adopted = new WeakMap();
   function adoptedAccessor(proto) {
@@ -1619,6 +1694,48 @@
   if (global.HTMLFormElement) {
     urlProperty(global.HTMLFormElement.prototype, "action", "action", function (form) {
       return (form.ownerDocument || global.document).URL;
+    });
+  }
+
+  // element.hasAttributeNS(namespace, name)
+  if (global.Element && !global.Element.prototype.hasAttributeNS) {
+    hidden(global.Element.prototype, "hasAttributeNS", function hasAttributeNS(ns, name) {
+      return this.getAttributeNS(ns, name) !== null;
+    });
+  }
+
+  // node.isEqualNode(other): the same kind of node, saying the same, with equal children
+  if (global.Node && !global.Node.prototype.isEqualNode) {
+    var equalNodes = function (a, b) {
+      if (a.nodeType !== b.nodeType) return false;
+      switch (a.nodeType) {
+        case 1:
+          if (a.namespaceURI !== b.namespaceURI || a.prefix !== b.prefix || a.localName !== b.localName) return false;
+          if (a.attributes.length !== b.attributes.length) return false;
+          for (var i = 0; i < a.attributes.length; i++) {
+            var at = a.attributes[i];
+            if (b.getAttributeNS(at.namespaceURI, at.localName) !== at.value) return false;
+          }
+          break;
+        case 3: case 4: case 8:
+          if (a.data !== b.data) return false;
+          break;
+        case 7:
+          if (a.target !== b.target || a.data !== b.data) return false;
+          break;
+        case 10:
+          if (a.name !== b.name || a.publicId !== b.publicId || a.systemId !== b.systemId) return false;
+          break;
+      }
+      var ak = a.childNodes, bk = b.childNodes;
+      if (ak.length !== bk.length) return false;
+      for (var k = 0; k < ak.length; k++) if (!equalNodes(ak[k], bk[k])) return false;
+      return true;
+    };
+    hidden(global.Node.prototype, "isEqualNode", function isEqualNode(other) {
+      if (other === null || other === undefined) return false;
+      if (!(other instanceof global.Node)) throw new TypeError("isEqualNode takes a Node");
+      return equalNodes(this, other);
     });
   }
 
@@ -2068,6 +2185,132 @@
     hidden(hp, "togglePopover", function togglePopover(force) {
       var open = force === undefined ? !openPopovers.has(this) : !!force;
       return settle(this, open);
+    });
+  }
+
+  // ---- <select> and <option> ----
+  // What scripts build and read menus with. Which options are selected is their selected attributes
+  // (what the browser shows is the first of them); a single select with none selected shows its
+  // first option, and says so.
+  if (global.HTMLSelectElement && !global.HTMLSelectElement.prototype.add) {
+    var sp = global.HTMLSelectElement.prototype, op = global.HTMLOptionElement.prototype;
+    var optionsOf = function (sel) {
+      var list = [];
+      for (var c = sel.firstElementChild; c; c = c.nextElementSibling) {
+        if (c.localName === "option") list.push(c);
+        else if (c.localName === "optgroup") {
+          for (var g = c.firstElementChild; g; g = g.nextElementSibling) if (g.localName === "option") list.push(g);
+        }
+      }
+      return list;
+    };
+    var selectOf = function (opt) {
+      var p = opt.parentElement;
+      if (p && p.localName === "optgroup") p = p.parentElement;
+      return p && p.localName === "select" ? p : null;
+    };
+    var chosen = function (sel) {
+      var list = optionsOf(sel);
+      for (var i = 0; i < list.length; i++) if (list[i].hasAttribute("selected")) return i;
+      return list.length && !sel.multiple ? 0 : -1;
+    };
+    var choose = function (sel, index) {
+      var list = optionsOf(sel);
+      for (var i = 0; i < list.length; i++) {
+        if (i === index) list[i].setAttribute("selected", "");
+        else if (!sel.multiple || index < 0) list[i].removeAttribute("selected");
+      }
+    };
+    var collection = function (sel) {
+      var list = optionsOf(sel);
+      list.item = function (i) { return list[i] || null; };
+      list.namedItem = function (n) { return list.find(function (o) { return o.id === n || o.getAttribute("name") === n; }) || null; };
+      list.add = function (el, before) { sel.add(el, before); };
+      list.remove = function (i) { sel.remove(i); };
+      Object.defineProperty(list, "selectedIndex", { get: function () { return sel.selectedIndex; }, set: function (v) { sel.selectedIndex = v; } });
+      return list;
+    };
+    Object.defineProperties(sp, {
+      options: { get: function () { return collection(this); }, configurable: true, enumerable: true },
+      length: {
+        get: function () { return optionsOf(this).length; },
+        set: function (n) {
+          var list = optionsOf(this);
+          n = Math.max(0, n >>> 0);
+          while (list.length > n) list.pop().remove();
+          for (var i = list.length; i < n; i++) this.appendChild(global.document.createElement("option"));
+        },
+        configurable: true, enumerable: true
+      },
+      selectedIndex: {
+        get: function () { return chosen(this); },
+        set: function (i) { choose(this, i | 0); },
+        configurable: true, enumerable: true
+      },
+      value: {
+        get: function () { var i = chosen(this); return i < 0 ? "" : optionsOf(this)[i].value; },
+        set: function (v) {
+          v = String(v);
+          var list = optionsOf(this), at = -1;
+          for (var i = 0; i < list.length; i++) if (list[i].value === v) { at = i; break; }
+          choose(this, at);
+        },
+        configurable: true, enumerable: true
+      },
+      selectedOptions: {
+        get: function () { var self = this, i = chosen(this); return optionsOf(this).filter(function (o, k) { return o.hasAttribute("selected") || (k === i && !self.multiple); }); },
+        configurable: true, enumerable: true
+      },
+      type: { get: function () { return this.multiple ? "select-multiple" : "select-one"; }, configurable: true, enumerable: true }
+    });
+    hidden(sp, "add", function add(el, before) {
+      var ref = typeof before === "number" ? (optionsOf(this)[before] || null) : (before || null);
+      if (ref) ref.parentNode.insertBefore(el, ref); else this.appendChild(el);
+    });
+    hidden(sp, "item", function item(i) { return optionsOf(this)[i] || null; });
+    hidden(sp, "namedItem", function namedItem(n) { return collection(this).namedItem(n); });
+    var removeSelf = global.Element.prototype.remove;
+    hidden(sp, "remove", function remove(index) {
+      if (arguments.length === 0) return removeSelf.call(this);
+      var o = optionsOf(this)[index];
+      if (o) o.remove();
+    });
+    Object.defineProperties(op, {
+      text: {
+        get: function () { return this.textContent.replace(/[ \t\n\f\r]+/g, " ").trim(); },
+        set: function (v) { this.textContent = String(v); },
+        configurable: true, enumerable: true
+      },
+      index: {
+        get: function () { var sel = selectOf(this); return sel ? optionsOf(sel).indexOf(this) : 0; },
+        configurable: true, enumerable: true
+      },
+      selected: {
+        get: function () { var sel = selectOf(this); return this.hasAttribute("selected") || (!!sel && !sel.multiple && chosen(sel) === optionsOf(sel).indexOf(this)); },
+        set: function (v) {
+          var sel = selectOf(this);
+          if (v && sel && !sel.multiple) choose(sel, optionsOf(sel).indexOf(this));
+          else if (v) this.setAttribute("selected", "");
+          else this.removeAttribute("selected");
+        },
+        configurable: true, enumerable: true
+      },
+      // (an option with no value attribute has its text for its value)
+      value: {
+        get: function () { var v = this.getAttribute("value"); return v === null ? this.text : v; },
+        set: function (v) { this.setAttribute("value", String(v)); },
+        configurable: true, enumerable: true
+      },
+      defaultSelected: {
+        get: function () { return this.hasAttribute("selected"); },
+        set: function (v) { if (v) this.setAttribute("selected", ""); else this.removeAttribute("selected"); },
+        configurable: true, enumerable: true
+      },
+      label: {
+        get: function () { return this.hasAttribute("label") ? this.getAttribute("label") : this.text; },
+        set: function (v) { this.setAttribute("label", String(v)); },
+        configurable: true, enumerable: true
+      }
     });
   }
 })(this);

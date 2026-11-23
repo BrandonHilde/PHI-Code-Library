@@ -2061,6 +2061,10 @@ phi.CssVars:Library
 		if m.depth > 32
 			s.vars is (Flatten: m);
 		;;
+		# (done with this element's list: its var()s are its map's from now on, and the next
+		# element's are its own, which needn't have a list at all)
+		slots is 0;
+		slot_n is 0;
 	[end]
 
 	# a map with everything in it, for when the chain has grown long

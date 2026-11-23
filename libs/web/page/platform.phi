@@ -12,6 +12,7 @@ phi.PagePlatform:Library
 		call Js.DefineNative: JsRt.r.global '%sheetNew' addr SheetNew 0;
 		call Js.DefineNative: JsRt.r.global '%sheetSet' addr SheetSet 2;
 		call Js.DefineNative: JsRt.r.global '%adopt' addr Adopt 2;
+		call Js.DefineNative: JsRt.r.global '%styleText' addr StyleText 2;
 		call Js.DefineNative: JsRt.r.global '%popover' addr Popover 2;
 		str js: (PagePlatformJs.Source);
 		call Page.RunSource: p addr js:0 js.len as u32 'platform';
@@ -63,6 +64,23 @@ phi.PagePlatform:Library
 			call p.css.AddSheet: made;
 		;;
 		p.doc.version++;
+	[end: JsV.UNDEF]
+
+	# %styleText(style element, text): the rules a script has made its sheet say (insertRule and the
+	# rest), which style the page in place of what the element says; undefined: what it says again
+	[StyleText: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		ptr<DomNode> n: (PageBind.NodeOf: (Js.Arg: args argc 0));
+		if n is 0 or n.type is not DomType.ELEMENT return JsV.UNDEF;
+		u64 tv: (Js.Arg: args argc 1);
+		if tv is JsV.UNDEF
+			call Page.OwnStyle: p n 0 as ptr<u8> 0 true;
+			return JsV.UNDEF;
+		;;
+		WlBuf text;
+		call Js.TextOf: tv addr text;
+		call Page.OwnStyle: p n text.data text.len false;
+		call text.Free;
 	[end: JsV.UNDEF]
 
 	# %adopt(document or shadow root, [keys]): the sheets that tree has adopted, from now on

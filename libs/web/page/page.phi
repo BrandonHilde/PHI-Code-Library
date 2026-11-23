@@ -113,6 +113,12 @@ struct.PageSheet
 	u32 text_hash;
 	u32 text_len;
 	bln seen;
+	# what a script made of a <style>'s sheet (insertRule, deleteRule: page/platform.js), which is
+	# what styles the page instead of its text, until its text changes (own_base was its hash then)
+	ptr<u8> own;
+	u32 own_len;
+	u32 own_base;
+	bln owned;
 }
 
 struct.Page
@@ -248,7 +254,7 @@ phi.Page:Library
 	[Pictures: ptr<Page> p: 0; ptr<DomNode> target: 0; int kind: 0; ptr<DomNode> node: 0; ptr<WlAtom> name: 0;]
 		if kind is Dom.ATTRIBUTE
 			# (told before the new value's in place: it asks once what's running is done, RunJobs)
-			if target.doc is p.doc and target.tag is (WlAtoms.GetZ: 'img') and target.ns is DomNs.HTML and name is (WlAtoms.GetZ: 'src')
+			if target.doc is p.doc and target.tag is (WlAtoms.GetZ: 'img') and target.ns is DomNs.HTML and (name is (WlAtoms.GetZ: 'src') or name is (WlAtoms.GetZ: 'srcset'))
 				while u32 q: 0; q < p.new_srcs.len; q++;
 					if p.new_srcs:q is target return;
 				;;
@@ -271,9 +277,29 @@ phi.Page:Library
 
 	[AskPicture: ptr<Page> p: 0; ptr<DomNode> img: 0;]
 		ptr<DomAttr> src: (Dom.Attr: img (WlAtoms.GetZ: 'src'));
-		if src is 0 or src.value_len is 0 return;
+		if src is not 0 and src.value_len > 0
+			img.flags is img.flags | Dom.PICTURE_ASKED;
+			u32 id: (Request: p src.value src.value_len PageLoad.IMAGE img);
+			return;
+		;;
+		# (none: srcset's first picture, the one its load event is about as far as a script can tell)
+		ptr<DomAttr> set: (Dom.Attr: img (WlAtoms.GetZ: 'srcset'));
+		if set is 0 or set.value_len is 0 return;
+		u32 from: 0;
+		while from < set.value_len and (set.value:from is 32 or set.value:from is 9 or set.value:from is 10 or set.value:from is ',')
+			from++;
+		;;
+		u32 to: from;
+		while to < set.value_len and set.value:to is not 32 and set.value:to is not 9 and set.value:to is not 10
+			to++;
+		;;
+		# (a comma ending the address is the list's, not the address's)
+		while to > from and set.value:(to - 1) is ','
+			to--;
+		;;
+		if to is from return;
 		img.flags is img.flags | Dom.PICTURE_ASKED;
-		u32 id: (Request: p src.value src.value_len PageLoad.IMAGE img);
+		u32 id2: (Request: p set.value + from to - from PageLoad.IMAGE img);
 	[end]
 
 	# What CSS asks of the page (CssSel.on_state): whether a popover is showing, and what has the
@@ -319,6 +345,7 @@ phi.Page:Library
 			if s.sheet is not 0
 				call Css.FreeSheet: s.sheet;
 			;;
+			call Disown: s;
 		;;
 		call p.css.Free;
 		call p.parser.Free;
@@ -835,6 +862,7 @@ phi.Page:Library
 				p.sheets:i.sheet is 0;
 				p.sheets:i.node is 0;
 				p.sheets:i.text_hash is 0;
+				call Disown: addr p.sheets:i;
 			;;
 		;;
 		p.sheets_version is p.doc.version;
@@ -913,6 +941,18 @@ phi.Page:Library
 		WlBuf text;
 		call Dom.TextContent: n text;
 		u32 h: (WlText.Hash: text.data text.len);
+		if s.owned
+			if h is s.own_base
+				# (a script's rules are what it says)
+				call text.Clear;
+				call text.AddN: s.own s.own_len;
+				h is (WlText.Hash: text.data text.len) ^ 0x5A5A5A5A;
+			;;
+			else
+				# (its text changed: that's what it says now)
+				call Disown: s;
+			;;
+		;;
 		ptr<DomNode> scope: (SheetScope: n);
 		if s.sheet is not 0 and s.sheet.scope is not scope
 			# moved into another tree: it's that tree's now
@@ -932,6 +972,39 @@ phi.Page:Library
 			;;
 		;;
 		call text.Free;
+	[end]
+
+	[Disown: ptr<PageSheet> s: 0;]
+		if s.own is not 0
+			free s.own;
+		;;
+		s.own is 0;
+		s.own_len is 0;
+		s.owned is false;
+	[end]
+
+	# A script's rules for a <style> (%styleText): text, or with no text its own text again
+	[OwnStyle: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<u8> text: 0; u32 len: 0; bln clear: false;]
+		ptr<PageSheet> s: (SheetFor: p n);
+		if s is 0 return;
+		call Disown: s;
+		if not clear
+			WlBuf now;
+			call Dom.TextContent: n now;
+			s.own_base is (WlText.Hash: now.data now.len);
+			call now.Free;
+			s.own is new u8[len + 1];
+			if s.own is 0 return;
+			call Mem.Copy: s.own text len;
+			s.own:len is 0;
+			s.own_len is len;
+			s.owned is true;
+		;;
+		# (read again next time styles are worked out)
+		s.text_hash is 0;
+		s.text_len is 0xFFFFFFFF;
+		p.sheets_scanned is false;
+		p.doc.version++;
 	[end]
 
 	[SeeLink: ptr<Page> p: 0; ptr<DomNode> n: 0;]
