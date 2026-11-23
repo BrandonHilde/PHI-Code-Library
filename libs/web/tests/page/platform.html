@@ -139,6 +139,57 @@ var baseEl = document.createElement("base"); baseEl.setAttribute("href", "/sub/"
 t("base", function () { var a = document.createElement("a"); a.setAttribute("href", "x.html"); return [document.baseURI, a.href].join(" "); });
 var inSub = new Image(); inSub.onerror = function () { log("picture in base:", inSub.getAttribute("src")); }; inSub.src = "in-sub.png";
 setTimeout(function () { baseEl.remove(); log("base gone:", document.baseURI); }, 0);
+// a script made by a script runs when it goes into the document, its code given as its text (jQuery's way)
+t("script text", function () {
+  var s = document.createElement("script");
+  s.text = "window.viaText = (window.viaText || 0) + 1;";
+  var held = s.textContent;
+  document.head.appendChild(s).parentNode.removeChild(s);
+  var again = document.createElement("script"); again.appendChild(document.createComment("no")); again.appendChild(document.createTextNode("window.viaText += 10;"));
+  document.head.appendChild(again);
+  s.async = true; s.defer = false;
+  return [held === "window.viaText = (window.viaText || 0) + 1;", window.viaText, again.text, s.hasAttribute("async"), s.async, s.defer, "noModule" in s].join(" ");
+});
+// a form's fields, by place and by name
+t("form fields", function () {
+  var f = document.createElement("form");
+  f.innerHTML = '<input name="email" value="a@b.c"><input type="hidden" id="token" value="t1"><fieldset><select name="size"><option value="s">S<option value="m" selected>M</select></fieldset>' +
+    '<input type="radio" name="color" value="red"><input type="radio" name="color" value="blue" checked><input type="image" name="pic"><textarea name="note">hi</textarea><button name="go" value="1">Go</button><span id="plain">x</span>';
+  document.body.appendChild(f);
+  var e = f.elements;
+  var out = [f.email.value, f.token.value, f.size.value, f.color.length, f.color.value, f.pic === undefined, f.plain === undefined, f.length, e.length,
+    e[0] === f.email, e.namedItem("note").tagName, e.color instanceof RadioNodeList, f.email.form === f, f.size.options[0].form === f, typeof f.submit, f.method, f.enctype, "email" in e];
+  f.color.value = "red";
+  out.push(f.color[0].checked);
+  f.email.value = "changed"; f.note.value = "changed"; f.reset();
+  out.push(f.email.value, f.note.value, new FormData(f).get("size"));
+  f.remove();
+  return out.join(" ");
+});
+// performance: marks and measures are kept, and an observer hears of them and of the page's own load
+t("performance", function () {
+  var m = performance.mark("began", { startTime: 5, detail: { n: 1 } });
+  performance.mark("ended", { startTime: 25 });
+  var d = performance.measure("took", "began", "ended");
+  var o = performance.measure("opts", { start: 10, duration: 7 });
+  var missing = ""; try { performance.measure("bad", "no-such-mark"); } catch (e) { missing = e.name; }
+  var sinceStart = performance.measure("load", "navigationStart", "ended");
+  missing += "/" + sinceStart.startTime + "/" + sinceStart.duration;
+  var nav = performance.getEntriesByType("navigation");
+  return [m.entryType, m.startTime, m.detail.n, d.startTime, d.duration, o.startTime, o.duration, missing, performance.getEntriesByType("mark").length,
+    performance.getEntriesByName("took").length, nav.length, nav[0].type, nav[0].serverTiming.length, nav[0].name === location.href,
+    PerformanceObserver.supportedEntryTypes.join("+")].join(" ");
+});
+new PerformanceObserver(function (list, obs) {
+  log("observer, navigation buffered:", list.getEntries().length, list.getEntries()[0].entryType, list.getEntriesByType("navigation").length);
+  obs.disconnect();
+}).observe({ type: "navigation", buffered: true });
+var seen = new PerformanceObserver(function (list) { log("observer, marks:", list.getEntries().map(function (e) { return e.name + "@" + e.startTime; }).join(" ")); });
+seen.observe({ entryTypes: ["mark", "measure", "paint"] });
+performance.mark("after", { startTime: 30 });
+performance.measure("span", { start: 1, end: 3 });
+new PerformanceObserver(function () { log("observer of what isn't measured (wrong)"); }).observe({ type: "paint", buffered: true });
+setTimeout(function () { performance.clearMarks(); performance.clearMeasures("took"); log("performance cleared:", performance.getEntriesByType("mark").length, performance.getEntriesByType("measure").length); }, 0);
 var ch = new MessageChannel();
 ch.port2.onmessage = function (e) { log("message:", e.data.n, e.data === sent); };
 var sent = {n: 7};

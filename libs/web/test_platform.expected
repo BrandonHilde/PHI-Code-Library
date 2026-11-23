@@ -63,6 +63,9 @@ style sheet:  | 1 | true | true | true | true | rgb(0, 0, 255) 3px 2 .sheeted { 
 equal nodes: true false false true false true
 animate: running fade idle 2 [0,1] 10 InvalidStateError
 base: http://test.example/sub/ http://test.example/sub/x.html
+script text: true 11 window.viaText += 10; true true false true
+form fields: a@b.c t1 m 2 blue true true 8 8 true TEXTAREA true true true function get application/x-www-form-urlencoded true true a@b.c hi m
+performance: mark 5 1 5 20 10 7 SyntaxError/0/25 2 1 1 navigate 0 true mark+measure+navigation
 script ends
 blob text: blob text
 play: NotSupportedError
@@ -86,6 +89,9 @@ made with: made with
 toggle: closed open
 toggle: open closed
 base gone: http://test.example/platform.html
+observer, navigation buffered: 1 navigation 1
+observer, marks: after@30 span@1
+performance cleared: 0 3
 message: 7 false
 animation finished: true finished 1
 --- a frame

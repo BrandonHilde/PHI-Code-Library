@@ -790,7 +790,7 @@
   class FormData {
     constructor(form) {
       hidden(this, "_list", []);
-      if (form && form.elements === undefined && form.querySelectorAll) {
+      if (form && form.nodeType === 1 && form.querySelectorAll) {
         var fields = form.querySelectorAll("input[name], select[name], textarea[name]");
         for (var i = 0; i < fields.length; i++) {
           var f = fields[i];
@@ -1283,16 +1283,135 @@
     toJSON() { return { name: this.name, entryType: this.entryType, startTime: this.startTime, duration: this.duration }; }
   }
   define("PerformanceEntry", PerformanceEntry);
+  // What's measured: the page's own load (one "navigation" entry) and the marks and measures a
+  // script makes. A PerformanceObserver is told of new ones, and with buffered: true of those made
+  // before it began, as the standard has it. (Wikipedia's banner code waits for the navigation
+  // entry before it shows anything: an observer that took the request and never answered left
+  // it waiting for good.) Not measured: resources, paints, long tasks. supportedEntryTypes says
+  // so, and observing one of those does nothing, as in a browser that doesn't have it.
+  var perf = global.performance;
+  var perfEntries = [];
+  var perfObservers = [];
+  var navEntry = null;
+  function navigationEntry() {
+    if (!navEntry) {
+      navEntry = new PerformanceEntry(String(global.location ? global.location.href : ""), "navigation", 0, perf ? perf.now() : 0);
+      ["unloadEventStart", "unloadEventEnd", "redirectStart", "redirectEnd", "workerStart", "fetchStart", "domainLookupStart",
+        "domainLookupEnd", "connectStart", "connectEnd", "secureConnectionStart", "requestStart", "responseStart", "responseEnd",
+        "domInteractive", "domContentLoadedEventStart", "domContentLoadedEventEnd", "domComplete", "loadEventStart", "loadEventEnd",
+        "transferSize", "encodedBodySize", "decodedBodySize", "redirectCount", "responseStatus"].forEach(function (k) {
+        Object.defineProperty(navEntry, k, { value: 0, enumerable: true });
+      });
+      Object.defineProperty(navEntry, "type", { value: "navigate", enumerable: true });
+      Object.defineProperty(navEntry, "initiatorType", { value: "navigation", enumerable: true });
+      Object.defineProperty(navEntry, "nextHopProtocol", { value: "", enumerable: true });
+      Object.defineProperty(navEntry, "serverTiming", { value: Object.freeze([]), enumerable: true });
+    }
+    return navEntry;
+  }
+  function entriesOf(type, name) {
+    return [navigationEntry()].concat(perfEntries).filter(function (e) {
+      return (type === undefined || e.entryType === type) && (name === undefined || e.name === name);
+    });
+  }
+  function perfList(entries) {
+    return {
+      getEntries: function () { return entries.slice(); },
+      getEntriesByType: function (type) { return entries.filter(function (e) { return e.entryType === String(type); }); },
+      getEntriesByName: function (name, type) { return entries.filter(function (e) { return e.name === String(name) && (type === undefined || e.entryType === String(type)); }); }
+    };
+  }
+  // the observer hears of these in a task of its own, all that came by then at once
+  function perfQueue(observer, entries) {
+    if (!entries.length) return;
+    for (var i = 0; i < entries.length; i++) observer._queue.push(entries[i]);
+    if (observer._pending) return;
+    observer._pending = true;
+    global.setTimeout(function () {
+      observer._pending = false;
+      var batch = observer._queue.splice(0);
+      if (!batch.length) return;
+      observer._callback.call(observer, perfList(batch), observer);
+    }, 0);
+  }
+  function perfAdd(entry) {
+    perfEntries.push(entry);
+    if (perfEntries.length > 2000) perfEntries.shift();
+    perfObservers.forEach(function (o) { if (o._types.indexOf(entry.entryType) >= 0) perfQueue(o, [entry]); });
+  }
+  function markTime(v, otherwise) {
+    if (v === undefined) return otherwise;
+    if (typeof v === "number") return v;
+    var found = entriesOf("mark", String(v));
+    if (found.length) return found[found.length - 1].startTime;
+    // (or one of the moments of the page's own loading, by its name in performance.timing)
+    var timing = perf && perf.timing;
+    if (timing && typeof timing[v] === "number") return timing[v] - (timing.navigationStart || 0);
+    throw new DOMException("The mark '" + v + "' does not exist.", "SyntaxError");
+  }
   class PerformanceObserver {
     constructor(callback) {
       if (typeof callback !== "function") throw new TypeError("PerformanceObserver needs a function");
       hidden(this, "_callback", callback);
+      hidden(this, "_types", []);
+      hidden(this, "_queue", []);
+      hidden(this, "_pending", false);
     }
-    observe() { }
-    disconnect() { }
-    takeRecords() { return []; }
+    observe(options) {
+      if (!options || (options.entryTypes === undefined && options.type === undefined)) throw new TypeError("observe needs entryTypes or a type");
+      var asked = options.entryTypes !== undefined ? Array.from(options.entryTypes, String) : [String(options.type)];
+      var types = asked.filter(function (t) { return PerformanceObserver.supportedEntryTypes.indexOf(t) >= 0; });
+      if (!types.length) return;
+      var me = this;
+      types.forEach(function (t) { if (me._types.indexOf(t) < 0) me._types.push(t); });
+      if (perfObservers.indexOf(this) < 0) perfObservers.push(this);
+      if (options.buffered && options.type !== undefined) perfQueue(this, entriesOf(types[0]));
+    }
+    disconnect() {
+      this._types.length = 0;
+      this._queue.length = 0;
+      var i = perfObservers.indexOf(this);
+      if (i >= 0) perfObservers.splice(i, 1);
+    }
+    takeRecords() { return this._queue.splice(0); }
   }
-  PerformanceObserver.supportedEntryTypes = [];
+  PerformanceObserver.supportedEntryTypes = Object.freeze(["mark", "measure", "navigation"]);
+  if (perf) {
+    hidden(perf, "mark", function mark(name, options) {
+      if (arguments.length < 1) throw new TypeError("mark needs a name");
+      var e = new PerformanceEntry(String(name), "mark", options && options.startTime !== undefined ? Number(options.startTime) : perf.now(), 0);
+      Object.defineProperty(e, "detail", { value: options && options.detail !== undefined ? options.detail : null, enumerable: true });
+      perfAdd(e);
+      return e;
+    });
+    hidden(perf, "measure", function measure(name, a, b) {
+      if (arguments.length < 1) throw new TypeError("measure needs a name");
+      var start = 0, end = perf.now(), detail = null;
+      if (a !== null && typeof a === "object") {
+        if (a.start !== undefined) start = markTime(a.start, 0);
+        if (a.end !== undefined) end = markTime(a.end, end);
+        else if (a.duration !== undefined && a.start !== undefined) end = start + Number(a.duration);
+        if (a.duration !== undefined && a.start === undefined && a.end !== undefined) start = end - Number(a.duration);
+        if (a.detail !== undefined) detail = a.detail;
+      } else {
+        start = markTime(a === null ? undefined : a, 0);
+        end = markTime(b, end);
+      }
+      var e = new PerformanceEntry(String(name), "measure", start, end - start);
+      Object.defineProperty(e, "detail", { value: detail, enumerable: true });
+      perfAdd(e);
+      return e;
+    });
+    hidden(perf, "getEntries", function getEntries() { return entriesOf(); });
+    hidden(perf, "getEntriesByType", function getEntriesByType(type) { return entriesOf(String(type)); });
+    hidden(perf, "getEntriesByName", function getEntriesByName(name, type) { return entriesOf(type === undefined ? undefined : String(type), String(name)); });
+    hidden(perf, "clearMarks", function clearMarks(name) {
+      perfEntries = perfEntries.filter(function (e) { return e.entryType !== "mark" || (name !== undefined && e.name !== String(name)); });
+    });
+    hidden(perf, "clearMeasures", function clearMeasures(name) {
+      perfEntries = perfEntries.filter(function (e) { return e.entryType !== "measure" || (name !== undefined && e.name !== String(name)); });
+    });
+  }
   define("PerformanceObserver", PerformanceObserver);
 
   var idleIds = 0;
@@ -1791,6 +1910,182 @@
       enumerable: true, configurable: true
     });
   }
+
+  // A <script>'s text: what its text nodes hold, and setting it is setting its text. jQuery runs
+  // every script it's handed this way (a page's HTML put in with .html() or .append(), a script it
+  // fetched): script.text = code, then into the document. Without it nothing ran, silently.
+  if (global.HTMLScriptElement) {
+    if (!Object.getOwnPropertyDescriptor(global.HTMLScriptElement.prototype, "text")) {
+      Object.defineProperty(global.HTMLScriptElement.prototype, "text", {
+        get: function () {
+          var out = "";
+          for (var c = this.firstChild; c; c = c.nextSibling) if (c.nodeType === 3) out += c.data;
+          return out;
+        },
+        set: function (v) { this.textContent = v === null || v === undefined ? "" : String(v); },
+        enumerable: true, configurable: true
+      });
+    }
+    ["async", "defer", "noModule"].forEach(function (k) {
+      if (Object.getOwnPropertyDescriptor(global.HTMLScriptElement.prototype, k)) return;
+      var attr = k.toLowerCase();
+      Object.defineProperty(global.HTMLScriptElement.prototype, k, {
+        get: function () { return this.hasAttribute(attr); },
+        set: function (v) { if (v) this.setAttribute(attr, ""); else this.removeAttribute(attr); },
+        enumerable: true, configurable: true
+      });
+    });
+  }
+  if (global.HTMLTitleElement && !Object.getOwnPropertyDescriptor(global.HTMLTitleElement.prototype, "text")) {
+    Object.defineProperty(global.HTMLTitleElement.prototype, "text", {
+      get: function () { return this.textContent; },
+      set: function (v) { this.textContent = v; },
+      enumerable: true, configurable: true
+    });
+  }
+
+  // ---- forms ----
+  // A form's fields: form.elements (in order, and by name or id), form.length, and each field's
+  // own .form. form.email is the field of that name too, before anything of the form's own: the
+  // page's binding looks for it (PageBind.FormHookGet), and asks %radioList for the list when
+  // several share the name. submit() goes where a GET form goes; reset() puts back what the page
+  // wrote. Not kept: a POST from submit() (the host is asked only for addresses), validation
+  // (checkValidity says yes), fields tied to a form by a form="id" attribute from outside it, and
+  // a checkbox's or radio button's first state once a script has changed it (checked is its
+  // attribute here, so reset() finds it as it is now).
+  var LISTED = { BUTTON: 1, FIELDSET: 1, INPUT: 1, OBJECT: 1, OUTPUT: 1, SELECT: 1, TEXTAREA: 1 };
+  function formControls(form) {
+    var out = [], all = global.Element.prototype.getElementsByTagName.call(form, "*");
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i];
+      if (LISTED[e.tagName] && !(e.tagName === "INPUT" && (e.getAttribute("type") || "").toLowerCase() === "image")) out.push(e);
+    }
+    return out;
+  }
+  class RadioNodeList {
+    get value() {
+      for (var i = 0; i < this.length; i++) {
+        var e = this[i];
+        if (e.tagName === "INPUT" && (e.getAttribute("type") || "").toLowerCase() === "radio" && e.checked) return e.value === "" && !e.hasAttribute("value") ? "on" : e.value;
+      }
+      return "";
+    }
+    set value(v) {
+      v = String(v);
+      for (var i = 0; i < this.length; i++) {
+        var e = this[i];
+        if (e.tagName === "INPUT" && (e.getAttribute("type") || "").toLowerCase() === "radio" && (e.value === v || (v === "on" && !e.hasAttribute("value")))) { e.checked = true; return; }
+      }
+    }
+    item(i) { return this[i] || null; }
+    forEach(fn, me) { for (var i = 0; i < this.length; i++) fn.call(me, this[i], i, this); }
+    [Symbol.iterator]() { return Array.prototype.slice.call(this)[Symbol.iterator](); }
+  }
+  define("RadioNodeList", RadioNodeList);
+  class HTMLFormControlsCollection {
+    item(i) { return this[i] || null; }
+    namedItem(name) { return namedIn(Array.prototype.slice.call(this), String(name)); }
+    [Symbol.iterator]() { return Array.prototype.slice.call(this)[Symbol.iterator](); }
+  }
+  define("HTMLFormControlsCollection", HTMLFormControlsCollection);
+  function listOf(proto, items) {
+    var list = Object.create(proto);
+    for (var i = 0; i < items.length; i++) list[i] = items[i];
+    hidden(list, "length", items.length);
+    return list;
+  }
+  function namedIn(items, name) {
+    var found = items.filter(function (e) { return e.id === name || e.getAttribute("name") === name; });
+    if (!found.length) return null;
+    return found.length === 1 ? found[0] : listOf(RadioNodeList.prototype, found);
+  }
+  hidden(global, "%radioList", function (form, name) { return namedIn(formControls(form), String(name)); });
+  if (global.HTMLFormElement) {
+    var formProto = global.HTMLFormElement.prototype;
+    Object.defineProperty(formProto, "elements", {
+      get: function () {
+        var items = formControls(this), list = listOf(HTMLFormControlsCollection.prototype, items), seen = {};
+        items.forEach(function (e) {
+          [e.id, e.getAttribute("name")].forEach(function (k) {
+            if (k && !seen[k] && !(k in list)) { seen[k] = 1; hidden(list, k, namedIn(items, k)); }
+          });
+        });
+        return list;
+      },
+      enumerable: true, configurable: true
+    });
+    Object.defineProperty(formProto, "length", { get: function () { return formControls(this).length; }, enumerable: true, configurable: true });
+    [["name", "name", ""], ["target", "target", ""], ["acceptCharset", "accept-charset", ""], ["autocomplete", "autocomplete", "on"],
+      ["method", "method", "get"], ["enctype", "enctype", "application/x-www-form-urlencoded"], ["encoding", "enctype", "application/x-www-form-urlencoded"]].forEach(function (p) {
+      // (method and enctype say what a form without them does, not nothing)
+      if (p[2] === "" && Object.getOwnPropertyDescriptor(formProto, p[0])) return;
+      Object.defineProperty(formProto, p[0], {
+        get: function () { var v = this.getAttribute(p[1]); return v === null ? p[2] : p[0] === "method" ? (/^(post|dialog)$/i.test(v) ? v.toLowerCase() : "get") : v; },
+        set: function (v) { this.setAttribute(p[1], String(v)); },
+        enumerable: true, configurable: true
+      });
+    });
+    Object.defineProperty(formProto, "noValidate", {
+      get: function () { return this.hasAttribute("novalidate"); },
+      set: function (v) { if (v) this.setAttribute("novalidate", ""); else this.removeAttribute("novalidate"); },
+      enumerable: true, configurable: true
+    });
+    hidden(formProto, "checkValidity", function checkValidity() { return true; });
+    hidden(formProto, "reportValidity", function reportValidity() { return true; });
+    var goForm = function (form, submitter) {
+      var method = String(form.getAttribute("method") || "get").toLowerCase();
+      if (method === "dialog") {
+        var d = form.closest && form.closest("dialog");
+        if (d && d.close) d.close(submitter && submitter.value !== undefined ? String(submitter.value) : undefined);
+        return;
+      }
+      if (method === "post") {
+        if (global.console) global.console.warn("form.submit(): a POST isn't sent from a script yet");
+        return;
+      }
+      var to = new global.URL(form.getAttribute("action") || "", global.document.baseURI || global.location.href);
+      var pairs = new global.URLSearchParams();
+      new FormData(form).forEach(function (value, key) { if (typeof value === "string") pairs.append(key, value); });
+      if (submitter && submitter.getAttribute && submitter.getAttribute("name")) pairs.append(submitter.getAttribute("name"), String(submitter.value === undefined ? "" : submitter.value));
+      to.search = pairs.toString();
+      global.location.href = to.href;
+    };
+    hidden(formProto, "submit", function submit() { goForm(this, null); });
+    hidden(formProto, "requestSubmit", function requestSubmit(submitter) {
+      var Ev = global.SubmitEvent || global.Event;
+      if (this.dispatchEvent(new Ev("submit", { bubbles: true, cancelable: true, submitter: submitter || null }))) goForm(this, submitter || null);
+    });
+    hidden(formProto, "reset", function reset() {
+      if (!this.dispatchEvent(new global.Event("reset", { bubbles: true, cancelable: true }))) return;
+      formControls(this).forEach(function (e) {
+        if (e.tagName === "INPUT") {
+          var type = (e.getAttribute("type") || "").toLowerCase();
+          if (type === "checkbox" || type === "radio") e.checked = e.hasAttribute("checked");
+          else if (type !== "submit" && type !== "button" && type !== "reset" && type !== "hidden" && type !== "file") e.value = e.getAttribute("value") || "";
+        } else if (e.tagName === "TEXTAREA") {
+          e.value = e.textContent;
+        } else if (e.tagName === "SELECT" && e.options) {
+          for (var i = 0; i < e.options.length; i++) e.options[i].selected = e.options[i].hasAttribute("selected");
+        }
+      });
+    });
+  }
+  ["HTMLInputElement", "HTMLSelectElement", "HTMLTextAreaElement", "HTMLButtonElement", "HTMLFieldSetElement", "HTMLOutputElement",
+    "HTMLOptionElement", "HTMLLabelElement", "HTMLObjectElement", "HTMLLegendElement"].forEach(function (name) {
+    var C = global[name];
+    if (!C || Object.getOwnPropertyDescriptor(C.prototype, "form")) return;
+    Object.defineProperty(C.prototype, "form", {
+      get: function () {
+        var id = this.getAttribute("form");
+        if (id !== null && name !== "HTMLOptionElement" && name !== "HTMLLabelElement" && name !== "HTMLLegendElement") {
+          var f = global.document.getElementById(id);
+          return f && f.tagName === "FORM" ? f : null;
+        }
+        return this.closest ? this.closest("form") : null;
+      },
+      enumerable: true, configurable: true
+    });
+  });
 
   // ---- document.domain ----
   // its URL's host (none for a document with an opaque origin); setting it to the host or one of

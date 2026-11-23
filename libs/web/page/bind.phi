@@ -20,6 +20,8 @@ struct.PageCollection
 phi.PageBind:Library
 {
 	ptr<JsClass> node_class: 0;
+	ptr<JsClass> form_class: 0;     # a <form>'s: a node, whose fields are also reached by name (form.email)
+	bln form_busy: false;
 	ptr<JsClass> collection_class: 0;
 	ptr<JsClass> static_list_class: 0;
 	ptr<JsClass> token_class: 0;
@@ -63,6 +65,8 @@ phi.PageBind:Library
 	[Install: ptr<Page> p: 0;]
 		if node_class is 0
 			node_class is (JsObjs.NewClass: 'Node');
+			form_class is (JsObjs.NewClass: 'Node');
+			form_class.get is addr FormHookGet;
 			collection_class is (JsObjs.NewClass: 'HTMLCollection');
 			collection_class.get is addr CollGet;
 			collection_class.get_own is addr CollGetOwn;
@@ -255,18 +259,93 @@ phi.PageBind:Library
 				proto is doctype_proto;
 			;;
 		;;
-		ptr<JsObj> o: (JsObjs.NewHost: node_class proto n as ptr<u8>);
+		ptr<JsClass> cls: node_class;
+		if n.type is DomType.ELEMENT and n.ns is DomNs.HTML and n.tag is not 0 and n.tag.tag is HtmlTag.FORM
+			cls is form_class;
+		;;
+		ptr<JsObj> o: (JsObjs.NewHost: cls proto n as ptr<u8>);
 		n.js_wrapper is (JsV.Obj: o);
 	[end: n.js_wrapper]
+
+	# whether an object of this class is a node's
+	[IsNodeClass: ptr<JsClass> c: 0;]
+	[end: c is node_class or c is form_class]
 
 	[NodeOf: u64 v: 0;]
 		if (JsV.IsObj: v)
 			ptr<JsObj> o: (JsV.AsObj: v);
-			if o.cls is node_class
+			if o.cls is node_class or o.cls is form_class
 				return o.data as ptr<DomNode>;
 			;;
 		;;
 	[end: 0 as ptr<DomNode>]
+
+	# whether an element is one a form lists: a field, a button, a fieldset, an output, an object
+	# (not an <input type=image>)
+	[Listed: ptr<DomNode> n: 0;]
+		if n.type is not DomType.ELEMENT or n.ns is not DomNs.HTML or n.tag is 0 return false;
+		u32 t: n.tag.tag;
+		if t is HtmlTag.INPUT
+			ptr<u8> type: (Dom.AttrValue: n 'type');
+			if type is not 0 and (WlText.EqZ: 'image' 5 type) return false;
+			return true;
+		;;
+	[end: t is HtmlTag.BUTTON or t is HtmlTag.FIELDSET or t is HtmlTag.OBJECT or t is HtmlTag.OUTPUT or t is HtmlTag.SELECT or t is HtmlTag.TEXTAREA]
+
+	# form.email, form['user-name']: the form's field of that name or id comes before anything of
+	# the form's own, as the standard has it; several of one name (radio buttons) are a list of them,
+	# which the page's script makes (%radioList, platform.js)
+	[FormHookGet: ptr<JsObj> o: 0; u64 key: 0; u64 recv: 0; ptr<u64> output: 0;]
+		if form_busy or not (JsV.IsStr: key) return 0;
+		ptr<JsStr> s: (JsStrs.Flat: (JsV.AsStr: key));
+		if s.bytes is 0 return 0;
+		ptr<DomNode> form: o.data as ptr<DomNode>;
+		ptr<DomNode> first: 0;
+		int count: 0;
+		ptr<DomNode> n: form.first_child;
+		int budget: 20000;
+		while n is not 0 and budget > 0
+			budget--;
+			if (Listed: n)
+				ptr<u8> name: (Dom.AttrValue: n 'name');
+				ptr<u8> id: (Dom.AttrValue: n 'id');
+				if (name is not 0 and (WlText.EqZ: s.data s.bytes name)) or (id is not 0 and (WlText.EqZ: s.data s.bytes id))
+					if first is 0
+						first is n;
+					;;
+					count++;
+				;;
+			;;
+			if n.first_child is not 0
+				n is n.first_child;
+				continue;
+			;;
+			while n is not 0 and n is not form and n.next is 0
+				n is n.parent;
+			;;
+			if n is 0 or n is form
+				break;
+			;;
+			n is n.next;
+		;;
+		if count is 0 return 0;
+		if count is 1
+			output:0 is (Wrap: first);
+			return 1;
+		;;
+		# several: the script's list of them (while it's made, the form is an ordinary element)
+		ptr<JsProp> found: (JsObjs.Find: JsRt.r.global (JsStrs.InternZ: '%radioList') as ptr<u8>);
+		if found is 0 or not (JsOps.IsCallable: found.value)
+			output:0 is (Wrap: first);
+			return 1;
+		;;
+		form_busy is true;
+		call Js.Push: (JsV.Obj: o);
+		call Js.Push: key;
+		u64 made: (Js.Call: found.value JsV.UNDEF 2);
+		form_busy is false;
+		output:0 is made;
+	[end: 1]
 
 	[ThisNode: ptr<u64> args: 0;]
 		ptr<DomNode> n: (NodeOf: args:(-1));
@@ -317,7 +396,7 @@ phi.PageBind:Library
 				call b.AddZ: 'Object';
 			;;
 			call b.Add: ']';
-			if o.cls is node_class
+			if o.cls is node_class or o.cls is form_class
 				ptr<DomNode> other: o.data as ptr<DomNode>;
 				call b.AddZ: ' (a node of type ';
 				call b.AddInt: other.type as int;

@@ -475,7 +475,7 @@ phi.PageEvents:Library
 		ptr<JsObj> path: (JsObjs.NewArray: 8);
 		call JsObjs.ArrayPush: path target;
 		ptr<JsObj> to: (JsV.AsObj: target);
-		if to.cls is PageBind.node_class
+		if (PageBind.IsNodeClass: to.cls)
 			ptr<DomNode> n: to.data as ptr<DomNode>;
 			ptr<DomNode> at_: n;
 			bln reached: false;         # the document
@@ -509,7 +509,7 @@ phi.PageEvents:Library
 		ptr<JsObj> seen: (JsObjs.NewArray: path.length);
 		ptr<JsObj> to: (JsV.AsObj: target);
 		ptr<DomNode> t: 0;
-		if to.cls is PageBind.node_class
+		if (PageBind.IsNodeClass: to.cls)
 			t is to.data as ptr<DomNode>;
 		;;
 		while u32 i: 0; i < path.length; i++;
@@ -629,7 +629,7 @@ phi.PageEvents:Library
 		if found is not 0
 			fn is found.value;
 		;;
-		elif to.cls is PageBind.node_class
+		elif (PageBind.IsNodeClass: to.cls)
 			fn is (AttrHandler: to.data as ptr<DomNode> name.data to key);
 		;;
 		call name.Free;
