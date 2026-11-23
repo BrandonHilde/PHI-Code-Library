@@ -358,6 +358,14 @@ phi.JsScopes:Library
 	[end: 0 as ptr<JsVar>]
 
 	[NoteRef: ptr<JsNode> n: 0;]
+		# (inside a with: the names for the objects around it, too)
+		if n.e is not 0 and n.kind is JsN.IDENT
+			ptr<JsNode> r: n.e;
+			while r is not 0
+				r.info is (Resolve: r.name) as ptr<u8>;
+				r is r.e;
+			;;
+		;;
 		ptr<JsVar> v: (Resolve: n.name);
 		n.info is v as ptr<u8>;
 		if v is 0 return;

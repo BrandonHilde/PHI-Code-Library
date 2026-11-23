@@ -1,0 +1,15 @@
+read: 1 outer
+write: 5 7 false
+call this: 3
+typeof: function undefined
+nested: ab
+inner wins: b
+closure: 2
+declared inside: local
+compound: 4
+let inside: let
+added later: undefined 1
+function scope: true true
+strict: SyntaxError
+outside var: 1
+on null threw TypeError

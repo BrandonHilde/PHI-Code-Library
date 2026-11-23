@@ -160,6 +160,7 @@ phi.JsN:Library
 	const u32 X_DELEGATE: 32;
 	const u32 X_OPT: 64;
 	const u32 X_PARENS: 0x1000000;
+	const u32 X_WITH: 0x2000000;      # on a declarator: the object of a with, made an object first
 	const u32 X_AWAIT: 256;
 	const u32 X_PROTO: 512;    # __proto__: value
 	const u32 X_COMMA_AFTER: 1024;
@@ -534,7 +535,7 @@ phi.JsParse:Library
 				return (Done: n);
 			;;
 			is JsT.K_WITH
-				call Fail: 'with statements are not supported';
+				return (WithStatement);
 			;;
 			is JsT.K_IMPORT
 				# import(...) and import.meta are expressions; a declaration is only at a module's top
@@ -697,6 +698,67 @@ phi.JsParse:Library
 		;;
 		call Semicolon;
 	[end: (Done: n)]
+
+	# with (object) statement (not in strict code): a block that keeps the object in a constant of
+	# its own (%with0, %with1 ...), with the statement after it. Each name the statement reads, sets
+	# or calls is told of it (Primary: its e is a name for that constant, whose e is the one for the
+	# with around this one, and so on), so the compiler has the name looked for on the object first.
+	ptr<JsStr> with_names[16];
+	int with_depth: 0;
+	int with_made: 0;
+
+	[WithStatement]
+		if JsLex.strict
+			call Fail: 'Strict mode code may not include a with statement';
+		;;
+		call Next;
+		call Expect: JsT.LPAREN;
+		ptr<JsNode> object: (Expression);
+		call Expect: JsT.RPAREN;
+		if with_depth >= 16
+			call Fail: 'with statements nested too deep';
+		;;
+		WlBuf name;
+		call name.AddZ: '%with';
+		call name.AddInt: with_made;
+		with_made++;
+		ptr<JsStr> kept: (JsStrs.Intern: name.data name.len);
+		call name.Free;
+		ptr<JsNode> decl: (Node: JsN.VARDECL);
+		decl.op is JsT.K_CONST as u16;
+		ptr<JsNode> d: (Node: JsN.DECLARATOR);
+		ptr<JsNode> target: (Node: JsN.IDENT);
+		target.name is kept;
+		d.a is (Done: target);
+		d.b is object;
+		d.flags is d.flags | JsN.X_WITH;
+		decl.a is (Done: d);
+		call Done: decl;
+		ptr<JsNode> block: (Node: JsN.BLOCK);
+		with_names:with_depth is kept;
+		with_depth++;
+		ptr<JsNode> body: (SubStatement: true);
+		with_depth--;
+		block.a is decl;
+		decl.next is body;
+	[end: (Done: block)]
+
+	# for a name inside a with: a name for each with's object around it, innermost first
+	[WithRefs: ptr<JsNode> n: 0;]
+		ptr<JsNode> last: n;
+		int d: with_depth - 1;
+		while d >= 0
+			ptr<JsNode> r: (arena.Alloc: sizeof JsNode) as ptr<JsNode>;
+			r.kind is JsN.IDENT as u16;
+			r.line is n.line;
+			r.pos is n.pos;
+			r.stop is n.stop;
+			r.name is with_names:d;
+			last.e is r;
+			last is r;
+			d--;
+		;;
+	[end]
 
 	[IfStatement]
 		ptr<JsNode> n: (Node: JsN.IF);
@@ -2017,7 +2079,11 @@ phi.JsParse:Library
 			if n.name is JsRt.A.arguments and ctx.in_field
 				call FailAt: 'arguments is not allowed in class field initializer or static initialization block' n.line;
 			;;
-			return (Done: n);
+			call Done: n;
+			if with_depth > 0
+				call WithRefs: n;
+			;;
+			return n;
 		;;
 		if k is JsT.NUM
 			n is (Node: JsN.NUM);

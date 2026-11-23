@@ -679,7 +679,51 @@ phi.JsCompile:Library
 		;;
 	[end]
 
+	# ---- names inside with: looked for on each with's object first, innermost first
+
+	# whether n's name is looked for on the object r names: not if n's variable is declared inside
+	# that with (nor, then, on the objects of the withs around it)
+	[WithApplies: ptr<JsNode> n: 0; ptr<JsNode> r: 0; : bln]
+		if r.info is 0 return false;
+		ptr<JsVar> v: n.info as ptr<JsVar>;
+		if v is 0 return true;
+		ptr<JsVar> rv: r.info as ptr<JsVar>;
+		ptr<JsBlock> b: v.block;
+		while b is not 0
+			if b is rv.block return false;
+			b is b.parent;
+		;;
+	[end: true]
+
+	# [] -> []: whether the name is on r's object; the jump returned is taken when it isn't
+	[WithHas: ptr<JsNode> r: 0; ptr<JsStr> name: 0; : u32]
+		call PushStr: name;
+		call GetVarOp: r.info as ptr<JsVar> false;
+		call Op: JsOp.IN;
+	[end: (Jump: JsOp.JF 0)]
+
 	[ExprIdent: ptr<JsNode> n: 0;]
+		if n.e is not 0 and (WithApplies: n n.e)
+			u32 done: 0;
+			ptr<JsNode> r: n.e;
+			while r is not 0 and (WithApplies: n r)
+				u32 miss: (WithHas: r n.name);
+				call GetVarOp: r.info as ptr<JsVar> false;
+				call Line: n.line;
+				call OpA: JsOp.GETFIELD (Atom: n.name);
+				done is (Jump: JsOp.JMP done);
+				call Adjust: -1;
+				call Bind: miss;
+				r is r.e;
+			;;
+			call ExprIdentPlain: n;
+			call Bind: done;
+			return;
+		;;
+		call ExprIdentPlain: n;
+	[end]
+
+	[ExprIdentPlain: ptr<JsNode> n: 0;]
 		ptr<JsVar> v: n.info as ptr<JsVar>;
 		if v is 0
 			if n.name is JsRt.A.undefined
@@ -894,6 +938,29 @@ phi.JsCompile:Library
 				call Op: JsOp.UNDEF;
 			;;
 			is JsT.K_TYPEOF
+				if a.kind is JsN.IDENT and a.e is not 0 and (WithApplies: a a.e)
+					u32 done: 0;
+					ptr<JsNode> r: a.e;
+					while r is not 0 and (WithApplies: a r)
+						u32 miss: (WithHas: r a.name);
+						call GetVarOp: r.info as ptr<JsVar> false;
+						call OpA: JsOp.GETFIELD (Atom: a.name);
+						call Op: JsOp.TYPEOF;
+						done is (Jump: JsOp.JMP done);
+						call Adjust: -1;
+						call Bind: miss;
+						r is r.e;
+					;;
+					if a.info is 0 and a.name is not JsRt.A.undefined
+						call OpA: JsOp.TYPEOF_GLOBAL (Atom: a.name);
+					;;
+					else
+						call ExprIdentPlain: a;
+						call Op: JsOp.TYPEOF;
+					;;
+					call Bind: done;
+					return;
+				;;
 				if a.kind is JsN.IDENT and a.info is 0 and a.name is not JsRt.A.undefined
 					call OpA: JsOp.TYPEOF_GLOBAL (Atom: a.name);
 					return;
@@ -1057,6 +1124,24 @@ phi.JsCompile:Library
 			# (a?.b)() still calls with a as this
 			call ParenOptCallee: callee;
 		;;
+		elif k is JsN.IDENT and callee.e is not 0 and (WithApplies: callee callee.e)
+			# f() inside a with: a method of the object that has it, if one does
+			u32 done: 0;
+			ptr<JsNode> r: callee.e;
+			while r is not 0 and (WithApplies: callee r)
+				u32 miss: (WithHas: r callee.name);
+				call GetVarOp: r.info as ptr<JsVar> false;
+				call Line: callee.line;
+				call OpA: JsOp.METHOD (Atom: callee.name);
+				done is (Jump: JsOp.JMP done);
+				call Adjust: -2;
+				call Bind: miss;
+				r is r.e;
+			;;
+			call ExprIdentPlain: callee;
+			call Op: JsOp.UNDEF;
+			call Bind: done;
+		;;
 		else
 			call Expr: callee;
 			call Op: JsOp.UNDEF;
@@ -1168,7 +1253,31 @@ phi.JsCompile:Library
 	# ---- assignment ----
 
 	# stores what's on the stack in an identifier and pops it
+	# [value] -> []
 	[StoreIdent: ptr<JsNode> t: 0; u32 mode: 0;]
+		if t.e is not 0 and mode is not M_INIT and (WithApplies: t t.e)
+			u32 done: 0;
+			ptr<JsNode> r: t.e;
+			while r is not 0 and (WithApplies: t r)
+				u32 miss: (WithHas: r t.name);
+				call GetVarOp: r.info as ptr<JsVar> false;
+				call Op: JsOp.SWAP;
+				call Line: t.line;
+				call OpA: JsOp.SETFIELD (Atom: t.name);
+				call Op: JsOp.POP;
+				done is (Jump: JsOp.JMP done);
+				call Adjust: 1;
+				call Bind: miss;
+				r is r.e;
+			;;
+			call StoreIdentPlain: t mode;
+			call Bind: done;
+			return;
+		;;
+		call StoreIdentPlain: t mode;
+	[end]
+
+	[StoreIdentPlain: ptr<JsNode> t: 0; u32 mode: 0;]
 		ptr<JsVar> v: t.info as ptr<JsVar>;
 		if v is 0
 			if mode is M_INIT
@@ -1434,7 +1543,7 @@ phi.JsCompile:Library
 		if t.kind is JsN.IDENT
 			ptr<JsVar> v: t.info as ptr<JsVar>;
 			# i++ on a plain local, its value unused: the commonest thing in a loop
-			if not want and op is JsOp.INC and v is not 0 and not v.captured and (t.flags & (JsN.X_TDZ | JsN.X_IMPORT)) is 0
+			if not want and op is JsOp.INC and v is not 0 and not v.captured and (t.flags & (JsN.X_TDZ | JsN.X_IMPORT)) is 0 and t.e is 0
 				u32 vk: v.kind;
 				if vk is not JsScopes.V_CONST and vk is not JsScopes.V_FNAME and vk is not JsScopes.V_CLASS_NAME
 					call OpA: JsOp.INCLOC v.slot as u32;
@@ -2685,6 +2794,13 @@ phi.JsCompile:Library
 				if d.a.kind is JsN.IDENT and is_var
 					call Expr: d.b;
 					call StoreIdent: d.a M_VAR;
+				;;
+				elif (d.flags & JsN.X_WITH) is not 0
+					# (a with's object: made one, or a TypeError)
+					call IntrinsicCall: 'withObject';
+					call Expr: d.b;
+					call OpFx: JsOp.CALL 1 -2;
+					call BindPattern: d.a M_INIT;
 				;;
 				else
 					call Expr: d.b;

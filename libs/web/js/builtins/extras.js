@@ -262,6 +262,13 @@
     return move(this, true, exports["%AsyncDisposableStack"]);
   };
 
+  // ---- with (object): the object it's given, as an object (a TypeError for null and undefined)
+
+  exports.withObject = function (value) {
+    if (value === null || value === undefined) throw new TypeError("Cannot convert undefined or null to object");
+    return Object(value);
+  };
+
   // ---- `using` and `await using`: the compiler's code keeps a capability for each block that has them
 
   exports.usingNew = function () {

@@ -129,6 +129,11 @@ struct.Page
 	ptr<CssEngine> css;
 	ptr<JsRuntime> rt;
 	ptr<u8> url;
+	# what the page's relative addresses are against (BaseUrl): its first <base href>, or url
+	ptr<u8> base;
+	u32 base_version;
+	ptr<u8> base_from;          # the url it was made against (pushState changes it)
+	bln base_known;
 
 	f64 width;
 	f64 height;
@@ -349,6 +354,10 @@ phi.Page:Library
 		;;
 		call p.css.Free;
 		call p.parser.Free;
+		if p.base is not 0
+			free p.base;
+			p.base is 0;
+		;;
 		call Dom.FreeDocument: p.doc;
 		while each d in p.docs
 			call Dom.FreeDocument: d;
@@ -442,8 +451,49 @@ phi.Page:Library
 
 	# the document's URL against the page's
 	[Resolve: ptr<Page> p: 0; ptr<u8> rel: 0; u32 n: 0; ptr<WlBuf> dest: 0;]
-		call CssUrl.Join: p.url rel n dest;
+		call CssUrl.Join: (BaseUrl: p) rel n dest;
 	[end]
+
+	# The page's base address: the first <base> with an href (looked for before <body>), made whole
+	# against the page's own address; that address if there's none. Worked out again when the
+	# document has changed.
+	[BaseUrl: ptr<Page> p: 0; : ptr<u8>]
+		if p.doc is 0 return p.url;
+		if p.base_known and p.base_version is p.doc.version and p.base_from is p.url
+			if p.base is not 0 return p.base;
+			return p.url;
+		;;
+		p.base_known is true;
+		p.base_version is p.doc.version;
+		p.base_from is p.url;
+		if p.base is not 0
+			free p.base;
+			p.base is 0;
+		;;
+		ptr<WlAtom> base_tag: (WlAtoms.GetZ: 'base');
+		ptr<WlAtom> body_tag: (WlAtoms.GetZ: 'body');
+		ptr<DomNode> root: p.doc.root;
+		ptr<DomNode> n: root;
+		int budget: 4000;
+		while n is not 0 and budget > 0
+			budget--;
+			if n.type is DomType.ELEMENT and n.ns is DomNs.HTML
+				if n.tag is body_tag break;
+				if n.tag is base_tag
+					ptr<DomAttr> href: (Dom.Attr: n (WlAtoms.GetZ: 'href'));
+					if href is not 0
+						WlBuf full;
+						call CssUrl.Join: p.url href.value href.value_len addr full;
+						call full.Add: 0;
+						p.base is (full.Take);
+						break;
+					;;
+				;;
+			;;
+			n is (Dom.Next: n root);
+		;;
+		if p.base is not 0 return p.base;
+	[end: p.url]
 
 	# A script and everything it calls, which reports what it throws and never lets it out
 	[RunSource: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; ptr<u8> name: 0;]

@@ -472,7 +472,7 @@ phi.PageBind:Library
 				return (JsV.Bool: (Dom.IsConnected: n));
 			;;
 			is N_BASE_URI
-				return (Js.NewStringZ: Page.current.url);
+				return (Js.NewStringZ: (Page.BaseUrl: Page.current));
 			;;
 		;;
 	[end: JsV.UNDEF]

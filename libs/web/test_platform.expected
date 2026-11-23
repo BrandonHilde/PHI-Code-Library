@@ -61,9 +61,12 @@ select: 3 1 bee select-one 1 b true true | 2 1 c | 3 | d |  | d
 multiple: select-multiple 2 0 a
 style sheet:  | 1 | true | true | true | true | rgb(0, 0, 255) 3px 2 .sheeted { margin-left: 3px } | 0px 1 | rgb(1, 2, 3) 1 | NotAllowedError
 equal nodes: true false false true false true
+animate: running fade idle 2 [0,1] 10 InvalidStateError
+base: http://test.example/sub/ http://test.example/sub/x.html
 script ends
 blob text: blob text
 play: NotSupportedError
+animation canceled: AbortError
 response json: 2
 sent: GET http://test.example/api/echo
 img load: load true
@@ -71,6 +74,8 @@ sent: GET http://test.example/nowhere.png
 img error: error
 sent: GET http://test.example/first-of-set.png
 srcset asked for its first: error
+sent: GET http://test.example/sub/in-sub.png
+picture in base: in-sub.png
 post: 201 Created application/json yes false
 xhr: 201 Created PUT yes "content-type: application/json\r\nx-answer: yes\r\n" 1,2,3,4 true 15
 xhr loadend 4
@@ -80,7 +85,10 @@ made with: made with
 --- a timer
 toggle: closed open
 toggle: open closed
+base gone: http://test.example/platform.html
 message: 7 false
+animation finished: true finished 1
 --- a frame
 --- later
+animation finish event: finish true
 done

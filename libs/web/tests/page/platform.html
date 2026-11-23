@@ -122,6 +122,23 @@ var set = new Image();
 set.onload = function (e) { log("srcset load (wrong):", e.type); };
 set.onerror = function (e) { log("srcset asked for its first:", e.type); };
 set.srcset = "/first-of-set.png 480w, /api/echo 640w";
+// Web Animations: time is kept, nothing moves
+t("animate", function () {
+  var el = document.createElement("div"); document.body.appendChild(el);
+  var a = el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 10, id: "fade" });
+  a.finished.then(function (x) { log("animation finished:", x === a, a.playState, el.getAnimations().length); });
+  a.onfinish = function (e) { log("animation finish event:", e.type, e instanceof AnimationPlaybackEvent); };
+  var b = el.animate({ opacity: [1, 0] }, 1000);
+  b.finished.catch(function (e) { log("animation canceled:", e.name); });
+  b.cancel();
+  var refused = ""; try { el.animate([], { duration: 10, iterations: Infinity }).finish(); } catch (e) { refused = e.name; }
+  return [a.playState, a.id, b.playState, el.getAnimations().length, JSON.stringify(a.effect.getKeyframes().map(function (f) { return f.computedOffset; })), a.effect.getComputedTiming().endTime, refused].join(" ");
+});
+// <base href>: what the page's addresses are made whole against, its own requests too
+var baseEl = document.createElement("base"); baseEl.setAttribute("href", "/sub/"); document.head.appendChild(baseEl);
+t("base", function () { var a = document.createElement("a"); a.setAttribute("href", "x.html"); return [document.baseURI, a.href].join(" "); });
+var inSub = new Image(); inSub.onerror = function () { log("picture in base:", inSub.getAttribute("src")); }; inSub.src = "in-sub.png";
+setTimeout(function () { baseEl.remove(); log("base gone:", document.baseURI); }, 0);
 var ch = new MessageChannel();
 ch.port2.onmessage = function (e) { log("message:", e.data.n, e.data === sent); };
 var sent = {n: 7};
