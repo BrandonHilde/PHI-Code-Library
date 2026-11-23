@@ -187,13 +187,12 @@ PHI OS's `render.phi` met it (2026-11-22) and keeps a count of its own. The mess
 what and where, so it's a gap in the ARM code generator rather than a trap.
 
 
-**Everyday words are keywords, and a library meets them at every turn.** `method`, `into`, `at` and
-`out` can't name a field, a variable or a parameter. In this work all four came up as the plainest
-name for the thing: an HTTP request's method (weblib calls it `verb`), a copy's destination (`dest`),
-a position (`at_`). The language guide lists them (Reserved words: 85 of them, with `in`, `out`, `at`
-and the port words among them), and the error names the word, so it costs only a rename; but a web
-library is full of standard names it would like to keep. For PHI: contextual keywords (`method` only
-where a type can stand, the port words only in their statements) would spare most of these (2026-11-22).
+**Keywords are reserved by design, not a problem to fix.** `method`, `into`, `at`, `out`, `end`,
+`each` and the rest can't name a field, a variable or a parameter, and an earlier version of this
+note asked for contextual keywords. That was a misreading: a keyword always means what it is, never
+also a variable, so a reader identifies it at once — one word, one meaning, which matters most in a
+low-level language (the user, 2026-11-22). The compiler names the word and suggests another
+(`'end' is a keyword… try 'stop' or 'last'`); this library uses `verb`, `dest`, `at_` and the like.
 
 **A PHI OS program's heap is a fixed 124 MB.** It's the range `0x40400000`–`0x47FFFFFF` whatever
 the machine has (PHI's `docs/memory-map.md`), and `Heap.most_bytes` can't raise it. weblib meets it
