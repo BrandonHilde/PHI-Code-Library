@@ -154,8 +154,12 @@ phi.PageWindow:Library
 		if not (JsOps.IsCallable: fn)
 			call JsErr.Type: 'requestAnimationFrame needs a function';
 		;;
+		# (not Page.Invalidate: asking for a frame changes nothing that shows, and the host runs
+		# Page.Frame on every turn of its loop anyway. A page that asks again in every frame, as
+		# many do, had PHI OS's browser lay the whole page out again each time: Wikipedia's 7,000
+		# items, five times a second, with nothing changed. What the callback changes in the
+		# document or its styles is seen as any other change is, by the document's version.)
 		int id: (Page.AddTimer: Page.current fn JsV.UNDEF 0.0 false true);
-		call Page.Invalidate: Page.current;
 	[end: (JsV.Int: id)]
 
 	[QueueMicrotask: ptr<u64> args: 0; int argc: 0;]
