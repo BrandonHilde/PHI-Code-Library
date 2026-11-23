@@ -167,6 +167,11 @@ for macOS is 41 MB (27 MB stripped); as a PHI OS program it's 3.7 MB, and as a 6
 15.6 MB of `__DATA_CONST,__const` and 20 MB of `__LINKEDIT` (a `phi_line_N` symbol for each line).
 Not looked into further; it runs (2026-11-22).
 
+**Fixed in PHI (`7f1e16e`, macos branch):** both were the line table: 24 bytes, a global symbol and a
+loader fix-up for each of 348,000 lines. Now each object has its own table of 8-byte entries, offsets
+from its code's start that the assembler works out: the browser is 9.6 MB (`__DATA_CONST` 2.8 MB,
+`__LINKEDIT` 0.6 MB). The library ABI is 1.3, so `.philib`s are rebuilt.
+
 **PHI 1.0's floating-point maths stops at `Sin` and `Cos`, and the libraries have each filled the gap
 their own way.** The builtins are `Float.Abs`, `Sqrt`, `Sin`, `Cos`, `Floor`, `Ceil`, `Round` and
 `Trunc`; there's no log, exp, pow, tan, atan, atan2, asin or acos. So:
