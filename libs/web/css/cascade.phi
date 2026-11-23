@@ -33,6 +33,7 @@ struct.CssIdx
 	ptr<DomNode> scope;     # its sheet's tree: 0 for the document's (CssSheet.scope)
 	u32 adopt_key;          # its sheet's CssSheet.adopt_key: for the trees that adopt it, if not 0
 	u8 aim;                 # CssCascade.AIM_*: what in or around that tree it's for
+	ptr<CssRule> cq;        # the @container rule it's in, 0 for most: it applies where that holds
 }
 
 struct.CssBucket
@@ -101,6 +102,7 @@ struct.CssEngine
 	bln has_sibling;    # a sibling combinator, or :nth-child(of S): later siblings depend on earlier
 	bln has_structural; # :first-child and its kin, :empty: what's in a parent matters
 	bln has_has;
+	bln has_cq;         # an @container rule: what applies depends on how wide boxes were laid out
 	bln has_layers;
 	ptr<CssLayerEntry> layers;
 	u32 layer_count;
@@ -538,7 +540,8 @@ phi.CssCascade:Library
 					call AddRule: e r rule_rank;
 				;;
 			;;
-			elif kind is CssSheetP.R_MEDIA or kind is CssSheetP.R_SUPPORTS or kind is CssSheetP.R_LAYER
+			elif kind is CssSheetP.R_MEDIA or kind is CssSheetP.R_SUPPORTS or kind is CssSheetP.R_LAYER or kind is CssSheetP.R_CONTAINER
+				# (an @container's rules are all in the index: which apply is asked element by element)
 				if (RuleApplies: e r)
 					call Walk: e r.first_child rank prefix depth;
 				;;
@@ -618,6 +621,10 @@ phi.CssCascade:Library
 				x.scope is cur_scope;
 				x.adopt_key is cur_key;
 				x.aim is (AimOf: c rank) as u8;
+				x.cq is r.cq;
+				if r.cq is not 0
+					e.has_cq is true;
+				;;
 				e.rule_order++;
 				if c.pseudo is not 0
 					e.has_pseudo is true;
@@ -791,6 +798,9 @@ phi.CssCascade:Library
 				rank is RANK_HINTS;
 			;;
 			CssSel.in_shadow is (x.scope is not 0 or x.adopt_key is not 0);
+			if for_it and x.cq is not 0
+				for_it is (Holds: node x.cq);
+			;;
 			if for_it and (CssSel.MatchFrom: c.right node)
 				call AddHit: x.decls c.spec x.order rank c.pseudo;
 			;;
@@ -798,6 +808,61 @@ phi.CssCascade:Library
 		;;
 		CssSel.in_shadow is false;
 	[end]
+
+	# Whether an @container rule (and any it's inside) holds for an element: its nearest ancestor
+	# that's a container (container-type isn't normal) of the name asked for, if one is, is as wide
+	# as the query says. How wide is what the browser laid it out at (DomNode.box_w); before it has
+	# been laid out, the window's width, which is right more often than not and is put right when
+	# layout has run (the browser marks the container dirty when its width isn't what was assumed).
+	# No such ancestor: it doesn't hold.
+	[Holds: ptr<DomNode> node: 0; ptr<CssRule> q: 0;]
+		int budget: 16;
+		while q is not 0 and budget > 0
+			budget--;
+			ptr<DomNode> up: (Above: node);
+			ptr<DomNode> box: 0;
+			int hops: 0;
+			while up is not 0 and box is 0 and hops < 512
+				hops++;
+				if up.type is DomType.ELEMENT and up.style is not 0
+					ptr<CssComputed> us: up.style as ptr<CssComputed>;
+					u32 kind: (us.Kw: CssP.CONTAINER_TYPE);
+					if (kind is CssK.INLINE_SIZE or kind is CssK.SIZE) and (Named: us q.cname)
+						box is up;
+					;;
+				;;
+				if box is 0
+					up is (Above: up);
+				;;
+			;;
+			if box is 0 return false;
+			CssMediaEnv there;
+			call Mem.Copy: addr there addr cur_engine.env sizeof CssMediaEnv;
+			if box.box_w > 0
+				there.width is (box.box_w - 1) as f64;
+			;;
+			if (CssMq.Matches: q.media addr there) is false return false;
+			q is q.cq;
+		;;
+	[end: true]
+
+	# the element a node is in: its parent, or from the top of a shadow tree its host
+	[Above: ptr<DomNode> n: 0; : ptr<DomNode>]
+		if n.parent is 0 and (Dom.IsShadowRoot: n) return n.shadow;
+	[end: n.parent]
+
+	# whether a container's container-name has this name in it (no name asked for: any will do)
+	[Named: ptr<CssComputed> s: 0; ptr<WlAtom> name: 0;]
+		if name is 0 return true;
+		ptr<CssVal> list: (s.Items: CssP.CONTAINER_NAME);
+		u32 n: CssV.item_count;
+		while u32 i: 0; i < n; i++;
+			ptr<CssVal> it: addr list:i;
+			if it.kind is CssV.IDENT as u8 or it.kind is CssV.STR as u8
+				if (WlText.EqZ: name.text name.len (CssV.Text: it)) return true;
+			;;
+		;;
+	[end: false]
 
 	# whether a tree (a shadow root, or 0 for the document) has adopted the sheet with this key
 	[Adopts: ptr<DomNode> tree: 0; u32 key: 0;]

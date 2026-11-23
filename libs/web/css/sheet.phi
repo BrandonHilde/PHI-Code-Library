@@ -31,6 +31,9 @@ struct.CssRule
 	ptr<CssKeyframes> frames;
 	u8 kind;                    # CssSheetP.R_*
 	u8 supported;               # @supports: what it came to
+	ptr<CssRule> cq;            # the @container rule it's in (and that one's, if it's in another): it
+	                            # applies to an element whose container the query holds for
+	ptr<WlAtom> cname;          # @container: the name of the container it asks about, 0 for the nearest
 }
 
 struct.CssImport
@@ -376,7 +379,7 @@ phi.CssMq:Library
 
 	[RangeType: u32 kw: 0;]
 		when kw
-			is CssK.WIDTH CssK.HEIGHT CssK.ASPECT_RATIO CssK.RESOLUTION CssK.COLOR CssK.COLOR_INDEX CssK.MONOCHROME CssK.DEVICE_WIDTH CssK.DEVICE_HEIGHT CssK.DEVICE_ASPECT_RATIO
+			is CssK.WIDTH CssK.INLINE_SIZE CssK.HEIGHT CssK.ASPECT_RATIO CssK.RESOLUTION CssK.COLOR CssK.COLOR_INDEX CssK.MONOCHROME CssK.DEVICE_WIDTH CssK.DEVICE_HEIGHT CssK.DEVICE_ASPECT_RATIO
 				return true;
 			;;
 		;;
@@ -713,7 +716,7 @@ phi.CssMq:Library
 		bln ranged: true;
 		bln wants_length: false;
 		when f
-			is CssK.WIDTH
+			is CssK.WIDTH CssK.INLINE_SIZE
 				have is env.width;
 				wants_length is true;
 			;;
@@ -1117,6 +1120,7 @@ phi.CssSheetP:Library
 	const u32 R_NAMESPACE: 8;
 	const u32 R_LAYER: 9;       # @layer { }: children
 	const u32 R_LAYER_NAME: 10; # @layer a; : declares the order
+	const u32 R_CONTAINER: 11;  # @container name? (condition) { }: children, each marked with it (cq)
 
 	const u32 MAX_NEST: 32;
 
@@ -1251,6 +1255,26 @@ phi.CssSheetP:Library
 		call CssDeclP.List: r.decls ts bf bt;
 	[end: r]
 
+	# the rules in an @container's block are marked as in it; one already in a container of its own
+	# (nested) keeps that, and that container is marked instead
+	[InContainer: ptr<CssRule> r: 0; ptr<CssRule> box: 0;]
+		call WlStack.Check;
+		while r is not 0
+			if r.kind is R_CONTAINER as u8
+				r.cq is box;
+			;;
+			elif r.kind is R_STYLE as u8
+				if r.cq is 0
+					r.cq is box;
+				;;
+			;;
+			elif r.first_child is not 0
+				call InContainer: r.first_child box;
+			;;
+			r is r.next;
+		;;
+	[end]
+
 	[AtRule: u32 i: 0; bln imports_ok: false; u32 depth: 0; ptr<WlAtom> layer: 0;]
 		u32 kw: (CssVp.Kw: addr t:i);
 		u32 pf: CssSyntax.prelude_from;
@@ -1277,6 +1301,23 @@ phi.CssSheetP:Library
 				ptr<CssRule> r: (NewRule: R_SUPPORTS);
 				r.supported is (CssSupports.Eval: ts pf pt) as u8;
 				r.first_child is (Rules: bf bt false depth + 1 layer);
+				return r;
+			;;
+			is CssK.CONTAINER
+				# @container sidebar (width >= 400px) { ... }: the condition is written as a media
+				# query's is, and asked of the container's box instead of the window (CssCascade.Holds)
+				if block is false or depth >= MAX_NEST or pf >= pt return 0;
+				ptr<CssRule> r: (NewRule: R_CONTAINER);
+				if t:pf.type is CssLex.IDENT and (CssVp.Kw: addr t:pf) is not CssK.NOT
+					r.cname is (WlAtoms.Get: ts.src + t:pf.start t:pf.stop - t:pf.start);
+					pf++;
+					while pf < pt and t:pf.type is CssLex.WS
+						pf++;
+					;;
+				;;
+				r.media is (CssMq.ParseList: ts pf pt addr sheet.arena);
+				r.first_child is (Rules: bf bt false depth + 1 layer);
+				call InContainer: r.first_child r;
 				return r;
 			;;
 			is CssK.IMPORT

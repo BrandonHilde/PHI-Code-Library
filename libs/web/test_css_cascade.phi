@@ -259,6 +259,43 @@ phi.TestCssCascade:Program
 	call Finish;
 	call many.Free;
 
+	# ---- @container: by how wide the container was laid out (the browser says: box_w is that plus 1)
+	call Setup: 'html(body(div#box(p#in span#sp) div#side(p#in2) p#out))'
+		'#box { container-type: inline-size; } #side { container: side / inline-size; } p { width: 1px; height: 1px; top: 1px; } @container (min-width: 400px) { p { width: 2px; } @media screen { span { width: 5px; } } } @container (width < 400px) { p { width: 3px; } } @container side (inline-size >= 100px) { p { height: 2px; } } @container nosuch (min-width: 1px) { p { height: 9px; } } @container (min-width: 100px) { @container (max-width: 300px) { p { top: 2px; } } } @container (min-width: 1px) { #box { width: 7px; } }';
+	# (not laid out yet: asked of the window, 800 wide)
+	call C: 'in' 'width' '2px';
+	call C: 'sp' 'width' '5px';
+	call C: 'in2' 'width' '2px';
+	call C: 'in2' 'height' '2px';
+	call C: 'in' 'height' '1px';
+	call C: 'out' 'width' '1px';
+	call C: 'out' 'height' '1px';
+	call C: 'in' 'top' '1px';
+	call C: 'box' 'width' 'auto';
+	call Say: 'an engine with @container says so' e.has_cq;
+	# (laid out: one 250 wide, the other 50)
+	ptr<DomNode> box: (Id: 'box');
+	ptr<DomNode> side: (Id: 'side');
+	box.box_w is 251;
+	side.box_w is 51;
+	call e.MarkDirty: box;
+	call e.MarkDirty: side;
+	call e.Update;
+	call C: 'in' 'width' '3px';
+	call C: 'sp' 'width' 'auto';
+	call C: 'in' 'top' '2px';
+	call C: 'in2' 'width' '3px';
+	call C: 'in2' 'height' '1px';
+	call C: 'in2' 'top' '1px';
+	call C: 'out' 'width' '1px';
+	box.box_w is 501;
+	call e.MarkDirty: box;
+	call e.Update;
+	call C: 'in' 'width' '2px';
+	call C: 'in' 'top' '1px';
+	call C: 'in2' 'width' '3px';
+	call Finish;
+
 	# ---- @media, with the viewport changing
 	call Setup: 'html(body(div#a))'
 		'@media (min-width: 500px) { #a { width: 1px; } } @media (max-width: 499px) { #a { width: 2px; } } @media print { #a { height: 1px; } } @media screen { #a { height: 2px; } } @media not print { #a { margin-top: 3px; } } @media not screen { #a { margin-top: 4px; } } @media (orientation: landscape) { #a { margin-left: 1px; } } @media (orientation: portrait) { #a { margin-left: 2px; } } @media (prefers-color-scheme: dark) { #a { color: white; } } @media (400px <= width <= 700px) { #a { top: 1px; } } @media (width > 700px) { #a { top: 2px; } } @media screen and (min-width: 100px) and (max-width: 10000px) { #a { left: 1px; } } @media (nonsense) { #a { right: 1px; } } @media not (nonsense) { #a { bottom: 1px; } } @media (min-width: 1000px), print { #a { padding-top: 1px; } } @media ((min-width: 1px) or (nonsense)) and (not (max-width: 1px)) { #a { padding-left: 1px; } } @media all { @media (min-width: 1px) { #a { padding-right: 1px; } } } @media foo { #a { padding-bottom: 1px; } } @media { #a { z-index: 1; } } @media 1 + 1 { #a { order: 1; } } @media screen, 1 { #a { order: 2; } }';

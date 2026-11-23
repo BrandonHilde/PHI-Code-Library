@@ -104,6 +104,8 @@ struct.DomNode
 	ptr<u8> style;          # the computed style (ptr<CssComputed>, css/)
 	ptr<u8> inline_style;   # the parsed style attribute (css/)
 	ptr<u8> layout;         # the browser's own: a layout box, say
+	u32 box_w;              # the browser's: how wide its content box was laid out, plus 1 (0: not
+	                        # laid out yet), which a container query about it is asked of
 }
 
 struct.DomDocument
