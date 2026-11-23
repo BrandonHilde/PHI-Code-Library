@@ -1362,6 +1362,8 @@ phi.CssCascade:Library
 		;;
 
 		CssCalc.cur_em is s.font_px;
+		CssCalc.cur_style is s as ptr<u8>;
+		CssCalc.cur_ch is -1.0;
 		f64 lh: s.font_px;
 		CssCalc.cur_lh is lh * 1.2;
 		if custom_n > 0
@@ -1377,19 +1379,22 @@ phi.CssCascade:Library
 		if is_root
 			CssCalc.cur_rem is s.font_px;
 		;;
+		# (the font goes with them: a ch in what follows is measured in it)
 		while u32 t: 0; t < touched_n; t++;
 			u32 prop: touched:t;
-			if prop is not CssP.FONT_SIZE and (CssProps.info:prop.flags & CssProps.F_EARLY) is not 0
+			if prop is not CssP.FONT_SIZE and (Early: prop)
 				call ApplyWinner: prop;
 			;;
 		;;
 		CssCalc.cur_lh is (s.LineHeightPx);
+		CssCalc.cur_ch is -1.0;
 		while u32 t: 0; t < touched_n; t++;
 			u32 prop: touched:t;
-			if (CssProps.info:prop.flags & CssProps.F_EARLY) is 0
+			if not (Early: prop)
 				call ApplyWinner: prop;
 			;;
 		;;
+		CssCalc.cur_style is 0;
 		call Fixups: is_root;
 		# clean up for the next one
 		while u32 t: 0; t < touched_n; t++;
@@ -1465,6 +1470,12 @@ phi.CssCascade:Library
 	[end: hits:a.order < hits:b.order]
 
 	CssVal cv;      # what ComputeOne made, with a reference that's going to the style
+
+	# whether a property is worked out before the rest: those others are measured by (the font's
+	# size, and its family, weight and style)
+	[Early: u32 prop: 0;]
+		if (CssProps.info:prop.flags & CssProps.F_EARLY) is not 0 return true;
+	[end: prop is CssP.FONT_FAMILY or prop is CssP.FONT_WEIGHT or prop is CssP.FONT_STYLE]
 
 	[ApplyWinner: u32 prop: 0;]
 		ptr<CssDecl> d: winner:prop;

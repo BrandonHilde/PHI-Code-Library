@@ -809,6 +809,12 @@ phi.CssCalc:Library
 	f64 cur_vw: 8.0;
 	f64 cur_vh: 6.0;
 	f64 cur_lh: 19.2;
+	# A ch is how wide "0" is in the element's font, which only the host that draws text knows: it
+	# gives ch_hook, asked once for a style that uses the unit (cur_style: the style being worked
+	# out, a CssComputed). Without one, or outside a style, a ch is half an em.
+	f64 cur_ch: -1.0;
+	ptr<u8> cur_style: 0;
+	method<ptr<u8>: f64> ch_hook;
 
 	[PxOf: u32 unit: 0;]
 		when unit
@@ -821,8 +827,18 @@ phi.CssCalc:Library
 			is CssU.REM
 				return cur_rem;
 			;;
-			is CssU.EX CssU.CH CssU.CAP
+			is CssU.EX CssU.CAP
 				return cur_em * 0.5;
+			;;
+			is CssU.CH
+				if ch_hook is 0 or cur_style is 0 return cur_em * 0.5;
+				if cur_ch < 0.0
+					cur_ch is (ch_hook: cur_style);
+					if cur_ch <= 0.0
+						cur_ch is cur_em * 0.5;
+					;;
+				;;
+				return cur_ch;
 			;;
 			is CssU.IC
 				return cur_em;
