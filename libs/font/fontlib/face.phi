@@ -131,9 +131,48 @@ phi.Fnt:Library
 		if face is 0 or glyph >= face.glyph_count
 			return 0;
 		;;
-		int lsb: 0;
 		ptr<FntTrueType> tt: face.tt;
-	[end: (tt.Metrics: (tt.data as u8[tt.length]) glyph addr lsb)]
+	[end: (tt.AdvanceOf: glyph)]
+
+	# A variable font's axes, by their four letters as a number
+	const u32 WEIGHT: 0x77676874;       # 'wght': 400 is regular, 700 bold
+	const u32 WIDTH: 0x77647468;        # 'wdth': 100 is normal, less is narrower
+	const u32 SLANT: 0x736C6E74;        # 'slnt': degrees, upright 0
+	const u32 ITALIC: 0x6974616C;       # 'ital': 0 or 1
+	const u32 OPTICAL: 0x6F70737A;      # 'opsz': the size in points the letters are drawn for
+
+	# Whether the font has an axis (a variable font's weight, width...), and its least, usual and
+	# most values, in whole numbers: a font with a 'wght' axis from 200 to 900 can be any weight
+	# between. False for a font with no such axis, and for one that isn't variable.
+	[Axis: ptr<FntFace> face: 0; u32 tag: 0; ptr<int> least: 0; ptr<int> usual: 0; ptr<int> most: 0; : bln]
+		if face is 0 return false;
+		int lo: 0;
+		int mid: 0;
+		int hi: 0;
+		if (face.tt.Axis: tag addr lo addr mid addr hi) < 0 return false;
+		least:0 is (Units: lo);
+		usual:0 is (Units: mid);
+		most:0 is (Units: hi);
+	[end: true]
+
+	# Puts a variable font's face at value on an axis (Fnt.Vary: face Fnt.WEIGHT 700): its glyphs'
+	# outlines and advances are that instance's from now on. A value outside the axis is its nearest
+	# end. False if the font has no such axis. Ask before making a size of the face (AtSize), which
+	# keeps the bitmaps it makes; two weights of one font file are two faces of it.
+	[Vary: ptr<FntFace> face: 0; u32 tag: 0; int value: 0; : bln]
+		if face is 0 return false;
+		if value > 32000
+			value is 32000;
+		;;
+		if value < -32000
+			value is -32000;
+		;;
+	[end: (face.tt.Set: tag value * 65536)]
+
+	# 16.16 to the nearest whole number
+	[Units: int v: 0; : int]
+		if v >= 0 return (v + 32768) / 65536;
+	[end: 0 - ((0 - v) + 32768) / 65536]
 
 	# A glyph's outline, into o, in font units: true, or false with the reason in error (a glyph the
 	# font can't give, which leaves o empty)
@@ -532,6 +571,13 @@ phi.Fnt:Library
 		;;
 		if tt.on_path is not 0
 			free tt.on_path;
+		;;
+		call tt.VarFree;
+		if tt.coords is not 0
+			free tt.coords;
+		;;
+		if tt.adv_cache is not 0
+			free tt.adv_cache;
 		;;
 		free tt;
 	[end]

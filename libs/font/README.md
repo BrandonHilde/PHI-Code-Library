@@ -1,6 +1,6 @@
 # fontlib
 
-Fonts in; metrics, outlines and smooth glyph bitmaps out. It reads TrueType and OpenType CFF fonts, and either wrapped as WOFF or WOFF2: the face, each
+Fonts in; metrics, outlines and smooth glyph bitmaps out. It reads TrueType and OpenType CFF fonts, variable TrueType fonts at any place on their axes, and any of them wrapped as WOFF or WOFF2: the face, each
 glyph's outline and metrics, in font units, and which glyph a character is; it makes glyphs' bitmaps at
 a size, exactly as FreeType makes them; and it measures and draws runs of UTF-8 text in a list of fonts,
 with HarfBuzz's glyphs, advances and kerning ([plan.md](../../plan.md#phase-4-font-library), milestones
@@ -54,7 +54,9 @@ These names are the API. Everything else the library declares (`FntTrueType`, `F
 | `Fnt.Load: data length` → | A `ptr<FntFace>`, or 0 with the reason in `Fnt.error`. `data` must stay as it is until `Fnt.Free` |
 | `Fnt.Free: face` | Gives back a face's memory (0 does nothing); not its bytes, which are the caller's |
 | `Fnt.GlyphOf: face code` → | The glyph for a Unicode code point, as HarfBuzz finds it, or 0 if the font has none |
-| `Fnt.Advance: face glyph` → | The glyph's advance from `hmtx`, in font units, as text is laid out with it (HarfBuzz's) |
+| `Fnt.Advance: face glyph` → | The glyph's advance from `hmtx`, in font units, as text is laid out with it (HarfBuzz's); for a variable font's face that's been moved (`Fnt.Vary`), its advance there |
+| `Fnt.Axis: face tag addr least addr usual addr most` → | Whether a variable font has this axis (`Fnt.WEIGHT`, `Fnt.WIDTH`, `Fnt.SLANT`, `Fnt.ITALIC`, `Fnt.OPTICAL`, or any tag's four letters as a `u32`), and its least, usual and most values in whole numbers; false for a font that isn't variable |
+| `Fnt.Vary: face tag value` → | Puts a variable font's face at a value on an axis (`Fnt.Vary: face Fnt.WEIGHT 700`): its outlines and advances are that instance's from then on. Outside the axis is its nearest end; false if it has no such axis. Before `Fnt.AtSize`, which keeps the bitmaps it makes |
 | `FntOutline` | A struct: `points`, `contours` (`u32`), `advance` (`int`, FreeType's: the glyph's, or a component's that says so), and `x`, `y` (`ptr<int>`), `on` (`ptr<u8>`: 1 on the curve, 0 a quadratic control point (TrueType), 2 a cubic one (CFF)) and `ends` (`ptr<u32>`) |
 | `Fnt.NewOutline` → | An outline to load glyphs into, again and again; its arrays grow as they need to |
 | `Fnt.Outline: face glyph outline` → | Loads a glyph's outline: true, or false with the reason in `Fnt.error`, and the outline empty |
@@ -128,6 +130,41 @@ they came from, glyph for glyph; and `test_woff2` shows fontlib gives every glyp
 them exactly as from the fonts themselves (2,620 glyphs and 71,785 points; 1,568 and 43,352). And a WOFF2
 font made by another encoder (Fraunces SemiBold, glyf transformed, 245 glyphs), read by fontlib and by
 CoreText: every advance the same, and every drawn glyph's bounding box the same.
+
+## Variable fonts
+
+A TrueType font with `fvar` and `gvar` tables is every weight (or width, or slant...) between the ones
+its designer drew: one file where a family once had a file a weight, which is how most web fonts now
+come. A face of it starts at the font's usual place on each axis, where it's exactly the font any reader
+sees; `Fnt.Vary` moves it, and its glyphs are then drawn there: each point moved by its `gvar` tuples'
+deltas in proportion to how near the place is to each tuple's peak, points a tuple doesn't list worked
+out from their neighbours on the contour, a composite's components moved the same way, and the advance
+by the glyph's phantom points. `avar`'s maps are followed. Two weights of one file are two faces of it.
+
+```phi
+ptr<FntFace> bold: (Fnt.Load: bytes length);
+int least: 0;
+int usual: 0;
+int most: 0;
+if (Fnt.Axis: bold Fnt.WEIGHT addr least addr usual addr most)     # 200, 400, 900, say
+	bln moved: (Fnt.Vary: bold Fnt.WEIGHT 700);
+;;
+ptr<FntSize> size: (Fnt.AtSize: bold 16);
+```
+
+Not read yet: a CFF2 font's variations (it's drawn at its usual place), `HVAR` and `MVAR` (advances
+come from `gvar`'s phantom points, which say the same; the line's height stays the usual one), and
+kerning's own variations. A font whose `fvar` and `gvar` don't fit together is a font with no axes.
+
+Checked two ways (2026-11-23). `tests/var/made.ttf`, a font written byte by byte by
+`tools/font/make_var_tests.py` with one or a few of everything `gvar` can say, is read at ten places on
+its two axes and every glyph's outline and advance must be exactly what the OpenType rules give, which
+that script works out from the file in exact fractions (and macOS's CoreText agrees with it at every
+place, `--coretext`); 200 damaged copies of it must come back without a crash. And macOS's own San
+Francisco (`SFNS.ttf`, 2,954 glyphs, three axes and an `avar`), read by fontlib and by CoreText at
+weight 700: 2,865 glyphs' advances and boxes the same to a font unit, the rest within two of 2,048
+(CoreText's box is the curve's, fontlib's check was of its control points; five advances differ by
+one, as CoreText takes them from `HVAR`); at its usual weight every glyph is the same.
 
 ## CFF
 

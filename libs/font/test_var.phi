@@ -1,0 +1,126 @@
+# fontlib's variable fonts, every day: tests/var/made.ttf (made by tools/font/make_var_tests.py, which
+# says what's in it) at ten places on its two axes, each glyph's advance and outline exactly as the
+# OpenType rules give them (worked out there from the file in exact fractions, and agreed with by
+# macOS's CoreText). And the font cut short or changed must come back, read or refused, without a crash.
+use fontlib;
+use memory.mem;
+
+phi.TestVar:Program
+{
+	u32 loaded: 0;
+	ptr<FntFace> face: 0;
+	ptr<FntOutline> outline: 0;
+
+	call FontLib.Start;
+	ptr<u8> good: (Load: 'tests/var/made.ttf');
+	u32 good_len: loaded;
+	face is (Fnt.Load: good good_len);
+	if face is 0
+		log 'refused: ' Fnt.error '\n';
+		exit 1;
+	;;
+	outline is (Fnt.NewOutline);
+	log 'units ' face.units_per_em ' glyphs ' face.glyph_count '\n';
+	call Axis: Fnt.WEIGHT 'wght';
+	call Axis: Fnt.WIDTH 'wdth';
+	call Axis: Fnt.SLANT 'slnt';
+	call Place: 400 100;
+	call Place: 900 100;
+	call Place: 650 100;
+	call Place: 100 100;
+	call Place: 250 100;
+	call Place: 400 200;
+	call Place: 900 200;
+	call Place: 525 100;
+	call Place: 400 50;
+	call Place: 1000 300;
+	call Fnt.Free: face;
+
+	# damage: cut short at many lengths, and bytes changed with a fixed seed; whatever is read is
+	# asked for every glyph away from its usual place
+	ptr<u8> work: new u8[good_len];
+	int tries: 0;
+	u32 seed: 20261123;
+	while u32 k: 0; k < 100; k++;
+		u32 cut: (good_len * k) / 100;
+		call Mem.Copy: work good cut;
+		call Try: work cut;
+		tries++;
+	;;
+	while u32 k: 0; k < 100; k++;
+		call Mem.Copy: work good good_len;
+		while int c: 0; c < 3; c++;
+			seed is seed * 1103515245 + 12345;
+			u32 spot: (seed >> 8) % good_len;
+			seed is seed * 1103515245 + 12345;
+			work:spot is (seed >> 16) as u8;
+		;;
+		call Try: work good_len;
+		tries++;
+	;;
+	log 'damaged: ' tries ' copies of it, cut short or with bytes changed, all came back\n';
+
+	[Axis: u32 tag: 0; ptr<u8> name: 0;]
+		int lo: 0;
+		int mid: 0;
+		int hi: 0;
+		if (Fnt.Axis: face tag addr lo addr mid addr hi)
+			log 'axis ' name ' ' lo ' ' mid ' ' hi '\n';
+		;;
+		else
+			log 'axis ' name ': none\n';
+		;;
+	[end]
+
+	# every glyph with the face at this weight and width
+	[Place: int weight: 0; int width: 0;]
+		bln weighed: (Fnt.Vary: face Fnt.WEIGHT weight);
+		bln widened: (Fnt.Vary: face Fnt.WIDTH width);
+		log 'wght ' weight ' wdth ' width '\n';
+		while u32 g: 0; g < face.glyph_count; g++;
+			if (Fnt.Outline: face g outline) is false
+				log g ': refused: ' Fnt.error '\n';
+				continue;
+			;;
+			log g ': ' (Fnt.Advance: face g);
+			while u32 i: 0; i < outline.points; i++;
+				log ' ' outline.x:i ',' outline.y:i;
+				if outline.on:i is 0
+					log 'c';
+				;;
+			;;
+			if outline.contours > 0
+				log ' ends';
+				while u32 c: 0; c < outline.contours; c++;
+					log ' ' outline.ends:c;
+				;;
+			;;
+			log '\n';
+		;;
+	[end]
+
+	# a damaged copy: read or refused, and if read, every glyph asked for at the far corner
+	[Try: ptr<u8> bytes: 0; u32 length: 0;]
+		ptr<FntFace> f: (Fnt.Load: bytes length);
+		if f is 0 return;
+		bln weighed: (Fnt.Vary: f Fnt.WEIGHT 900);
+		bln widened: (Fnt.Vary: f Fnt.WIDTH 200);
+		int sum: 0;
+		while u32 g: 0; g < f.glyph_count and g < 64; g++;
+			bln got: (Fnt.Outline: f g outline);
+			sum++ (Fnt.Advance: f g);
+		;;
+		call Fnt.Free: f;
+	[end]
+
+	[Load: ptr<u8> path: 0; : ptr<u8>]
+		int size: (OS.FileSize: path);
+		if size <= 0
+			log 'no ' path '\n';
+			exit 1;
+		;;
+		ptr<u8> bytes: new u8[size];
+		int got: (OS.ReadFile: path bytes size);
+		loaded is got as u32;
+	[end: bytes]
+}

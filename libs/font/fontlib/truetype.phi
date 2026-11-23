@@ -41,6 +41,8 @@ struct.FntFrame
 	u32 base;               # the outline's points before that component
 	u32 index;              # its glyph
 	bln started;            # its first component has been read
+	u32 parts;              # a variable font's: how many components it has, and which is next
+	u32 part;
 }
 
 struct.FntTrueType
@@ -90,6 +92,30 @@ struct.FntTrueType
 	int advance;
 	bln overlap;            # FreeType's FT_OUTLINE_OVERLAP: any simple glyph's first point, or the
 	# outermost composite's first component, says the contours overlap
+
+	# a variable font (fvar and gvar): its axes, and where this face is on each
+	u32 axes;               # how many (0: it isn't one), 16 at most
+	u32 axis_at;            # fvar's first axis record, and how long each is
+	u32 axis_size;
+	u32 gvar_at;
+	u32 gvar_len;
+	u32 avar_at;
+	u32 avar_len;
+	ptr<int> coords;        # 16 of them, 2.14: -16384 (an axis's least) to 16384 (its most), 0 its usual
+	bln varied;             # the face isn't at the usual place on every axis: its glyphs are moved
+	bln raw;                # a glyph is being read in font units, to be moved before it's scaled
+	ptr<i64> var_x;         # a glyph's deltas, 16.16, one a point (var_room of each of these)
+	ptr<i64> var_y;
+	ptr<i64> tup_x;         # one tuple's, for every point
+	ptr<i64> tup_y;
+	ptr<i64> lst_x;         # one tuple's as they're packed, for the points it lists
+	ptr<i64> lst_y;
+	ptr<u8> tup_hit;        # 1: the tuple moves this point itself
+	ptr<u32> pts_shared;    # the points every tuple of the glyph lists, and one tuple's own
+	ptr<u32> pts_own;
+	u32 var_room;
+	u32 var_q;              # where a packed list ended
+	ptr<int> adv_cache;     # each glyph's advance where the face is, plus 1, once worked out (0: not yet)
 
 
 	# ---------------------------------------------------------------- the face
@@ -236,6 +262,7 @@ struct.FntTrueType
 			;;
 		;;
 		call Line: src;
+		call Axes: src;
 	[end]
 
 	# The line, as FreeType has it: OS/2's typo metrics when its USE_TYPO_METRICS bit is set; or else
@@ -478,6 +505,7 @@ struct.FntTrueType
 			throw 'no such glyph';
 		;;
 		scale is with_scale;
+		raw is false;
 		overlap is false;
 		o.points is 0;
 		o.contours is 0;
@@ -548,6 +576,9 @@ struct.FntTrueType
 		if size is 0
 			ret_pp1 is 0 - lsb;
 			ret_adv is adv;
+			if varied
+				call VaryMetrics: src g 0;
+			;;
 			return;
 		;;
 		u32 p: glyf_at + pos;
@@ -563,9 +594,38 @@ struct.FntTrueType
 		ret_pp1 is pp1;
 		ret_adv is adv;
 		if n_contours is 0
+			if varied
+				call VaryMetrics: src g 0;
+			;;
 			return;
 		;;
 		if n_contours > 0
+			if varied
+				# (read in font units, moved to where the face is on its axes, then scaled)
+				u32 base: o.points;
+				u32 first: o.contours;
+				raw is true;
+				call Simple: src (p + 10) limit (n_contours as u32) o;
+				raw is false;
+				u32 n: o.points - base;
+				if (Deltas: src g (n + 4) o base first)
+					while u32 i: 0; i < n; i++;
+						o.x:(base + i) is o.x:(base + i) + (Whole: var_x:i);
+						o.y:(base + i) is o.y:(base + i) + (Whole: var_y:i);
+					;;
+					int d1: (Whole: var_x:n);
+					int d2: (Whole: var_x:(n + 1));
+					ret_pp1 is pp1 + d1;
+					ret_adv is adv + d2 - d1;
+				;;
+				if scale is not 0
+					while u32 i: 0; i < n; i++;
+						o.x:(base + i) is (Scaled: o.x:(base + i));
+						o.y:(base + i) is (Scaled: o.y:(base + i));
+					;;
+				;;
+				return;
+			;;
 			call Simple: src (p + 10) limit (n_contours as u32) o;
 			return;
 		;;
@@ -585,6 +645,20 @@ struct.FntTrueType
 		f.more is true;
 		f.pending is false;
 		f.started is false;
+		f.parts is 0;
+		f.part is 0;
+		if varied
+			# (a composite's points are its components, each one's offset, then the phantom four)
+			u32 parts: (Components: src (p + 10) limit);
+			f.parts is parts;
+			if (Deltas: src g (parts + 4) (0 as ptr<FntOutline>) 0 0)
+				int d1: (Whole: var_x:parts);
+				int d2: (Whole: var_x:(parts + 1));
+				# (frames may have moved: FrameRoom was before this)
+				f.pp1 is pp1 + d1;
+				f.adv is adv + d2 - d1;
+			;;
+		;;
 	[end]
 
 	[FrameRoom: u32 need: 0;]
@@ -665,6 +739,17 @@ struct.FntTrueType
 				q++ 2;
 			;;
 		;;
+		if varied and (flags & 2) is not 0 and f.part < f.parts
+			# (its offset where the face is on its axes)
+			u32 glyph: f.glyph;
+			u32 part: f.part;
+			u32 parts: f.parts;
+			if (Deltas: src glyph (parts + 4) (0 as ptr<FntOutline>) 0 0)
+				f.a1 is f.a1 + (Whole: var_x:part);
+				f.a2 is f.a2 + (Whole: var_y:part);
+			;;
+		;;
+		f.part++;
 		f.xx is 0x10000;
 		f.yy is 0x10000;
 		f.xy is 0;
@@ -877,6 +962,586 @@ struct.FntTrueType
 		o.contours is o.contours + n_contours;
 	[end]
 
+	# ---------------------------------------------------------------- a variable font
+
+	# The font's axes (fvar) and its glyphs' variations (gvar), if it has both for TrueType outlines.
+	# One whose tables don't fit together is a font with no axes: its glyphs as they're drawn at
+	# its usual place, which is what it is to a reader that knows nothing of variations.
+	[Axes: u8 src[];]
+		axes is 0;
+		varied is false;
+		u32 fvar_len: 0;
+		u32 fvar_at: (Table: src 0x66766172 addr fvar_len);
+		gvar_at is (Table: src 0x67766172 addr gvar_len);
+		avar_at is (Table: src 0x61766172 addr avar_len);
+		if fvar_len < 16 or gvar_len < 20 return;
+		u32 first: (U16: src (fvar_at + 4));
+		u32 count: (U16: src (fvar_at + 8));
+		u32 size: (U16: src (fvar_at + 10));
+		if count is 0 or count > 16 or size < 20 return;
+		if first + count * size > fvar_len return;
+		# (gvar is for the same axes, and its parts are inside it)
+		if (U16: src (gvar_at + 4)) is not count return;
+		if (U32: src (gvar_at + 8)) > gvar_len or (U32: src (gvar_at + 16)) > gvar_len return;
+		coords is new int[16];
+		if coords is 0
+			throw 'out of memory';
+		;;
+		axis_at is fvar_at + first;
+		axis_size is size;
+		axes is count;
+	[end]
+
+	# a 16.16 number
+	[Fixed: u8 src[]; u32 p: 0; : int]
+	[end: (I16: src p) * 65536 + (U16: src (p + 2)) as int]
+
+	# An axis by its tag (0x77676874 is 'wght'): which one, or -1; its least, usual and most
+	# values, 16.16
+	[Axis: u32 tag: 0; ptr<int> least: 0; ptr<int> usual: 0; ptr<int> most: 0; : int]
+		while u32 a: 0; a < axes; a++;
+			u32 p: axis_at + a * axis_size;
+			if (U32: (data as u8[length]) p) is tag
+				least:0 is (Fixed: (data as u8[length]) (p + 4));
+				usual:0 is (Fixed: (data as u8[length]) (p + 8));
+				most:0 is (Fixed: (data as u8[length]) (p + 12));
+				return a as int;
+			;;
+		;;
+	[end: -1]
+
+	# Puts the face at value (16.16) on the axis with this tag: false if the font has none. Its
+	# glyphs and advances from now on are that instance's.
+	[Set: u32 tag: 0; int value: 0; : bln]
+		int lo: 0;
+		int mid: 0;
+		int hi: 0;
+		int a: (Axis: tag addr lo addr mid addr hi);
+		if a < 0 return false;
+		if value < lo
+			value is lo;
+		;;
+		if value > hi
+			value is hi;
+		;;
+		# normalized: -1 at its least, 0 at its usual, 1 at its most (2.14)
+		i64 n: 0;
+		if value < mid and mid > lo
+			n is 0 - ((((mid as i64) - (value as i64)) * 16384) / ((mid as i64) - (lo as i64)));
+		;;
+		elif value > mid and hi > mid
+			n is (((value as i64) - (mid as i64)) * 16384) / ((hi as i64) - (mid as i64));
+		;;
+		coords:a is (Avar: (data as u8[length]) a as u32 n as int);
+		varied is false;
+		while u32 k: 0; k < axes; k++;
+			if coords:k is not 0
+				varied is true;
+			;;
+		;;
+		if adv_cache is not 0
+			while u32 g: 0; g <= glyph_count; g++;
+				adv_cache:g is 0;
+			;;
+		;;
+	[end: true]
+
+	# avar: an axis's normalized place, moved as the font's map for that axis says (straight lines
+	# between the places it names)
+	[Avar: u8 src[]; u32 a: 0; int v: 0; : int]
+		if avar_len < 8 or (U16: src (avar_at + 6)) is not axes return v;
+		u32 p: avar_at + 8;
+		u32 stop: avar_at + avar_len;
+		while u32 k: 0; k < a; k++;
+			if p + 2 > stop return v;
+			p++ 2 + (U16: src p) * 4;
+		;;
+		if p + 2 > stop return v;
+		u32 n: (U16: src p);
+		p++ 2;
+		if n < 2 or p + n * 4 > stop return v;
+		int from0: (I16: src p);
+		int to0: (I16: src (p + 2));
+		if v <= from0 return to0;
+		while u32 k: 1; k < n; k++;
+			int from1: (I16: src (p + 4 * k));
+			int to1: (I16: src (p + 4 * k + 2));
+			if v <= from1
+				if from1 is from0 return to1;
+				return to0 + ((v - from0) * (to1 - to0)) / (from1 - from0);
+			;;
+			from0 is from1;
+			to0 is to1;
+		;;
+	[end: to0]
+
+	# How much of a tuple's deltas apply where the face is (16.16): all of them at the tuple's peak,
+	# none on the other side of the usual place or past the peak, and in proportion between. With
+	# mid_at, the tuple says where it begins and ends on each axis (the starts, then the ends).
+	[Share: u8 src[]; u32 peak: 0; u32 mid_at: 0; : i64]
+		i64 s: 65536;
+		while u32 a: 0; a < axes; a++;
+			int pk: (I16: src (peak + 2 * a));
+			if pk is 0
+				continue;
+			;;
+			int c: coords:a;
+			if c is 0 return 0;
+			if c is pk
+				continue;
+			;;
+			if mid_at is not 0
+				int from: (I16: src (mid_at + 2 * a));
+				int to: (I16: src (mid_at + 2 * (axes + a)));
+				if c <= from or c >= to return 0;
+				if c < pk
+					if pk is from return 0;
+					s is (s * ((c - from) as i64)) / ((pk - from) as i64);
+				;;
+				else
+					if to is pk return 0;
+					s is (s * ((to - c) as i64)) / ((to - pk) as i64);
+				;;
+			;;
+			else
+				if (c < 0) is not (pk < 0) return 0;
+				if c < 0 and c < pk return 0;
+				if c > 0 and c > pk return 0;
+				s is (s * (c as i64)) / (pk as i64);
+			;;
+		;;
+	[end: s]
+
+	# room for a glyph of n points in the arrays its deltas are worked out in
+	[VarRoom: u32 n: 0;]
+		if n + 8 <= var_room return;
+		call VarFree;
+		u32 room: n + 64;
+		var_x is new i64[room];
+		var_y is new i64[room];
+		tup_x is new i64[room];
+		tup_y is new i64[room];
+		lst_x is new i64[room];
+		lst_y is new i64[room];
+		tup_hit is new u8[room];
+		pts_shared is new u32[room];
+		pts_own is new u32[room];
+		if var_x is 0 or var_y is 0 or tup_x is 0 or tup_y is 0 or lst_x is 0 or lst_y is 0 or tup_hit is 0 or pts_shared is 0 or pts_own is 0
+			call VarFree;
+			throw 'out of memory';
+		;;
+		var_room is room;
+	[end]
+
+	[VarFree]
+		if var_x is not 0
+			free var_x;
+		;;
+		if var_y is not 0
+			free var_y;
+		;;
+		if tup_x is not 0
+			free tup_x;
+		;;
+		if tup_y is not 0
+			free tup_y;
+		;;
+		if lst_x is not 0
+			free lst_x;
+		;;
+		if lst_y is not 0
+			free lst_y;
+		;;
+		if tup_hit is not 0
+			free tup_hit;
+		;;
+		if pts_shared is not 0
+			free pts_shared;
+		;;
+		if pts_own is not 0
+			free pts_own;
+		;;
+		var_x is 0;
+		var_y is 0;
+		tup_x is 0;
+		tup_y is 0;
+		lst_x is 0;
+		lst_y is 0;
+		tup_hit is 0;
+		pts_shared is 0;
+		pts_own is 0;
+		var_room is 0;
+	[end]
+
+	# A packed list of point numbers at q (it ends before stop), into list: how many, or 0xFFFFFFFF
+	# for "every point". var_q is where it ended.
+	[PointList: u8 src[]; u32 q: 0; u32 stop: 0; ptr<u32> list: 0; : u32]
+		if q >= stop
+			throw 'a glyph\'s variations are cut short';
+		;;
+		u32 count: src:q;
+		q++;
+		if count is 0
+			var_q is q;
+			return 0xFFFFFFFF;
+		;;
+		if (count & 0x80) is not 0
+			if q >= stop
+				throw 'a glyph\'s variations are cut short';
+			;;
+			count is ((count & 0x7F) << 8) | src:q;
+			q++;
+		;;
+		if count > var_room
+			throw 'a variation of more points than its glyph has';
+		;;
+		u32 i: 0;
+		u32 pt: 0;
+		while i < count
+			if q >= stop
+				throw 'a glyph\'s variations are cut short';
+			;;
+			u32 c: src:q;
+			q++;
+			u32 run: (c & 0x7F) + 1;
+			while u32 r: 0; r < run and i < count; r++;
+				if (c & 0x80) is not 0
+					if q + 2 > stop
+						throw 'a glyph\'s variations are cut short';
+					;;
+					pt is pt + (U16: src q);
+					q++ 2;
+				;;
+				else
+					if q >= stop
+						throw 'a glyph\'s variations are cut short';
+					;;
+					pt is pt + src:q;
+					q++;
+				;;
+				list:i is pt;
+				i++;
+			;;
+		;;
+		var_q is q;
+	[end: count]
+
+	# count packed deltas at q (they end before stop) into list, each 16.16. var_q is where they ended.
+	[DeltaList: u8 src[]; u32 q: 0; u32 stop: 0; ptr<i64> list: 0; u32 count: 0;]
+		u32 i: 0;
+		while i < count
+			if q >= stop
+				throw 'a glyph\'s variations are cut short';
+			;;
+			u32 c: src:q;
+			q++;
+			u32 run: (c & 0x3F) + 1;
+			while u32 r: 0; r < run and i < count; r++;
+				i64 d: 0;
+				if (c & 0x80) is not 0
+					d is 0;
+				;;
+				elif (c & 0x40) is not 0
+					if q + 2 > stop
+						throw 'a glyph\'s variations are cut short';
+					;;
+					d is (I16: src q);
+					q++ 2;
+				;;
+				else
+					if q >= stop
+						throw 'a glyph\'s variations are cut short';
+					;;
+					d is (I8: src:q);
+					q++;
+				;;
+				list:i is d * 65536;
+				i++;
+			;;
+		;;
+		var_q is q;
+	[end]
+
+	# Glyph g's deltas where the face is, for its n points (the last four its phantom points), into
+	# var_x and var_y (16.16): false if it has none. o, with base and first, is a simple glyph: its
+	# points (from base) and contours (from first) as the font has them, which the points a tuple
+	# doesn't list are worked out from. With no o it's a composite, whose points are its components'
+	# offsets: one a tuple doesn't list stays where it is.
+	[Deltas: u8 src[]; u32 g: 0; u32 n: 0; ptr<FntOutline> o: 0; u32 base: 0; u32 first: 0; : bln]
+		u32 stop_all: gvar_at + gvar_len;
+		if g >= (U16: src (gvar_at + 12)) return false;
+		u32 shared_n: (U16: src (gvar_at + 6));
+		u32 shared_at: gvar_at + (U32: src (gvar_at + 8));
+		bln wide: ((U16: src (gvar_at + 14)) & 1) is not 0;
+		u32 array_at: gvar_at + (U32: src (gvar_at + 16));
+		u32 from: 0;
+		u32 to: 0;
+		if wide
+			if gvar_at + 20 + 4 * (g + 2) > stop_all return false;
+			from is (U32: src (gvar_at + 20 + 4 * g));
+			to is (U32: src (gvar_at + 24 + 4 * g));
+		;;
+		else
+			if gvar_at + 20 + 2 * (g + 2) > stop_all return false;
+			from is (U16: src (gvar_at + 20 + 2 * g)) * 2;
+			to is (U16: src (gvar_at + 22 + 2 * g)) * 2;
+		;;
+		if from > gvar_len or to > gvar_len or to <= from or to - from < 4 return false;
+		u32 p: array_at + from;
+		u32 stop: array_at + to;
+		if stop > stop_all return false;
+		call VarRoom: n;
+		while u32 i: 0; i < n; i++;
+			var_x:i is 0;
+			var_y:i is 0;
+		;;
+		u32 field: (U16: src p);
+		u32 count: field & 0x0FFF;
+		u32 dp: p + (U16: src (p + 2));
+		u32 hp: p + 4;
+		if dp > stop return false;
+		u32 shared_pts: 0xFFFFFFFF;
+		if (field & 0x8000) is not 0
+			shared_pts is (PointList: src dp stop pts_shared);
+			dp is var_q;
+		;;
+		while u32 t: 0; t < count; t++;
+			if hp + 4 > stop
+				throw 'a glyph\'s variations are cut short';
+			;;
+			u32 size: (U16: src hp);
+			u32 index: (U16: src (hp + 2));
+			hp++ 4;
+			u32 peak: 0;
+			if (index & 0x8000) is not 0
+				peak is hp;
+				hp++ 2 * axes;
+			;;
+			else
+				u32 which: index & 0x0FFF;
+				if which >= shared_n
+					throw 'a variation with a tuple the font doesn\'t have';
+				;;
+				peak is shared_at + which * 2 * axes;
+			;;
+			u32 mid_at: 0;
+			if (index & 0x4000) is not 0
+				mid_at is hp;
+				hp++ 4 * axes;
+			;;
+			if hp > stop or peak + 2 * axes > stop_all
+				throw 'a glyph\'s variations are cut short';
+			;;
+			u32 q: dp;
+			u32 q_stop: dp + size;
+			if q_stop > stop
+				throw 'a glyph\'s variations are cut short';
+			;;
+			dp is q_stop;
+			i64 share: (Share: src peak mid_at);
+			if share is 0
+				continue;
+			;;
+			u32 pts: shared_pts;
+			ptr<u32> list: pts_shared;
+			if (index & 0x2000) is not 0
+				pts is (PointList: src q q_stop pts_own);
+				list is pts_own;
+				q is var_q;
+			;;
+			if pts is 0xFFFFFFFF
+				# every point, in order
+				call DeltaList: src q q_stop tup_x n;
+				call DeltaList: src var_q q_stop tup_y n;
+			;;
+			else
+				call DeltaList: src q q_stop lst_x pts;
+				call DeltaList: src var_q q_stop lst_y pts;
+				while u32 i: 0; i < n; i++;
+					tup_x:i is 0;
+					tup_y:i is 0;
+					tup_hit:i is 0;
+				;;
+				while u32 k: 0; k < pts; k++;
+					u32 pt: list:k;
+					if pt < n
+						tup_x:pt is lst_x:k;
+						tup_y:pt is lst_y:k;
+						tup_hit:pt is 1;
+					;;
+				;;
+				if o is not 0 and n > 4
+					call Infer: o base first (n - 4);
+				;;
+			;;
+			while u32 i: 0; i < n; i++;
+				var_x:i is var_x:i + (tup_x:i * share) / 65536;
+				var_y:i is var_y:i + (tup_y:i * share) / 65536;
+			;;
+		;;
+	[end: true]
+
+	# The points of a simple glyph (n of them, from base, in contours from first) that a tuple didn't
+	# list: each moves as the listed points before and after it on its contour do, by where it is
+	# between them. A contour with none listed stays where it is.
+	[Infer: ptr<FntOutline> o: 0; u32 base: 0; u32 first: 0; u32 n: 0;]
+		u32 start: 0;
+		while u32 c: first; c < o.contours; c++;
+			u32 last: o.ends:c - base;
+			if last >= n or last < start
+				break;
+			;;
+			u32 a: start;
+			while a <= last and tup_hit:a is 0
+				a++;
+			;;
+			if a <= last
+				u32 from: a;
+				bln round: true;
+				while round
+					# the next listed point after from, going round the contour (from itself, if
+					# it's the only one)
+					u32 to: from;
+					bln looking: true;
+					while looking
+						if to is last
+							to is start;
+						;;
+						else
+							to++;
+						;;
+						looking is (tup_hit:to is 0);
+					;;
+					u32 i: from;
+					bln between: true;
+					while between
+						if i is last
+							i is start;
+						;;
+						else
+							i++;
+						;;
+						if i is to
+							between is false;
+						;;
+						else
+							tup_x:i is (Between: o.x:(base + i) o.x:(base + from) o.x:(base + to) tup_x:from tup_x:to);
+							tup_y:i is (Between: o.y:(base + i) o.y:(base + from) o.y:(base + to) tup_y:from tup_y:to);
+						;;
+					;;
+					from is to;
+					round is (from is not a);
+				;;
+			;;
+			start is last + 1;
+		;;
+	[end]
+
+	# a point at x between two that moved by da and db from a and b: as the nearer one beyond them,
+	# in proportion between them
+	[Between: int x: 0; int a: 0; int b: 0; i64 da: 0; i64 db: 0; : i64]
+		if a is b
+			if da is db return da;
+			return 0;
+		;;
+		if a > b
+			int keep: a;
+			a is b;
+			b is keep;
+			i64 kept: da;
+			da is db;
+			db is kept;
+		;;
+		if x <= a return da;
+		if x >= b return db;
+	[end: da + ((db - da) * ((x - a) as i64)) / ((b - a) as i64)]
+
+	# 16.16 to the nearest whole number
+	[Whole: i64 v: 0; : int]
+		if v >= 0
+			return ((v + 32768) / 65536) as int;
+		;;
+		i64 up: ((0 - v) + 32768) / 65536;
+	[end: (0 - up) as int]
+
+	# how many components the composite glyph at q has
+	[Components: u8 src[]; u32 q: 0; u32 limit: 0; : u32]
+		u32 n: 0;
+		bln more: true;
+		while more and n < 4096
+			if q + 4 > limit
+				break;
+			;;
+			u32 flags: (U16: src q);
+			u32 count: 6;
+			if (flags & 1) is not 0
+				count++ 2;
+			;;
+			if (flags & 8) is not 0
+				count++ 2;
+			;;
+			elif (flags & 0x40) is not 0
+				count++ 4;
+			;;
+			elif (flags & 0x80) is not 0
+				count++ 8;
+			;;
+			q++ count;
+			n++;
+			more is (flags & 0x20) is not 0;
+		;;
+	[end: n]
+
+	# a glyph of n points whose outline isn't moved (it has none, or only its metrics are wanted):
+	# its phantom points' deltas onto ret_pp1 and ret_adv
+	[VaryMetrics: u8 src[]; u32 g: 0; u32 n: 0;]
+		if (Deltas: src g (n + 4) (0 as ptr<FntOutline>) 0 0)
+			int d1: (Whole: var_x:n);
+			int d2: (Whole: var_x:(n + 1));
+			ret_pp1 is ret_pp1 + d1;
+			ret_adv is ret_adv + d2 - d1;
+		;;
+	[end]
+
+	# Glyph g's advance in font units: hmtx's, moved to where the face is on its axes
+	[AdvanceOf: u32 g: 0; : int]
+		int lsb: 0;
+		int adv: (Metrics: (data as u8[length]) g addr lsb);
+		if varied is false or g >= glyph_count return adv;
+		if adv_cache is 0
+			adv_cache is new int[glyph_count + 1];
+			if adv_cache is 0 return adv;
+		;;
+		if adv_cache:g is not 0 return adv_cache:g - 1;
+		int got: adv;
+		if call got is VariedAdvance: (data as u8[length]) g adv throws err
+			got is adv;
+		;;
+		adv_cache:g is got + 1;
+	[end: got]
+
+	[VariedAdvance: u8 src[]; u32 g: 0; int adv: 0; : int]
+		u32 size: 0;
+		u32 pos: (Location: src g addr size);
+		u32 n: 0;
+		if size >= 10
+			u32 p: glyf_at + pos;
+			if (p as u64) + (size as u64) > length as u64 return adv;
+			int n_contours: (I16: src p);
+			if n_contours > 0
+				if 10 + 2 * (n_contours as u32) > size return adv;
+				n is ((I16: src (p + 10 + 2 * ((n_contours as u32) - 1))) + 1) as u32;
+				if n > Fnt.MOST_POINTS return adv;
+			;;
+			elif n_contours < 0
+				n is (Components: src (p + 10) (p + size));
+			;;
+		;;
+		ret_pp1 is 0;
+		ret_adv is adv;
+		call VaryMetrics: src g n;
+	[end: ret_adv]
+
 	# ---------------------------------------------------------------- FreeType's fixed point
 
 	# FT_MulFix: a * b / 65536, rounded half away from zero
@@ -985,7 +1650,7 @@ struct.FntTrueType
 
 	# a coordinate in font units, scaled if there's a scale
 	[Scaled: int v: 0; : int]
-		if scale is 0
+		if scale is 0 or raw
 			return v;
 		;;
 	[end: (W32: (MulFix: v scale))]
