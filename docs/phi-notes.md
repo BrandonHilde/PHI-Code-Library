@@ -124,6 +124,8 @@ variables apart, and a scan of every `.phi` file in this repo and PHI OS for the
 declared in a block, again at the method's level, then in `[end: ...]`) found no other. **For PHI:** a
 silent wrong value, so a candidate for "something that demands a fix".
 
+**Fixed in PHI (`977a988` and `09231a9`, its macos branch, not released):** `[end: ...]` sees the method's own variables as they are at its end, whether it's worked out from a call elsewhere or at the method's own first return (end_sees_own_locals).
+
 **`net.tls13` offers no ALPN, so a client on it can't speak HTTP/2.** Its ClientHello's extensions are
 fixed (server_name, the groups, key_share and the rest), and an extension a program wants to add, or a
 server's EncryptedExtensions to read, has no way in. netlib has HTTP/2 now (`WireH2`), and its own TLS
@@ -131,6 +133,8 @@ server's EncryptedExtensions to read, has no way in. netlib has HTTP/2 now (`Wir
 on HTTP/1.1 with every server that speaks TLS 1.3. What would do: a list of ALPN names on the session
 before the ClientHello is made (`application_layer_protocol_negotiation`, extension 16), and the name
 the server chose, from its EncryptedExtensions, after the handshake (2026-11-21).
+
+**Fixed in PHI (`be98582`, macos branch):** `Tls13.Client: s host 'h2 http/1.1'` (and Server, Tls.Connect, Secure.Accept/Connect) offer protocols; `s.protocol` is the one agreed.
 
 **A shift is done in 32 bits whatever it's stored into, and a constant one that overflows is folded
 without a word.** `u64 a: 1 << 42;` is 1024, as is `1 << n` with `n` 42: the shift is an `int`'s,
@@ -144,6 +148,8 @@ and a byte is made a `u32` before its shift. **For PHI:** an error for a constan
 width, and a warning when a shift's count may reach 32 in an `int` that's then widened, as the
 silent wrong value is the dangerous half (2026-11-21, checked in 1.0 on macOS arm64).
 
+**Fixed in PHI (`82fcd36`, macos branch):** a written count past the width is an error, and a 32-bit shift made 64 bits is warned about (fontlib's `truetype.phi` met the warning, and now writes the shift in 64 bits).
+
 **A macOS program's window must be made on its first thread, and nothing says so.** PHI OS's browser
 makes its window on a thread of its own, with a big stack. Built for macOS it built cleanly and
 stopped as it opened, with AppKit's `NSInternalInconsistencyException` ("NSWindow should only be
@@ -152,6 +158,8 @@ mentions it, and the same program runs on PHI OS, Linux and Windows. `gui.app` c
 error saying so when it's called on another thread, or the documentation could say it. Related and
 smaller: `OS.ThreadStart` takes a method of no values on PHI OS, but on Linux, Windows and macOS the
 method must take the one value it's given; that error is clear (2026-11-21).
+
+**Fixed in PHI (`5fb03a7`, macos branch):** opening one off the first thread is a PHI error that says what to do, and can be caught.
 
 **A macOS program is about ten times the size of the same program for x86.** PHI OS's browser built
 for macOS is 41 MB (27 MB stripped); as a PHI OS program it's 3.7 MB, and as a 64-bit Linux program
@@ -180,11 +188,15 @@ programs rounded to double precision as a matter of course. Then weblib would ne
 all, and vectorlib's own versions could go. Until then, porting fdlibm into a library here is the way
 to the same results everywhere (2026-11-22).
 
+**Fixed in PHI (`67981c8`, `8a00315`, `aed0acc`, macos branch):** `Float.Log`, `Log2`, `Log10`, `Log1p`, `Exp`, `Expm1`, `Pow`, `Tan`, `Atan`, `Atan2`, `Asin`, `Acos`, `Sinh`, `Cosh`, `Tanh`, `Cbrt`, `Hypot`, and `Sin` and `Cos`, are fdlibm's in PHI (`lang.float`, no `use`), the same to the bit on x86 and ARM; and x86 code's `f64` results keep an `f64`'s range (they kept the x87's). weblib's x87 routines and libm calls can go, and vectorlib's `Vg.Tan`/`Atan2` with them.
+
 **A macOS program can't read the count of a local `atmost` array.** `str words[atmost 8];` in a method,
 then `words.len`, stops a macOS build with `Args uses a NameExpr (Length, an atmost array's count
 'words.len') ..., which macOS programs can't do yet`; the same file builds for every other system.
 PHI OS's `render.phi` met it (2026-11-22) and keeps a count of its own. The message says exactly
 what and where, so it's a gap in the ARM code generator rather than a trap.
+
+**Fixed in PHI (`7b879f7`, macos branch).**
 
 
 **Keywords are reserved by design, not a problem to fix.** `method`, `into`, `at`, `out`, `end`,
@@ -208,3 +220,5 @@ Windows: on PHI OS the call would have to reach the kernel, whose `proc.process`
 meets it too (its scripts fail with "RangeError: Out of memory" at a 92 MB heap, 20 MB of it the
 browser's cache of fetched scripts). Not to be worked round in PHI OS by copying `proc/process.phi`
 next to `os.phi`: it waits for PHI.
+
+**Fixed in PHI (`feb228a`, macos branch):** `call Heap.Limit: bytes;` sets it, up to what the machine has; the default stays 128 MB.

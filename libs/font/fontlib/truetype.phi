@@ -979,7 +979,7 @@ struct.FntTrueType
 			r is 0 - r;
 		;;
 		if shift > 0
-			return (r + (1 << (shift - 1))) >> shift;
+			return (r + ((1 as i64) << (shift - 1))) >> shift;
 		;;
 	[end: (r << (0 - shift)) & 0xFFFFFFFF]
 
