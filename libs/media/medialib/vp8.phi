@@ -116,6 +116,55 @@ struct.MdVp8Mb
 
 phi.MdVp8:Library
 {
+	# clip:(v + 384) is v clamped to 0..255, for v from -384 to 639
+	ptr<u8> clip: 0;
+	# YUV to RGB (libwebp's numbers, 14-bit): y's part, and u's and v's with a bias of 1024 << 6 so
+	# that (sum >> 6) indexes clip8, which clamps (index - 1024) to 0..255
+	ptr<int> yuv_y: 0;
+	ptr<int> yuv_rv: 0;
+	ptr<int> yuv_g: 0;
+	ptr<int> yuv_gv: 0;
+	ptr<int> yuv_bu: 0;
+	ptr<u8> clip8: 0;
+
+	[Tables]
+		if clip is not 0 return;
+		yuv_y is new int[256];
+		yuv_rv is new int[256];
+		yuv_g is new int[256];
+		yuv_gv is new int[256];
+		yuv_bu is new int[256];
+		clip8 is new u8[2048];
+		while int i: 0; i < 256; i++;
+			yuv_y:i is (i * 19077) >> 8;
+			yuv_rv:i is ((i * 26149) >> 8) - 14234 + 65536;
+			yuv_g:i is 0 - ((i * 6419) >> 8) + 8708 + 65536;
+			yuv_gv:i is 0 - ((i * 13320) >> 8);
+			yuv_bu:i is ((i * 33050) >> 8) - 17685 + 65536;
+		;;
+		while int i: 0; i < 2048; i++;
+			int v: i - 1024;
+			if v < 0
+				v is 0;
+			;;
+			if v > 255
+				v is 255;
+			;;
+			clip8:i is v as u8;
+		;;
+		clip is new u8[1024];
+		while int i: 0; i < 1024; i++;
+			int v: i - 384;
+			if v < 0
+				v is 0;
+			;;
+			if v > 255
+				v is 255;
+			;;
+			clip:i is v as u8;
+		;;
+	[end]
+
 	const int B_PRED: 4;
 	const int NEAREST: 5;
 	const int NEAR: 6;
@@ -126,6 +175,7 @@ phi.MdVp8:Library
 	str error: [80];
 
 	[New]
+		call Tables;
 		ptr<MdVp8> d: new MdVp8;
 		if d is 0 return 0 as ptr<MdVp8>;
 		call Mem.Fill: d as ptr<u8> 0 sizeof MdVp8;
@@ -165,7 +215,7 @@ struct.MdVp8
 	ptr<u8> out_y;
 	ptr<u8> out_u;
 	ptr<u8> out_v;
-	# the macroblocks, with a row upper and a column left of the frame that are never anything
+	# the macroblocks, with a row above and a column left of the frame that are never anything
 	ptr<MdVp8Mb> mbs;
 	MdVp8Bool br;
 	MdVp8Bool parts[8];
@@ -634,7 +684,7 @@ struct.MdVp8
 		;;
 	[end]
 
-	# a key frame's modes (with the upper and left blocks' as context): its uv mode
+	# a key frame's modes (with the above and left blocks' as context): its uv mode
 	[KeyModes: ptr<MdVp8Mb> m: 0; int mx: 0;]
 		m.ref is 0;
 		m.mvx is 0;
@@ -916,7 +966,7 @@ struct.MdVp8
 	[MvComponent: int base_at: 0;]
 		int x: 0;
 		if (br.Bit: mv_probs:base_at) is 1
-			# long: bits 0 to 2, then 9 down to 4, then 3 (which must be 1 if nothing upper it is)
+			# long: bits 0 to 2, then 9 down to 4, then 3 (which must be 1 if nothing above it is)
 			while int i: 0; i < 3; i++;
 				x++ (br.Bit: mv_probs:(base_at + 9 + i)) << i;
 			;;
@@ -950,7 +1000,7 @@ struct.MdVp8
 	[end: x << 1]
 
 	# SPLITMV: the partitioning, then each partition's motion vector (from the block left of its first
-	# block, upper it, zero, or new from the best)
+	# block, above it, zero, or new from the best)
 	[Split: ptr<MdVp8Mb> m: 0; int mx: 0; int my: 0; int best_x: 0; int best_y: 0;]
 		ptr<MdVp8Mb> upper: (Mb: mx my - 1);
 		ptr<MdVp8Mb> left: (Mb: mx - 1 my);
@@ -1132,7 +1182,14 @@ struct.MdVp8
 		int iy: y + (mvy >> 3);
 		int fx: mvx & 7;
 		int fy: mvy & 7;
-		# the window: from 2 left and 2 upper to 3 right and 3 below
+		if fx is 0 and fy is 0 and ix >= 0 and iy >= 0 and ix + bw <= pw and iy + bh <= ph
+			# (a whole-pixel move inside the frame: copied straight)
+			while int r: 0; r < bh; r++;
+				call Mem.Copy: dst + r * dst_stride plane + (iy + r) * stride + ix bw as u32;
+			;;
+			return;
+		;;
+		# the window: from 2 left and 2 above to 3 right and 3 below
 		int ww: bw + 5;
 		int wh: bh + 5;
 		bln inside: (ix - 2 >= 0 and iy - 2 >= 0 and ix + bw + 3 <= pw and iy + bh + 3 <= ph);
@@ -1392,19 +1449,32 @@ struct.MdVp8
 	# its nearest), w by h into pixels
 
 	[ToArgb: ptr<u32> pixels: 0;]
+		ptr<int> ty: MdVp8.yuv_y;
+		ptr<int> tr: MdVp8.yuv_rv;
+		ptr<int> tg: MdVp8.yuv_g;
+		ptr<int> tb: MdVp8.yuv_bu;
+		ptr<int> tgv: MdVp8.yuv_gv;
+		ptr<u8> c8: MdVp8.clip8;
 		while int y: 0; y < h; y++;
 			ptr<u8> yr: out_y + y * ys;
 			ptr<u8> ur: out_u + (y >> 1) * uvs;
 			ptr<u8> vr: out_v + (y >> 1) * uvs;
 			ptr<u32> o: pixels + y * w * 4;
-			while int x: 0; x < w; x++;
+			int x: 0;
+			while x < w
 				int u: ur:(x >> 1);
 				int v: vr:(x >> 1);
-				int yy: (yr:x * 19077) >> 8;
-				int r: (Clip8: yy + ((v * 26149) >> 8) - 14234);
-				int g: (Clip8: yy - ((u * 6419) >> 8) - ((v * 13320) >> 8) + 8708);
-				int b: (Clip8: yy + ((u * 33050) >> 8) - 17685);
-				o:x is 0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+				int rv: tr:v;
+				int gg: tg:u + tgv:v;
+				int bu: tb:u;
+				# (the parts carry a bias of 1024 << 6, so (sum >> 6) indexes clip8 directly)
+				int yy: ty:(yr:x);
+				o:x is 0xFF000000 | ((c8:((yy + rv) >> 6) as u32) << 16) | ((c8:((yy + gg) >> 6) as u32) << 8) | c8:((yy + bu) >> 6) as u32;
+				if x + 1 < w
+					yy is ty:(yr:(x + 1));
+					o:(x + 1) is 0xFF000000 | ((c8:((yy + rv) >> 6) as u32) << 16) | ((c8:((yy + gg) >> 6) as u32) << 8) | c8:((yy + bu) >> 6) as u32;
+				;;
+				x++ 2;
 			;;
 		;;
 	[end]
@@ -1556,8 +1626,8 @@ struct.MdVp8
 	[end: extra + 3 + (8 << cat)]
 
 	# The edges a macroblock is predicted from, into the buffers' first row and column: the row
-	# upper (127 on the top row), the column left (129 at the left edge), the corner, and for luma
-	# four pixels upper to the right (those of the macroblock upper and right; on the right edge
+	# above (127 on the top row), the column left (129 at the left edge), the corner, and for luma
+	# four pixels above to the right (those of the macroblock above and right; on the right edge
 	# the last above, repeated; 127 on the top row), repeated down the right side for the 4x4
 	# blocks of the right column below the first, as libwebp has them.
 	[Edges: int mx: 0; int my: 0;]
@@ -1714,7 +1784,7 @@ struct.MdVp8
 	[end]
 
 	# A 4x4 block's prediction by its mode (libwebp's numbering), into ybuf at o, from the pixels
-	# around it there: the four upper and four above-right, the corner, and the four left.
+	# around it there: the four above and four above-right, the corner, and the four left.
 	[Predict4: int o: 0; int mode: 0;]
 		ptr<u8> d: addr ybuf:o;
 		int s: 21;
@@ -1745,7 +1815,7 @@ struct.MdVp8
 				;;
 			;;
 			is 2
-				# vertical, smoothed: each upper with its neighbors
+				# vertical, smoothed: each above with its neighbors
 				int v0: (Avg3: tl a b);
 				int v1: (Avg3: a b c);
 				int v2: (Avg3: b c e);
@@ -1937,35 +2007,54 @@ struct.MdVp8
 	# (libwebp's TransformOne: the RFC's, its constants 20091 and 35468).
 	[Idct: ptr<int> c: 0; ptr<u8> buf: 0; int o: 0; int stride: 0;]
 		bln nothing: true;
-		while int i: 0; i < 16; i++;
+		bln dc_only: true;
+		while int i: 1; i < 16; i++;
 			if c:i is not 0
 				nothing is false;
+				dc_only is false;
 				break;
 			;;
 		;;
-		if nothing return;
+		ptr<u8> clip: MdVp8.clip;
+		if dc_only
+			# (only the DC: every pixel moves the same, (c0 + 4) >> 3, as the full transform gives)
+			if c:0 is 0 return;
+			int dv: (c:0 + 4) >> 3;
+			while int i: 0; i < 4; i++;
+				ptr<u8> row: buf + o + i * stride;
+				row:0 is clip:(row:0 + dv + 384);
+				row:1 is clip:(row:1 + dv + 384);
+				row:2 is clip:(row:2 + dv + 384);
+				row:3 is clip:(row:3 + dv + 384);
+			;;
+			return;
+		;;
 		int tmp[16];
 		while int i: 0; i < 4; i++;
+			int c4: c:(4 + i);
+			int c12: c:(12 + i);
 			int a: c:i + c:(8 + i);
 			int b: c:i - c:(8 + i);
-			int cc: (Mul2: c:(4 + i)) - (Mul1: c:(12 + i));
-			int dd: (Mul1: c:(4 + i)) + (Mul2: c:(12 + i));
+			int cc: ((c4 * 35468) >> 16) - (((c12 * 20091) >> 16) + c12);
+			int dd: (((c4 * 20091) >> 16) + c4) + ((c12 * 35468) >> 16);
 			tmp:(i * 4) is a + dd;
 			tmp:(i * 4 + 1) is b + cc;
 			tmp:(i * 4 + 2) is b - cc;
 			tmp:(i * 4 + 3) is a - dd;
 		;;
 		while int i: 0; i < 4; i++;
+			int t4: tmp:(4 + i);
+			int t12: tmp:(12 + i);
 			int dc: tmp:i + 4;
 			int a: dc + tmp:(8 + i);
 			int b: dc - tmp:(8 + i);
-			int cc: (Mul2: tmp:(4 + i)) - (Mul1: tmp:(12 + i));
-			int dd: (Mul1: tmp:(4 + i)) + (Mul2: tmp:(12 + i));
+			int cc: ((t4 * 35468) >> 16) - (((t12 * 20091) >> 16) + t12);
+			int dd: (((t4 * 20091) >> 16) + t4) + ((t12 * 35468) >> 16);
 			ptr<u8> row: buf + o + i * stride;
-			row:0 is (Math.Clamp: row:0 + ((a + dd) >> 3) 0 255) as u8;
-			row:1 is (Math.Clamp: row:1 + ((b + cc) >> 3) 0 255) as u8;
-			row:2 is (Math.Clamp: row:2 + ((b - cc) >> 3) 0 255) as u8;
-			row:3 is (Math.Clamp: row:3 + ((a - dd) >> 3) 0 255) as u8;
+			row:0 is clip:(row:0 + ((a + dd) >> 3) + 384);
+			row:1 is clip:(row:1 + ((b + cc) >> 3) + 384);
+			row:2 is clip:(row:2 + ((b - cc) >> 3) + 384);
+			row:3 is clip:(row:3 + ((a - dd) >> 3) + 384);
 		;;
 	[end]
 
@@ -1976,16 +2065,49 @@ struct.MdVp8
 	[end: (a * 35468) >> 16]
 
 	# the simple filter across an edge: size pixels along it, step across it, next along it
+	# (written out with nothing called for each pixel: this is most of a frame's time)
 	[Simple: ptr<u8> p: 0; int step: 0; int next: 0; int size: 0; int thresh: 0;]
 		int t2: 2 * thresh + 1;
+		ptr<u8> clip: MdVp8.clip;
 		while int i: 0; i < size; i++;
 			ptr<u8> q: p + i * next;
 			int p1: q:(-2 * step);
 			int p0: q:(0 - step);
 			int q0: q:0;
 			int q1: q:step;
-			if 4 * (Math.Abs: p0 - q0) + (Math.Abs: p1 - q1) <= t2
-				call Two: q step;
+			int d0: p0 - q0;
+			if d0 < 0
+				d0 is 0 - d0;
+			;;
+			int d1: p1 - q1;
+			if d1 < 0
+				d1 is 0 - d1;
+			;;
+			if 4 * d0 + d1 <= t2
+				int s1: p1 - q1;
+				if s1 < -128
+					s1 is -128;
+				;;
+				if s1 > 127
+					s1 is 127;
+				;;
+				int a: 3 * (q0 - p0) + s1;
+				int a1: (a + 4) >> 3;
+				int a2: (a + 3) >> 3;
+				if a1 < -16
+					a1 is -16;
+				;;
+				if a1 > 15
+					a1 is 15;
+				;;
+				if a2 < -16
+					a2 is -16;
+				;;
+				if a2 > 15
+					a2 is 15;
+				;;
+				q:(0 - step) is clip:(p0 + a2 + 384);
+				q:0 is clip:(q0 - a1 + 384);
 			;;
 		;;
 	[end]
@@ -1993,6 +2115,7 @@ struct.MdVp8
 	# the normal filter across an edge: on a macroblock's edge (mb) six pixels change, inside it four
 	[Loop: ptr<u8> p: 0; int step: 0; int next: 0; int size: 0; int thresh: 0; int ithresh: 0; int hev: 0; bln mb: false;]
 		int t2: 2 * thresh + 1;
+		ptr<u8> clip: MdVp8.clip;
 		while int i: 0; i < size; i++;
 			ptr<u8> q: p + i * next;
 			int p3: q:(-4 * step);
@@ -2003,76 +2126,137 @@ struct.MdVp8
 			int q1: q:step;
 			int q2: q:(2 * step);
 			int q3: q:(3 * step);
-			if 4 * (Math.Abs: p0 - q0) + (Math.Abs: p1 - q1) > t2
+			int d: p0 - q0;
+			if d < 0
+				d is 0 - d;
+			;;
+			int e: p1 - q1;
+			if e < 0
+				e is 0 - e;
+			;;
+			if 4 * d + e > t2
 				continue;
 			;;
-			if (Math.Abs: p3 - p2) > ithresh or (Math.Abs: p2 - p1) > ithresh or (Math.Abs: p1 - p0) > ithresh or (Math.Abs: q3 - q2) > ithresh or (Math.Abs: q2 - q1) > ithresh or (Math.Abs: q1 - q0) > ithresh
+			int x: p3 - p2;
+			if x < 0
+				x is 0 - x;
+			;;
+			if x > ithresh
 				continue;
 			;;
-			if (Math.Abs: p1 - p0) > hev or (Math.Abs: q1 - q0) > hev
-				call Two: q step;
+			x is p2 - p1;
+			if x < 0
+				x is 0 - x;
+			;;
+			if x > ithresh
+				continue;
+			;;
+			int hp: p1 - p0;
+			if hp < 0
+				hp is 0 - hp;
+			;;
+			if hp > ithresh
+				continue;
+			;;
+			x is q3 - q2;
+			if x < 0
+				x is 0 - x;
+			;;
+			if x > ithresh
+				continue;
+			;;
+			x is q2 - q1;
+			if x < 0
+				x is 0 - x;
+			;;
+			if x > ithresh
+				continue;
+			;;
+			int hq: q1 - q0;
+			if hq < 0
+				hq is 0 - hq;
+			;;
+			if hq > ithresh
+				continue;
+			;;
+			if hp > hev or hq > hev
+				# (high edge variance: two pixels)
+				int s1: p1 - q1;
+				if s1 < -128
+					s1 is -128;
+				;;
+				if s1 > 127
+					s1 is 127;
+				;;
+				int a: 3 * (q0 - p0) + s1;
+				int a1: (a + 4) >> 3;
+				int a2: (a + 3) >> 3;
+				if a1 < -16
+					a1 is -16;
+				;;
+				if a1 > 15
+					a1 is 15;
+				;;
+				if a2 < -16
+					a2 is -16;
+				;;
+				if a2 > 15
+					a2 is 15;
+				;;
+				q:(0 - step) is clip:(p0 + a2 + 384);
+				q:0 is clip:(q0 - a1 + 384);
 			;;
 			elif mb
-				call Six: q step;
+				# (six)
+				int s1: p1 - q1;
+				if s1 < -128
+					s1 is -128;
+				;;
+				if s1 > 127
+					s1 is 127;
+				;;
+				int a: 3 * (q0 - p0) + s1;
+				if a < -128
+					a is -128;
+				;;
+				if a > 127
+					a is 127;
+				;;
+				int a1: (27 * a + 63) >> 7;
+				int a2: (18 * a + 63) >> 7;
+				int a3: (9 * a + 63) >> 7;
+				q:(-3 * step) is clip:(p2 + a3 + 384);
+				q:(-2 * step) is clip:(p1 + a2 + 384);
+				q:(0 - step) is clip:(p0 + a1 + 384);
+				q:0 is clip:(q0 - a1 + 384);
+				q:step is clip:(q1 - a2 + 384);
+				q:(2 * step) is clip:(q2 - a3 + 384);
 			;;
 			else
-				call Four: q step;
+				# (four)
+				int a: 3 * (q0 - p0);
+				int a1: (a + 4) >> 3;
+				int a2: (a + 3) >> 3;
+				if a1 < -16
+					a1 is -16;
+				;;
+				if a1 > 15
+					a1 is 15;
+				;;
+				if a2 < -16
+					a2 is -16;
+				;;
+				if a2 > 15
+					a2 is 15;
+				;;
+				int a3: (a1 + 1) >> 1;
+				q:(-2 * step) is clip:(p1 + a3 + 384);
+				q:(0 - step) is clip:(p0 + a2 + 384);
+				q:0 is clip:(q0 - a1 + 384);
+				q:step is clip:(q1 - a3 + 384);
 			;;
 		;;
 	[end]
 
-	[Clip1: int v: 0;]
-	[end: (Math.Clamp: v 0 255)]
 
-	[Sclip1: int v: 0;]
-	[end: (Math.Clamp: v (-128) 127)]
-
-	[Sclip2: int v: 0;]
-	[end: (Math.Clamp: v (-16) 15)]
-
-	[Two: ptr<u8> q: 0; int step: 0;]
-		int p1: q:(-2 * step);
-		int p0: q:(0 - step);
-		int q0: q:0;
-		int q1: q:step;
-		int a: 3 * (q0 - p0) + (Sclip1: p1 - q1);
-		int a1: (Sclip2: (a + 4) >> 3);
-		int a2: (Sclip2: (a + 3) >> 3);
-		q:(0 - step) is (Clip1: p0 + a2) as u8;
-		q:0 is (Clip1: q0 - a1) as u8;
-	[end]
-
-	[Four: ptr<u8> q: 0; int step: 0;]
-		int p1: q:(-2 * step);
-		int p0: q:(0 - step);
-		int q0: q:0;
-		int q1: q:step;
-		int a: 3 * (q0 - p0);
-		int a1: (Sclip2: (a + 4) >> 3);
-		int a2: (Sclip2: (a + 3) >> 3);
-		int a3: (a1 + 1) >> 1;
-		q:(-2 * step) is (Clip1: p1 + a3) as u8;
-		q:(0 - step) is (Clip1: p0 + a2) as u8;
-		q:0 is (Clip1: q0 - a1) as u8;
-		q:step is (Clip1: q1 - a3) as u8;
-	[end]
-
-	[Six: ptr<u8> q: 0; int step: 0;]
-		int p2: q:(-3 * step);
-		int p1: q:(-2 * step);
-		int p0: q:(0 - step);
-		int q0: q:0;
-		int q1: q:step;
-		int q2: q:(2 * step);
-		int a: (Sclip1: 3 * (q0 - p0) + (Sclip1: p1 - q1));
-		int a1: (27 * a + 63) >> 7;
-		int a2: (18 * a + 63) >> 7;
-		int a3: (9 * a + 63) >> 7;
-		q:(-3 * step) is (Clip1: p2 + a3) as u8;
-		q:(-2 * step) is (Clip1: p1 + a2) as u8;
-		q:(0 - step) is (Clip1: p0 + a1) as u8;
-		q:0 is (Clip1: q0 - a1) as u8;
-		q:step is (Clip1: q1 - a2) as u8;
-		q:(2 * step) is (Clip1: q2 - a3) as u8;
-	[end]
 }

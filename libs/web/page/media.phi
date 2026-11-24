@@ -714,12 +714,35 @@ phi.PageMedia:Library
 	# ---- video
 
 	# Decodes the frames due by t (microseconds): every one (each is the next one's reference), but
-	# only the last becomes the picture. At most 200 ms of work a turn; it catches up on the next.
+	# only the last becomes the picture. At most about 60 ms of decoding a turn (by the host's clock,
+	# JsDate.Current), so the page and its sound keep going on a slow machine; more than a second
+	# behind, it goes on from the next key frame that's due, as a player that can't keep up does.
 	[Pictures: ptr<Page> p: 0; ptr<PageMediaEl> e: 0; i64 t: 0;]
 		ptr<MdMedia> m: e.m;
 		ptr<MdVp8> d: e.vdec;
 		bln got: false;
-		f64 began: p.now;
+		f64 began: (JsDate.Current);
+		# (far behind: the last key frame that's due, if it's ahead of where it is)
+		if e.pic is not 0 and e.vnext < m.vcount
+			ptr<MdPacket> first: m.vpackets + e.vnext * sizeof MdPacket;
+			if first.us < t - 1000000
+				u32 k: e.vnext + 1;
+				u32 key: 0xFFFFFFFF;
+				while k < m.vcount
+					ptr<MdPacket> pk: m.vpackets + k * sizeof MdPacket;
+					if pk.us > t
+						break;
+					;;
+					if (pk.flags & MdMedia.KEY) is not 0
+						key is k;
+					;;
+					k++;
+				;;
+				if key is not 0xFFFFFFFF
+					e.vnext is key;
+				;;
+			;;
+		;;
 		int guard: 0;
 		while e.vnext < m.vcount and guard < 60
 			guard++;
@@ -736,6 +759,9 @@ phi.PageMedia:Library
 				if pk.us >= t
 					break;
 				;;
+			;;
+			if got and began > 0.0 and (JsDate.Current) - began > 60.0
+				break;
 			;;
 		;;
 		if not got return;
