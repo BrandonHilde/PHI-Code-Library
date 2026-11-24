@@ -114,6 +114,7 @@ struct.PageRequest
 	u32 id;
 	PageLoad kind;
 	bln done;
+	bln blocks;             # the parser waits for it (a script of the document's, not async or deferred)
 	ptr<DomNode> node;      # the script or link it's for
 	ptr<CssImport> import;  # a sheet's @import it's for (the kind is STYLE, and there's no node)
 	u64 a;                  # resolve
@@ -698,8 +699,12 @@ phi.Page:Library
 			u32 id: (Request: p src (WlText.LenZ: src) PageLoad.SCRIPT s JsV.UNDEF JsV.UNDEF);
 			# if it hasn't come yet, parsing waits for it (an async one doesn't hold anything up)
 			if from_parser and (Dom.AttrValue: s 'async') is 0 and not (RequestDone: p id)
-				p.blocking++;
-				call p.parser.Pause;
+				ptr<PageRequest> waited: (Find: p id);
+				if waited is not 0
+					waited.blocks is true;
+					p.blocking++;
+					call p.parser.Pause;
+				;;
 			;;
 			return;
 		;;
@@ -742,6 +747,7 @@ phi.Page:Library
 		p.requests:at_.body is 0;
 		p.requests:at_.body_len is 0;
 		p.requests:at_.answer_headers is 0;
+		p.requests:at_.blocks is false;
 		if verb is not 0 and verb:0 is not 0 and not (WlText.EqZ: verb (WlText.LenZ: verb) 'GET')
 			p.requests:at_.verb is (DupZ: verb (WlText.LenZ: verb));
 		;;
@@ -872,7 +878,10 @@ phi.Page:Library
 				else
 					call FireNode: p s 'error';
 				;;
-				if p.blocking > 0 and not p.parse_done
+				# (only a script the parser waits for lets it go on: an async one, or one a script
+				# made, coming first doesn't)
+				if r.blocks and p.blocking > 0 and not p.parse_done
+					r.blocks is false;
 					p.blocking--;
 					if p.blocking is 0
 						call p.parser.Resume;

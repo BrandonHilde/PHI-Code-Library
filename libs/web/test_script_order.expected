@@ -1,0 +1,8 @@
+1 inline: made a script
+--- held 3 requests
+2 async.js ran
+3 made.js ran
+--- now the one waited for
+waited.js ran
+4 inline after waited.js: number
+5 body: end

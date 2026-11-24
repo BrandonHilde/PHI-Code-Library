@@ -1,0 +1,56 @@
+# Scripts in the document's order (page/page.phi Run, DeliverNow): the parser waits for a script of
+# the document's until it has come and run, however the host's answers come. Here the host holds
+# the requests and answers an async script and one a script made first: neither lets the parser go
+# on (w3schools.com's async consent script came first, so a script after its uic_prov.js ran
+# before it, and found uic_prov_pre missing). Then the one waited for: the rest runs after it.
+use weblib;
+
+phi.TestScriptOrder:Program
+{
+	u32 ids[8];
+	str urls: [1024];
+	int held: 0;
+
+	call Weblib.Start: 900000;
+	PageHost host;
+	host.logger is addr Print;
+	host.load is addr Hold;
+	str html: '<!doctype html><head><script async src="/async.js"></script><script>var s = document.createElement("script"); s.src = "/made.js"; document.head.appendChild(s); console.log("1 inline: made a script");</script><script src="/waited.js"></script><script>console.log("4 inline after waited.js: " + typeof fromWaited);</script></head><body><p>end</p><script>console.log("5 body: " + document.querySelector("p").textContent);</script></body>';
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page html html.len as u32 'https://order.example/';
+	log '--- held ' held ' requests\n';
+	call Answer: page '/async.js' 'console.log("2 async.js ran")';
+	call Answer: page '/made.js' 'console.log("3 made.js ran")';
+	log '--- now the one waited for\n';
+	call Answer: page '/waited.js' 'const fromWaited = 1; console.log("waited.js ran")';
+	call Page.Tick: page 10.0;
+	call Page.Free: page;
+	exit 0;
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+
+	[Hold: ptr<Page> p: 0; ptr<u8> url: 0; PageLoad kind: PageLoad.DOCUMENT; u32 id: 0;]
+		if held < 8
+			ids:held is id;
+			held++;
+		;;
+	[end]
+
+	# the held request whose address ends with tail: answered with js
+	[Answer: ptr<Page> p: 0; ptr<u8> tail: 0; ptr<u8> js: 0;]
+		while int i: 0; i < held; i++;
+			ptr<PageRequest> r: (Page.Find: p ids:i);
+			if r is not 0 and not r.done
+				u32 ul: (WlText.LenZ: r.url);
+				u32 tl: (WlText.LenZ: tail);
+				if ul >= tl and (WlText.EqZ: r.url + (ul - tl) tl tail)
+					call Page.Delivered: p ids:i 200 js (WlText.LenZ: js);
+					return;
+				;;
+			;;
+		;;
+		log 'no request for ' tail '\n';
+	[end]
+}
