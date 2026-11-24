@@ -4,6 +4,7 @@
 # memory, an unpacked size past 256 MB).
 
 use corelib;
+use crypto.sha1;
 use crypto.sha256;
 use crypto.sha512;
 
@@ -17,7 +18,7 @@ phi.PagePacking:Library
 		call Js.DefineNative: JsRt.r.global '%digest' addr Digest 3;
 	[end]
 
-	# %digest(name, buffer, length): crypto.subtle.digest's hash, SHA-256, SHA-384 or SHA-512, as an
+	# %digest(name, buffer, length): crypto.subtle.digest's hash, SHA-1, SHA-256, SHA-384 or SHA-512, as an
 	# ArrayBuffer
 	[Digest: ptr<u64> args: 0; int argc: 0;]
 		WlBuf name;
@@ -28,7 +29,11 @@ phi.PagePacking:Library
 		ptr<u8> data: (JsTyped.BytesOf: buf);
 		u8 digest[64];
 		u32 size: 32;
-		if (WlText.EqZ: name.data 7 'SHA-384')
+		if (WlText.EqZ: name.data 5 'SHA-1') and name.len is 6
+			size is 20;
+			call Sha1.Hash: data n addr digest;
+		;;
+		elif (WlText.EqZ: name.data 7 'SHA-384')
 			size is 48;
 			call Sha512.Hash384: data n addr digest;
 		;;

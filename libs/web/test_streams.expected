@@ -23,4 +23,7 @@ gzip 2400 -> under 200 bytes -> the same; deflate 2400 -> under 200 bytes -> the
 -- bad compressed data, a bad format
 zip: TypeError
 bad data: TypeError
+-- crypto.subtle.digest
+SHA-1 a9993e364706816a... (20); SHA-256 ba7816bf8f01cfea... (32); SHA-384 cb00753f45a35e8b... (48); SHA-512 ddaf35a193617aba... (64)
+MD5: NotSupportedError
 done

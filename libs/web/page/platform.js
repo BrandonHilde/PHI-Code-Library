@@ -2069,14 +2069,14 @@
     var h = Array.prototype.map.call(b, function (x) { return (x + 256).toString(16).slice(1); }).join("");
     return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20);
   }
-  // crypto.subtle: digest, SHA-256, SHA-384 and SHA-512 (%digest: PHI's crypto). Not kept yet:
-  // SHA-1, keys, signing and encryption.
+  // crypto.subtle: digest, SHA-1, SHA-256, SHA-384 and SHA-512 (%digest: PHI's crypto). Not kept
+  // yet: keys, signing and encryption.
   var digestNative = global["%digest"];
   delete global["%digest"];
   class SubtleCrypto {
     digest(algorithm, data) {
       var name = String(typeof algorithm === "object" && algorithm !== null ? algorithm.name : algorithm).toUpperCase();
-      if (name !== "SHA-256" && name !== "SHA-384" && name !== "SHA-512") {
+      if (name !== "SHA-1" && name !== "SHA-256" && name !== "SHA-384" && name !== "SHA-512") {
         return Promise.reject(new DOMException("Unrecognized or unsupported algorithm: " + name, "NotSupportedError"));
       }
       var bytes;
