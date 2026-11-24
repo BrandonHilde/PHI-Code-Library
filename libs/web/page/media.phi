@@ -68,6 +68,8 @@ phi.PageMedia:Library
 	ptr<Page> owner: 0;         # the page els are of
 	u32 changes: 0;             # goes up when what shows changes: a picture, the clock, playing or not
 	i16 mix[4096];              # (2048 frames, mixed)
+	i16 pend[4096];             # mixed frames the host hasn't taken yet: given first, next time
+	int pend_n: 0;
 
 	# the record for an element, made if it hasn't one
 	[Of: ptr<Page> p: 0; ptr<DomNode> n: 0;]
@@ -103,6 +105,7 @@ phi.PageMedia:Library
 		;;
 		count is 0;
 		owner is 0;
+		pend_n is 0;
 		seen_version is 0xFFFFFFFF;
 	[end]
 
@@ -438,6 +441,28 @@ phi.PageMedia:Library
 
 	[Mix: ptr<Page> p: 0;]
 		if p.host.audio_write is 0 or p.host.audio_rate is 0 return;
+		int dev_rate: (p.host.audio_rate: p);
+		if dev_rate <= 0 return;
+		int queued: 0;
+		if p.host.audio_queued is not 0
+			queued is (p.host.audio_queued: p);
+		;;
+		int want: dev_rate * LEAD_MS / 1000 - queued;
+		# what was mixed and not taken goes first (its elements' sound has moved on past it)
+		if pend_n > 0
+			int took: (p.host.audio_write: p addr pend pend_n);
+			if took < 0
+				took is 0;
+			;;
+			call Counted: took;
+			if took < pend_n
+				call Mem.Move: addr pend as ptr<u8> (addr pend as ptr<u8>) + took * 4 ((pend_n - took) * 4) as u32;
+				pend_n is pend_n - took;
+				return;
+			;;
+			pend_n is 0;
+			want-- took;
+		;;
 		bln any: false;
 		while int i: 0; i < count; i++;
 			ptr<PageMediaEl> e: els:i;
@@ -446,13 +471,6 @@ phi.PageMedia:Library
 			;;
 		;;
 		if not any return;
-		int dev_rate: (p.host.audio_rate: p);
-		if dev_rate <= 0 return;
-		int queued: 0;
-		if p.host.audio_queued is not 0
-			queued is (p.host.audio_queued: p);
-		;;
-		int want: dev_rate * LEAD_MS / 1000 - queued;
 		int guard: 0;
 		while want > 0 and guard < 16
 			guard++;
@@ -473,14 +491,27 @@ phi.PageMedia:Library
 			;;
 			if made is 0 return;
 			int taken: (p.host.audio_write: p addr mix made);
-			while int i: 0; i < count; i++;
-				ptr<PageMediaEl> e: els:i;
-				if e.audible and not e.paused and not e.ended
-					e.dev_written++ taken as i64;
-				;;
+			if taken < 0
+				taken is 0;
 			;;
-			if taken < made return;
+			call Counted: taken;
+			if taken < made
+				# (the host is full: the rest waits)
+				call Mem.Copy: addr pend as ptr<u8> (addr mix as ptr<u8>) + taken * 4 ((made - taken) * 4) as u32;
+				pend_n is made - taken;
+				return;
+			;;
 			want-- made;
+		;;
+	[end]
+
+	# frames the host took: each element playing with sound has had that many more given
+	[Counted: int taken: 0;]
+		while int i: 0; i < count; i++;
+			ptr<PageMediaEl> e: els:i;
+			if e.audible and not e.paused and not e.ended
+				e.dev_written++ taken as i64;
+			;;
 		;;
 	[end]
 
@@ -549,8 +580,8 @@ phi.PageMedia:Library
 		;;
 		bln at_end: false;
 		if e.audible
-			# everything decoded and heard
-			if e.source_done
+			# everything decoded, given and heard
+			if e.source_done and pend_n is 0
 				int queued: 0;
 				if p.host.audio_queued is not 0
 					queued is (p.host.audio_queued: p);
