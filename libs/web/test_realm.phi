@@ -1,0 +1,30 @@
+# Pages side by side (as an iframe's page is beside the window's): each its own JS runtime and the
+# DOM classes and prototypes made in it (PageRealm). Page a is made, then page b; then each runs
+# script against its own document, in turn, a few times over, and a's waits on b's turn.
+use weblib;
+
+phi.TestRealm:Program
+{
+	call Weblib.Start: 900000;
+	PageHost host;
+	host.logger is addr Print;
+	str html_a: '<!doctype html><body><p id=one>a</p><p>a2</p><script>window.which = "a";</script></body>';
+	str html_b: '<!doctype html><body><div id=only>b</div><script>window.which = "b";</script></body>';
+	ptr<Page> a: (Page.New: addr host 800.0 600.0);
+	call Page.Load: a html_a html_a.len as u32 'https://a.example/';
+	ptr<Page> b: (Page.New: addr host 800.0 600.0);
+	call Page.Load: b html_b html_b.len as u32 'https://b.example/';
+	str script: 'console.log(which + ": children " + document.body.children.length + ", first " + document.body.children[0].id + ", made " + (document.createElement("span") instanceof HTMLElement) + ", event " + (new Event("x") instanceof Event) + ", host " + location.host)';
+	while int round: 0; round < 3; round++;
+		call Page.RunSource: a addr script:0 script.len as u32 'x';
+		call Page.RunSource: b addr script:0 script.len as u32 'x';
+	;;
+	call Page.Free: b;
+	call Page.RunSource: a addr script:0 script.len as u32 'x';
+	call Page.Free: a;
+	exit 0;
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+}

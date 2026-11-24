@@ -31,6 +31,7 @@ use page.pmodules;
 use page.canvas;
 use page.anim;
 use page.socket;
+use page.realm;
 use page.media;
 
 # what's asked of PageHost.load
@@ -177,6 +178,7 @@ struct.Page
 	int nest;               # how deep in running JS we are: microtasks and answers wait for 0
 	bln submitted;          # the last Click's default action sent a form (the host needn't)
 	bln is_frame;           # the host's: a page in another's <iframe> (its media aren't played)
+	u64 realm[128];          # its JS classes and prototypes while another page is used (PageRealm; REALM_ROOM)
 	ptr<JsObj> local_obj;   # its localStorage (changes to it are given to the host to keep)
 	ptr<u8> anim_runs;      # its transitions and animations (PageAnim's, while another page has them)
 	int anim_count;
@@ -214,6 +216,8 @@ struct.Page
 
 phi.Page:Library
 {
+	const int REALM_ROOM: 128;   # (Page.realm's size)
+
 	# what Page.SocketEvent says of a WebSocket
 	const int WS_OPEN: 1;       # it's open: data is the protocol the server chose
 	const int WS_TEXT: 2;       # a text message (UTF-8)
@@ -274,11 +278,16 @@ phi.Page:Library
 		p.css.on_import is addr OnImport;
 		p.css.on_style is addr PageAnim.Style;
 		call p.css.SetViewport: width height;
+		if current is not 0
+			# (what the page in use made is kept in it: this one makes its own)
+			call PageRealm.Save: current;
+		;;
 		p.rt is (Js.New);
 		p.keep is JsV.UNDEF;
 		p.window_location is JsV.UNDEF;
 		p.storage is JsV.UNDEF;
 		current is p;
+		call PageRealm.Clear;
 		call PageBind.Install: p;
 		call PageObservers.Install: p;
 		call PageElements.Install: p;
@@ -387,8 +396,12 @@ phi.Page:Library
 
 	[Use: ptr<Page> p: 0;]
 		if current is not p
+			if current is not 0
+				call PageRealm.Save: current;
+			;;
 			current is p;
 			call Js.Use: p.rt;
+			call PageRealm.Load: p;
 		;;
 	[end]
 
@@ -557,6 +570,7 @@ phi.Page:Library
 
 	# A script and everything it calls, which reports what it throws and never lets it out
 	[RunSource: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; ptr<u8> name: 0;]
+		call Use: p;
 		p.nest++;
 		call Js.Eval: text n name;
 		if Js.failed

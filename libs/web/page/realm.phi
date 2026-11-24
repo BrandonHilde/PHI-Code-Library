@@ -1,0 +1,182 @@
+# Made by tools/web/make_realm.py: don't change it by hand, run that after adding or removing a
+# program-level ptr<JsObj>, ptr<JsClass> or ptr<JsSym> (or a list of them) in page/*.phi.
+#
+# Each page's own JS classes, prototypes and symbols (made in its runtime at Install, held in
+# program fields there's one of for all pages): saved into the page Page.Use leaves (Page.realm)
+# and loaded from the one it goes to, so pages side by side (an iframe's and the window's)
+# don't use each other's.
+
+use page.page;
+
+phi.PageRealm:Library
+{
+	const int SLOTS: 114;         # (Page.realm has room for Page.REALM_ROOM)
+
+	[Save: ptr<Page> p: 0;]
+		ptr<u64> r: addr p.realm:0;
+		r:0 is PageBind.node_class as u64;
+		r:1 is PageBind.form_class as u64;
+		r:2 is PageBind.collection_class as u64;
+		r:3 is PageBind.static_list_class as u64;
+		r:4 is PageBind.token_class as u64;
+		r:5 is PageBind.style_class as u64;
+		r:6 is PageBind.computed_class as u64;
+		r:7 is PageBind.dataset_class as u64;
+		r:8 is PageBind.node_proto as u64;
+		r:9 is PageBind.element_proto as u64;
+		r:10 is PageBind.html_proto as u64;
+		r:11 is PageBind.svg_proto as u64;
+		r:12 is PageBind.character_proto as u64;
+		r:13 is PageBind.text_proto as u64;
+		r:14 is PageBind.comment_proto as u64;
+		r:15 is PageBind.document_proto as u64;
+		r:16 is PageBind.fragment_proto as u64;
+		r:17 is PageBind.doctype_proto as u64;
+		r:18 is PageBind.collection_proto as u64;
+		r:19 is PageBind.nodelist_proto as u64;
+		r:20 is PageBind.token_proto as u64;
+		r:21 is PageBind.style_proto as u64;
+		r:22 is PageBind.dataset_proto as u64;
+		r:23 is PageBind.attr_proto as u64;
+		r:24 is PageBind.namedmap_proto as u64;
+		r:25 is PageBind.tag_protos.len as u64;
+		while u32 i: 0; i < PageBind.tag_protos.len; i++;
+			r:(26 + i) is PageBind.tag_protos:i as u64;
+		;;
+		r:90 is PageCanvas.ctx_class as u64;
+		r:91 is PageCanvas.path_class as u64;
+		r:92 is PageCanvas.gradient_class as u64;
+		r:93 is PageCanvas.pattern_class as u64;
+		r:94 is PageCanvas.ctx_proto as u64;
+		r:95 is PageCanvas.path_proto as u64;
+		r:96 is PageCanvas.gradient_proto as u64;
+		r:97 is PageCanvas.pattern_proto as u64;
+		r:98 is PageCanvas.image_data_proto as u64;
+		r:99 is PageCanvas.metrics_proto as u64;
+		r:100 is PageElements.list as u64;
+		r:101 is PageEvents.event_class as u64;
+		r:102 is PageEvents.listeners_key as u64;
+		r:103 is PageEvents.event_proto as u64;
+		r:104 is PageEvents.ui_proto as u64;
+		r:105 is PageEvents.mouse_proto as u64;
+		r:106 is PageEvents.key_proto as u64;
+		r:107 is PageEvents.custom_proto as u64;
+		r:108 is PageEvents.focus_proto as u64;
+		r:109 is PageEvents.input_proto as u64;
+		r:110 is PageEvents.target_proto as u64;
+		r:111 is PageShadow.root_proto as u64;
+		r:112 is PageShadow.slot_proto as u64;
+		r:113 is PageNet.response_proto as u64;
+	[end]
+
+	[Load: ptr<Page> p: 0;]
+		ptr<u64> r: addr p.realm:0;
+		PageBind.node_class is r:0 as ptr<JsClass>;
+		PageBind.form_class is r:1 as ptr<JsClass>;
+		PageBind.collection_class is r:2 as ptr<JsClass>;
+		PageBind.static_list_class is r:3 as ptr<JsClass>;
+		PageBind.token_class is r:4 as ptr<JsClass>;
+		PageBind.style_class is r:5 as ptr<JsClass>;
+		PageBind.computed_class is r:6 as ptr<JsClass>;
+		PageBind.dataset_class is r:7 as ptr<JsClass>;
+		PageBind.node_proto is r:8 as ptr<JsObj>;
+		PageBind.element_proto is r:9 as ptr<JsObj>;
+		PageBind.html_proto is r:10 as ptr<JsObj>;
+		PageBind.svg_proto is r:11 as ptr<JsObj>;
+		PageBind.character_proto is r:12 as ptr<JsObj>;
+		PageBind.text_proto is r:13 as ptr<JsObj>;
+		PageBind.comment_proto is r:14 as ptr<JsObj>;
+		PageBind.document_proto is r:15 as ptr<JsObj>;
+		PageBind.fragment_proto is r:16 as ptr<JsObj>;
+		PageBind.doctype_proto is r:17 as ptr<JsObj>;
+		PageBind.collection_proto is r:18 as ptr<JsObj>;
+		PageBind.nodelist_proto is r:19 as ptr<JsObj>;
+		PageBind.token_proto is r:20 as ptr<JsObj>;
+		PageBind.style_proto is r:21 as ptr<JsObj>;
+		PageBind.dataset_proto is r:22 as ptr<JsObj>;
+		PageBind.attr_proto is r:23 as ptr<JsObj>;
+		PageBind.namedmap_proto is r:24 as ptr<JsObj>;
+		PageBind.tag_protos.len is r:25 as u32;
+		while u32 i: 0; i < PageBind.tag_protos.len; i++;
+			PageBind.tag_protos:i is r:(26 + i) as ptr<JsObj>;
+		;;
+		PageCanvas.ctx_class is r:90 as ptr<JsClass>;
+		PageCanvas.path_class is r:91 as ptr<JsClass>;
+		PageCanvas.gradient_class is r:92 as ptr<JsClass>;
+		PageCanvas.pattern_class is r:93 as ptr<JsClass>;
+		PageCanvas.ctx_proto is r:94 as ptr<JsObj>;
+		PageCanvas.path_proto is r:95 as ptr<JsObj>;
+		PageCanvas.gradient_proto is r:96 as ptr<JsObj>;
+		PageCanvas.pattern_proto is r:97 as ptr<JsObj>;
+		PageCanvas.image_data_proto is r:98 as ptr<JsObj>;
+		PageCanvas.metrics_proto is r:99 as ptr<JsObj>;
+		PageElements.list is r:100 as ptr<JsObj>;
+		PageEvents.event_class is r:101 as ptr<JsClass>;
+		PageEvents.listeners_key is r:102 as ptr<JsSym>;
+		PageEvents.event_proto is r:103 as ptr<JsObj>;
+		PageEvents.ui_proto is r:104 as ptr<JsObj>;
+		PageEvents.mouse_proto is r:105 as ptr<JsObj>;
+		PageEvents.key_proto is r:106 as ptr<JsObj>;
+		PageEvents.custom_proto is r:107 as ptr<JsObj>;
+		PageEvents.focus_proto is r:108 as ptr<JsObj>;
+		PageEvents.input_proto is r:109 as ptr<JsObj>;
+		PageEvents.target_proto is r:110 as ptr<JsObj>;
+		PageShadow.root_proto is r:111 as ptr<JsObj>;
+		PageShadow.slot_proto is r:112 as ptr<JsObj>;
+		PageNet.response_proto is r:113 as ptr<JsObj>;
+	[end]
+
+	# a new page's: none yet (its Install makes them)
+	[Clear]
+		PageBind.node_class is 0 as ptr<JsClass>;
+		PageBind.form_class is 0 as ptr<JsClass>;
+		PageBind.collection_class is 0 as ptr<JsClass>;
+		PageBind.static_list_class is 0 as ptr<JsClass>;
+		PageBind.token_class is 0 as ptr<JsClass>;
+		PageBind.style_class is 0 as ptr<JsClass>;
+		PageBind.computed_class is 0 as ptr<JsClass>;
+		PageBind.dataset_class is 0 as ptr<JsClass>;
+		PageBind.node_proto is 0 as ptr<JsObj>;
+		PageBind.element_proto is 0 as ptr<JsObj>;
+		PageBind.html_proto is 0 as ptr<JsObj>;
+		PageBind.svg_proto is 0 as ptr<JsObj>;
+		PageBind.character_proto is 0 as ptr<JsObj>;
+		PageBind.text_proto is 0 as ptr<JsObj>;
+		PageBind.comment_proto is 0 as ptr<JsObj>;
+		PageBind.document_proto is 0 as ptr<JsObj>;
+		PageBind.fragment_proto is 0 as ptr<JsObj>;
+		PageBind.doctype_proto is 0 as ptr<JsObj>;
+		PageBind.collection_proto is 0 as ptr<JsObj>;
+		PageBind.nodelist_proto is 0 as ptr<JsObj>;
+		PageBind.token_proto is 0 as ptr<JsObj>;
+		PageBind.style_proto is 0 as ptr<JsObj>;
+		PageBind.dataset_proto is 0 as ptr<JsObj>;
+		PageBind.attr_proto is 0 as ptr<JsObj>;
+		PageBind.namedmap_proto is 0 as ptr<JsObj>;
+		PageBind.tag_protos.len is 0;
+		PageCanvas.ctx_class is 0 as ptr<JsClass>;
+		PageCanvas.path_class is 0 as ptr<JsClass>;
+		PageCanvas.gradient_class is 0 as ptr<JsClass>;
+		PageCanvas.pattern_class is 0 as ptr<JsClass>;
+		PageCanvas.ctx_proto is 0 as ptr<JsObj>;
+		PageCanvas.path_proto is 0 as ptr<JsObj>;
+		PageCanvas.gradient_proto is 0 as ptr<JsObj>;
+		PageCanvas.pattern_proto is 0 as ptr<JsObj>;
+		PageCanvas.image_data_proto is 0 as ptr<JsObj>;
+		PageCanvas.metrics_proto is 0 as ptr<JsObj>;
+		PageElements.list is 0 as ptr<JsObj>;
+		PageEvents.event_class is 0 as ptr<JsClass>;
+		PageEvents.listeners_key is 0 as ptr<JsSym>;
+		PageEvents.event_proto is 0 as ptr<JsObj>;
+		PageEvents.ui_proto is 0 as ptr<JsObj>;
+		PageEvents.mouse_proto is 0 as ptr<JsObj>;
+		PageEvents.key_proto is 0 as ptr<JsObj>;
+		PageEvents.custom_proto is 0 as ptr<JsObj>;
+		PageEvents.focus_proto is 0 as ptr<JsObj>;
+		PageEvents.input_proto is 0 as ptr<JsObj>;
+		PageEvents.target_proto is 0 as ptr<JsObj>;
+		PageShadow.root_proto is 0 as ptr<JsObj>;
+		PageShadow.slot_proto is 0 as ptr<JsObj>;
+		PageNet.response_proto is 0 as ptr<JsObj>;
+	[end]
+}
