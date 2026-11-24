@@ -168,6 +168,11 @@ struct.Page
 	int blocking;           # requests the parser is waiting for
 	int nest;               # how deep in running JS we are: microtasks and answers wait for 0
 	bln submitted;          # the last Click's default action sent a form (the host needn't)
+	bln is_frame;           # the host's: a page in another's <iframe> (its media aren't played)
+	ptr<JsObj> local_obj;   # its localStorage (changes to it are given to the host to keep)
+	ptr<u8> anim_runs;      # its transitions and animations (PageAnim's, while another page has them)
+	int anim_count;
+	int anim_cap;
 	bln parse_done;
 	bln load_fired;
 

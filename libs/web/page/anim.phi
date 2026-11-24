@@ -118,19 +118,36 @@ phi.PageAnim:Library
 		k_scale is (CssProps.KwOf: 'scale' 5);
 	[end]
 
-	# the page's own: another page's runs are let go (their elements are gone with it)
+	# the runs of page p (each page keeps its own while another's are worked on: a page and its frames)
 	[Use: ptr<Page> p: 0;]
 		if owner is p return;
-		call Forget: owner;
+		if owner is not 0
+			owner.anim_runs is runs as ptr<u8>;
+			owner.anim_count is count;
+			owner.anim_cap is cap;
+		;;
+		runs is p.anim_runs as ptr<PageAnimRun>;
+		count is p.anim_count;
+		cap is p.anim_cap;
 		owner is p;
 	[end]
 
+	# a page going: its runs let go
 	[Forget: ptr<Page> p: 0;]
-		if p is not owner return;
+		if p is 0 return;
+		call Use: p;
 		while int i: 0; i < count; i++;
 			call Drop: (Run: i);
 		;;
+		if runs is not 0
+			free runs;
+		;;
+		runs is 0 as ptr<PageAnimRun>;
 		count is 0;
+		cap is 0;
+		p.anim_runs is 0;
+		p.anim_count is 0;
+		p.anim_cap is 0;
 		owner is 0;
 	[end]
 
@@ -1032,7 +1049,9 @@ phi.PageAnim:Library
 	# ---- each frame: what's running styled again, its events told, what's finished let go
 
 	[Frame: ptr<Page> p: 0;]
-		if p is not owner or count is 0 return;
+		if p.anim_count is 0 and p is not owner return;
+		call Use: p;
+		if count is 0 return;
 		f64 now: p.now;
 		bln any: false;
 		int i: 0;
@@ -1087,7 +1106,7 @@ phi.PageAnim:Library
 
 	# whether something's running (the host keeps drawing frames while it is)
 	[Running: ptr<Page> p: 0; : bln]
-		if p is not owner return false;
+		call Use: p;
 		while int i: 0; i < count; i++;
 			ptr<PageAnimRun> r: (Run: i);
 			if not r.gone and not (r.kind is ANIMATION and (r.fired & 2) is not 0)

@@ -74,6 +74,7 @@ phi.PageMedia:Library
 
 	# the record for an element, made if it hasn't one
 	[Of: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		if p.is_frame return 0 as ptr<PageMediaEl>;
 		call Own: p;
 		while int i: 0; i < count; i++;
 			if els:i.node is n return els:i;
@@ -143,6 +144,8 @@ phi.PageMedia:Library
 	# ---- each turn
 
 	[Pump: ptr<Page> p: 0;]
+		# (a frame's media aren't played: the window's page has the sound)
+		if p.is_frame return;
 		call Own: p;
 		if p.doc.media_version is not seen_version
 			seen_version is p.doc.media_version;
@@ -269,6 +272,7 @@ phi.PageMedia:Library
 
 	# Page.DeliverNow's, for a MEDIA request: the whole file (or a failure)
 	[Arrived: ptr<Page> p: 0; ptr<DomNode> n: 0; u32 id: 0; bln ok: false; ptr<u8> bytes: 0; u32 len: 0;]
+		if p.is_frame return;
 		call Own: p;
 		ptr<PageMediaEl> e: 0;
 		while int i: 0; i < count; i++;

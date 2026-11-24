@@ -489,8 +489,6 @@ phi.PageWindow:Library
 	# ---- storage: localStorage lasts as long as the host keeps it (PageHost storage_load and
 	# storage_save), else as long as the page; sessionStorage as long as the page ----
 
-	ptr<JsObj> local_store: 0;   # (this page's localStorage: changes to it are given to the host to keep)
-
 	[InstallStorage: ptr<Page> p: 0;]
 		ptr<JsObj> proto: (JsObjs.NewObject);
 		call Js.DefineNative: proto 'getItem' addr StorageGet 1;
@@ -503,12 +501,14 @@ phi.PageWindow:Library
 		ptr<JsObj> s: (JsObjs.NewWithProto: proto);
 		call JsObjs.DefineZ: JsRt.r.global 'localStorage' (JsV.Obj: l) JsObjs.E | JsObjs.C;
 		call JsObjs.DefineZ: JsRt.r.global 'sessionStorage' (JsV.Obj: s) JsObjs.E | JsObjs.C;
-		local_store is l;
+		if p is not 0
+			p.local_obj is l;
+		;;
 	[end]
 
 	# what the host kept of localStorage for the page's origin (Page.Start, once the page has its address)
 	[LoadStorage: ptr<Page> p: 0;]
-		ptr<JsObj> l: local_store;
+		ptr<JsObj> l: p.local_obj;
 		if l is 0 or p is 0 or p.url is 0 or p.host.storage_load is 0 return;
 		WlBuf origin;
 		call Origin: p.url addr origin;
@@ -566,9 +566,8 @@ phi.PageWindow:Library
 
 	# localStorage changed: all of it, to the host to keep
 	[Kept: ptr<JsObj> o: 0;]
-		if o is not local_store return;
 		ptr<Page> p: Page.current;
-		if p is 0 or p.url is 0 or p.host.storage_save is 0 return;
+		if p is 0 or o is not p.local_obj or p.url is 0 or p.host.storage_save is 0 return;
 		WlBuf all;
 		ptr<JsObj> keys: (JsObjs.OwnKeys: o);
 		while u32 i: 0; i < keys.length; i++;
