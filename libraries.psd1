@@ -8,7 +8,7 @@
 		@{ Name = 'editlib'; Folder = 'libs\edit'; Uses = @() }
 		@{ Name = 'vectorlib'; Folder = 'libs\vector'; Uses = @() }
 		@{ Name = 'medialib'; Folder = 'libs\media'; Uses = @() }
-		@{ Name = 'weblib'; Folder = 'libs\web'; Uses = @('vectorlib', 'medialib') }
+		@{ Name = 'weblib'; Folder = 'libs\web'; Uses = @('corelib', 'vectorlib', 'medialib') }
 		@{ Name = 'encodinglib'; Folder = 'libs\encoding'; Uses = @() }
 		@{ Name = 'netlib'; Folder = 'libs\net'; Uses = @('corelib') }
 	)

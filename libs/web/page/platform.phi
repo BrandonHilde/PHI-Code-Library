@@ -4,11 +4,13 @@
 
 use crypto.random;
 use page.platformjs;
+use page.packing;
 
 phi.PagePlatform:Library
 {
 	[Install: ptr<Page> p: 0;]
 		call Js.DefineNative: JsRt.r.global '%randomBytes' addr RandomBytes 1;
+		call PagePacking.Install;
 		call Js.DefineNative: JsRt.r.global '%sheetNew' addr SheetNew 0;
 		call Js.DefineNative: JsRt.r.global '%sheetSet' addr SheetSet 2;
 		call Js.DefineNative: JsRt.r.global '%adopt' addr Adopt 2;

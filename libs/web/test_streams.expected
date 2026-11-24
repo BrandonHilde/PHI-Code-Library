@@ -1,0 +1,26 @@
+-- read and close
+locked true
+{"value":"a","done":false} {"value":"b","done":false} {"done":true}
+-- pull and backpressure
+pulled before reading: 2 (desired 2,1)
+read 1,2,3
+-- error
+rejected: boom
+-- writable
+written in order: 1,2,closed
+-- pipeThrough a TransformStream, async iteration
+through: ONE TWO !
+-- tee
+tee: text '123', sum 6
+-- text streams split a character across chunks
+decoded: héllo €
+-- Blob.stream and Response bodies
+blob stream through a Response: from a blob
+body is a ReadableStream: true, used before: false, null body: null
+body chunk: body text
+-- compression round trips
+gzip 2400 -> under 200 bytes -> the same; deflate 2400 -> under 200 bytes -> the same; deflate-raw 2400 -> under 200 bytes -> the same
+-- bad compressed data, a bad format
+zip: TypeError
+bad data: TypeError
+done

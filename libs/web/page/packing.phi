@@ -1,0 +1,102 @@
+# What CompressionStream, DecompressionStream and crypto.subtle.digest (platform.js) stand on: %compress(format, buffer,
+# length) and %decompress(format, buffer, length), corelib's deflate and inflate, for gzip, deflate
+# (zlib's framing) and deflate-raw. Each answers an ArrayBuffer, or null when it can't (bad data, no
+# memory, an unpacked size past 256 MB).
+
+use corelib;
+use crypto.sha256;
+use crypto.sha512;
+
+phi.PagePacking:Library
+{
+	const u32 MOST: 268435456;
+
+	[Install]
+		call Js.DefineNative: JsRt.r.global '%compress' addr Compress 3;
+		call Js.DefineNative: JsRt.r.global '%decompress' addr Decompress 3;
+		call Js.DefineNative: JsRt.r.global '%digest' addr Digest 3;
+	[end]
+
+	# %digest(name, buffer, length): crypto.subtle.digest's hash, SHA-256, SHA-384 or SHA-512, as an
+	# ArrayBuffer
+	[Digest: ptr<u64> args: 0; int argc: 0;]
+		WlBuf name;
+		call Js.TextOf: (Js.Arg: args argc 0) addr name;
+		call name.Add: 0;
+		u64 buf: (Js.Arg: args argc 1);
+		u32 n: (JsOps.ToInteger: (Js.Arg: args argc 2)) as u32;
+		ptr<u8> data: (JsTyped.BytesOf: buf);
+		u8 digest[64];
+		u32 size: 32;
+		if (WlText.EqZ: name.data 7 'SHA-384')
+			size is 48;
+			call Sha512.Hash384: data n addr digest;
+		;;
+		elif (WlText.EqZ: name.data 7 'SHA-512')
+			size is 64;
+			call Sha512.Hash: data n addr digest;
+		;;
+		else
+			call Sha256.Hash: data n addr digest;
+		;;
+		call name.Free;
+		ptr<JsObj> b: (JsTyped.NewBuffer: size as f64 JsRt.P.arraybuffer);
+		u64 bv: (JsV.Obj: b);
+		call Mem.Copy: (JsTyped.BytesOf: bv) addr digest size;
+	[end: bv]
+
+	[Compress: ptr<u64> args: 0; int argc: 0;]
+	[end: (Pack: args argc false)]
+
+	[Decompress: ptr<u64> args: 0; int argc: 0;]
+	[end: (Pack: args argc true)]
+
+	[Pack: ptr<u64> args: 0; int argc: 0; bln unpack: false;]
+		WlBuf format;
+		call Js.TextOf: (Js.Arg: args argc 0) addr format;
+		call format.Add: 0;
+		u64 buf: (Js.Arg: args argc 1);
+		u32 n: (JsOps.ToInteger: (Js.Arg: args argc 2)) as u32;
+		ptr<u8> data: (JsTyped.BytesOf: buf);
+		if data is 0 and n > 0
+			call format.Free;
+			return JsV.NULL;
+		;;
+		u32 size: 0;
+		ptr<u8> packed: 0 as ptr<u8>;
+		bln gzip: (WlText.EqZ: format.data 4 'gzip') and format.len is 5;
+		bln raw: (WlText.EqZ: format.data 11 'deflate-raw') and format.len is 12;
+		call format.Free;
+		if unpack
+			if gzip
+				packed is (CoreInflate.Gzip: data n MOST addr size);
+			;;
+			elif raw
+				packed is (CoreInflate.Raw: data n MOST addr size);
+			;;
+			else
+				packed is (CoreInflate.Zlib: data n MOST addr size);
+			;;
+		;;
+		else
+			if gzip
+				packed is (CoreDeflate.Gzip: data n 6 addr size);
+			;;
+			elif raw
+				packed is (CoreDeflate.Raw: data n 6 addr size);
+			;;
+			else
+				packed is (CoreDeflate.Zlib: data n 6 addr size);
+			;;
+		;;
+		if packed is 0 and size is 0 and n > 0 return JsV.NULL;
+		ptr<JsObj> b: (JsTyped.NewBuffer: size as f64 JsRt.P.arraybuffer);
+		u64 bv: (JsV.Obj: b);
+		if size > 0
+			call Mem.Copy: (JsTyped.BytesOf: bv) packed size;
+		;;
+		if packed is not 0
+			free packed;
+		;;
+	[end: bv]
+}
