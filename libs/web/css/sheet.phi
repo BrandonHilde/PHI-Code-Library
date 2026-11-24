@@ -1138,6 +1138,12 @@ phi.CssSheetP:Library
 		if base_url is not 0
 			s.base_url is (s.arena.Text: base_url (WlText.LenZ: base_url));
 		;;
+		# (a UTF-8 byte order mark before it isn't part of it: decoding a sheet drops it, and kept,
+		# it would join the first selector, as w3.css's "html{box-sizing:border-box}" did)
+		if len >= 3 and bytes:0 is 0xEF and bytes:1 is 0xBB and bytes:2 is 0xBF
+			bytes is bytes + 3;
+			len is len - 3;
+		;;
 		ptr<CssToks> toks: (CssLex.Run: bytes len);
 		sheet is s;
 		ts is toks;

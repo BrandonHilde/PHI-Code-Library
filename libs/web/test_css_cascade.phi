@@ -498,6 +498,23 @@ phi.TestCssCascade:Program
 	call e.Update;
 	call C: 'k' 'color' 'rgb(0, 0, 255)';
 	call Css.FreeSheet: extra;
+	# a sheet that starts with a UTF-8 byte order mark: the mark isn't part of its first selector
+	u8 bom[24];
+	str bom_rule: '#k { color: lime; }';
+	ptr<u8> bom_text: addr bom_rule:0;
+	bom:0 is 0xEF;
+	bom:1 is 0xBB;
+	bom:2 is 0xBF;
+	while int bi: 0; bi < 19; bi++;
+		bom:(3 + bi) is bom_text:bi;
+	;;
+	ptr<CssSheet> marked: (Css.ParseSheet: addr bom 22 0);
+	call e.AddSheet: marked;
+	call e.Update;
+	call C: 'k' 'color' 'rgb(0, 255, 0)';
+	call e.RemoveSheet: marked;
+	call e.Update;
+	call Css.FreeSheet: marked;
 	# hover, through the host
 	ptr<CssSheet> hv: (Css.ParseSheet: '#k:hover { color: pink; }' 25 0);
 	call e.AddSheet: hv;
