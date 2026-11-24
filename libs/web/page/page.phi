@@ -29,6 +29,7 @@ use page.platform;
 use page.shadow;
 use page.pmodules;
 use page.canvas;
+use page.anim;
 use page.media;
 
 # what's asked of PageHost.load
@@ -242,6 +243,7 @@ phi.Page:Library
 		p.css is (Css.NewEngine: p.doc);
 		CssSel.on_state is addr CssState;
 		p.css.on_import is addr OnImport;
+		p.css.on_style is addr PageAnim.Style;
 		call p.css.SetViewport: width height;
 		p.rt is (Js.New);
 		p.keep is JsV.UNDEF;
@@ -362,6 +364,7 @@ phi.Page:Library
 	[end]
 
 	[Free: ptr<Page> p: 0;]
+		call PageAnim.Forget: p;
 		call PageElements.Forget;
 		if PageMedia.owner is p
 			call PageMedia.Forget;
@@ -1227,6 +1230,7 @@ phi.Page:Library
 		p.now is now;
 		# (what's playing: its pictures, its sound and its clock)
 		call PageMedia.Pump: p;
+		call PageAnim.Frame: p;
 		int limit: p.next_timer;
 		int i: 0;
 		while i < p.timers.len as int

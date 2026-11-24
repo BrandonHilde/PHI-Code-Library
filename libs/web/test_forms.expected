@@ -1,0 +1,26 @@
+storage asked for https://forms.example
+localStorage kept: k=v1, gone=x, 2 items
+storage kept for https://forms.example: k=v2 gone=x
+storage kept for https://forms.example: k=v2 gone=x new=é日
+storage kept for https://forms.example: k=v2 new=é日
+a checkbox without a value: on
+--- a click on b1
+POST https://forms.example/submit (application/x-www-form-urlencoded): a=x+y&c=on&s=2
+allowed 1, sent by the page 1
+--- a click on b2
+POST https://other.example/up (multipart/form-data; boundary=BOUNDARY): --BOUNDARY|Content-Disposition: form-data; name="n"||q"r|--BOUNDARY|Content-Disposition: form-data; name="t"||line1|line2|--BOUNDARY|Content-Disposition: form-data; name="go"||Send|--BOUNDARY--|
+allowed 1, sent by the page 1
+--- a click on b3
+navigate: https://forms.example/find?q=a%26b
+allowed 1, sent by the page 1
+--- a click on b4
+f4: its submit handler stopped it
+allowed 1, sent by the page 1
+--- a click on b5
+POST https://forms.example/z (text/plain): which=five|
+allowed 1, sent by the page 1
+--- a click on b7
+allowed 1, sent by the page 0
+--- form.submit() from a script
+POST https://forms.example/s (application/x-www-form-urlencoded): from=script
+done

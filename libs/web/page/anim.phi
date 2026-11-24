@@ -1,0 +1,1098 @@
+# CSS transitions and animations (CSS Transitions 1, CSS Animations 1), worked into the computed
+# style the cascade gives each element (CssEngine.on_style).
+#
+# A transition starts when a property its element's transition-property names comes out of a
+# restyle different from before (a class added, an inline style set): from the value it had to the
+# new one, over transition-duration after transition-delay, by transition-timing-function. An
+# animation runs while its element's animation-name names an @keyframes: its keyframes' values for
+# the element (each worked out by the cascade with the keyframe's declarations after the page's
+# own, so ems and percentages are the element's) are interpolated, a keyframe interval at a time,
+# by animation-timing-function, for animation-iteration-count times in animation-direction, held
+# before and after as animation-fill-mode says. Every page frame (Frame) the elements with something
+# running are styled again, and transitionend, animationstart, animationiteration and animationend
+# are fired as they come.
+#
+# What's interpolated: numbers, lengths and angles of the same unit, percentages, colors (each
+# channel), and lists of the same shape (a transform's functions, one by one; `none` against a
+# transform is that transform's identity). Anything else changes halfway, as discrete values do.
+# Not done: animation-play-state, keyframes' own animation-timing-function, the events' fields
+# (they're plain Events), and transitions of custom properties.
+
+use memory.mem;
+use core.atoms;
+use css.css;
+use dom.dom;
+
+# one transition or animation on an element
+struct.PageAnimRun
+{
+	ptr<DomNode> node;
+	int kind;               # PageAnim.TRANSITION or ANIMATION
+	u32 prop;               # a transition's property
+	CssVal from;            # a transition's values (held)
+	CssVal to;
+	ptr<WlAtom> name;       # an animation's @keyframes
+	ptr<CssKeyframes> frames;
+	f64 start;              # the page's time (ms) it began, before its delay
+	f64 delay;              # ms
+	f64 duration;           # ms
+	f64 iterations;         # -1: infinite
+	int direction;          # 0 normal, 1 reverse, 2 alternate, 3 alternate-reverse
+	int fill;               # 1 forwards, 2 backwards (both: 3)
+	int ease;               # 0 linear, 1 a cubic Bézier, 2 steps
+	f64 x1;
+	f64 y1;
+	f64 x2;
+	f64 y2;
+	int steps;
+	int jump;               # steps: 0 jump-end, 1 jump-start, 2 jump-none, 3 jump-both
+	int fired;              # 1 its start was told, 2 its end
+	int iteration;          # the last iteration told
+	bln seen;               # (still named by its element's animation-name at the last restyle)
+	bln gone;               # finished, with nothing to hold: let go at the next frame
+}
+
+phi.PageAnim:Library
+{
+	const int TRANSITION: 1;
+	const int ANIMATION: 2;
+
+	ptr<PageAnimRun> runs: 0;
+	int count: 0;
+	int cap: 0;
+	ptr<Page> owner: 0;
+
+	# the keywords it reads
+	u32 k_linear: 0;
+	u32 k_ease: 0;
+	u32 k_ease_in: 0;
+	u32 k_ease_out: 0;
+	u32 k_ease_in_out: 0;
+	u32 k_step_start: 0;
+	u32 k_step_end: 0;
+	u32 k_cubic: 0;
+	u32 k_steps: 0;
+	u32 k_jump_start: 0;
+	u32 k_jump_end: 0;
+	u32 k_jump_none: 0;
+	u32 k_jump_both: 0;
+	u32 k_start: 0;
+	u32 k_end: 0;
+	u32 k_infinite: 0;
+	u32 k_reverse: 0;
+	u32 k_alternate: 0;
+	u32 k_alternate_reverse: 0;
+	u32 k_forwards: 0;
+	u32 k_backwards: 0;
+	u32 k_both: 0;
+	u32 k_none: 0;
+	u32 k_translate: 0;
+	u32 k_scale: 0;
+
+	[Start]
+		if k_linear is not 0 return;
+		k_linear is (CssProps.KwOf: 'linear' 6);
+		k_ease is (CssProps.KwOf: 'ease' 4);
+		k_ease_in is (CssProps.KwOf: 'ease-in' 7);
+		k_ease_out is (CssProps.KwOf: 'ease-out' 8);
+		k_ease_in_out is (CssProps.KwOf: 'ease-in-out' 11);
+		k_step_start is (CssProps.KwOf: 'step-start' 10);
+		k_step_end is (CssProps.KwOf: 'step-end' 8);
+		k_cubic is (CssProps.KwOf: 'cubic-bezier' 12);
+		k_steps is (CssProps.KwOf: 'steps' 5);
+		k_jump_start is (CssProps.KwOf: 'jump-start' 10);
+		k_jump_end is (CssProps.KwOf: 'jump-end' 8);
+		k_jump_none is (CssProps.KwOf: 'jump-none' 9);
+		k_jump_both is (CssProps.KwOf: 'jump-both' 9);
+		k_start is (CssProps.KwOf: 'start' 5);
+		k_end is (CssProps.KwOf: 'end' 3);
+		k_infinite is (CssProps.KwOf: 'infinite' 8);
+		k_reverse is (CssProps.KwOf: 'reverse' 7);
+		k_alternate is (CssProps.KwOf: 'alternate' 9);
+		k_alternate_reverse is (CssProps.KwOf: 'alternate-reverse' 17);
+		k_forwards is (CssProps.KwOf: 'forwards' 8);
+		k_backwards is (CssProps.KwOf: 'backwards' 9);
+		k_both is (CssProps.KwOf: 'both' 4);
+		k_none is (CssProps.KwOf: 'none' 4);
+		k_translate is (CssProps.KwOf: 'translate' 9);
+		k_scale is (CssProps.KwOf: 'scale' 5);
+	[end]
+
+	# the page's own: another page's runs are let go (their elements are gone with it)
+	[Use: ptr<Page> p: 0;]
+		if owner is p return;
+		call Forget: owner;
+		owner is p;
+	[end]
+
+	[Forget: ptr<Page> p: 0;]
+		if p is not owner return;
+		while int i: 0; i < count; i++;
+			call Drop: (Run: i);
+		;;
+		count is 0;
+		owner is 0;
+	[end]
+
+	[Run: int i: 0; : ptr<PageAnimRun>]
+	[end: runs + i * sizeof PageAnimRun]
+
+	[Drop: ptr<PageAnimRun> r: 0;]
+		call CssV.Release: addr r.from;
+		call CssV.Release: addr r.to;
+	[end]
+
+	[Add: : ptr<PageAnimRun>]
+		if count >= cap
+			int room: cap * 2;
+			if room < 16
+				room is 16;
+			;;
+			ptr<PageAnimRun> grown: new u8[room * sizeof PageAnimRun] as ptr<PageAnimRun>;
+			if grown is 0 return 0 as ptr<PageAnimRun>;
+			if runs is not 0
+				call Mem.Copy: grown as ptr<u8> runs as ptr<u8> (count * sizeof PageAnimRun) as u32;
+				free runs;
+			;;
+			runs is grown;
+			cap is room;
+		;;
+		ptr<PageAnimRun> r: (Run: count);
+		call Mem.Fill: r as ptr<u8> 0 sizeof PageAnimRun;
+		count++;
+	[end: r]
+
+	[RemoveAt: int i: 0;]
+		call Drop: (Run: i);
+		if i < count - 1
+			call Mem.Move: (Run: i) as ptr<u8> (Run: i + 1) as ptr<u8> ((count - 1 - i) * sizeof PageAnimRun) as u32;
+		;;
+		count--;
+	[end]
+
+	# ---- the hook: an element's new style, and what's running on it worked in
+
+	[Style: ptr<CssEngine> e: 0; ptr<DomNode> n: 0; ptr<CssComputed> old: 0; ptr<CssComputed> made: 0; ptr<CssComputed> parent: 0; bln is_root: false; : ptr<CssComputed>]
+		ptr<Page> p: Page.current;
+		if p is 0 or n.type is not DomType.ELEMENT return made;
+		call Start;
+		call Use: p;
+		f64 now: p.now;
+		call Animations: e n made now;
+		if old is not 0 and old is not made
+			call Transitions: n old made now;
+		;;
+		bln any: false;
+		while int i: 0; i < count; i++;
+			ptr<PageAnimRun> r: (Run: i);
+			if r.node is n and not r.gone
+				any is true;
+				break;
+			;;
+		;;
+		if not any return made;
+		ptr<CssComputed> s: (Own: made);
+		# transitions first; an animation's values beat a transition's
+		while int i: 0; i < count; i++;
+			ptr<PageAnimRun> r: (Run: i);
+			if r.node is n and not r.gone and r.kind is TRANSITION
+				call ApplyTransition: s r now;
+			;;
+		;;
+		while int i: 0; i < count; i++;
+			ptr<PageAnimRun> r: (Run: i);
+			if r.node is n and not r.gone and r.kind is ANIMATION
+				call ApplyAnimation: e s made r now is_root;
+			;;
+		;;
+	[end: s]
+
+	# the animations animation-name names: new ones begin now, ones no longer named end
+	[Animations: ptr<CssEngine> e: 0; ptr<DomNode> n: 0; ptr<CssComputed> s: 0; f64 now: 0.0;]
+		while int i: 0; i < count; i++;
+			ptr<PageAnimRun> r: (Run: i);
+			if r.node is n and r.kind is ANIMATION
+				r.seen is false;
+			;;
+		;;
+		ptr<CssVal> names: (s.Val: CssP.ANIMATION_NAME);
+		int layers: (Layers: names);
+		while int k: 0; k < layers; k++;
+			ptr<CssVal> nv: (Layer: names k);
+			if nv is 0 or (nv.kind is not CssV.IDENT as u8 and nv.kind is not CssV.STR as u8)
+				continue;
+			;;
+			ptr<u8> text: (CssV.Text: nv);
+			u32 len: (CssV.TextLen: nv);
+			if (WlText.EqNoCaseZ: text len 'none')
+				continue;
+			;;
+			ptr<CssKeyframes> set: (Css.FindKeyframes: e text len);
+			if set is 0
+				continue;
+			;;
+			ptr<WlAtom> name: (WlAtoms.Get: text len);
+			ptr<PageAnimRun> r: 0 as ptr<PageAnimRun>;
+			while int i: 0; i < count; i++;
+				ptr<PageAnimRun> q: (Run: i);
+				if q.node is n and q.kind is ANIMATION and q.name is name and not q.seen
+					r is q;
+					break;
+				;;
+			;;
+			if r is 0
+				r is (Add);
+				if r is 0 return;
+				r.node is n;
+				r.kind is ANIMATION;
+				r.name is name;
+				r.start is now;
+				r.iteration is 0;
+			;;
+			r.seen is true;
+			r.frames is set;
+			r.duration is (Seconds: (Layer: (s.Val: CssP.ANIMATION_DURATION) k)) * 1000.0;
+			r.delay is (Seconds: (Layer: (s.Val: CssP.ANIMATION_DELAY) k)) * 1000.0;
+			r.iterations is 1.0;
+			ptr<CssVal> it: (Layer: (s.Val: CssP.ANIMATION_ITERATION_COUNT) k);
+			if it is not 0
+				if it.kind is CssV.KW as u8 and it.code as u32 is k_infinite
+					r.iterations is -1.0;
+				;;
+				elif it.kind is CssV.NUM as u8 or it.kind is CssV.INT as u8
+					r.iterations is (Number: it);
+				;;
+			;;
+			r.direction is 0;
+			ptr<CssVal> dv: (Layer: (s.Val: CssP.ANIMATION_DIRECTION) k);
+			if dv is not 0 and dv.kind is CssV.KW as u8
+				u32 d: dv.code;
+				if d is k_reverse
+					r.direction is 1;
+				;;
+				elif d is k_alternate
+					r.direction is 2;
+				;;
+				elif d is k_alternate_reverse
+					r.direction is 3;
+				;;
+			;;
+			r.fill is 0;
+			ptr<CssVal> fv: (Layer: (s.Val: CssP.ANIMATION_FILL_MODE) k);
+			if fv is not 0 and fv.kind is CssV.KW as u8
+				u32 f: fv.code;
+				if f is k_forwards
+					r.fill is 1;
+				;;
+				elif f is k_backwards
+					r.fill is 2;
+				;;
+				elif f is k_both
+					r.fill is 3;
+				;;
+			;;
+			call Easing: r (s.Val: CssP.ANIMATION_TIMING_FUNCTION) k;
+		;;
+		# (ones no longer named end, without their events)
+		int i: 0;
+		while i < count
+			ptr<PageAnimRun> r: (Run: i);
+			if r.node is n and r.kind is ANIMATION and not r.seen
+				call RemoveAt: i;
+				continue;
+			;;
+			i++;
+		;;
+	[end]
+
+	# transitions: each property transition-property names whose value changed
+	[Transitions: ptr<DomNode> n: 0; ptr<CssComputed> old: 0; ptr<CssComputed> s: 0; f64 now: 0.0;]
+		ptr<CssVal> props: (s.Val: CssP.TRANSITION_PROPERTY);
+		int layers: (Layers: props);
+		if layers is 0 return;
+		ptr<CssVal> durs: (s.Val: CssP.TRANSITION_DURATION);
+		ptr<CssVal> delays: (s.Val: CssP.TRANSITION_DELAY);
+		int nd: (Layers: durs);
+		int nl: (Layers: delays);
+		# (no time to take: nothing to do)
+		bln some: false;
+		while int k: 0; k < nd; k++;
+			if (Seconds: (Layer: durs k)) > 0.0
+				some is true;
+			;;
+		;;
+		if not some return;
+		while int k: 0; k < layers; k++;
+			ptr<CssVal> pv: (Layer: props k);
+			if pv is 0 or (pv.kind is not CssV.IDENT as u8 and pv.kind is not CssV.KW as u8)
+				continue;
+			;;
+			f64 dur: (Seconds: (Layer: durs k % (Math.Max: nd 1))) * 1000.0;
+			f64 del: (Seconds: (Layer: delays k % (Math.Max: nl 1))) * 1000.0;
+			if dur <= 0.0
+				continue;
+			;;
+			ptr<u8> text: 0;
+			u32 len: 0;
+			if pv.kind is CssV.IDENT as u8
+				text is (CssV.Text: pv);
+				len is (CssV.TextLen: pv);
+			;;
+			else
+				text is (CssProps.KwName: pv.code);
+				len is (WlText.LenZ: text);
+			;;
+			if (WlText.EqNoCaseZ: text len 'none')
+				continue;
+			;;
+			if (WlText.EqNoCaseZ: text len 'all')
+				while u32 prop: 0; prop < CssP.LONGHANDS; prop++;
+					if prop is not CssP.TRANSITION_PROPERTY and prop is not CssP.ANIMATION_NAME
+						call Consider: n old s prop dur del now k;
+					;;
+				;;
+				continue;
+			;;
+			int id: (CssProps.Find: text len);
+			if id < 0
+				continue;
+			;;
+			if (CssProps.IsShorthand: id as u32)
+				ptr<CssPropInfo> info: addr CssProps.info:id;
+				while u32 j: 0; j < info.sub_count; j++;
+					call Consider: n old s info.subs:j as u32 dur del now k;
+				;;
+				continue;
+			;;
+			call Consider: n old s id as u32 dur del now k;
+		;;
+	[end]
+
+	# a property that may transition: if it changed (to something that can be interpolated), a
+	# transition from what it was to what it is now
+	[Consider: ptr<DomNode> n: 0; ptr<CssComputed> old: 0; ptr<CssComputed> s: 0; u32 prop: 0; f64 dur: 0.0; f64 del: 0.0; f64 now: 0.0; int layer: 0;]
+		ptr<CssVal> a: (old.Val: prop);
+		ptr<CssVal> b: (s.Val: prop);
+		if (CssStyles.SameVal: a b) return;
+		if not (CanInterpolate: a b) return;
+		# (an animation of it rules it; one already going there carries on)
+		ptr<PageAnimRun> same: 0 as ptr<PageAnimRun>;
+		while int i: 0; i < count; i++;
+			ptr<PageAnimRun> r: (Run: i);
+			if r.node is n and r.kind is ANIMATION and (Animates: r prop) return;
+			if r.node is n and r.kind is TRANSITION and r.prop is prop
+				same is r;
+			;;
+		;;
+		if same is not 0
+			if (CssStyles.SameVal: addr same.to b) return;
+			call Drop: same;
+		;;
+		else
+			same is (Add);
+			if same is 0 return;
+		;;
+		same.node is n;
+		same.kind is TRANSITION;
+		same.prop is prop;
+		same.from is a:0;
+		call CssV.Retain: addr same.from;
+		same.to is b:0;
+		call CssV.Retain: addr same.to;
+		same.start is now;
+		same.duration is dur;
+		same.delay is del;
+		same.iterations is 1.0;
+		same.direction is 0;
+		same.fill is 0;
+		same.fired is 0;
+		same.gone is false;
+		call Easing: same (s.Val: CssP.TRANSITION_TIMING_FUNCTION) layer;
+	[end]
+
+	# whether an animation's keyframes set prop
+	[Animates: ptr<PageAnimRun> r: 0; u32 prop: 0; : bln]
+		if r.frames is 0 return false;
+		ptr<CssKeyframe> f: r.frames.first;
+		while f is not 0
+			while u32 i: 0; i < f.decls.count; i++;
+				if f.decls.items:i.prop as u32 is prop return true;
+			;;
+			f is f.next;
+		;;
+	[end: false]
+
+	# ---- values over time
+
+	[ApplyTransition: ptr<CssComputed> s: 0; ptr<PageAnimRun> r: 0; f64 now: 0.0;]
+		f64 t: now - r.start - r.delay;
+		if t < 0.0
+			call Put: s r.prop addr r.from;
+			return;
+		;;
+		if t >= r.duration
+			return;
+		;;
+		f64 p: (Ease: r t / r.duration);
+		CssVal v;
+		call Mix: addr r.from addr r.to p addr v;
+		call Put: s r.prop addr v;
+		call CssV.Release: addr v;
+	[end]
+
+	# where an animation is: its progress through its keyframes (0 to 1), or -1 if it has no effect now
+	[Progress: ptr<PageAnimRun> r: 0; f64 now: 0.0; ptr<int> iteration: 0;]
+		f64 t: now - r.start - r.delay;
+		f64 d: r.duration;
+		iteration:0 is 0;
+		f64 active: -1.0;
+		if r.iterations >= 0.0
+			active is d * r.iterations;
+		;;
+		f64 frac: 0.0;
+		int it: 0;
+		if t < 0.0
+			if (r.fill & 2) is 0 return -1.0;
+			frac is 0.0;
+		;;
+		elif active >= 0.0 and t >= active
+			if (r.fill & 1) is 0 return -1.0;
+			# (held at its end: the last iteration's end, or where a fraction of one stops)
+			if d <= 0.0
+				it is (Math.Max: 0 (r.iterations as int) - 1);
+				frac is 1.0;
+			;;
+			else
+				f64 whole: r.iterations;
+				it is whole as int;
+				frac is whole - (it as f64);
+				if frac is 0.0 and it > 0
+					it--;
+					frac is 1.0;
+				;;
+			;;
+		;;
+		elif d <= 0.0
+			frac is 1.0;
+		;;
+		else
+			it is (t / d) as int;
+			frac is (t - (it as f64) * d) / d;
+		;;
+		iteration:0 is it;
+		bln back: (r.direction is 1) or (r.direction is 2 and (it & 1) is 1) or (r.direction is 3 and (it & 1) is 0);
+		if back return 1.0 - frac;
+	[end: frac]
+
+	# An animation's values at its progress: for each property its keyframes set, the keyframes either
+	# side that set it (or the element's own style, as 0% and 100%, where none does), each worked out
+	# for the element, mixed by the timing function over that interval
+	[ApplyAnimation: ptr<CssEngine> e: 0; ptr<CssComputed> s: 0; ptr<CssComputed> base: 0; ptr<PageAnimRun> r: 0; f64 now: 0.0; bln is_root: false;]
+		int it: 0;
+		f64 p: (Progress: r now addr it);
+		if p < 0.0 or r.frames is 0 return;
+		# the keyframes, and each one's style for the element (built once, when first wanted)
+		ptr<CssKeyframe> frames[32];
+		ptr<CssComputed> built[32];
+		int nf: 0;
+		ptr<CssKeyframe> f: r.frames.first;
+		while f is not 0 and nf < 32
+			frames:nf is f;
+			built:nf is 0 as ptr<CssComputed>;
+			nf++;
+			f is f.next;
+		;;
+		while int a: 0; a < nf; a++;
+			ptr<CssDecls> d: frames:a.decls;
+			while u32 i: 0; i < d.count; i++;
+				u32 prop: d.items:i.prop;
+				if prop >= CssP.LONGHANDS
+					continue;
+				;;
+				# (each property once: from the first keyframe that sets it)
+				bln earlier: false;
+				while int b: 0; b < a; b++;
+					if (Sets: frames:b prop)
+						earlier is true;
+						break;
+					;;
+				;;
+				if earlier
+					continue;
+				;;
+				# the keyframes that set it either side of p
+				int lo: -1;
+				int hi: -1;
+				f64 lo_at: 0.0;
+				f64 hi_at: 1.0;
+				while int k: 0; k < nf; k++;
+					if not (Sets: frames:k prop)
+						continue;
+					;;
+					ptr<CssKeyframe> kf: frames:k;
+					while u32 j: 0; j < kf.offset_count; j++;
+						f64 at_: kf.offsets:j;
+						if at_ <= p and (lo < 0 or at_ >= lo_at)
+							lo is k;
+							lo_at is at_;
+						;;
+						if at_ >= p and (hi < 0 or at_ < hi_at or (at_ is hi_at and at_ > lo_at))
+							hi is k;
+							hi_at is at_;
+						;;
+					;;
+				;;
+				if lo < 0
+					lo_at is 0.0;
+				;;
+				if hi < 0
+					hi_at is 1.0;
+				;;
+				# (at a keyframe exactly, the interval after it, unless it's the end)
+				if lo >= 0 and hi >= 0 and lo_at is hi_at and p < 1.0
+					hi is -1;
+					hi_at is 1.0;
+					while int k: 0; k < nf; k++;
+						if not (Sets: frames:k prop)
+							continue;
+						;;
+						ptr<CssKeyframe> kf: frames:k;
+						while u32 j: 0; j < kf.offset_count; j++;
+							f64 at_: kf.offsets:j;
+							if at_ > p and (hi < 0 or at_ < hi_at)
+								hi is k;
+								hi_at is at_;
+							;;
+						;;
+					;;
+				;;
+				ptr<CssComputed> sa: base;
+				ptr<CssComputed> sb: base;
+				if lo >= 0
+					if built:lo is 0
+						built:lo is (CssCascade.BuildFrame: e is_root frames:lo.decls);
+					;;
+					sa is built:lo;
+				;;
+				if hi >= 0
+					if built:hi is 0
+						built:hi is (CssCascade.BuildFrame: e is_root frames:hi.decls);
+					;;
+					sb is built:hi;
+				;;
+				f64 local: 0.0;
+				if hi_at > lo_at
+					local is (p - lo_at) / (hi_at - lo_at);
+				;;
+				local is (Ease: r local);
+				CssVal v;
+				call Mix: (sa.Val: prop) (sb.Val: prop) local addr v;
+				call Put: s prop addr v;
+				call CssV.Release: addr v;
+			;;
+		;;
+		while int a: 0; a < nf; a++;
+			if built:a is not 0
+				call CssStyles.Release: built:a;
+			;;
+		;;
+	[end]
+
+	[Sets: ptr<CssKeyframe> k: 0; u32 prop: 0; : bln]
+		while u32 i: 0; i < k.decls.count; i++;
+			if k.decls.items:i.prop as u32 is prop return true;
+		;;
+	[end: false]
+
+	# ---- timing functions (CSS Easing 1)
+
+	[Easing: ptr<PageAnimRun> r: 0; ptr<CssVal> list: 0; int layer: 0;]
+		# ease, by default
+		call Bezier: r 0.25 0.1 0.25 1.0;
+		int layers: (Layers: list);
+		if layers is 0 return;
+		layer is layer % layers;
+		# (a function's items follow it, so the layer is found by walking)
+		ptr<CssVal> v: (Layer: list layer);
+		if v is 0 return;
+		if v.kind is CssV.KW as u8
+			u32 k: v.code;
+			if k is k_linear
+				r.ease is 0;
+			;;
+			elif k is k_ease_in
+				call Bezier: r 0.42 0.0 1.0 1.0;
+			;;
+			elif k is k_ease_out
+				call Bezier: r 0.0 0.0 0.58 1.0;
+			;;
+			elif k is k_ease_in_out
+				call Bezier: r 0.42 0.0 0.58 1.0;
+			;;
+			elif k is k_step_start
+				r.ease is 2;
+				r.steps is 1;
+				r.jump is 1;
+			;;
+			elif k is k_step_end
+				r.ease is 2;
+				r.steps is 1;
+				r.jump is 0;
+			;;
+			return;
+		;;
+		if v.kind is not CssV.FUNC as u8 return;
+		# its numbers, after it (separators passed over)
+		f64 nums[4];
+		int nn: 0;
+		u32 kw: 0;
+		u32 inner: v.bits;
+		while u32 i: 1; i <= inner; i++;
+			ptr<CssVal> a: v + i * 8;
+			if a.kind is CssV.NUM as u8 or a.kind is CssV.INT as u8
+				if nn < 4
+					nums:nn is (Number: a);
+					nn++;
+				;;
+			;;
+			elif a.kind is CssV.KW as u8
+				kw is a.code;
+			;;
+		;;
+		if v.code as u32 is k_cubic and nn is 4
+			call Bezier: r nums:0 nums:1 nums:2 nums:3;
+		;;
+		elif v.code as u32 is k_steps and nn >= 1
+			r.ease is 2;
+			r.steps is (Math.Max: 1 nums:0 as int);
+			r.jump is 0;
+			if kw is k_jump_start or kw is k_start
+				r.jump is 1;
+			;;
+			elif kw is k_jump_none
+				r.jump is 2;
+			;;
+			elif kw is k_jump_both
+				r.jump is 3;
+			;;
+		;;
+	[end]
+
+	[Bezier: ptr<PageAnimRun> r: 0; f64 x1: 0.0; f64 y1: 0.0; f64 x2: 1.0; f64 y2: 1.0;]
+		r.ease is 1;
+		r.x1 is x1;
+		r.y1 is y1;
+		r.x2 is x2;
+		r.y2 is y2;
+	[end]
+
+	[Ease: ptr<PageAnimRun> r: 0; f64 t: 0.0; : f64]
+		if t <= 0.0 and r.ease is not 2 return 0.0;
+		if t >= 1.0 and r.ease is not 2 return 1.0;
+		if r.ease is 0 return t;
+		if r.ease is 2
+			int n: r.steps;
+			int k: (t * (n as f64)) as int;
+			if r.jump is 1 or r.jump is 3
+				k++;
+			;;
+			int total: n;
+			if r.jump is 2
+				total is n - 1;
+			;;
+			elif r.jump is 3
+				total is n + 1;
+			;;
+			if t >= 1.0
+				k is total;
+			;;
+			if t < 0.0
+				k is 0;
+			;;
+			if total <= 0 return 1.0;
+			return (k as f64) / (total as f64);
+		;;
+		# x(u) = t, by Newton's method then halving; y(u) is the answer
+		f64 u: t;
+		while int i: 0; i < 8; i++;
+			f64 x: (Curve: u r.x1 r.x2) - t;
+			f64 dx: (Slope: u r.x1 r.x2);
+			if x < 0.000001 and x > -0.000001
+				return (Curve: u r.y1 r.y2);
+			;;
+			if dx < 0.000001 and dx > -0.000001
+				break;
+			;;
+			u is u - x / dx;
+		;;
+		f64 lo: 0.0;
+		f64 hi: 1.0;
+		u is t;
+		while int i: 0; i < 40; i++;
+			f64 x: (Curve: u r.x1 r.x2);
+			if x < t
+				lo is u;
+			;;
+			else
+				hi is u;
+			;;
+			u is (lo + hi) / 2.0;
+		;;
+	[end: (Curve: u r.y1 r.y2)]
+
+	# a cubic Bézier from 0 to 1 through a and b, at u
+	[Curve: f64 u: 0.0; f64 a: 0.0; f64 b: 0.0; : f64]
+		f64 v: 1.0 - u;
+	[end: 3.0 * v * v * u * a + 3.0 * v * u * u * b + u * u * u]
+
+	[Slope: f64 u: 0.0; f64 a: 0.0; f64 b: 0.0; : f64]
+		f64 v: 1.0 - u;
+	[end: 3.0 * v * v * a + 6.0 * v * u * (b - a) + 3.0 * u * u * (1.0 - b)]
+
+	# ---- interpolating
+
+	[CanInterpolate: ptr<CssVal> a: 0; ptr<CssVal> b: 0; : bln]
+		u32 ka: a.kind;
+		u32 kb: b.kind;
+		if (Numeric: ka) and ka is kb
+			if ka is CssV.LEN or ka is CssV.ANGLE or ka is CssV.TIME
+				return a.unit is b.unit;
+			;;
+			return true;
+		;;
+		if ka is CssV.COLOR and kb is CssV.COLOR return true;
+		if ka is CssV.LIST and kb is CssV.LIST return (SameShape: a b);
+		# a transform against none
+		if ka is CssV.LIST and kb is CssV.KW and b.code as u32 is k_none return true;
+		if kb is CssV.LIST and ka is CssV.KW and a.code as u32 is k_none return true;
+	[end: false]
+
+	[Numeric: u32 k: 0; : bln]
+	[end: (k is CssV.NUM or k is CssV.INT or k is CssV.LEN or k is CssV.PCT or k is CssV.ANGLE or k is CssV.TIME)]
+
+	[SameShape: ptr<CssVal> a: 0; ptr<CssVal> b: 0; : bln]
+		ptr<CssCx> ca: (CssV.Cx: a);
+		ptr<CssCx> cb: (CssV.Cx: b);
+		if ca.len is not cb.len return false;
+		ptr<CssVal> ia: (CssV.Items: a);
+		ptr<CssVal> ib: (CssV.Items: b);
+		while u32 i: 0; i < ca.len; i++;
+			ptr<CssVal> x: ia + i * 8;
+			ptr<CssVal> y: ib + i * 8;
+			if x.kind is not y.kind return false;
+			if x.kind is CssV.FUNC as u8 or x.kind is CssV.SEP as u8 or x.kind is CssV.KW as u8
+				if x.code is not y.code or x.bits is not y.bits return false;
+			;;
+			elif x.kind is CssV.LEN as u8 or x.kind is CssV.ANGLE as u8
+				if x.unit is not y.unit return false;
+			;;
+			elif not (Numeric: x.kind) and not (CssV.Same: x y)
+				return false;
+			;;
+		;;
+	[end: true]
+
+	# a value t of the way from a to b, into out (held: release it)
+	[Mix: ptr<CssVal> a: 0; ptr<CssVal> b: 0; f64 t: 0.0; ptr<CssVal> dst: 0;]
+		dst.kind is 0;
+		dst.bits is 0;
+		dst.code is 0;
+		dst.unit is 0;
+		if not (CanInterpolate: a b)
+			ptr<CssVal> pick: a;
+			if t >= 0.5
+				pick is b;
+			;;
+			dst:0 is pick:0;
+			call CssV.Retain: dst;
+			return;
+		;;
+		u32 k: a.kind;
+		if (Numeric: k)
+			if k is CssV.INT
+				f64 x: ((a.bits as int) as f64) * (1.0 - t) + ((b.bits as int) as f64) * t;
+				call CssV.SetInt: dst (Float.Round: x) as int;
+				return;
+			;;
+			dst:0 is a:0;
+			call dst.SetNum: (a.Num) * (1.0 - t) + (b.Num) * t;
+			return;
+		;;
+		if k is CssV.COLOR
+			call CssV.SetColor: dst (MixColor: a.bits b.bits t);
+			return;
+		;;
+		# lists (and none against one: that list's identity)
+		ptr<CssVal> la: a;
+		ptr<CssVal> lb: b;
+		CssVal made;
+		made.kind is 0;
+		if a.kind is CssV.KW as u8
+			call Identity: b addr made;
+			la is addr made;
+		;;
+		elif b.kind is CssV.KW as u8
+			call Identity: a addr made;
+			lb is addr made;
+		;;
+		ptr<CssCx> cx: (CssV.Cx: la);
+		u32 len: cx.len;
+		ptr<CssVal> items: new u8[(len + 1) * 8] as ptr<CssVal>;
+		ptr<CssVal> ia: (CssV.Items: la);
+		ptr<CssVal> ib: (CssV.Items: lb);
+		while u32 i: 0; i < len; i++;
+			ptr<CssVal> x: ia + i * 8;
+			ptr<CssVal> y: ib + i * 8;
+			ptr<CssVal> z: items + i * 8;
+			z:0 is x:0;
+			if x.kind is CssV.COLOR as u8
+				z.bits is (MixColor: x.bits y.bits t);
+			;;
+			elif x.kind is CssV.INT as u8
+				z.bits is (Float.Round: ((x.bits as int) as f64) * (1.0 - t) + ((y.bits as int) as f64) * t) as int as u32;
+			;;
+			elif (Numeric: x.kind)
+				call z.SetNum: (x.Num) * (1.0 - t) + (y.Num) * t;
+			;;
+		;;
+		dst.kind is CssV.LIST as u8;
+		dst.bits is (CssCxs.NewList: items len);
+		free items;
+		if made.kind is not 0
+			call CssV.Release: addr made;
+		;;
+	[end]
+
+	[MixColor: u32 a: 0; u32 b: 0; f64 t: 0.0; : u32]
+		u32 c: 0;
+		while int sh: 0; sh < 32; sh++ 8;
+			f64 x: (((a >> sh) & 255) as f64) * (1.0 - t) + (((b >> sh) & 255) as f64) * t;
+			int v: (Float.Round: x) as int;
+			if v < 0
+				v is 0;
+			;;
+			if v > 255
+				v is 255;
+			;;
+			c is c | ((v as u32) << sh);
+		;;
+	[end: c]
+
+	# a transform list's identity: the same functions, translations and rotations 0, scales 1
+	[Identity: ptr<CssVal> like: 0; ptr<CssVal> dst: 0;]
+		ptr<CssCx> cx: (CssV.Cx: like);
+		u32 len: cx.len;
+		ptr<CssVal> items: new u8[(len + 1) * 8] as ptr<CssVal>;
+		ptr<CssVal> src: (CssV.Items: like);
+		bln scaling: false;
+		while u32 i: 0; i < len; i++;
+			ptr<CssVal> x: src + i * 8;
+			ptr<CssVal> z: items + i * 8;
+			z:0 is x:0;
+			if x.kind is CssV.FUNC as u8
+				ptr<u8> fname: (CssProps.KwName: x.code);
+				scaling is (WlText.EqNoCaseZ: fname 5 'scale');
+			;;
+			elif (Numeric: x.kind)
+				if scaling and x.kind is not CssV.PCT as u8
+					call z.SetNum: 1.0;
+				;;
+				elif scaling
+					call z.SetNum: 100.0;
+				;;
+				else
+					call z.SetNum: 0.0;
+				;;
+			;;
+		;;
+		dst.kind is CssV.LIST as u8;
+		dst.code is 0;
+		dst.unit is 0;
+		dst.bits is (CssCxs.NewList: items len);
+		free items;
+	[end]
+
+	# ---- styles
+
+	# a style of the element's own (not shared) to write in: made's reference is taken
+	[Own: ptr<CssComputed> made: 0; : ptr<CssComputed>]
+		ptr<CssComputed> s: new CssComputed;
+		if s is 0 return made;
+		s.refs is 1;
+		s.font_px is made.font_px;
+		s.current_color is made.current_color;
+		while u32 g: 0; g < CssP.GROUPS; g++;
+			s.g:g is made.g:g;
+			if s.g:g is not 0
+				call CssStyles.RetainGroup: s.g:g;
+			;;
+		;;
+		s.vars is made.vars;
+		call CssStyles.RetainVars: s.vars;
+		s.pseudo is 0;
+		if made.pseudo is not 0
+			ptr<CssPseudoSet> set: new CssPseudoSet;
+			if set is not 0
+				while u32 k: 0; k < 10; k++;
+					set.styles:k is made.pseudo.styles:k;
+					call CssStyles.Retain: set.styles:k;
+				;;
+				s.pseudo is set;
+			;;
+		;;
+		call CssStyles.Release: made;
+	[end: s]
+
+	# prop's value in s becomes v (s's own style; its group copied first if shared)
+	[Put: ptr<CssComputed> s: 0; u32 prop: 0; ptr<CssVal> v: 0;]
+		ptr<CssPropInfo> info: addr CssProps.info:prop;
+		u32 gi: info.group;
+		ptr<u8> group: s.g:gi;
+		if group is 0 return;
+		ptr<u32> head: group as ptr<u32>;
+		if head:0 > 1
+			ptr<u8> mine: (CssStyles.CloneGroup: group);
+			call CssStyles.ReleaseGroup: group;
+			s.g:gi is mine;
+			group is mine;
+		;;
+		ptr<CssVal> slot: (group + 8 + info.slot * 8) as ptr<CssVal>;
+		call CssV.Release: slot;
+		slot:0 is v:0;
+		call CssV.Retain: slot;
+		if prop is CssP.COLOR and v.kind is CssV.COLOR as u8
+			s.current_color is v.bits;
+		;;
+		if prop is CssP.FONT_SIZE and v.kind is CssV.LEN as u8
+			s.font_px is (v.Num) as f32;
+		;;
+	[end]
+
+	# ---- reading values
+
+	# how many layers a list has (a lone value is one)
+	[Layers: ptr<CssVal> v: 0; : int]
+		if v is 0 return 0;
+		if v.kind is not CssV.LIST as u8 return 1;
+		ptr<CssCx> cx: (CssV.Cx: v);
+		ptr<CssVal> items: (CssV.Items: v);
+		int n: 1;
+		u32 i: 0;
+		while i < cx.len
+			ptr<CssVal> x: items + i * 8;
+			if x.kind is CssV.SEP as u8 and x.code is 44
+				n++;
+			;;
+			if x.kind is CssV.FUNC as u8
+				i++ x.bits;
+			;;
+			i++;
+		;;
+	[end: n]
+
+	# a list's layer k's first value (a function's, with its items after it), or 0
+	[Layer: ptr<CssVal> v: 0; int k: 0; : ptr<CssVal>]
+		if v is 0 return 0 as ptr<CssVal>;
+		if v.kind is not CssV.LIST as u8
+			if k is 0 return v;
+			return 0 as ptr<CssVal>;
+		;;
+		ptr<CssCx> cx: (CssV.Cx: v);
+		ptr<CssVal> items: (CssV.Items: v);
+		int at_: 0;
+		bln fresh: true;
+		u32 i: 0;
+		while i < cx.len
+			ptr<CssVal> x: items + i * 8;
+			if x.kind is CssV.SEP as u8 and x.code is 44
+				at_++;
+				fresh is true;
+				i++;
+				continue;
+			;;
+			if at_ is k and fresh
+				return x;
+			;;
+			fresh is false;
+			if x.kind is CssV.FUNC as u8
+				i++ x.bits;
+			;;
+			i++;
+		;;
+	[end: 0 as ptr<CssVal>]
+
+	[Seconds: ptr<CssVal> v: 0; : f64]
+		if v is 0 or v.kind is not CssV.TIME as u8 return 0.0;
+	[end: (v.Num)]
+
+	[Number: ptr<CssVal> v: 0; : f64]
+		if v.kind is CssV.INT as u8 return (v.bits as int) as f64;
+	[end: (v.Num)]
+
+	# ---- each frame: what's running styled again, its events told, what's finished let go
+
+	[Frame: ptr<Page> p: 0;]
+		if p is not owner or count is 0 return;
+		f64 now: p.now;
+		bln any: false;
+		int i: 0;
+		while i < count
+			ptr<PageAnimRun> r: (Run: i);
+			ptr<DomNode> n: r.node;
+			if r.gone or not (Dom.IsConnected: n)
+				call RemoveAt: i;
+				continue;
+			;;
+			call p.css.MarkDirty: n;
+			any is true;
+			if r.kind is TRANSITION
+				if now - r.start - r.delay >= r.duration
+					# (its last style is the one without it)
+					r.gone is true;
+					call Tell: p n 'transitionend';
+				;;
+				i++;
+				continue;
+			;;
+			f64 t: now - r.start - r.delay;
+			if t >= 0.0 and (r.fired & 1) is 0
+				r.fired is r.fired | 1;
+				call Tell: p n 'animationstart';
+			;;
+			int it: 0;
+			f64 pr: (Progress: r now addr it);
+			if t >= 0.0 and it > r.iteration and (r.iterations < 0.0 or (it as f64) < r.iterations)
+				r.iteration is it;
+				call Tell: p n 'animationiteration';
+			;;
+			if r.iterations >= 0.0 and t >= r.duration * r.iterations and (r.fired & 2) is 0
+				r.fired is r.fired | 2;
+				call Tell: p n 'animationend';
+				if (r.fill & 1) is 0
+					r.gone is true;
+				;;
+			;;
+			i++;
+		;;
+		if any
+			p.doc.version++;
+		;;
+	[end]
+
+	# an event at the element, bubbling (as transitionend and animation* do)
+	[Tell: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<u8> type: 0;]
+		call Page.Fire: p (PageBind.Wrap: n) type true;
+		call Page.RunJobs: p;
+	[end]
+
+	# whether something's running (the host keeps drawing frames while it is)
+	[Running: ptr<Page> p: 0; : bln]
+		if p is not owner return false;
+		while int i: 0; i < count; i++;
+			ptr<PageAnimRun> r: (Run: i);
+			if not r.gone and not (r.kind is ANIMATION and (r.fired & 2) is not 0)
+				return true;
+			;;
+		;;
+	[end: false]
+}

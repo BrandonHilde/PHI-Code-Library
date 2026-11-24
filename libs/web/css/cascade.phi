@@ -134,6 +134,10 @@ struct.CssEngine
 
 	# asked once for each @import that applies: answer now or later, with Css.ImportDone
 	method<ptr<CssEngine> ptr<CssImport>> on_import;
+	# told each style an element's given (the engine, the element, its style before, the new one, its
+	# parent's, whether it's the root): what it gives back is the element's (its transitions and
+	# animations): it takes the new style's reference, and gives one of what it gives
+	method<ptr<CssEngine> ptr<DomNode> ptr<CssComputed> ptr<CssComputed> ptr<CssComputed> bln: ptr<CssComputed> > on_style;
 	u32 import_count;
 
 	bln all_dirty;
@@ -1535,6 +1539,10 @@ phi.CssCascade:Library
 			e.root_px is made.font_px;
 			CssCalc.cur_rem is e.root_px;
 		;;
+		if e.on_style is not 0
+			cur_parent is parent;
+			made is (e.on_style: e n n.style as ptr<CssComputed> made parent is_root);
+		;;
 		ptr<CssComputed> old: n.style as ptr<CssComputed>;
 		if old is made
 			call CssStyles.Release: made;
@@ -1696,6 +1704,17 @@ phi.CssCascade:Library
 	ptr<CssComputed> cur: 0;
 	ptr<CssComputed> parent_style: 0;
 	u32 owned: 0;       # which of cur's groups are its own to write to
+
+	ptr<CssComputed> cur_parent: 0;   # (the element being restyled's parent's style, for BuildFrame)
+
+	# While an element is restyled (from its on_style): its style with extra declarations after all
+	# its normal ones (a keyframe's: an animation's values beat the page's own but not !important)
+	[BuildFrame: ptr<CssEngine> e: 0; bln is_root: false; ptr<CssDecls> extra: 0; : ptr<CssComputed>]
+		u32 keep: hit_n;
+		call AddHit: extra 0xFFFFFFFF 0xFFFFFFFF RANK_INLINE + 1 0;
+		ptr<CssComputed> s: (Build: e cur_parent is_root 0);
+		hit_n is keep;
+	[end: s]
 
 	[Build: ptr<CssEngine> e: 0; ptr<CssComputed> parent: 0; bln is_root: false; u32 pseudo: 0;]
 		if winner is 0

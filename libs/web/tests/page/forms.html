@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html><head><title>forms</title></head><body>
+<form id="f1" method="post" action="/submit"><input name="a" value="x y"><input type="checkbox" name="c" checked><input type="checkbox" name="off"><select name="s"><option>1</option><option selected>2</option></select><button id="b1">Go</button></form>
+<form id="f2" method="post" enctype="multipart/form-data" action="https://other.example/up"><input name="n" value='q"r'><textarea name="t">line1
+line2</textarea><input type="submit" id="b2" name="go" value="Send"></form>
+<form id="f3" action="/find"><input name="q" value="a&amp;b"><button id="b3">Find</button></form>
+<form id="f4" method="post" action="/x"><input name="z" value="1"><button id="b4">Stop</button></form>
+<form id="f5" method="get" action="/y"><button id="b5" formmethod="post" formaction="/z" formenctype="text/plain" name="which" value="five">Five</button></form>
+<form id="f6" method="post" action="/s"><input name="from" value="script"></form>
+<button id="b7" type="button">Not in a form</button>
+<script>
+document.getElementById("f4").addEventListener("submit", function (e) { e.preventDefault(); console.log("f4: its submit handler stopped it"); });
+console.log("localStorage kept: k=" + localStorage.getItem("k") + ", gone=" + localStorage.getItem("gone") + ", " + localStorage.length + " items");
+localStorage.setItem("k", "v2");
+localStorage.setItem("new", "é日");
+localStorage.removeItem("gone");
+console.log("a checkbox without a value: " + document.querySelector("input[type=checkbox]").value);
+</script>
+</body></html>

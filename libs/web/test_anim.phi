@@ -1,0 +1,48 @@
+# CSS transitions and animations (page/anim.phi), over a page's frames every 50 ms: values worked out
+# by hand from the standards. #a: opacity 1 to 0, linear over 1 s, and width 100px to 300px by
+# steps(4, jump-end) over 500 ms, from when a script adds a class at 100 ms. #b: transform and color
+# from one keyframe to the other, linear, 1 s, twice, alternate, fill both (back at its start when it
+# ends). #c: ease-in over 400 ms after a 100 ms delay, fill forwards: opacity through 0%, 50% and
+# 100% keyframes, margin-left (2em at 10px) only at 100%, so from its own 0px over the whole. Then the
+# events they fired, in order.
+use weblib;
+use css.css;
+
+phi.TestAnim:Program
+{
+	call Weblib.Start: 900000;
+	ptr<Page> p: (Page.New: 0 as ptr<PageHost> 800.0 600.0);
+	call Page.Start: p 'https://example.test/';
+	str html: '<!doctype html><html><head><style>#a { opacity: 1; transition: opacity 1s linear, width 500ms steps(4, jump-end); width: 100px } #a.off { opacity: 0; width: 300px } #b { animation: spin 1s linear 2 alternate both } @keyframes spin { from { transform: rotate(0deg) translateX(0px); color: rgb(0, 0, 0) } to { transform: rotate(360deg) translateX(100px); color: rgb(200, 100, 0) } } #c { animation: fade 400ms ease-in 100ms forwards } @keyframes fade { 0% { opacity: 0.25 } 50% { opacity: 1 } 100% { opacity: 0.5; margin-left: 2em } }</style></head><body><div id=a>a</div><div id=b>b</div><div id=c style="font-size: 10px">c</div><div id=log></div><script>["transitionend","animationstart","animationiteration","animationend"].forEach(function (t) { document.addEventListener(t, function (e) { document.getElementById("log").textContent += " " + t + "@" + e.target.id; }); }); setTimeout(function () { document.getElementById("a").className = "off"; }, 100);</script></body></html>';
+	call Page.Feed: p html html.len as u32;
+	call Page.Finish: p;
+	call Page.UpdateStyle: p;
+	while int ms: 0; ms <= 2600; ms is ms + 50;
+		call Page.Tick: p ms as f64;
+		call Page.Frame: p ms as f64;
+		call Page.UpdateStyle: p;
+		if ms % 250 is 0
+			log 't=' ms;
+			call Show: p 'a' 'opacity';
+			call Show: p 'a' 'width';
+			call Show: p 'b' 'transform';
+			call Show: p 'b' 'color';
+			call Show: p 'c' 'opacity';
+			call Show: p 'c' 'margin-left';
+			log '\n';
+		;;
+	;;
+	ptr<DomNode> lg: (Dom.FindById: p.doc.root (WlAtoms.GetZ: 'log'));
+	WlBuf events;
+	call Dom.TextContent: lg events;
+	log 'events:' events.data '\n';
+	exit 0;
+
+	[Show: ptr<Page> p: 0; ptr<u8> id: 0; ptr<u8> prop: 0;]
+		ptr<DomNode> n: (Dom.FindById: p.doc.root (WlAtoms.GetZ: id));
+		WlBuf t;
+		bln ok: (Css.ComputedText: n prop (WlText.LenZ: prop) addr t);
+		log '  ' id '.' prop '=' t.data;
+		call t.Free;
+	[end]
+}

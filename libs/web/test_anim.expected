@@ -1,0 +1,12 @@
+t=0  a.opacity=1  a.width=100px  b.transform=rotate(0deg) translatex(0px)  b.color=rgb(0, 0, 0)  c.opacity=1  c.margin-left=0px
+t=250  a.opacity=0.85  a.width=150px  b.transform=rotate(90deg) translatex(25px)  b.color=rgb(50, 25, 0)  c.opacity=0.7163964  c.margin-left=3.84043px
+t=500  a.opacity=0.6  a.width=250px  b.transform=rotate(180deg) translatex(50px)  b.color=rgb(100, 50, 0)  c.opacity=0.5  c.margin-left=20px
+t=750  a.opacity=0.35  a.width=300px  b.transform=rotate(270deg) translatex(75px)  b.color=rgb(150, 75, 0)  c.opacity=0.5  c.margin-left=20px
+t=1000  a.opacity=0.1  a.width=300px  b.transform=rotate(360deg) translatex(100px)  b.color=rgb(200, 100, 0)  c.opacity=0.5  c.margin-left=20px
+t=1250  a.opacity=0  a.width=300px  b.transform=rotate(270deg) translatex(75px)  b.color=rgb(150, 75, 0)  c.opacity=0.5  c.margin-left=20px
+t=1500  a.opacity=0  a.width=300px  b.transform=rotate(180deg) translatex(50px)  b.color=rgb(100, 50, 0)  c.opacity=0.5  c.margin-left=20px
+t=1750  a.opacity=0  a.width=300px  b.transform=rotate(90deg) translatex(25px)  b.color=rgb(50, 25, 0)  c.opacity=0.5  c.margin-left=20px
+t=2000  a.opacity=0  a.width=300px  b.transform=rotate(0deg) translatex(0px)  b.color=rgb(0, 0, 0)  c.opacity=0.5  c.margin-left=20px
+t=2250  a.opacity=0  a.width=300px  b.transform=rotate(0deg) translatex(0px)  b.color=rgb(0, 0, 0)  c.opacity=0.5  c.margin-left=20px
+t=2500  a.opacity=0  a.width=300px  b.transform=rotate(0deg) translatex(0px)  b.color=rgb(0, 0, 0)  c.opacity=0.5  c.margin-left=20px
+events: animationstart@b animationstart@c animationend@c transitionend@a animationiteration@b transitionend@a animationend@b

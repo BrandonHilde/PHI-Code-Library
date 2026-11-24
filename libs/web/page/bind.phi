@@ -1457,6 +1457,13 @@ phi.PageBind:Library
 		;;
 		ptr<DomAttr> a: (Dom.AttrZ: n 'value');
 		if a is 0
+			# (a checkbox or radio button with no value attribute is "on", as a form sends it)
+			if n.tag is (WlAtoms.GetZ: 'input')
+				ptr<u8> type: (Dom.AttrValue: n 'type');
+				if type is not 0 and ((WlText.EqNoCaseZ: type (WlText.LenZ: type) 'checkbox') or (WlText.EqNoCaseZ: type (WlText.LenZ: type) 'radio'))
+					return (Js.NewStringZ: 'on');
+				;;
+			;;
 			return (JsV.Str: JsRt.blank);
 		;;
 	[end: (Js.NewString: a.value a.value_len)]

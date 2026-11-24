@@ -1,0 +1,131 @@
+# Forms sent by POST and localStorage kept by the host, on tests/page/forms.html: a submit
+# button's click sends its form (requestSubmit: the submit event, then the form by its method,
+# enctype and the button's form* attributes), POST through PageHost.post, GET through navigate;
+# form.submit() from a script; localStorage loaded from and given to PageHost storage_load and
+# storage_save. Multipart boundaries are random: shown as BOUNDARY.
+use weblib;
+
+phi.TestForms:Program
+{
+	call Weblib.Start: 900000;
+	PageHost host;
+	host.logger is addr Print;
+	host.navigate is addr Navigate;
+	host.post is addr Post;
+	host.storage_load is addr StorageLoad;
+	host.storage_save is addr StorageSave;
+	int size: (OS.FileSize: 'tests/page/forms.html');
+	ptr<u8> html: new u8[size + 1];
+	int got: (OS.ReadFile: 'tests/page/forms.html' html size);
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page html got as u32 'https://forms.example/page.html';
+	call Click: page 'b1';
+	call Click: page 'b2';
+	call Click: page 'b3';
+	call Click: page 'b4';
+	call Click: page 'b5';
+	call Click: page 'b7';
+	log '--- form.submit() from a script\n';
+	str script: 'document.getElementById("f6").submit()';
+	call Page.RunSource: page addr script:0 script.len as u32 'x';
+	call Page.Tick: page 10.0;
+	call Page.Free: page;
+	log 'done\n';
+	exit 0;
+
+	[Click: ptr<Page> p: 0; ptr<u8> id: 0;]
+		log '--- a click on ' id '\n';
+		ptr<DomNode> n: (Dom.FindById: p.doc.root (WlAtoms.GetZ: id));
+		bln allowed: (Page.Click: p n 1.0 1.0);
+		log 'allowed ' allowed ', sent by the page ' p.submitted '\n';
+	[end]
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+
+	[Navigate: ptr<Page> p: 0; ptr<u8> url: 0;]
+		log 'navigate: ' url '\n';
+	[end]
+
+	[Post: ptr<Page> p: 0; ptr<u8> url: 0; ptr<u8> kind: 0; ptr<u8> body: 0; u32 n: 0;]
+		# (a multipart form's boundary, random, as BOUNDARY; each \r\n as |)
+		u32 kn: (WlText.LenZ: kind);
+		u32 at_: 0;
+		u32 bound_at: 0;
+		u32 bound_n: 0;
+		while at_ + 9 <= kn
+			if (WlText.EqNoCase: kind + at_ 9 'boundary=' 9)
+				bound_at is at_ + 9;
+				bound_n is kn - bound_at;
+				break;
+			;;
+			at_++;
+		;;
+		str k: (Clean: kind kn kind + bound_at bound_n);
+		str b: (Clean: body n kind + bound_at bound_n);
+		log 'POST ' url ' (' k '): ' b '\n';
+	[end]
+
+	[Clean: ptr<u8> t: 0; u32 n: 0; ptr<u8> bound: 0; u32 bn: 0; : str]
+		str made: '';
+		u32 i: 0;
+		while i < n
+			if bn > 0 and i + bn <= n and (WlText.Eq: t + i bn bound bn)
+				made++ 'BOUNDARY';
+				i++ bn;
+				continue;
+			;;
+			if t:i is 13 and i + 1 < n and t:(i + 1) is 10
+				made++ '|';
+				i++ 2;
+				continue;
+			;;
+			made++ t:i as chr;
+			i++;
+		;;
+	[end: made]
+
+	[StorageLoad: ptr<Page> p: 0; ptr<u8> origin: 0; ptr<WlBuf> dest: 0; : bln]
+		log 'storage asked for ' origin '\n';
+		call Record: dest 'k' 'v1';
+		call Record: dest 'gone' 'x';
+	[end: true]
+
+	[Record: ptr<WlBuf> b: 0; ptr<u8> key: 0; ptr<u8> value: 0;]
+		call U32: b (WlText.LenZ: key);
+		call b.AddZ: key;
+		call U32: b (WlText.LenZ: value);
+		call b.AddZ: value;
+	[end]
+
+	[U32: ptr<WlBuf> b: 0; u32 v: 0;]
+		call b.Add: (v & 255) as u8;
+		call b.Add: ((v >> 8) & 255) as u8;
+		call b.Add: ((v >> 16) & 255) as u8;
+		call b.Add: ((v >> 24) & 255) as u8;
+	[end]
+
+	[StorageSave: ptr<Page> p: 0; ptr<u8> origin: 0; ptr<u8> data: 0; u32 n: 0;]
+		log 'storage kept for ' origin ':';
+		u32 at_: 0;
+		while at_ + 8 <= n
+			u32 kn: (Get: data + at_);
+			str key: '';
+			while u32 i: 0; i < kn; i++;
+				key++ data:(at_ + 4 + i) as chr;
+			;;
+			u32 vn: (Get: data + at_ + 4 + kn);
+			str value: '';
+			while u32 i: 0; i < vn; i++;
+				value++ data:(at_ + 8 + kn + i) as chr;
+			;;
+			log ' ' key '=' value;
+			at_++ 8 + kn + vn;
+		;;
+		log '\n';
+	[end]
+
+	[Get: ptr<u8> b: 0; : u32]
+	[end: (b:0 as u32) | ((b:1 as u32) << 8) | ((b:2 as u32) << 16) | ((b:3 as u32) << 24)]
+}
