@@ -1948,9 +1948,11 @@
   // A form's fields: form.elements (in order, and by name or id), form.length, and each field's
   // own .form. form.email is the field of that name too, before anything of the form's own: the
   // page's binding looks for it (PageBind.FormHookGet), and asks %radioList for the list when
-  // several share the name. submit() goes where a GET form goes; reset() puts back what the page
-  // wrote. Not kept: a POST from submit() (the host is asked only for addresses), validation
-  // (checkValidity says yes), fields tied to a form by a form="id" attribute from outside it, and
+  // several share the name. submit() and requestSubmit() send the form as its method and enctype
+  // say (and its submitter's formaction, formmethod and formenctype): a GET to its address with the
+  // fields after a ?, a POST through the host (%post) as application/x-www-form-urlencoded,
+  // multipart/form-data or text/plain; reset() puts back what the page wrote. Not kept: files in a
+  // multipart form, validation (checkValidity says yes), fields tied to a form by a form="id" attribute from outside it, and
   // a checkbox's or radio button's first state once a script has changed it (checked is its
   // attribute here, so reset() finds it as it is now).
   var LISTED = { BUTTON: 1, FIELDSET: 1, INPUT: 1, OBJECT: 1, OUTPUT: 1, SELECT: 1, TEXTAREA: 1 };
@@ -2032,23 +2034,54 @@
     });
     hidden(formProto, "checkValidity", function checkValidity() { return true; });
     hidden(formProto, "reportValidity", function reportValidity() { return true; });
+    var postNative = global["%post"];
+    delete global["%post"];
+    var formAttr = function (form, submitter, name, own) {
+      var v = submitter && submitter.getAttribute && submitter.getAttribute(name);
+      if (v !== null && v !== undefined) return v;
+      return form.getAttribute(own) || "";
+    };
     var goForm = function (form, submitter) {
-      var method = String(form.getAttribute("method") || "get").toLowerCase();
+      var method = String(formAttr(form, submitter, "formmethod", "method") || "get").toLowerCase();
       if (method === "dialog") {
         var d = form.closest && form.closest("dialog");
         if (d && d.close) d.close(submitter && submitter.value !== undefined ? String(submitter.value) : undefined);
         return;
       }
-      if (method === "post") {
-        if (global.console) global.console.warn("form.submit(): a POST isn't sent from a script yet");
+      var to = new global.URL(formAttr(form, submitter, "formaction", "action"), global.document.baseURI || global.location.href);
+      var list = [];
+      new FormData(form).forEach(function (value, key) { if (typeof value === "string") list.push([key, value]); });
+      if (submitter && submitter.getAttribute && submitter.getAttribute("name")) list.push([submitter.getAttribute("name"), String(submitter.value === undefined ? "" : submitter.value)]);
+      if (method !== "post") {
+        var pairs = new global.URLSearchParams();
+        list.forEach(function (kv) { pairs.append(kv[0], kv[1]); });
+        to.search = pairs.toString();
+        global.location.href = to.href;
         return;
       }
-      var to = new global.URL(form.getAttribute("action") || "", global.document.baseURI || global.location.href);
-      var pairs = new global.URLSearchParams();
-      new FormData(form).forEach(function (value, key) { if (typeof value === "string") pairs.append(key, value); });
-      if (submitter && submitter.getAttribute && submitter.getAttribute("name")) pairs.append(submitter.getAttribute("name"), String(submitter.value === undefined ? "" : submitter.value));
-      to.search = pairs.toString();
-      global.location.href = to.href;
+      var enctype = String(formAttr(form, submitter, "formenctype", "enctype")).toLowerCase();
+      var type, body;
+      if (enctype === "multipart/form-data") {
+        var boundary = "----PhiFormBoundary" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+        var esc = function (s) { return String(s).replace(/\r\n|\r|\n/g, "%0D%0A").replace(/"/g, "%22"); };
+        body = "";
+        list.forEach(function (kv) {
+          body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + esc(kv[0]) + "\"\r\n\r\n" + String(kv[1]).replace(/\r\n|\r|\n/g, "\r\n") + "\r\n";
+        });
+        body += "--" + boundary + "--\r\n";
+        type = "multipart/form-data; boundary=" + boundary;
+      } else if (enctype === "text/plain") {
+        body = list.map(function (kv) { return kv[0] + "=" + kv[1] + "\r\n"; }).join("");
+        type = "text/plain";
+      } else {
+        var form_pairs = new global.URLSearchParams();
+        list.forEach(function (kv) { form_pairs.append(kv[0], kv[1]); });
+        body = form_pairs.toString();
+        type = "application/x-www-form-urlencoded";
+      }
+      if (!postNative || !postNative(to.href, type, body)) {
+        if (global.console) global.console.warn("form.submit(): this browser can't send a POST");
+      }
     };
     hidden(formProto, "submit", function submit() { goForm(this, null); });
     hidden(formProto, "requestSubmit", function requestSubmit(submitter) {

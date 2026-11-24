@@ -41,7 +41,7 @@ phi.PageWindow:Library
 		call InstallLocation: p;
 		call InstallNavigator;
 		call InstallPerformance;
-		call InstallStorage;
+		call InstallStorage: p;
 		call PageNet.Install: keep;
 	[end]
 
@@ -486,9 +486,12 @@ phi.PageWindow:Library
 		ptr<Page> p: Page.current;
 	[end: (JsV.Num: p.now - p.started_at)]
 
-	# ---- storage: lasts as long as the page does; a browser that wants it kept can save it from here ----
+	# ---- storage: localStorage lasts as long as the host keeps it (PageHost storage_load and
+	# storage_save), else as long as the page; sessionStorage as long as the page ----
 
-	[InstallStorage]
+	ptr<JsObj> local_store: 0;   # (this page's localStorage: changes to it are given to the host to keep)
+
+	[InstallStorage: ptr<Page> p: 0;]
 		ptr<JsObj> proto: (JsObjs.NewObject);
 		call Js.DefineNative: proto 'getItem' addr StorageGet 1;
 		call Js.DefineNative: proto 'setItem' addr StorageSet 2;
@@ -500,6 +503,96 @@ phi.PageWindow:Library
 		ptr<JsObj> s: (JsObjs.NewWithProto: proto);
 		call JsObjs.DefineZ: JsRt.r.global 'localStorage' (JsV.Obj: l) JsObjs.E | JsObjs.C;
 		call JsObjs.DefineZ: JsRt.r.global 'sessionStorage' (JsV.Obj: s) JsObjs.E | JsObjs.C;
+		local_store is l;
+	[end]
+
+	# what the host kept of localStorage for the page's origin (Page.Start, once the page has its address)
+	[LoadStorage: ptr<Page> p: 0;]
+		ptr<JsObj> l: local_store;
+		if l is 0 or p is 0 or p.url is 0 or p.host.storage_load is 0 return;
+		WlBuf origin;
+		call Origin: p.url addr origin;
+		WlBuf kept;
+		if (p.host.storage_load: p origin.data addr kept)
+			u32 at_: 0;
+			while at_ + 8 <= kept.len
+				u32 kn: (U32At: kept.data + at_);
+				if at_ + 4 + kn + 4 > kept.len
+					break;
+				;;
+				ptr<u8> kp: kept.data + at_ + 4;
+				u32 vn: (U32At: kp + kn);
+				if at_ + 8 + kn + vn > kept.len
+					break;
+				;;
+				u64 k: (JsObjs.KeyOf: (Js.NewString: kp kn));
+				call JsObjs.CreateData: l k (Js.NewString: kp + kn + 4 vn);
+				at_++ 8 + kn + vn;
+			;;
+		;;
+		call kept.Free;
+		call origin.Free;
+	[end]
+
+	[U32At: ptr<u8> b: 0; : u32]
+	[end: (b:0 as u32) | ((b:1 as u32) << 8) | ((b:2 as u32) << 16) | ((b:3 as u32) << 24)]
+
+	[AddU32: ptr<WlBuf> b: 0; u32 v: 0;]
+		call b.Add: (v & 255) as u8;
+		call b.Add: ((v >> 8) & 255) as u8;
+		call b.Add: ((v >> 16) & 255) as u8;
+		call b.Add: ((v >> 24) & 255) as u8;
+	[end]
+
+	# a URL's origin: its scheme and host (and port), "https://example.com"
+	[Origin: ptr<u8> url: 0; ptr<WlBuf> dest: 0;]
+		u32 n: (WlText.LenZ: url);
+		u32 i: 0;
+		while i < n and url:i is not ':'
+			i++;
+		;;
+		i++;
+		if i + 1 < n and url:i is '/' and url:(i + 1) is '/'
+			i++ 2;
+		;;
+		while i < n and url:i is not '/' and url:i is not '?' and url:i is not '#'
+			i++;
+		;;
+		if i > n
+			i is n;
+		;;
+		call dest.AddN: url i;
+	[end]
+
+	# localStorage changed: all of it, to the host to keep
+	[Kept: ptr<JsObj> o: 0;]
+		if o is not local_store return;
+		ptr<Page> p: Page.current;
+		if p is 0 or p.url is 0 or p.host.storage_save is 0 return;
+		WlBuf all;
+		ptr<JsObj> keys: (JsObjs.OwnKeys: o);
+		while u32 i: 0; i < keys.length; i++;
+			u64 key: keys.elems:i;
+			JsDesc d;
+			if not (JsObjs.GetOwn: o (JsObjs.KeyOf: key) addr d)
+				continue;
+			;;
+			WlBuf kt;
+			call Js.TextOf: key addr kt;
+			WlBuf vt;
+			call Js.TextOf: d.value addr vt;
+			call AddU32: addr all kt.len;
+			call all.AddN: kt.data kt.len;
+			call AddU32: addr all vt.len;
+			call all.AddN: vt.data vt.len;
+			call kt.Free;
+			call vt.Free;
+		;;
+		WlBuf origin;
+		call Origin: p.url addr origin;
+		call p.host.storage_save: p origin.data all.data all.len;
+		call origin.Free;
+		call all.Free;
 	[end]
 
 	[ThisStore: ptr<u64> args: 0;]
@@ -519,11 +612,13 @@ phi.PageWindow:Library
 		ptr<JsObj> o: (ThisStore: args);
 		u64 k: (JsObjs.KeyOf: (JsV.Str: (JsOps.ToStr: (Js.Arg: args argc 0))));
 		call JsObjs.CreateData: o k (JsV.Str: (JsOps.ToStr: (Js.Arg: args argc 1)));
+		call Kept: o;
 	[end: JsV.UNDEF]
 
 	[StorageRemove: ptr<u64> args: 0; int argc: 0;]
 		ptr<JsObj> o: (ThisStore: args);
 		call JsObjs.Delete: o (JsObjs.KeyOf: (JsV.Str: (JsOps.ToStr: (Js.Arg: args argc 0))));
+		call Kept: o;
 	[end: JsV.UNDEF]
 
 	[StorageClear: ptr<u64> args: 0; int argc: 0;]
@@ -532,6 +627,7 @@ phi.PageWindow:Library
 		while u32 i: 0; i < keys.length; i++;
 			call JsObjs.Delete: o (JsObjs.KeyOf: keys.elems:i);
 		;;
+		call Kept: o;
 	[end: JsV.UNDEF]
 
 	[StorageKey: ptr<u64> args: 0; int argc: 0;]

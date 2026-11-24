@@ -15,9 +15,29 @@ phi.PagePlatform:Library
 		call Js.DefineNative: JsRt.r.global '%styleText' addr StyleText 2;
 		call Js.DefineNative: JsRt.r.global '%popover' addr Popover 2;
 		call Js.DefineNative: JsRt.r.global '%media' addr PageMedia.Native 3;
+		call Js.DefineNative: JsRt.r.global '%post' addr Post 3;
 		str js: (PagePlatformJs.Source);
 		call Page.RunSource: p addr js:0 js.len as u32 'platform';
 	[end]
+
+	# %post(url, type, body): a form sent by POST, through the host (true if it has a way to)
+	[Post: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		if p.host.post is 0 return (JsV.Bool: false);
+		WlBuf where;
+		call Js.TextOf: (Js.Arg: args argc 0) addr where;
+		WlBuf full;
+		call Page.Resolve: p where.data where.len addr full;
+		WlBuf kind;
+		call Js.TextOf: (Js.Arg: args argc 1) addr kind;
+		WlBuf body;
+		call Js.TextOf: (Js.Arg: args argc 2) addr body;
+		call p.host.post: p full.data kind.data body.data body.len;
+		call where.Free;
+		call full.Free;
+		call kind.Free;
+		call body.Free;
+	[end: (JsV.Bool: true)]
 
 	# %popover(element, open): whether it's showing (CSS's :popover-open); its style is worked out again
 	[Popover: ptr<u64> args: 0; int argc: 0;]

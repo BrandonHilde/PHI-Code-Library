@@ -55,6 +55,15 @@ struct.PageHost
 	method<ptr<Page>> invalidate;
 	# the page asked to go somewhere: location.href = ..., a link followed
 	method<ptr<Page> ptr<u8>> navigate;
+	# a form the page submitted by POST (form.submit(), requestSubmit()): where, its Content-Type,
+	# and its body (bytes, how many). Without it, such a form goes nowhere.
+	method<ptr<Page> ptr<u8> ptr<u8> ptr<u8> u32> post;
+	# localStorage that outlasts the page, by origin ("https://example.com:8080"): what was kept
+	# (into the buffer; false if nothing), and all of it to keep, whenever it changes. Its bytes are
+	# records: a key's length (four bytes, the lowest first), the key (UTF-8), the value's length, the
+	# value. Without them, localStorage lasts as long as the page.
+	method<ptr<Page> ptr<u8> ptr<WlBuf>: bln> storage_load;
+	method<ptr<Page> ptr<u8> ptr<u8> u32> storage_save;
 	# where layout put a node: fills in x, y, width, height. Without it, layout queries answer 0.
 	method<ptr<Page> ptr<DomNode> ptr<f64>> box;
 	# window.alert
@@ -157,6 +166,7 @@ struct.Page
 	u32 next_request;
 	int blocking;           # requests the parser is waiting for
 	int nest;               # how deep in running JS we are: microtasks and answers wait for 0
+	bln submitted;          # the last Click's default action sent a form (the host needn't)
 	bln parse_done;
 	bln load_fired;
 
@@ -204,6 +214,9 @@ phi.Page:Library
 			p.host.logger is host.logger;
 			p.host.invalidate is host.invalidate;
 			p.host.navigate is host.navigate;
+			p.host.post is host.post;
+			p.host.storage_load is host.storage_load;
+			p.host.storage_save is host.storage_save;
 			p.host.box is host.box;
 			p.host.alert is host.alert;
 			p.host.cookies is host.cookies;
@@ -449,6 +462,7 @@ phi.Page:Library
 		u32 len: (WlText.LenZ: url);
 		p.url is (WlText.Dup: url len);
 		p.doc.url is (WlText.Dup: url len);
+		call PageWindow.LoadStorage: p;
 	[end]
 
 	[Feed: ptr<Page> p: 0; ptr<u8> bytes: 0; u32 n: 0;]
@@ -1328,8 +1342,9 @@ phi.Page:Library
 		call Invalidate: p;
 	[end: allowed]
 
-	# following a link, or ticking a box
+	# following a link, or sending a form from its submit button
 	[DefaultClick: ptr<Page> p: 0; ptr<DomNode> node: 0;]
+		p.submitted is false;
 		ptr<WlAtom> a_tag: (WlAtoms.GetZ: 'a');
 		ptr<DomNode> n: node;
 		while n is not 0
@@ -1345,7 +1360,49 @@ phi.Page:Library
 			;;
 			n is n.parent;
 		;;
+		# a submit button (a <button> of type submit or none, an <input> of type submit or image) in
+		# a form: the form's requestSubmit(button), which fires submit and, if nothing stops it, sends
+		# the form by its method (platform.js)
+		ptr<DomNode> button: node;
+		while button is not 0 and not (SubmitButton: button)
+			button is button.parent;
+		;;
+		if button is 0 return;
+		ptr<DomNode> form: button.parent;
+		while form is not 0 and not (Is: form HtmlTag.FORM)
+			form is form.parent;
+		;;
+		if form is 0 return;
+		u64 f: (PageBind.Wrap: form);
+		u64 fn: (Js.GetProp: f 'requestSubmit');
+		if not (JsV.IsObj: fn) return;
+		call Js.Push: (PageBind.Wrap: button);
+		p.nest++;
+		u64 ignored: (Js.Call: fn f 1);
+		p.nest--;
+		if Js.failed
+			call ReportException: p;
+		;;
+		call RunJobs: p;
+		p.submitted is true;
 	[end]
+
+	[Is: ptr<DomNode> n: 0; u32 tag: 0; : bln]
+		if n.type is not DomType.ELEMENT or n.ns is not DomNs.HTML or n.tag is 0 return false;
+	[end: (n.tag.tag is tag)]
+
+	[SubmitButton: ptr<DomNode> n: 0; : bln]
+		if (Is: n HtmlTag.BUTTON)
+			ptr<u8> t: (Dom.AttrValue: n 'type');
+			if t is 0 return true;
+			return (WlText.EqNoCaseZ: t (WlText.LenZ: t) 'submit');
+		;;
+		if (Is: n HtmlTag.INPUT)
+			ptr<u8> t: (Dom.AttrValue: n 'type');
+			if t is 0 return false;
+			return (WlText.EqNoCaseZ: t (WlText.LenZ: t) 'submit') or (WlText.EqNoCaseZ: t (WlText.LenZ: t) 'image');
+		;;
+	[end: false]
 
 	[MouseEvent: ptr<Page> p: 0; ptr<DomNode> node: 0; ptr<u8> type: 0; f64 x: 0.0; f64 y: 0.0; int button: 0;]
 		call Use: p;
