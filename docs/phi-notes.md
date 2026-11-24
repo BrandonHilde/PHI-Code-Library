@@ -227,3 +227,12 @@ browser's cache of fetched scripts). Not to be worked round in PHI OS by copying
 next to `os.phi`: it waits for PHI.
 
 **Fixed in PHI (`feb228a`, macos branch):** `call Heap.Limit: bytes;` sets it, up to what the machine has; the default stays 128 MB.
+
+## A method value's pointer result was an int (fixed in PHI, 2026-11-23)
+
+`method<...: ptr<T>>` gave its result back as an `int` (every number did, and PHI counts a pointer
+as a number), so in 64-bit code (macOS, 64-bit Linux and Windows) the pointer lost its top half and
+the program stopped at its first use. weblib's `CssEngine.on_style` (page/anim.phi's hook for
+transitions and animations) is one. Fixed on PHI's macos branch in `6cf41dc` (a pointer or method
+value keeps its type; other numbers are still an int); weblib needs a PHI built from it. PHI OS
+FINDINGS #45.
