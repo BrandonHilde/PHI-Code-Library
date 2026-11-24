@@ -21,7 +21,8 @@
 //   and the names of the classes the window's own objects are made from (History, Location ...)
 //   Web Animations: element.animate, getAnimations, Animation, KeyframeEffect (time is kept;
 //   nothing moves)
-// Not kept: TouchEvent (a page would take this for a touch screen), streams, WebSocket, workers.
+// WebSocket (over the host's ws_open, ws_send and ws_close: page/socket.phi), and CloseEvent.
+// Not kept: TouchEvent (a page would take this for a touch screen), streams, workers.
 (function (global) {
   "use strict";
   var randomBytes = global["%randomBytes"];
@@ -1133,6 +1134,104 @@
   eventClass("AnimationEvent", global.Event, { animationName: "", elapsedTime: 0, pseudoElement: "" });
   eventClass("TransitionEvent", global.Event, { propertyName: "", elapsedTime: 0, pseudoElement: "" });
   eventClass("SubmitEvent", global.Event, { submitter: null });
+  eventClass("CloseEvent", global.Event, { code: 0, reason: "", wasClean: false });
+
+  // ---- WebSocket: the host's connections (%wsOpen, %wsSend, %wsClose); what happens on them comes
+  // back through %wsEvent(id, kind, data, code): 1 open (data the protocol), 2 text, 3 binary (an
+  // ArrayBuffer), 4 error, 5 closed (code, data the reason)
+  (function () {
+    var wsOpen = global["%wsOpen"], wsSend = global["%wsSend"], wsClose = global["%wsClose"];
+    delete global["%wsOpen"]; delete global["%wsSend"]; delete global["%wsClose"];
+    if (!wsOpen) return;
+    var sockets = {};
+    // (EventTarget calls onopen and the rest itself)
+    var fire = function (sock, ev) { sock.dispatchEvent(ev); };
+    var failLater = function (sock) {
+      setTimeout(function () {
+        sock._state = 3;
+        fire(sock, new global.Event("error"));
+        fire(sock, new global.CloseEvent("close", { code: 1006, reason: "", wasClean: false }));
+      }, 0);
+    };
+    class WebSocket extends global.EventTarget {
+      constructor(url, protocols) {
+        super();
+        if (arguments.length < 1) throw new TypeError("Failed to construct 'WebSocket': 1 argument required");
+        var u = new global.URL(String(url), (global.document && global.document.baseURI) || global.location.href);
+        if (u.protocol === "http:") u.protocol = "ws:";
+        else if (u.protocol === "https:") u.protocol = "wss:";
+        if (u.protocol !== "ws:" && u.protocol !== "wss:") throw new global.DOMException("The URL's scheme must be either 'ws' or 'wss'.", "SyntaxError");
+        if (u.hash) throw new global.DOMException("The URL contains a fragment identifier.", "SyntaxError");
+        var list = protocols === undefined ? [] : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
+        hidden(this, "_url", u.href);
+        hidden(this, "_state", 0);
+        hidden(this, "_protocol", "");
+        hidden(this, "_binaryType", "blob");
+        this.onopen = null; this.onmessage = null; this.onerror = null; this.onclose = null;
+        var id = wsOpen(u.href, list.join(", "));
+        hidden(this, "_id", id);
+        if (id) sockets[id] = this;
+        else failLater(this);
+      }
+      get url() { return this._url; }
+      get readyState() { return this._state; }
+      get protocol() { return this._protocol; }
+      get extensions() { return ""; }
+      get bufferedAmount() { return 0; }
+      get binaryType() { return this._binaryType; }
+      set binaryType(v) { v = String(v); if (v === "blob" || v === "arraybuffer") this._binaryType = v; }
+      send(data) {
+        if (this._state === 0) throw new global.DOMException("Still in CONNECTING state.", "InvalidStateError");
+        if (this._state !== 1) return;
+        var id = this._id;
+        if (typeof data === "string") { wsSend(id, data, false, 0); return; }
+        if (data instanceof ArrayBuffer) { wsSend(id, data, true, data.byteLength); return; }
+        if (ArrayBuffer.isView(data)) {
+          var copy = new Uint8Array(data.byteLength);
+          copy.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+          wsSend(id, copy.buffer, true, copy.byteLength);
+          return;
+        }
+        if (global.Blob && data instanceof global.Blob) {
+          data.arrayBuffer().then(function (b) { wsSend(id, b, true, b.byteLength); });
+          return;
+        }
+        wsSend(id, String(data), false, 0);
+      }
+      close(code, reason) {
+        if (code !== undefined) {
+          code = Number(code);
+          if (code !== 1000 && (code < 3000 || code > 4999)) throw new global.DOMException("The code must be either 1000, or between 3000 and 4999.", "InvalidAccessError");
+        }
+        if (this._state === 2 || this._state === 3) return;
+        if (this._state === 0) { this._state = 3; delete sockets[this._id]; wsClose(this._id, 0, ""); failLater(this); return; }
+        this._state = 2;
+        wsClose(this._id, code === undefined ? 1000 : code, reason === undefined ? "" : String(reason));
+      }
+    }
+    ["CONNECTING", "OPEN", "CLOSING", "CLOSED"].forEach(function (k, i) {
+      Object.defineProperty(WebSocket, k, { value: i, enumerable: true });
+      Object.defineProperty(WebSocket.prototype, k, { value: i, enumerable: true });
+    });
+    define("WebSocket", WebSocket);
+    hidden(global, "%wsEvent", function (id, kind, data, code) {
+      var sock = sockets[id];
+      if (!sock) return;
+      if (kind === 1) { sock._state = 1; sock._protocol = data || ""; fire(sock, new global.Event("open")); }
+      else if (kind === 2 || kind === 3) {
+        if (sock._state !== 1) return;
+        var value = data;
+        if (kind === 3 && sock._binaryType === "blob" && global.Blob) value = new global.Blob([data]);
+        fire(sock, new global.MessageEvent("message", { data: value, origin: new global.URL(sock._url).origin }));
+      }
+      else if (kind === 4) fire(sock, new global.Event("error"));
+      else if (kind === 5) {
+        sock._state = 3;
+        delete sockets[id];
+        fire(sock, new global.CloseEvent("close", { code: code, reason: data || "", wasClean: code !== 1006 }));
+      }
+    });
+  })();
   eventClass("StorageEvent", global.Event, { key: null, oldValue: null, newValue: null, url: "", storageArea: null });
   eventClass("CompositionEvent", global.UIEvent || global.Event, { data: "" });
   eventClass("ClipboardEvent", global.Event, { clipboardData: null });

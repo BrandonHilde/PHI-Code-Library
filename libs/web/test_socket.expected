@@ -1,0 +1,16 @@
+host asked to open wss://echo.example/chat?x=1 (v1, v2)
+made: wss://echo.example/chat?x=1 state 0 1
+bad scheme: SyntaxError
+host asked to open ws://nowhere.example/ ()
+bad: error
+bad: closed 1006
+--- the host: open
+open, protocol v2, state 1
+host sends on 7 (8 bytes, binary 0): 104 101 108 108 111 32 195 169
+host sends on 7 (3 bytes, binary 1): 1 2 250
+--- the host: a text, then bytes
+message: echo: hi
+message: bytes 9,8,7
+--- the page closes
+host closes 7 (1000 done)
+closed 1000 done clean true state 3

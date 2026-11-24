@@ -1,0 +1,57 @@
+# WebSocket (page/socket.phi, platform.js): a page's sockets over a pretend host, as the standard says
+# they behave: opened with its protocols, open, text and bytes each way (binaryType arraybuffer), a
+# close by the page answered by the host, a bad scheme refused, and one the host can't open failing.
+use weblib;
+
+phi.TestSocket:Program
+{
+	call Weblib.Start: 900000;
+	PageHost host;
+	host.logger is addr Print;
+	host.ws_open is addr WsOpen;
+	host.ws_send is addr WsSend;
+	host.ws_close is addr WsClose;
+	str html: '<!doctype html><body><script>var ws = new WebSocket("wss://echo.example/chat?x=1", ["v1", "v2"]); console.log("made: " + ws.url + " state " + ws.readyState + " " + WebSocket.OPEN); ws.binaryType = "arraybuffer"; ws.onopen = function () { console.log("open, protocol " + ws.protocol + ", state " + ws.readyState); ws.send("hello \\u00e9"); ws.send(new Uint8Array([1, 2, 250])); }; ws.addEventListener("message", function (e) { console.log("message: " + (typeof e.data === "string" ? e.data : "bytes " + Array.from(new Uint8Array(e.data)).join(","))); }); ws.onclose = function (e) { console.log("closed " + e.code + " " + e.reason + " clean " + e.wasClean + " state " + ws.readyState); }; try { new WebSocket("ftp://x"); } catch (e) { console.log("bad scheme: " + e.name); } var bad = new WebSocket("ws://nowhere.example/"); bad.onerror = function () { console.log("bad: error"); }; bad.onclose = function (e) { console.log("bad: closed " + e.code); };</script></body>';
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page html html.len as u32 'https://page.example/';
+	call Page.Tick: page 5.0;
+	log '--- the host: open\n';
+	str proto: 'v2';
+	call Page.SocketEvent: page 7 Page.WS_OPEN addr proto:0 proto.len as u32 0;
+	log '--- the host: a text, then bytes\n';
+	str msg: 'echo: hi';
+	call Page.SocketEvent: page 7 Page.WS_TEXT addr msg:0 msg.len as u32 0;
+	u8 bytes[3];
+	bytes:0 is 9;
+	bytes:1 is 8;
+	bytes:2 is 7;
+	call Page.SocketEvent: page 7 Page.WS_BINARY addr bytes 3 0;
+	log '--- the page closes\n';
+	str script: 'ws.close(1000, "done")';
+	call Page.RunSource: page addr script:0 script.len as u32 'x';
+	str why: 'done';
+	call Page.SocketEvent: page 7 Page.WS_CLOSED addr why:0 why.len as u32 1000;
+	call Page.Tick: page 20.0;
+	exit 0;
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+
+	[WsOpen: ptr<Page> p: 0; ptr<u8> url: 0; ptr<u8> protocols: 0; : int]
+		log 'host asked to open ' url ' (' protocols ')\n';
+		if (WlText.EqZ: url 27 'wss://echo.example/chat?x=1') return 7;
+	[end: 0]
+
+	[WsSend: ptr<Page> p: 0; int id: 0; ptr<u8> data: 0; u32 n: 0; bln binary: false; : bln]
+		log 'host sends on ' id ' (' n ' bytes, binary ' binary '):';
+		while u32 i: 0; i < n; i++;
+			log ' ' data:i;
+		;;
+		log '\n';
+	[end: true]
+
+	[WsClose: ptr<Page> p: 0; int id: 0; int code: 0; ptr<u8> reason: 0;]
+		log 'host closes ' id ' (' code ' ' reason ')\n';
+	[end]
+}

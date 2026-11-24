@@ -16,6 +16,7 @@ phi.PagePlatform:Library
 		call Js.DefineNative: JsRt.r.global '%popover' addr Popover 2;
 		call Js.DefineNative: JsRt.r.global '%media' addr PageMedia.Native 3;
 		call Js.DefineNative: JsRt.r.global '%post' addr Post 3;
+		call PageSocket.Install;
 		str js: (PagePlatformJs.Source);
 		call Page.RunSource: p addr js:0 js.len as u32 'platform';
 	[end]

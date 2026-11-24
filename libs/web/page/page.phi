@@ -30,6 +30,7 @@ use page.shadow;
 use page.pmodules;
 use page.canvas;
 use page.anim;
+use page.socket;
 use page.media;
 
 # what's asked of PageHost.load
@@ -64,6 +65,13 @@ struct.PageHost
 	# records: a key's length (four bytes, the lowest first), the key (UTF-8), the value's length, the
 	# value. Without them, localStorage lasts as long as the page.
 	method<ptr<Page> ptr<u8> ptr<WlBuf>: bln> storage_load;
+	# WebSockets: a connection opened (url, the protocols asked for, comma separated: an id, or 0 if
+	# there's no room), a message sent on one (id, bytes, how many, binary: whether it went), and one
+	# closed (id, code, reason). What happens on them the host tells Page.SocketEvent. Without them, a
+	# page's WebSocket fails at once.
+	method<ptr<Page> ptr<u8> ptr<u8>: int> ws_open;
+	method<ptr<Page> int ptr<u8> u32 bln: bln> ws_send;
+	method<ptr<Page> int int ptr<u8>> ws_close;
 	method<ptr<Page> ptr<u8> ptr<u8> u32> storage_save;
 	# where layout put a node: fills in x, y, width, height. Without it, layout queries answer 0.
 	method<ptr<Page> ptr<DomNode> ptr<f64>> box;
@@ -206,6 +214,19 @@ struct.Page
 
 phi.Page:Library
 {
+	# what Page.SocketEvent says of a WebSocket
+	const int WS_OPEN: 1;       # it's open: data is the protocol the server chose
+	const int WS_TEXT: 2;       # a text message (UTF-8)
+	const int WS_BINARY: 3;     # a binary message
+	const int WS_ERROR: 4;      # it failed (a close follows)
+	const int WS_CLOSED: 5;     # it's closed: code, and data the reason
+
+	# The host's news of a WebSocket (ws_open's id): see WS_*. Turned into the socket's events.
+	[SocketEvent: ptr<Page> p: 0; int id: 0; int kind: 0; ptr<u8> data: 0; u32 n: 0; int code: 0;]
+		if p is 0 return;
+		call PageSocket.Event: p id kind data n code;
+	[end]
+
 	ptr<Page> current: 0;
 
 	# ---- starting and stopping ----
@@ -223,6 +244,9 @@ phi.Page:Library
 			p.host.post is host.post;
 			p.host.storage_load is host.storage_load;
 			p.host.storage_save is host.storage_save;
+			p.host.ws_open is host.ws_open;
+			p.host.ws_send is host.ws_send;
+			p.host.ws_close is host.ws_close;
 			p.host.box is host.box;
 			p.host.alert is host.alert;
 			p.host.cookies is host.cookies;
