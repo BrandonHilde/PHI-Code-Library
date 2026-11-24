@@ -7,5 +7,63 @@ use textcases;
 phi.TestText:Program
 {
 	call FontLib.Start;
+	call Clipped;
 	call FntTestText.Run: 'tests/text/cases.bin';
+
+	# Fnt.Clip: drawn only inside the box, and the whole canvas again after NoClip
+	[Clipped]
+		int size: (OS.FileSize: 'tests/fonts/LiberationSans-Regular.ttf');
+		ptr<u8> data: new u8[size];
+		if (OS.ReadFile: 'tests/fonts/LiberationSans-Regular.ttf' data size) is not size
+			log 'clipped: the font did not load\n';
+			return;
+		;;
+		ptr<FntFace> face: (Fnt.Load: data size as u32);
+		FntStack stack;
+		stack.sizes:0 is (Fnt.AtSize: face 24);
+		stack.count is 1;
+		u32 w: 200;
+		u32 h: 40;
+		ptr<u32> whole: new u32[w * h];
+		ptr<u32> cut: new u32[w * h];
+		while u32 i: 0; i < w * h; i++;
+			whole:i is 0xFFFFFFFF;
+			cut:i is 0xFFFFFFFF;
+		;;
+		ptr<u8> word: 'Clipped text';
+		int a: (Fnt.Draw: addr stack word 12 whole w h 4 * 64 30 0xFF000000);
+		call Fnt.Clip: 40 10 120 25;
+		int b: (Fnt.Draw: addr stack word 12 cut w h 4 * 64 30 0xFF000000);
+		call Fnt.NoClip;
+		int outside: 0;
+		int inside: 0;
+		int same_inside: 0;
+		while int y: 0; y < h as int; y++;
+			while int x: 0; x < w as int; x++;
+				u32 i: (y as u32) * w + (x as u32);
+				bln in_box: x >= 40 and x < 120 and y >= 10 and y < 25;
+				if not in_box and cut:i is not 0xFFFFFFFF
+					outside++;
+				;;
+				if in_box and whole:i is not 0xFFFFFFFF
+					inside++;
+					if cut:i is whole:i
+						same_inside++;
+					;;
+				;;
+			;;
+		;;
+		log 'clipped: ' outside ' pixels drawn outside the box; inside it, ' same_inside ' of ' inside ' drawn as without a clip';
+		if inside > 0 and same_inside is inside and outside is 0
+			log ': right\n';
+		;;
+		else
+			log ': WRONG\n';
+		;;
+		call Fnt.FreeSize: stack.sizes:0;
+		call Fnt.Free: face;
+		free data;
+		free whole;
+		free cut;
+	[end]
 }
