@@ -1022,17 +1022,18 @@ phi.PageBind:Library
 		call Method: p 'focus' addr Focus 0 1;
 		call Method: p 'blur' addr Focus 0 0;
 		call Method: p 'click' addr ClickFn 0 0;
-		call Method: p 'scrollIntoView' addr Nothing 0 0;
-		call Method: p 'scrollTo' addr Nothing 0 0;
-		call Method: p 'scrollBy' addr Nothing 0 0;
+		call Method: p 'scrollIntoView' addr PageScroll.IntoView 0 0;
+		call Method: p 'scrollTo' addr PageScroll.ElementTo 2 0;
+		call Method: p 'scroll' addr PageScroll.ElementTo 2 0;
+		call Method: p 'scrollBy' addr PageScroll.ElementTo 2 1;
 		call Getter: p 'clientWidth' addr ClientGet 0 B_WIDTH;
 		call Getter: p 'clientHeight' addr ClientGet 0 B_HEIGHT;
 		call Getter: p 'clientLeft' addr Zero 0 0;
 		call Getter: p 'clientTop' addr Zero 0 0;
 		call Getter: p 'scrollWidth' addr BoxGet 0 B_WIDTH;
 		call Getter: p 'scrollHeight' addr BoxGet 0 B_HEIGHT;
-		call Getter: p 'scrollLeft' addr Zero addr Nothing 0;
-		call Getter: p 'scrollTop' addr Zero addr Nothing 0;
+		call Getter: p 'scrollLeft' addr PageScroll.ElementGet addr PageScroll.ElementSet 0;
+		call Getter: p 'scrollTop' addr PageScroll.ElementGet addr PageScroll.ElementSet 1;
 		call ParentNodeMethods: p;
 		call ChildNodeMethods: p;
 		call ChildNodeMethods: character_proto;
@@ -2079,16 +2080,27 @@ phi.PageBind:Library
 		call Js.Define: r 'bottom' (JsV.Num: box:1 + box:3) JsObjs.WEC;
 	[end: (JsV.Obj: r)]
 
+	# (getBoundingClientRect and getClientRects are the window's: the page's box less where it's
+	# scrolled to)
 	[BoundingRect: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (ThisElement: args);
 		f64 box[4];
 		call BoxOf: n addr box:0;
+		call InWindow: addr box:0;
 	[end: (RectObject: addr box:0)]
+
+	[InWindow: ptr<f64> box: 0;]
+		ptr<Page> p: Page.current;
+		if p is 0 return;
+		box:0 is box:0 - p.scroll_x;
+		box:1 is box:1 - p.scroll_y;
+	[end]
 
 	[ClientRects: ptr<u64> args: 0; int argc: 0;]
 		ptr<DomNode> n: (ThisElement: args);
 		f64 box[4];
 		call BoxOf: n addr box:0;
+		call InWindow: addr box:0;
 		ptr<JsObj> list: (JsObjs.NewArray: 1);
 		call JsObjs.ArrayPush: list (RectObject: addr box:0);
 	[end: (JsV.Obj: list)]
@@ -2151,6 +2163,7 @@ phi.PageBind:Library
 	[InstallDocument]
 		ptr<JsObj> p: document_proto;
 		call Getter: p 'documentElement' addr DocProp 0 D_ELEMENT;
+		call Getter: p 'scrollingElement' addr PageScroll.ScrollingElement 0 0;
 		call Getter: p 'head' addr DocProp 0 D_HEAD;
 		call Getter: p 'body' addr DocProp 0 D_BODY;
 		call Getter: p 'URL' addr DocProp 0 D_URL;

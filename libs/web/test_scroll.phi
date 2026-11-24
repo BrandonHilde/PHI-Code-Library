@@ -1,0 +1,71 @@
+# Scrolling (page/scroll.phi): what a page asks for goes to the host's scroll hook, the host says
+# where things went (Page.Scrolled), scrollX, scrollY, scrollTop ... say so at once, and a scroll
+# event comes in the next frame (at the document, heard by the window, for the window; at the
+# element, not bubbling, for a box). The pretend host keeps the window to 0..500 and boxes to 0..200.
+use weblib;
+
+phi.TestScroll:Program
+{
+	call Weblib.Start: 900000;
+	PageHost host;
+	host.logger is addr Print;
+	host.scroll is addr Scroll;
+	host.box is addr Box;
+	str html: '<!doctype html><body><div id=box style="height:50px;overflow:auto"><p>a</p><p>b</p></div><p id=far>far</p><script>var box = document.getElementById("box"); window.addEventListener("scroll", function () { console.log("window scroll event: scrollY " + scrollY + ", pageYOffset " + pageYOffset); }); box.addEventListener("scroll", function () { console.log("box scroll event: scrollTop " + box.scrollTop); }); document.body.addEventListener("scroll", function () { console.log("body heard a box scroll: wrong, it does not bubble"); }); console.log("at first: scrollY " + scrollY + ", box " + box.scrollTop + ", scrollingElement " + document.scrollingElement.tagName);</script></body>';
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page html html.len as u32 'https://scroll.example/';
+	call Page.Tick: page 5.0;
+	call Run: page 'scrollTo(0, 120); console.log("after scrollTo(0, 120): scrollY " + scrollY)';
+	call Run: page 'scrollBy({ top: 1000 }); console.log("after scrollBy({ top: 1000 }): scrollY " + scrollY + " (the host stopped it)")';
+	call Run: page 'box.scrollTop = 30; console.log("after box.scrollTop = 30: " + box.scrollTop)';
+	call Run: page 'box.scrollBy(0, 15); console.log("after box.scrollBy(0, 15): " + box.scrollTop)';
+	call Run: page 'document.getElementById("far").scrollIntoView(); console.log("scrollIntoView asked")';
+	call Run: page 'document.documentElement.scrollTop = 7; console.log("root element scrollTop = 7: scrollY " + scrollY)';
+	log '--- a frame: the scroll events\n';
+	call Page.Frame: page 20.0;
+	log '--- the host scrolls the window (the wheel, say)\n';
+	call Page.Scrolled: page 0 as ptr<DomNode> 0.0 333.0;
+	call Run: page 'console.log("scrollY now " + scrollY + "; far is at " + document.getElementById("far").getBoundingClientRect().top + " in the window (1000 on the page)")';
+	call Page.Frame: page 40.0;
+	log '--- a frame with nothing new: no events\n';
+	call Page.Frame: page 60.0;
+	call Page.Free: page;
+	exit 0;
+
+	[Run: ptr<Page> p: 0; ptr<u8> js: 0;]
+		call Page.RunSource: p js (WlText.LenZ: js) 'x';
+	[end]
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+
+	# (every element's box: at 1000 on the page)
+	[Box: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<f64> box: 0;]
+		box:0 is 0.0;
+		box:1 is 1000.0;
+		box:2 is 100.0;
+		box:3 is 20.0;
+	[end]
+
+	[Scroll: ptr<Page> p: 0; ptr<DomNode> n: 0; f64 x: 0.0; f64 y: 0.0; int kind: 0;]
+		str what: 'the window';
+		if n is not 0 and n.tag is not 0
+			what is '<' n.tag.text '>';
+		;;
+		if kind is 1
+			log 'host: bring ' what ' into view\n';
+			call Page.Scrolled: p 0 as ptr<DomNode> 0.0 400.0;
+			return;
+		;;
+		log 'host: scroll ' what ' to ' x as int ', ' y as int '\n';
+		f64 most: 500.0;
+		if n is not 0
+			most is 200.0;
+		;;
+		if y > most
+			y is most;
+		;;
+		call Page.Scrolled: p n x y;
+	[end]
+}

@@ -1,0 +1,266 @@
+# Scrolling: where the window and each box that scrolls are, as the host says (Page.Scrolled), and
+# what a page asks for (window.scrollTo, scrollBy, scroll; an element's scrollTop and scrollLeft
+# set, its scrollTo, scrollBy and scrollIntoView), passed to the host's PageHost.scroll, which
+# scrolls and says where things went with Page.Scrolled. A host without the hook: what the page
+# sets is kept as it is (nothing to scroll, so nothing stops it).
+#
+# window.scrollX, scrollY, pageXOffset and pageYOffset are the window's; the root element's
+# scrollTop and scrollLeft are too (and the body's in quirks mode), and document.scrollingElement
+# is the root element. Each change the host tells makes a scroll event, sent in the next frame
+# (Page.Frame) as browsers send them: at the element for a box (not bubbling), at the document for
+# the window (bubbling, so the window hears it too).
+
+use page.page;
+
+phi.PageScroll:Library
+{
+	const int MOST: 256;
+
+	[Install: ptr<Page> p: 0;]
+		ptr<JsObj> g: JsRt.r.global;
+		call Js.DefineNative: g 'scrollTo' addr WindowTo 2;
+		call Js.DefineNative: g 'scroll' addr WindowTo 2;
+		call Js.DefineNative: g 'scrollBy' addr WindowBy 2;
+		call Window: p;
+	[end]
+
+	# the window's place, as window.scrollX ... say
+	[Window: ptr<Page> p: 0;]
+		ptr<JsObj> g: JsRt.r.global;
+		call JsObjs.DefineZ: g 'scrollX' (JsV.Num: p.scroll_x) JsObjs.WEC;
+		call JsObjs.DefineZ: g 'scrollY' (JsV.Num: p.scroll_y) JsObjs.WEC;
+		call JsObjs.DefineZ: g 'pageXOffset' (JsV.Num: p.scroll_x) JsObjs.WEC;
+		call JsObjs.DefineZ: g 'pageYOffset' (JsV.Num: p.scroll_y) JsObjs.WEC;
+	[end]
+
+	# ---- what the host says
+
+	# node (0: the window) is scrolled to (x, y)
+	[Scrolled: ptr<Page> p: 0; ptr<DomNode> n: 0; f64 x: 0.0; f64 y: 0.0;]
+		if p is 0 return;
+		call Page.Use: p;
+		if n is 0 or (IsRoot: p n)
+			if x is p.scroll_x and y is p.scroll_y return;
+			p.scroll_x is x;
+			p.scroll_y is y;
+			call Window: p;
+			p.scroll_window_news is true;
+			return;
+		;;
+		int k: (Slot: p n true);
+		if k < 0 return;
+		if p.scroll_nx:k is x and p.scroll_ny:k is y return;
+		p.scroll_nx:k is x;
+		p.scroll_ny:k is y;
+		p.scroll_news:k is true;
+	[end]
+
+	# the scroll events waiting: sent (from Page.Frame)
+	[Fire: ptr<Page> p: 0;]
+		if p.scroll_window_news
+			p.scroll_window_news is false;
+			call Page.Fire: p (PageBind.Wrap: p.doc.root) 'scroll' true;
+		;;
+		while u32 k: 0; k < p.scroll_nodes.len; k++;
+			if p.scroll_news:k
+				p.scroll_news:k is false;
+				call Page.FireNode: p p.scroll_nodes:k 'scroll';
+			;;
+		;;
+	[end]
+
+	# where a box is scrolled to: its x (which 0) or y (1)
+	[Of: ptr<Page> p: 0; ptr<DomNode> n: 0; int which: 0; : f64]
+		if (IsRoot: p n)
+			if which is 0 return p.scroll_x;
+			return p.scroll_y;
+		;;
+		int k: (Slot: p n false);
+		if k < 0 return 0.0;
+		if which is 0 return p.scroll_nx:k;
+	[end: p.scroll_ny:k]
+
+	# a box's slot in the page's table (made if make and there's room): -1 if none
+	[Slot: ptr<Page> p: 0; ptr<DomNode> n: 0; bln make: false; : int]
+		while u32 k: 0; k < p.scroll_nodes.len; k++;
+			if p.scroll_nodes:k is n return k as int;
+		;;
+		if not make or p.scroll_nodes.len >= p.scroll_nodes.max return -1;
+		p.scroll_nodes++ n;
+		u32 at_: p.scroll_nodes.len - 1;
+		p.scroll_nx:at_ is 0.0;
+		p.scroll_ny:at_ is 0.0;
+		p.scroll_news:at_ is false;
+	[end: at_ as int]
+
+	# the document's root element, or (in quirks mode) its body: what stands for the window
+	[IsRoot: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		if n is 0 or n.doc is not p.doc return false;
+		if n.parent is not 0 and n.parent.type is DomType.DOCUMENT return true;
+	[end: n.doc.quirks and n.tag is (WlAtoms.GetZ: 'body')]
+
+	# a box (0: the window) forgotten: an element taken out of the document
+	[Forget: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		int k: (Slot: p n false);
+		if k < 0 return;
+		u32 last: p.scroll_nodes.len - 1;
+		p.scroll_nodes:k is p.scroll_nodes:last;
+		p.scroll_nx:k is p.scroll_nx:last;
+		p.scroll_ny:k is p.scroll_ny:last;
+		p.scroll_news:k is p.scroll_news:last;
+		p.scroll_nodes.len is last;
+	[end]
+
+	# ---- what the page asks for
+
+	# to the host: node (0: the window) to (x, y), or (to_view) brought into view
+	[Ask: ptr<Page> p: 0; ptr<DomNode> n: 0; f64 x: 0.0; f64 y: 0.0; bln to_view: false;]
+		if x < 0.0
+			x is 0.0;
+		;;
+		if y < 0.0
+			y is 0.0;
+		;;
+		if n is not 0 and (IsRoot: p n)
+			n is 0;
+		;;
+		if p.host.scroll is not 0
+			int kind: 0;
+			if to_view
+				kind is 1;
+			;;
+			call p.host.scroll: p n x y kind;
+			return;
+		;;
+		# (no host to ask: kept as it is)
+		if not to_view
+			call Scrolled: p n x y;
+		;;
+	[end]
+
+	# (x, y) from scrollTo's arguments: two numbers, or { left, top } (either left out: as it is)
+	f64 to_x: 0.0;
+	f64 to_y: 0.0;
+
+	[Where: ptr<u64> args: 0; int argc: 0; f64 x: 0.0; f64 y: 0.0;]
+		to_x is x;
+		to_y is y;
+		u64 a: (Js.Arg: args argc 0);
+		if (JsV.IsObj: a)
+			u64 left: (Js.GetProp: a 'left');
+			u64 top: (Js.GetProp: a 'top');
+			if left is not JsV.UNDEF
+				to_x is (JsOps.ToNumber: left);
+			;;
+			if top is not JsV.UNDEF
+				to_y is (JsOps.ToNumber: top);
+			;;
+			return;
+		;;
+		if argc >= 1
+			to_x is (JsOps.ToNumber: a);
+		;;
+		if argc >= 2
+			to_y is (JsOps.ToNumber: (Js.Arg: args argc 1));
+		;;
+		if to_x is not to_x
+			to_x is 0.0;
+		;;
+		if to_y is not to_y
+			to_y is 0.0;
+		;;
+	[end]
+
+	[WindowTo: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		if p is 0 return JsV.UNDEF;
+		call Where: args argc p.scroll_x p.scroll_y;
+		call Ask: p 0 as ptr<DomNode> to_x to_y false;
+	[end: JsV.UNDEF]
+
+	[WindowBy: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		if p is 0 return JsV.UNDEF;
+		call Where: args argc 0.0 0.0;
+		call Ask: p 0 as ptr<DomNode> p.scroll_x + to_x p.scroll_y + to_y false;
+	[end: JsV.UNDEF]
+
+	# el.scrollTop and el.scrollLeft (magic: 1 top, 0 left)
+	[ElementGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (PageBind.ThisElement: args);
+		ptr<Page> p: Page.current;
+		if n is 0 or p is 0 return (JsV.Int: 0);
+	[end: (JsV.Num: (Of: p n self.magic as int))]
+
+	[ElementSet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (PageBind.ThisElement: args);
+		ptr<Page> p: Page.current;
+		if n is 0 or p is 0 return JsV.UNDEF;
+		f64 v: (JsOps.ToNumber: (Js.Arg: args argc 0));
+		if v is not v
+			v is 0.0;
+		;;
+		f64 x: (Of: p n 0);
+		f64 y: (Of: p n 1);
+		if self.magic is 1
+			y is v;
+		;;
+		else
+			x is v;
+		;;
+		call Ask: p n x y false;
+	[end: JsV.UNDEF]
+
+	# el.scrollTo, el.scroll (magic 0) and el.scrollBy (1)
+	[ElementTo: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (PageBind.ThisElement: args);
+		ptr<Page> p: Page.current;
+		if n is 0 or p is 0 return JsV.UNDEF;
+		f64 x: (Of: p n 0);
+		f64 y: (Of: p n 1);
+		if self.magic is 1
+			call Where: args argc 0.0 0.0;
+			call Ask: p n x + to_x y + to_y false;
+		;;
+		else
+			call Where: args argc x y;
+			call Ask: p n to_x to_y false;
+		;;
+	[end: JsV.UNDEF]
+
+	[IntoView: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (PageBind.ThisElement: args);
+		ptr<Page> p: Page.current;
+		if n is 0 or p is 0 return JsV.UNDEF;
+		call Ask: p n 0.0 0.0 true;
+	[end: JsV.UNDEF]
+
+	# document.scrollingElement: the root element (the body in quirks mode)
+	[ScrollingElement: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		if p is 0 or p.doc is 0 return JsV.NULL;
+		# (the root element: the document's element child)
+		ptr<DomNode> root: 0 as ptr<DomNode>;
+		ptr<DomNode> c: 0 as ptr<DomNode>;
+		if p.doc.root is not 0
+			c is p.doc.root.first_child;
+		;;
+		while c is not 0 and root is 0
+			if c.type is DomType.ELEMENT
+				root is c;
+			;;
+			c is c.next;
+		;;
+		if root is 0 return JsV.NULL;
+		if p.doc.quirks
+			c is root.first_child;
+			while c is not 0
+				if c.tag is (WlAtoms.GetZ: 'body') return (PageBind.Wrap: c);
+				c is c.next;
+			;;
+		;;
+	[end: (PageBind.Wrap: root)]
+}

@@ -1,0 +1,20 @@
+at first: scrollY 0, box 0, scrollingElement HTML
+host: scroll the window to 0, 120
+after scrollTo(0, 120): scrollY 120
+host: scroll the window to 0, 1120
+after scrollBy({ top: 1000 }): scrollY 500 (the host stopped it)
+host: scroll <div> to 0, 30
+after box.scrollTop = 30: 30
+host: scroll <div> to 0, 45
+after box.scrollBy(0, 15): 45
+host: bring <p> into view
+scrollIntoView asked
+host: scroll the window to 0, 7
+root element scrollTop = 7: scrollY 7
+--- a frame: the scroll events
+window scroll event: scrollY 7, pageYOffset 7
+box scroll event: scrollTop 45
+--- the host scrolls the window (the wheel, say)
+scrollY now 333; far is at 667 in the window (1000 on the page)
+window scroll event: scrollY 333, pageYOffset 333
+--- a frame with nothing new: no events

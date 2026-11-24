@@ -30,9 +30,6 @@ phi.PageWindow:Library
 		call Js.DefineNative: g 'alert' addr Alert 0;
 		call Js.DefineNative: g 'confirm' addr FalseFn 0;
 		call Js.DefineNative: g 'prompt' addr NullFn 0;
-		call Js.DefineNative: g 'scrollTo' addr PageBind.Nothing 0;
-		call Js.DefineNative: g 'scrollBy' addr PageBind.Nothing 0;
-		call Js.DefineNative: g 'scroll' addr PageBind.Nothing 0;
 		call Js.DefineNative: g 'focus' addr PageBind.Nothing 0;
 		call Js.DefineNative: g 'blur' addr PageBind.Nothing 0;
 		call Js.DefineNative: g 'atob' addr Atob 1;
@@ -52,10 +49,7 @@ phi.PageWindow:Library
 		call JsObjs.DefineZ: g 'outerWidth' (JsV.Num: p.width) JsObjs.WEC;
 		call JsObjs.DefineZ: g 'outerHeight' (JsV.Num: p.height) JsObjs.WEC;
 		call JsObjs.DefineZ: g 'devicePixelRatio' (JsV.Int: 1) JsObjs.WEC;
-		call JsObjs.DefineZ: g 'scrollX' JsV.INT_BASE JsObjs.WEC;
-		call JsObjs.DefineZ: g 'scrollY' JsV.INT_BASE JsObjs.WEC;
-		call JsObjs.DefineZ: g 'pageXOffset' JsV.INT_BASE JsObjs.WEC;
-		call JsObjs.DefineZ: g 'pageYOffset' JsV.INT_BASE JsObjs.WEC;
+		call PageScroll.Window: p;
 		ptr<JsObj> screen: (JsObjs.NewObject);
 		call Js.Define: screen 'width' (JsV.Num: p.width) JsObjs.WEC;
 		call Js.Define: screen 'height' (JsV.Num: p.height) JsObjs.WEC;

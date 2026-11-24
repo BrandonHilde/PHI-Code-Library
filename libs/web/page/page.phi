@@ -32,6 +32,7 @@ use page.canvas;
 use page.anim;
 use page.socket;
 use page.realm;
+use page.scroll;
 use page.media;
 
 # what's asked of PageHost.load
@@ -72,6 +73,10 @@ struct.PageHost
 	# page's WebSocket fails at once.
 	method<ptr<Page> ptr<u8> ptr<u8>: int> ws_open;
 	method<ptr<Page> int ptr<u8> u32 bln: bln> ws_send;
+	# scrolling a page asks for (page/scroll.phi): the window (node 0) or a box that scrolls to
+	# (x, y) (kind 0), or the node brought into view (kind 1). The host says where things went with
+	# Page.Scrolled. Without it, what the page sets is kept as it is.
+	method<ptr<Page> ptr<DomNode> f64 f64 int> scroll;
 	method<ptr<Page> int int ptr<u8>> ws_close;
 	method<ptr<Page> ptr<u8> ptr<u8> u32> storage_save;
 	# where layout put a node: fills in x, y, width, height. Without it, layout queries answer 0.
@@ -180,7 +185,15 @@ struct.Page
 	bln submitted;          # the last Click's default action sent a form (the host needn't)
 	bln is_frame;           # the host's: a page in another's <iframe> (its media aren't played)
 	u64 realm[128];          # its JS classes and prototypes while another page is used (PageRealm; REALM_ROOM)
-	ptr<JsObj> local_obj;   # its localStorage (changes to it are given to the host to keep)
+	ptr<JsObj> local_obj;
+	# where it's scrolled to (page/scroll.phi): the window, and each box the host has said of
+	f64 scroll_x;
+	f64 scroll_y;
+	bln scroll_window_news;         # a scroll event for the window waits for the next frame
+	ptr<DomNode> scroll_nodes[atmost 256];
+	f64 scroll_nx[256];
+	f64 scroll_ny[256];
+	bln scroll_news[256];   # its localStorage (changes to it are given to the host to keep)
 	ptr<u8> anim_runs;      # its transitions and animations (PageAnim's, while another page has them)
 	int anim_count;
 	int anim_cap;
@@ -226,6 +239,12 @@ phi.Page:Library
 	const int WS_ERROR: 4;      # it failed (a close follows)
 	const int WS_CLOSED: 5;     # it's closed: code, and data the reason
 
+	# The host's news of scrolling: node (0 for the window) is scrolled to (x, y). The page's
+	# scrollX, scrollTop ... say so at once; a scroll event goes in the next frame.
+	[Scrolled: ptr<Page> p: 0; ptr<DomNode> n: 0; f64 x: 0.0; f64 y: 0.0;]
+		call PageScroll.Scrolled: p n x y;
+	[end]
+
 	# The host's news of a WebSocket (ws_open's id): see WS_*. Turned into the socket's events.
 	[SocketEvent: ptr<Page> p: 0; int id: 0; int kind: 0; ptr<u8> data: 0; u32 n: 0; int code: 0;]
 		if p is 0 return;
@@ -252,6 +271,7 @@ phi.Page:Library
 			p.host.ws_open is host.ws_open;
 			p.host.ws_send is host.ws_send;
 			p.host.ws_close is host.ws_close;
+			p.host.scroll is host.scroll;
 			p.host.box is host.box;
 			p.host.alert is host.alert;
 			p.host.cookies is host.cookies;
@@ -293,6 +313,7 @@ phi.Page:Library
 		call PageObservers.Install: p;
 		call PageElements.Install: p;
 		call PagePlatform.Install: p;
+		call PageScroll.Install: p;
 		call PageModules.Hooks;
 		call Js.AddRootFn: addr MarkAll;
 	[end: p]
@@ -1280,6 +1301,8 @@ phi.Page:Library
 	[Frame: ptr<Page> p: 0; f64 now: 0.0;]
 		call Use: p;
 		p.now is now;
+		# (scroll events, before the frame's callbacks, as browsers send them)
+		call PageScroll.Fire: p;
 		# (what's playing: its pictures, its sound and its clock)
 		call PageMedia.Pump: p;
 		call PageAnim.Frame: p;
