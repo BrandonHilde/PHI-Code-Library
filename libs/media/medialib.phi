@@ -18,6 +18,12 @@ use medialib.mp4;
 use medialib.mdct;
 use medialib.aactables;
 use medialib.aac;
+use medialib.h264tables;
+use medialib.h264rec;
+use medialib.h264loop;
+use medialib.h264cavlc;
+use medialib.h264;
+use medialib.video;
 
 phi.MediaLib:Library
 {

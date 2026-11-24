@@ -1,0 +1,998 @@
+# Making H.264 macroblocks from what h264.phi parsed: intra prediction (8.3: 4x4, 8x8 with its
+# filtered neighbors, 16x16, chroma), the inverse transforms (8.5: 4x4, 8x8, and the DC transforms
+# of Intra_16x16 and chroma), and prediction from other pictures (8.4.2: quarter-pixel luma with the
+# six-tap filter, eighth-pixel chroma, and weighted prediction, explicit and implicit). Everything is
+# the standard's arithmetic exactly; each function says which equations it follows.
+
+use memory.mem;
+use user.math;
+use medialib.h264tables;
+
+phi.MdH264Rec:Library
+{
+	# luma4x4BlkIdx to the block's x and y (6.4.3)
+	u8 blk_x: 0 1 0 1 2 3 2 3 0 1 0 1 2 3 2 3;
+	u8 blk_y: 0 0 1 1 0 0 1 1 2 2 3 3 2 2 3 3;
+	# B sub-macroblock types (Table 7-18): 0 8x8, 1 8x4, 2 4x8, 3 4x4; and the lists (1 L0, 2 L1, 3 both)
+	u8 bsub_shape: 0 0 0 0 1 2 1 2 1 2 3 3 3;
+	u8 bsub_pred: 0 1 2 3 1 1 2 2 3 3 1 2 3;
+	# B macroblock types (Table 7-14): 0 16x16, 1 16x8, 2 8x16; each partition's lists
+	u8 b_shape: 0 0 0 0 1 2 1 2 1 2 1 2 1 2 1 2 1 2 1 2 1 2 0;
+	u8 b_pred0: 0 1 2 3 1 1 2 2 1 1 2 2 1 1 2 2 3 3 3 3 3 3 0;
+	u8 b_pred1: 0 1 2 3 1 1 2 2 2 2 1 1 3 3 3 3 1 1 2 2 3 3 0;
+
+	ptr<u8> tr_ok: 0;           # by raster 4x4 block: its above-right neighbor inside the macroblock is decoded first
+
+	[Tables]
+		if tr_ok is not 0 return;
+		tr_ok is new u8[16];
+		while int r: 0; r < 16; r++;
+			int x: r & 3;
+			int y: r >> 2;
+			tr_ok:r is 0;
+			if y > 0 and x < 3 and (Z: x + 1 y - 1) < (Z: x y)
+				tr_ok:r is 1;
+			;;
+		;;
+	[end]
+
+	# a 4x4 block's place in decoding order
+	[Z: int x: 0; int y: 0;]
+	[end: ((y >> 1) * 2 + (x >> 1)) * 4 + (y & 1) * 2 + (x & 1)]
+
+	[Px: int v: 0;]
+		if v < 0 return 0;
+		if v > 255 return 255;
+	[end: v]
+
+	# ---- inverse transforms (8.5.12, 8.5.13): coefficients by raster position, added to dst ----
+
+	[Idct4: ptr<int> c: 0; ptr<u8> dst: 0; int stride: 0;]
+		int t[16];
+		while int i: 0; i < 4; i++;
+			int k: i * 4;
+			int e0: c:k + c:(k + 2);
+			int e1: c:k - c:(k + 2);
+			int e2: (c:(k + 1) >> 1) - c:(k + 3);
+			int e3: c:(k + 1) + (c:(k + 3) >> 1);
+			t:k is e0 + e3;
+			t:(k + 1) is e1 + e2;
+			t:(k + 2) is e1 - e2;
+			t:(k + 3) is e0 - e3;
+		;;
+		while int i: 0; i < 4; i++;
+			int g0: t:i + t:(8 + i);
+			int g1: t:i - t:(8 + i);
+			int g2: (t:(4 + i) >> 1) - t:(12 + i);
+			int g3: t:(4 + i) + (t:(12 + i) >> 1);
+			dst:i is (Px: dst:i + ((g0 + g3 + 32) >> 6)) as u8;
+			dst:(stride + i) is (Px: dst:(stride + i) + ((g1 + g2 + 32) >> 6)) as u8;
+			dst:(2 * stride + i) is (Px: dst:(2 * stride + i) + ((g1 - g2 + 32) >> 6)) as u8;
+			dst:(3 * stride + i) is (Px: dst:(3 * stride + i) + ((g0 - g3 + 32) >> 6)) as u8;
+		;;
+	[end]
+
+	# the 8x8 one-dimensional transform (8-338 to 8-361) on v:0, v:s, ... v:7s
+	[Line8: ptr<int> v: 0; int s: 1;]
+		int d0: v:0;
+		int d1: v:s;
+		int d2: v:(2 * s);
+		int d3: v:(3 * s);
+		int d4: v:(4 * s);
+		int d5: v:(5 * s);
+		int d6: v:(6 * s);
+		int d7: v:(7 * s);
+		int e0: d0 + d4;
+		int e1: 0 - d3 + d5 - d7 - (d7 >> 1);
+		int e2: d0 - d4;
+		int e3: d1 + d7 - d3 - (d3 >> 1);
+		int e4: (d2 >> 1) - d6;
+		int e5: 0 - d1 + d7 + d5 + (d5 >> 1);
+		int e6: d2 + (d6 >> 1);
+		int e7: d3 + d5 + d1 + (d1 >> 1);
+		int f0: e0 + e6;
+		int f1: e1 + (e7 >> 2);
+		int f2: e2 + e4;
+		int f3: e3 + (e5 >> 2);
+		int f4: e2 - e4;
+		int f5: (e3 >> 2) - e5;
+		int f6: e0 - e6;
+		int f7: e7 - (e1 >> 2);
+		v:0 is f0 + f7;
+		v:s is f2 + f5;
+		v:(2 * s) is f4 + f3;
+		v:(3 * s) is f6 + f1;
+		v:(4 * s) is f6 - f1;
+		v:(5 * s) is f4 - f3;
+		v:(6 * s) is f2 - f5;
+		v:(7 * s) is f0 - f7;
+	[end]
+
+	[Idct8: ptr<int> c: 0; ptr<u8> dst: 0; int stride: 0;]
+		int t[64];
+		while int i: 0; i < 64; i++;
+			t:i is c:i;
+		;;
+		while int i: 0; i < 8; i++;
+			call Line8: (addr t) + i * 32 1;
+		;;
+		while int i: 0; i < 8; i++;
+			call Line8: (addr t) + i * 4 8;
+		;;
+		while int y: 0; y < 8; y++;
+			while int x: 0; x < 8; x++;
+				ptr<u8> p: dst + y * stride + x;
+				p:0 is (Px: p:0 + ((t:(y * 8 + x) + 32) >> 6)) as u8;
+			;;
+		;;
+	[end]
+
+	# Intra_16x16's DC: the inverse Hadamard transform of the levels and their dequantizing (8.5.10),
+	# into each 4x4 block's first coefficient
+	[DcLuma: ptr<MdH264> d: 0;]
+		int f[16];
+		while int i: 0; i < 4; i++;
+			int c0: d.dcy:(i * 4);
+			int c1: d.dcy:(i * 4 + 1);
+			int c2: d.dcy:(i * 4 + 2);
+			int c3: d.dcy:(i * 4 + 3);
+			f:(i * 4) is c0 + c1 + c2 + c3;
+			f:(i * 4 + 1) is c0 + c1 - c2 - c3;
+			f:(i * 4 + 2) is c0 - c1 - c2 + c3;
+			f:(i * 4 + 3) is c0 - c1 + c2 - c3;
+		;;
+		int q: d.qp;
+		int q6: q / 6;
+		int ls: d.ls4:((q % 6) * 16);
+		while int j: 0; j < 4; j++;
+			int c0: f:j;
+			int c1: f:(4 + j);
+			int c2: f:(8 + j);
+			int c3: f:(12 + j);
+			int g[4];
+			g:0 is c0 + c1 + c2 + c3;
+			g:1 is c0 + c1 - c2 - c3;
+			g:2 is c0 - c1 - c2 + c3;
+			g:3 is c0 - c1 + c2 - c3;
+			while int i: 0; i < 4; i++;
+				int v: 0;
+				if q >= 36
+					v is (g:i * ls) << (q6 - 6);
+				;;
+				else
+					v is (g:i * ls + (1 << (5 - q6))) >> (6 - q6);
+				;;
+				d.coef:((i * 4 + j) * 16) is v;
+			;;
+		;;
+	[end]
+
+	# chroma's: the 2x2 transform of the DC levels and their dequantizing (8.5.11), then each block
+	[ChromaResidual: ptr<MdH264> d: 0;]
+		while int ch: 0; ch < 2; ch++;
+			int q: d.qpc0;
+			if ch is 1
+				q is d.qpc1;
+			;;
+			int lst: 4 + ch;
+			if d.intra
+				lst is 1 + ch;
+			;;
+			ptr<int> base: (addr d.coef) + (256 + ch * 64) * 4;
+			if ((d.coded >> (25 + ch)) & 1) is not 0
+				int c0: d.dcc:(ch * 4);
+				int c1: d.dcc:(ch * 4 + 1);
+				int c2: d.dcc:(ch * 4 + 2);
+				int c3: d.dcc:(ch * 4 + 3);
+				int ls: d.ls4:((lst * 6 + q % 6) * 16);
+				int q6: q / 6;
+				base:0 is (((c0 + c1 + c2 + c3) * ls) << q6) >> 5;
+				base:16 is (((c0 - c1 + c2 - c3) * ls) << q6) >> 5;
+				base:32 is (((c0 + c1 - c2 - c3) * ls) << q6) >> 5;
+				base:48 is (((c0 - c1 - c2 + c3) * ls) << q6) >> 5;
+			;;
+			ptr<u8> plane: d.cur.u;
+			if ch is 1
+				plane is d.cur.v;
+			;;
+			ptr<u8> p: plane + d.my * 8 * d.uvs + d.mx * 8;
+			while int k: 0; k < 4; k++;
+				if ((d.coded >> (16 + ch * 4 + k)) & 1) is not 0 or base:(k * 16) is not 0
+					call Idct4: base + k * 64 p + (k >> 1) * 4 * d.uvs + (k & 1) * 4 d.uvs;
+				;;
+			;;
+		;;
+	[end]
+
+	# an inter macroblock's residual, luma and chroma
+	[Residual: ptr<MdH264> d: 0;]
+		ptr<u8> py: d.cur.y + d.my * 16 * d.ys + d.mx * 16;
+		if (d.coded & 0xFFFF) is not 0
+			if d.t8
+				while int b8: 0; b8 < 4; b8++;
+					int bit: (b8 >> 1) * 8 + (b8 & 1) * 2;
+					if ((d.coded >> bit) & 1) is not 0
+						call Idct8: (addr d.coef) + b8 * 256 py + (b8 >> 1) * 8 * d.ys + (b8 & 1) * 8 d.ys;
+					;;
+				;;
+			;;
+			else
+				while int r: 0; r < 16; r++;
+					if ((d.coded >> r) & 1) is not 0
+						call Idct4: (addr d.coef) + r * 64 py + (r >> 2) * 4 * d.ys + (r & 3) * 4 d.ys;
+					;;
+				;;
+			;;
+		;;
+		if (d.cbp >> 4) is not 0
+			call ChromaResidual: d;
+		;;
+	[end]
+
+	# ---- intra prediction ----
+
+	# an intra macroblock: each block predicted from its neighbors (as made so far) and its residual added
+	[IntraMb: ptr<MdH264> d: 0; int i16mode: 0; int cmode: 0;]
+		ptr<u8> py: d.cur.y + d.my * 16 * d.ys + d.mx * 16;
+		int ys: d.ys;
+		bln la: (d.IntraOk: d.mb_a);
+		bln ta: (d.IntraOk: d.mb_b);
+		bln ca: (d.IntraOk: d.mb_c);
+		bln da: (d.IntraOk: d.mb_d);
+		int kind: d.mb_kind:(d.mba);
+		if (kind & MdH264.K_I4) is not 0
+			while int blk: 0; blk < 16; blk++;
+				int x: blk_x:blk;
+				int y: blk_y:blk;
+				int r: y * 4 + x;
+				int av: 0;
+				if x > 0 or la
+					av is av | 1;
+				;;
+				if y > 0 or ta
+					av is av | 2;
+				;;
+				if y is 0
+					if (x < 3 and ta) or (x is 3 and ca)
+						av is av | 4;
+					;;
+				;;
+				elif tr_ok:r is 1
+					av is av | 4;
+				;;
+				if x > 0 and y > 0
+					av is av | 8;
+				;;
+				elif x is 0 and y is 0
+					if da
+						av is av | 8;
+					;;
+				;;
+				elif x is 0
+					if la
+						av is av | 8;
+					;;
+				;;
+				elif ta
+					av is av | 8;
+				;;
+				ptr<u8> p: py + y * 4 * ys + x * 4;
+				call Intra4: p ys d.ipm:(d.mba * 16 + r) av;
+				if ((d.coded >> r) & 1) is not 0
+					call Idct4: (addr d.coef) + r * 64 p ys;
+				;;
+			;;
+		;;
+		elif (kind & MdH264.K_I8) is not 0
+			while int b8: 0; b8 < 4; b8++;
+				int av: 0;
+				if (b8 & 1) is 1 or la
+					av is av | 1;
+				;;
+				if b8 >= 2 or ta
+					av is av | 2;
+				;;
+				if (b8 is 0 and ta) or (b8 is 1 and ca) or b8 is 2
+					av is av | 4;
+				;;
+				if (b8 is 0 and da) or (b8 is 1 and ta) or (b8 is 2 and la) or b8 is 3
+					av is av | 8;
+				;;
+				ptr<u8> p: py + (b8 >> 1) * 8 * ys + (b8 & 1) * 8;
+				int r: (b8 >> 1) * 8 + (b8 & 1) * 2;
+				call Intra8: p ys d.ipm:(d.mba * 16 + r) av;
+				if ((d.coded >> r) & 1) is not 0
+					call Idct8: (addr d.coef) + b8 * 256 p ys;
+				;;
+			;;
+		;;
+		else
+			int av: 0;
+			if la
+				av is av | 1;
+			;;
+			if ta
+				av is av | 2;
+			;;
+			if da
+				av is av | 8;
+			;;
+			call Intra16: py ys i16mode av;
+			if ((d.coded >> 24) & 1) is not 0
+				call DcLuma: d;
+			;;
+			while int r: 0; r < 16; r++;
+				if ((d.coded >> r) & 1) is not 0 or d.coef:(r * 16) is not 0
+					call Idct4: (addr d.coef) + r * 64 py + (r >> 2) * 4 * ys + (r & 3) * 4 ys;
+				;;
+			;;
+		;;
+		int cav: 0;
+		if la
+			cav is cav | 1;
+		;;
+		if ta
+			cav is cav | 2;
+		;;
+		if da
+			cav is cav | 8;
+		;;
+		int off: d.my * 8 * d.uvs + d.mx * 8;
+		call IntraChroma: d.cur.u + off d.uvs cmode cav;
+		call IntraChroma: d.cur.v + off d.uvs cmode cav;
+		if (d.cbp >> 4) is not 0
+			call ChromaResidual: d;
+		;;
+	[end]
+
+	# a 4x4 block's prediction (8.3.1.2); av: 1 left, 2 above, 4 above right, 8 above left
+	[Intra4: ptr<u8> p: 0; int s: 0; int mode: 2; int av: 0;]
+		int tp[17];
+		int lf[9];
+		call Edges: p s 4 av addr tp addr lf;
+		if mode is 0
+			while int y: 0; y < 4; y++;
+				while int x: 0; x < 4; x++;
+					p:(y * s + x) is tp:(x + 1) as u8;
+				;;
+			;;
+			return;
+		;;
+		if mode is 1
+			while int y: 0; y < 4; y++;
+				while int x: 0; x < 4; x++;
+					p:(y * s + x) is lf:(y + 1) as u8;
+				;;
+			;;
+			return;
+		;;
+		if mode is 2
+			call Dc: p s 4 av addr tp addr lf;
+			return;
+		;;
+		call Directional: p s 4 mode addr tp addr lf;
+	[end]
+
+	# the neighbors of an n by n block: tp:(x + 1) is p[x, -1] (x from -1 to 2n - 1), lf:(y + 1) is p[-1, y]
+	[Edges: ptr<u8> p: 0; int s: 0; int n: 4; int av: 0; ptr<int> tp: 0; ptr<int> lf: 0;]
+		int corner: 128;
+		if (av & 8) is not 0
+			corner is p:(0 - s - 1);
+		;;
+		tp:0 is corner;
+		lf:0 is corner;
+		while int x: 0; x < n; x++;
+			int v: 128;
+			if (av & 2) is not 0
+				v is p:(x - s);
+			;;
+			tp:(x + 1) is v;
+		;;
+		while int x: n; x < 2 * n; x++;
+			int v: tp:n;
+			if (av & 4) is not 0
+				v is p:(x - s);
+			;;
+			tp:(x + 1) is v;
+		;;
+		while int y: 0; y < n; y++;
+			int v: 128;
+			if (av & 1) is not 0
+				v is p:(y * s - 1);
+			;;
+			lf:(y + 1) is v;
+		;;
+	[end]
+
+	# DC prediction of an n by n block (n 4 or 8)
+	[Dc: ptr<u8> p: 0; int s: 0; int n: 4; int av: 0; ptr<int> tp: 0; ptr<int> lf: 0;]
+		int sum: 0;
+		int v: 128;
+		int sh: 2;
+		if n is 8
+			sh is 3;
+		;;
+		if (av & 3) is 3
+			while int i: 0; i < n; i++;
+				sum++ tp:(i + 1) + lf:(i + 1);
+			;;
+			v is (sum + n) >> (sh + 1);
+		;;
+		elif (av & 2) is not 0
+			while int i: 0; i < n; i++;
+				sum++ tp:(i + 1);
+			;;
+			v is (sum + (n >> 1)) >> sh;
+		;;
+		elif (av & 1) is not 0
+			while int i: 0; i < n; i++;
+				sum++ lf:(i + 1);
+			;;
+			v is (sum + (n >> 1)) >> sh;
+		;;
+		while int y: 0; y < n; y++;
+			while int x: 0; x < n; x++;
+				p:(y * s + x) is v as u8;
+			;;
+		;;
+	[end]
+
+	# the six directional modes, for 4x4 (8-48 to 8-71) and 8x8 (8-99 to 8-122) alike
+	[Directional: ptr<u8> p: 0; int s: 0; int n: 4; int mode: 3; ptr<int> tp: 0; ptr<int> lf: 0;]
+		while int y: 0; y < n; y++;
+			while int x: 0; x < n; x++;
+				int v: 0;
+				when mode
+					is 3
+						if x is n - 1 and y is n - 1
+							v is (tp:(2 * n - 1) + 3 * tp:(2 * n) + 2) >> 2;
+						;;
+						else
+							v is (tp:(x + y + 1) + 2 * tp:(x + y + 2) + tp:(x + y + 3) + 2) >> 2;
+						;;
+					;;
+					is 4
+						if x > y
+							v is (tp:(x - y - 1) + 2 * tp:(x - y) + tp:(x - y + 1) + 2) >> 2;
+						;;
+						elif x < y
+							v is (lf:(y - x - 1) + 2 * lf:(y - x) + lf:(y - x + 1) + 2) >> 2;
+						;;
+						else
+							v is (tp:1 + 2 * tp:0 + lf:1 + 2) >> 2;
+						;;
+					;;
+					is 5
+						int z: 2 * x - y;
+						int k: x - (y >> 1);
+						if z >= 0 and (z & 1) is 0
+							v is (tp:k + tp:(k + 1) + 1) >> 1;
+						;;
+						elif z >= 0
+							v is (tp:(k - 1) + 2 * tp:k + tp:(k + 1) + 2) >> 2;
+						;;
+						elif z is -1
+							v is (lf:1 + 2 * lf:0 + tp:1 + 2) >> 2;
+						;;
+						else
+							int m: y - 2 * x;
+							v is (lf:m + 2 * lf:(m - 1) + lf:(m - 2) + 2) >> 2;
+						;;
+					;;
+					is 6
+						int z: 2 * y - x;
+						int k: y - (x >> 1);
+						if z >= 0 and (z & 1) is 0
+							v is (lf:k + lf:(k + 1) + 1) >> 1;
+						;;
+						elif z >= 0
+							v is (lf:(k - 1) + 2 * lf:k + lf:(k + 1) + 2) >> 2;
+						;;
+						elif z is -1
+							v is (lf:1 + 2 * lf:0 + tp:1 + 2) >> 2;
+						;;
+						else
+							int m: x - 2 * y;
+							v is (tp:m + 2 * tp:(m - 1) + tp:(m - 2) + 2) >> 2;
+						;;
+					;;
+					is 7
+						int k: x + (y >> 1);
+						if (y & 1) is 0
+							v is (tp:(k + 1) + tp:(k + 2) + 1) >> 1;
+						;;
+						else
+							v is (tp:(k + 1) + 2 * tp:(k + 2) + tp:(k + 3) + 2) >> 2;
+						;;
+					;;
+					is 8
+						int z: x + 2 * y;
+						int k: y + (x >> 1);
+						if z < 2 * n - 3 and (z & 1) is 0
+							v is (lf:(k + 1) + lf:(k + 2) + 1) >> 1;
+						;;
+						elif z < 2 * n - 3
+							v is (lf:(k + 1) + 2 * lf:(k + 2) + lf:(k + 3) + 2) >> 2;
+						;;
+						elif z is 2 * n - 3
+							v is (lf:(n - 1) + 3 * lf:n + 2) >> 2;
+						;;
+						else
+							v is lf:n;
+						;;
+					;;
+				;;
+				p:(y * s + x) is v as u8;
+			;;
+		;;
+	[end]
+
+	# an 8x8 block's prediction (8.3.2.2): from its neighbors after they're filtered
+	[Intra8: ptr<u8> p: 0; int s: 0; int mode: 2; int av: 0;]
+		int raw[17];
+		int rl[9];
+		call Edges: p s 8 av addr raw addr rl;
+		int tp[17];
+		int lf[9];
+		bln has_c: ((av & 8) is not 0);
+		bln has_t: ((av & 2) is not 0);
+		bln has_l: ((av & 1) is not 0);
+		while int i: 0; i < 17; i++;
+			tp:i is raw:i;
+		;;
+		while int i: 0; i < 9; i++;
+			lf:i is rl:i;
+		;;
+		if has_t
+			if has_c
+				tp:1 is (raw:0 + 2 * raw:1 + raw:2 + 2) >> 2;
+			;;
+			else
+				tp:1 is (3 * raw:1 + raw:2 + 2) >> 2;
+			;;
+			while int x: 1; x < 15; x++;
+				tp:(x + 1) is (raw:x + 2 * raw:(x + 1) + raw:(x + 2) + 2) >> 2;
+			;;
+			tp:16 is (raw:15 + 3 * raw:16 + 2) >> 2;
+		;;
+		if has_c
+			if has_t and has_l
+				tp:0 is (raw:1 + 2 * raw:0 + rl:1 + 2) >> 2;
+			;;
+			elif has_t
+				tp:0 is (3 * raw:0 + raw:1 + 2) >> 2;
+			;;
+			elif has_l
+				tp:0 is (3 * raw:0 + rl:1 + 2) >> 2;
+			;;
+			lf:0 is tp:0;
+		;;
+		if has_l
+			if has_c
+				lf:1 is (rl:0 + 2 * rl:1 + rl:2 + 2) >> 2;
+			;;
+			else
+				lf:1 is (3 * rl:1 + rl:2 + 2) >> 2;
+			;;
+			while int y: 1; y < 7; y++;
+				lf:(y + 1) is (rl:y + 2 * rl:(y + 1) + rl:(y + 2) + 2) >> 2;
+			;;
+			lf:8 is (rl:7 + 3 * rl:8 + 2) >> 2;
+		;;
+		if mode is 0
+			while int y: 0; y < 8; y++;
+				while int x: 0; x < 8; x++;
+					p:(y * s + x) is tp:(x + 1) as u8;
+				;;
+			;;
+			return;
+		;;
+		if mode is 1
+			while int y: 0; y < 8; y++;
+				while int x: 0; x < 8; x++;
+					p:(y * s + x) is lf:(y + 1) as u8;
+				;;
+			;;
+			return;
+		;;
+		if mode is 2
+			call Dc: p s 8 av addr tp addr lf;
+			return;
+		;;
+		call Directional: p s 8 mode addr tp addr lf;
+	[end]
+
+	# Intra_16x16 (8.3.3): 0 vertical, 1 horizontal, 2 DC, 3 plane
+	[Intra16: ptr<u8> p: 0; int s: 0; int mode: 2; int av: 0;]
+		if mode is 0
+			while int y: 0; y < 16; y++;
+				call Mem.Copy: p + y * s p - s 16;
+			;;
+			return;
+		;;
+		if mode is 1
+			while int y: 0; y < 16; y++;
+				call Mem.Fill: p + y * s p:(y * s - 1) 16;
+			;;
+			return;
+		;;
+		if mode is 2
+			int sum: 0;
+			int v: 128;
+			if (av & 3) is 3
+				while int i: 0; i < 16; i++;
+					sum++ p:(i - s) + p:(i * s - 1);
+				;;
+				v is (sum + 16) >> 5;
+			;;
+			elif (av & 2) is not 0
+				while int i: 0; i < 16; i++;
+					sum++ p:(i - s);
+				;;
+				v is (sum + 8) >> 4;
+			;;
+			elif (av & 1) is not 0
+				while int i: 0; i < 16; i++;
+					sum++ p:(i * s - 1);
+				;;
+				v is (sum + 8) >> 4;
+			;;
+			while int y: 0; y < 16; y++;
+				call Mem.Fill: p + y * s v as u8 16;
+			;;
+			return;
+		;;
+		int hh: 0;
+		int vv: 0;
+		while int i: 0; i < 8; i++;
+			hh++ (i + 1) * (p:(8 + i - s) - p:(6 - i - s));
+			vv++ (i + 1) * (p:((8 + i) * s - 1) - p:((6 - i) * s - 1));
+		;;
+		int a: 16 * (p:(15 * s - 1) + p:(15 - s));
+		int bb: (5 * hh + 32) >> 6;
+		int cc: (5 * vv + 32) >> 6;
+		while int y: 0; y < 16; y++;
+			while int x: 0; x < 16; x++;
+				p:(y * s + x) is (Px: (a + bb * (x - 7) + cc * (y - 7) + 16) >> 5) as u8;
+			;;
+		;;
+	[end]
+
+	# chroma (8.3.4), 8x8: 0 DC, 1 horizontal, 2 vertical, 3 plane
+	[IntraChroma: ptr<u8> p: 0; int s: 0; int mode: 0; int av: 0;]
+		if mode is 0
+			while int k: 0; k < 4; k++;
+				int xo: (k & 1) * 4;
+				int yo: (k >> 1) * 4;
+				int st: 0;
+				int sl: 0;
+				while int i: 0; i < 4; i++;
+					if (av & 2) is not 0
+						st++ p:(xo + i - s);
+					;;
+					if (av & 1) is not 0
+						sl++ p:((yo + i) * s - 1);
+					;;
+				;;
+				int v: 128;
+				bln t: ((av & 2) is not 0);
+				bln l: ((av & 1) is not 0);
+				if (xo is 0 and yo is 0) or (xo > 0 and yo > 0)
+					if t and l
+						v is (st + sl + 4) >> 3;
+					;;
+					elif l
+						v is (sl + 2) >> 2;
+					;;
+					elif t
+						v is (st + 2) >> 2;
+					;;
+				;;
+				elif xo > 0
+					if t
+						v is (st + 2) >> 2;
+					;;
+					elif l
+						v is (sl + 2) >> 2;
+					;;
+				;;
+				else
+					if l
+						v is (sl + 2) >> 2;
+					;;
+					elif t
+						v is (st + 2) >> 2;
+					;;
+				;;
+				while int y: 0; y < 4; y++;
+					call Mem.Fill: p + (yo + y) * s + xo v as u8 4;
+				;;
+			;;
+			return;
+		;;
+		if mode is 1
+			while int y: 0; y < 8; y++;
+				call Mem.Fill: p + y * s p:(y * s - 1) 8;
+			;;
+			return;
+		;;
+		if mode is 2
+			while int y: 0; y < 8; y++;
+				call Mem.Copy: p + y * s p - s 8;
+			;;
+			return;
+		;;
+		int hh: 0;
+		int vv: 0;
+		while int i: 0; i < 4; i++;
+			hh++ (i + 1) * (p:(4 + i - s) - p:(2 - i - s));
+			vv++ (i + 1) * (p:((4 + i) * s - 1) - p:((2 - i) * s - 1));
+		;;
+		int a: 16 * (p:(7 * s - 1) + p:(7 - s));
+		int bb: (34 * hh + 32) >> 6;
+		int cc: (34 * vv + 32) >> 6;
+		while int y: 0; y < 8; y++;
+			while int x: 0; x < 8; x++;
+				p:(y * s + x) is (Px: (a + bb * (x - 3) + cc * (y - 3) + 16) >> 5) as u8;
+			;;
+		;;
+	[end]
+
+	# ---- inter prediction ----
+
+	# the planes of the picture in slot (or gray, if there's none)
+	[Planes: ptr<MdH264> d: 0; int slot: 0; ptr<ptr<u8>> y: 0; ptr<ptr<u8>> u: 0; ptr<ptr<u8>> v: 0;]
+		y:0 is d.gray;
+		u:0 is d.gray;
+		v:0 is d.gray;
+		if slot < 0 return;
+		ptr<MdH264Pic> p: (d.Pic: slot);
+		if p.gone or p.y is 0 return;
+		y:0 is p.y;
+		u:0 is p.u;
+		v:0 is p.v;
+	[end]
+
+	# the partition at (x, y), bw by bh 4x4 blocks, from its references (8.4.2)
+	[InterPart: ptr<MdH264> d: 0; int x: 0; int y: 0; int bw: 4; int bh: 4;]
+		int k: (y + 1) * 8 + x + 1;
+		int r0: d.refc:k;
+		int r1: d.refc:(40 + k);
+		int px: d.mx * 16 + x * 4;
+		int py: d.my * 16 + y * 4;
+		int w: bw * 4;
+		int h: bh * 4;
+		int ph: d.ph;
+		ptr<u8> ry: 0;
+		ptr<u8> ru: 0;
+		ptr<u8> rv: 0;
+		if r0 >= 0
+			call Planes: d d.list0:r0 addr ry addr ru addr rv;
+			int vx: d.mvc:(k * 2);
+			int vy: d.mvc:(k * 2 + 1);
+			call Luma: ry d.ys d.ys ph px py vx vy w h addr d.pred0 16;
+			call Chroma: ru d.uvs d.uvs ph >> 1 px >> 1 py >> 1 vx vy w >> 1 h >> 1 addr d.cpred0 8;
+			call Chroma: rv d.uvs d.uvs ph >> 1 px >> 1 py >> 1 vx vy w >> 1 h >> 1 (addr d.cpred0) + 64 8;
+		;;
+		if r1 >= 0
+			call Planes: d d.list1:r1 addr ry addr ru addr rv;
+			int vx: d.mvc:((40 + k) * 2);
+			int vy: d.mvc:((40 + k) * 2 + 1);
+			call Luma: ry d.ys d.ys ph px py vx vy w h addr d.pred1 16;
+			call Chroma: ru d.uvs d.uvs ph >> 1 px >> 1 py >> 1 vx vy w >> 1 h >> 1 addr d.cpred1 8;
+			call Chroma: rv d.uvs d.uvs ph >> 1 px >> 1 py >> 1 vx vy w >> 1 h >> 1 (addr d.cpred1) + 64 8;
+		;;
+		ptr<u8> dy: d.cur.y + py * d.ys + px;
+		ptr<u8> du: d.cur.u + (py >> 1) * d.uvs + (px >> 1);
+		ptr<u8> dv: d.cur.v + (py >> 1) * d.uvs + (px >> 1);
+		if r0 >= 0 and r1 >= 0
+			if d.wmode is 1
+				int o: (d.oy:r0 + d.oy:(32 + r1) + 1) >> 1;
+				call Bi: addr d.pred0 addr d.pred1 16 dy d.ys w h d.lwd_y d.wy:r0 d.wy:(32 + r1) o;
+				while int ch: 0; ch < 2; ch++;
+					ptr<u8> dc: du;
+					if ch is 1
+						dc is dv;
+					;;
+					int oc: (d.oc:(r0 * 2 + ch) + d.oc:((32 + r1) * 2 + ch) + 1) >> 1;
+					call Bi: (addr d.cpred0) + ch * 64 (addr d.cpred1) + ch * 64 8 dc d.uvs w >> 1 h >> 1 d.lwd_c d.wc:(r0 * 2 + ch) d.wc:((32 + r1) * 2 + ch) oc;
+				;;
+			;;
+			elif d.wmode is 2
+				int w0: d.iw:(r0 * 32 + r1);
+				call Bi: addr d.pred0 addr d.pred1 16 dy d.ys w h 5 w0 64 - w0 0;
+				call Bi: addr d.cpred0 addr d.cpred1 8 du d.uvs w >> 1 h >> 1 5 w0 64 - w0 0;
+				call Bi: (addr d.cpred0) + 64 (addr d.cpred1) + 64 8 dv d.uvs w >> 1 h >> 1 5 w0 64 - w0 0;
+			;;
+			else
+				call Avg: addr d.pred0 addr d.pred1 16 dy d.ys w h;
+				call Avg: addr d.cpred0 addr d.cpred1 8 du d.uvs w >> 1 h >> 1;
+				call Avg: (addr d.cpred0) + 64 (addr d.cpred1) + 64 8 dv d.uvs w >> 1 h >> 1;
+			;;
+			return;
+		;;
+		ptr<u8> sy: addr d.pred0;
+		ptr<u8> sc: addr d.cpred0;
+		int l: 0;
+		int r: r0;
+		if r0 < 0
+			sy is addr d.pred1;
+			sc is addr d.cpred1;
+			l is 1;
+			r is r1;
+		;;
+		if r < 0 return;
+		if d.wmode is 1
+			int ki: l * 32 + r;
+			call One: sy 16 dy d.ys w h d.lwd_y d.wy:ki d.oy:ki;
+			call One: sc 8 du d.uvs w >> 1 h >> 1 d.lwd_c d.wc:(ki * 2) d.oc:(ki * 2);
+			call One: sc + 64 8 dv d.uvs w >> 1 h >> 1 d.lwd_c d.wc:(ki * 2 + 1) d.oc:(ki * 2 + 1);
+			return;
+		;;
+		while int j: 0; j < h; j++;
+			call Mem.Copy: dy + j * d.ys sy + j * 16 w as u32;
+		;;
+		while int j: 0; j < (h >> 1); j++;
+			call Mem.Copy: du + j * d.uvs sc + j * 8 (w >> 1) as u32;
+			call Mem.Copy: dv + j * d.uvs sc + 64 + j * 8 (w >> 1) as u32;
+		;;
+	[end]
+
+	# default prediction from both lists (8-273)
+	[Avg: ptr<u8> a: 0; ptr<u8> b2: 0; int ss: 16; ptr<u8> dst: 0; int ds: 0; int w: 0; int h: 0;]
+		while int y: 0; y < h; y++;
+			while int x: 0; x < w; x++;
+				dst:(y * ds + x) is ((a:(y * ss + x) + b2:(y * ss + x) + 1) >> 1) as u8;
+			;;
+		;;
+	[end]
+
+	# weighted prediction from both lists (8-301)
+	[Bi: ptr<u8> a: 0; ptr<u8> b2: 0; int ss: 16; ptr<u8> dst: 0; int ds: 0; int w: 0; int h: 0; int lwd: 0; int w0: 0; int w1: 0; int o: 0;]
+		int round: 1 << lwd;
+		while int y: 0; y < h; y++;
+			while int x: 0; x < w; x++;
+				int v: ((a:(y * ss + x) * w0 + b2:(y * ss + x) * w1 + round) >> (lwd + 1)) + o;
+				dst:(y * ds + x) is (Px: v) as u8;
+			;;
+		;;
+	[end]
+
+	# weighted prediction from one list (8-299, 8-300)
+	[One: ptr<u8> a: 0; int ss: 16; ptr<u8> dst: 0; int ds: 0; int w: 0; int h: 0; int lwd: 0; int wt: 0; int o: 0;]
+		while int y: 0; y < h; y++;
+			while int x: 0; x < w; x++;
+				int v: a:(y * ss + x) * wt;
+				if lwd >= 1
+					v is ((v + (1 << (lwd - 1))) >> lwd) + o;
+				;;
+				else
+					v is v + o;
+				;;
+				dst:(y * ds + x) is (Px: v) as u8;
+			;;
+		;;
+	[end]
+
+	# a luma block at (x, y), w by h, moved by (mvx, mvy) in quarter pixels (8.4.2.2.1): into dst
+	[Luma: ptr<u8> src: 0; int stride: 0; int pw: 0; int ph: 0; int x: 0; int y: 0; int mvx: 0; int mvy: 0; int w: 0; int h: 0; ptr<u8> dst: 0; int ds: 16;]
+		int ix: x + (mvx >> 2);
+		int iy: y + (mvy >> 2);
+		int fx: mvx & 3;
+		int fy: mvy & 3;
+		# the pixels it needs, from 2 left and above to 3 right and below, the edges repeated past the picture
+		u8 win[441];
+		int ww: w + 5;
+		while int r: 0; r < h + 5; r++;
+			int sy: (Math.Clamp: iy - 2 + r 0 ph - 1);
+			ptr<u8> row: src + sy * stride;
+			if ix - 2 >= 0 and ix + w + 3 <= pw
+				call Mem.Copy: (addr win) + r * ww row + ix - 2 ww as u32;
+			;;
+			else
+				while int cx: 0; cx < ww; cx++;
+					win:(r * ww + cx) is row:(Math.Clamp: ix - 2 + cx 0 pw - 1);
+				;;
+			;;
+		;;
+		ptr<u8> g: (addr win) + 2 * ww + 2;
+		while int j: 0; j < h; j++;
+			while int i: 0; i < w; i++;
+				ptr<u8> q: g + j * ww + i;
+				int v: 0;
+				when fx + fy * 4
+					is 0
+						v is q:0;
+					;;
+					is 1
+						v is (q:0 + (HalfH: q) + 1) >> 1;
+					;;
+					is 2
+						v is (HalfH: q);
+					;;
+					is 3
+						v is (q:1 + (HalfH: q) + 1) >> 1;
+					;;
+					is 4
+						v is (q:0 + (HalfV: q ww) + 1) >> 1;
+					;;
+					is 8
+						v is (HalfV: q ww);
+					;;
+					is 12
+						v is (q:ww + (HalfV: q ww) + 1) >> 1;
+					;;
+					is 10
+						v is (Center: q ww);
+					;;
+					is 5
+						v is ((HalfH: q) + (HalfV: q ww) + 1) >> 1;
+					;;
+					is 7
+						v is ((HalfH: q) + (HalfV: q + 1 ww) + 1) >> 1;
+					;;
+					is 13
+						v is ((HalfV: q ww) + (HalfH: q + ww) + 1) >> 1;
+					;;
+					is 15
+						v is ((HalfV: q + 1 ww) + (HalfH: q + ww) + 1) >> 1;
+					;;
+					is 6
+						v is ((HalfH: q) + (Center: q ww) + 1) >> 1;
+					;;
+					is 14
+						v is ((Center: q ww) + (HalfH: q + ww) + 1) >> 1;
+					;;
+					is 9
+						v is ((HalfV: q ww) + (Center: q ww) + 1) >> 1;
+					;;
+					is 11
+						v is ((Center: q ww) + (HalfV: q + 1 ww) + 1) >> 1;
+					;;
+				;;
+				dst:(j * ds + i) is v as u8;
+			;;
+		;;
+	[end]
+
+	# the six-tap filter's sum across (b1, unrounded) and down (h1) from the pixel at q
+	[TapH: ptr<u8> q: 0;]
+	[end: q:(-2) - 5 * q:(-1) + 20 * q:0 + 20 * q:1 - 5 * q:2 + q:3]
+
+	[TapV: ptr<u8> q: 0; int s: 0;]
+	[end: q:(-2 * s) - 5 * q:(0 - s) + 20 * q:0 + 20 * q:s - 5 * q:(2 * s) + q:(3 * s)]
+
+	# b: half a pixel right of q
+	[HalfH: ptr<u8> q: 0;]
+	[end: (Px: ((TapH: q) + 16) >> 5)]
+
+	# h: half a pixel below
+	[HalfV: ptr<u8> q: 0; int s: 0;]
+	[end: (Px: ((TapV: q s) + 16) >> 5)]
+
+	# j: half right and half below, from the unrounded sums across of six rows
+	[Center: ptr<u8> q: 0; int s: 0;]
+		int j1: (TapH: q - 2 * s) - 5 * (TapH: q - s) + 20 * (TapH: q) + 20 * (TapH: q + s) - 5 * (TapH: q + 2 * s) + (TapH: q + 3 * s);
+	[end: (Px: (j1 + 512) >> 10)]
+
+	# a chroma block at (x, y), w by h, moved by (mvx, mvy) in eighths of its pixels (8.4.2.2.2)
+	[Chroma: ptr<u8> src: 0; int stride: 0; int pw: 0; int ph: 0; int x: 0; int y: 0; int mvx: 0; int mvy: 0; int w: 0; int h: 0; ptr<u8> dst: 0; int ds: 8;]
+		int ix: x + (mvx >> 3);
+		int iy: y + (mvy >> 3);
+		int dx: mvx & 7;
+		int dy: mvy & 7;
+		int ca: (8 - dx) * (8 - dy);
+		int cb: dx * (8 - dy);
+		int cc: (8 - dx) * dy;
+		int cd: dx * dy;
+		while int j: 0; j < h; j++;
+			ptr<u8> r0: src + (Math.Clamp: iy + j 0 ph - 1) * stride;
+			ptr<u8> r1: src + (Math.Clamp: iy + j + 1 0 ph - 1) * stride;
+			while int i: 0; i < w; i++;
+				int x0: (Math.Clamp: ix + i 0 pw - 1);
+				int x1: (Math.Clamp: ix + i + 1 0 pw - 1);
+				dst:(j * ds + i) is ((ca * r0:x0 + cb * r0:x1 + cc * r1:x0 + cd * r1:x1 + 32) >> 6) as u8;
+			;;
+		;;
+	[end]
+}

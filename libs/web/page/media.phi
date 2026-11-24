@@ -48,8 +48,9 @@ struct.PageMediaEl
 	f64 last_update;            # when timeupdate last fired (page ms)
 	# video: its decoder, the next packet, and the picture now (0xAARRGGBB, w by h), with a number
 	# that changes when it does (for the host, which shows it)
-	ptr<MdVp8> vdec;
+	ptr<MdVideo> vdec;
 	u32 vnext;
+	bln vflushed;               # the last packet was given: what the decoder holds is let out
 	ptr<u32> pic;
 	int pic_w;
 	int pic_h;
@@ -111,13 +112,14 @@ phi.PageMedia:Library
 
 	[Drop: ptr<PageMediaEl> e: 0;]
 		if e.vdec is not 0
-			call MdVp8.Free: e.vdec;
+			call MdVideo.Free: e.vdec;
 			e.vdec is 0;
 		;;
 		if e.pic is not 0
 			free e.pic;
 			e.pic is 0;
 		;;
+		e.vflushed is false;
 		e.pic_w is 0;
 		e.pic_h is 0;
 		e.pic_version++;
@@ -298,10 +300,12 @@ phi.PageMedia:Library
 		if e.m.duration_us > 0
 			e.duration is (e.m.duration_us as f64) / 1000000.0;
 		;;
-		if e.m.has_video and e.m.vcodec is MdMedia.CODEC_VP8
-			e.vdec is (MdVp8.New);
-			# the first picture, shown before it plays
-			call Pictures: p e 0;
+		if e.m.has_video
+			e.vdec is (MdVideo.Open: e.m);
+			if e.vdec is not 0
+				# the first picture, shown before it plays
+				call Pictures: p e 0;
+			;;
 		;;
 		call Page.FireNode: p n 'durationchange';
 		call Page.FireNode: p n 'loadedmetadata';
@@ -713,17 +717,18 @@ phi.PageMedia:Library
 
 	# ---- video
 
-	# Decodes the frames due by t (microseconds): every one (each is the next one's reference), but
-	# only the last becomes the picture. At most about 60 ms of decoding a turn (by the host's clock,
-	# JsDate.Current), so the page and its sound keep going on a slow machine; more than a second
-	# behind, it goes on from the next key frame that's due, as a player that can't keep up does.
+	# Decodes as far as the picture due at t (microseconds): every packet in turn (each may be a
+	# reference for the next), pictures coming out in the order they're shown; the last one due is
+	# the one shown, and one that isn't due yet waits in the decoder. At most about 60 ms of decoding
+	# a turn (by the host's clock, JsDate.Current), so the page and its sound keep going on a slow
+	# machine; more than a second behind, it goes on from the next key frame that's due, as a player
+	# that can't keep up does.
 	[Pictures: ptr<Page> p: 0; ptr<PageMediaEl> e: 0; i64 t: 0;]
 		ptr<MdMedia> m: e.m;
-		ptr<MdVp8> d: e.vdec;
-		bln got: false;
+		ptr<MdVideo> v: e.vdec;
 		f64 began: (JsDate.Current);
 		# (far behind: the last key frame that's due, if it's ahead of where it is)
-		if e.pic is not 0 and e.vnext < m.vcount
+		if e.pic is not 0 and e.vnext < m.vcount and not (v.Peek)
 			ptr<MdPacket> first: m.vpackets + e.vnext * sizeof MdPacket;
 			if first.us < t - 1000000
 				u32 k: e.vnext + 1;
@@ -739,44 +744,65 @@ phi.PageMedia:Library
 					k++;
 				;;
 				if key is not 0xFFFFFFFF
+					call v.Reset;
 					e.vnext is key;
 				;;
 			;;
 		;;
+		bln shown: false;
 		int guard: 0;
-		while e.vnext < m.vcount and guard < 60
+		while guard < 120
 			guard++;
-			ptr<MdPacket> pk: m.vpackets + e.vnext * sizeof MdPacket;
-			# (the first one always, so there's something to show)
-			if pk.us > t and e.pic is not 0
-				break;
-			;;
-			e.vnext++;
-			int r: (d.Decode: m.data + pk.pos pk.size);
-			if r is 1
-				got is true;
-				e.pic_us is pk.us;
-				if pk.us >= t
+			# the pictures that are due (the first one always, so there's something to show)
+			bln taken: false;
+			while (v.Peek)
+				if v.ahead_us > t and (e.pic is not 0 or shown)
 					break;
 				;;
+				call v.Take;
+				taken is true;
 			;;
-			if got and began > 0.0 and (JsDate.Current) - began > 60.0
-				break;
+			if taken
+				call Show: p e v;
+				shown is true;
+			;;
+			if (v.Peek)
+				# (the next isn't due yet)
+				return;
+			;;
+			if e.vnext >= m.vcount
+				if e.vflushed return;
+				call v.Flush;
+				e.vflushed is true;
+				continue;
+			;;
+			if shown and began > 0.0 and (JsDate.Current) - began > 60.0
+				return;
+			;;
+			ptr<MdPacket> pk: m.vpackets + e.vnext * sizeof MdPacket;
+			e.vnext++;
+			if (v.Decode: pk) < 0
+				# (a broken packet: the rest of the video is passed over)
+				e.vnext is m.vcount;
 			;;
 		;;
-		if not got return;
-		if e.pic is 0 or e.pic_w is not d.w or e.pic_h is not d.h
+	[end]
+
+	# the picture taken from the decoder becomes the element's
+	[Show: ptr<Page> p: 0; ptr<PageMediaEl> e: 0; ptr<MdVideo> v: 0;]
+		if e.pic is 0 or e.pic_w is not v.w or e.pic_h is not v.h
 			if e.pic is not 0
 				free e.pic;
 			;;
-			e.pic is new u32[d.w * d.h];
+			e.pic is new u32[v.w * v.h];
 			if e.pic is 0 return;
-			e.pic_w is d.w;
-			e.pic_h is d.h;
+			e.pic_w is v.w;
+			e.pic_h is v.h;
 			# (its size is the element's: laid out again)
 			call Page.Invalidate: p;
 		;;
-		call d.ToArgb: e.pic;
+		call v.ToArgb: e.pic;
+		e.pic_us is v.us;
 		e.pic_version++;
 		changes++;
 	[end]
@@ -788,14 +814,16 @@ phi.PageMedia:Library
 		u32 key: 0;
 		while k < m.vcount
 			ptr<MdPacket> pk: m.vpackets + k * sizeof MdPacket;
-			if pk.us > t
+			if pk.us > t and (pk.flags & MdMedia.KEY) is not 0
 				break;
 			;;
-			if (pk.flags & MdMedia.KEY) is not 0
+			if (pk.flags & MdMedia.KEY) is not 0 and pk.us <= t
 				key is k;
 			;;
 			k++;
 		;;
+		call e.vdec.Reset;
+		e.vflushed is false;
 		e.vnext is key;
 		call Pictures: p e t;
 	[end]
@@ -832,8 +860,11 @@ phi.PageMedia:Library
 
 	# canPlayType's answer for a MIME type (with its codecs): 0 "", 1 "maybe", 2 "probably"
 	[CanPlay: ptr<u8> type: 0; u32 n: 0;]
-		# (what medialib doesn't decode yet: Opus, H.264, VP9, AV1)
-		if (Has: type n 'opus') or (Has: type n 'avc1') or (Has: type n 'avc3') or (Has: type n 'vp9') or (Has: type n 'vp09') or (Has: type n 'av01') or (Has: type n 'hev1') or (Has: type n 'hvc1')
+		# (what medialib doesn't decode yet: Opus, VP9, AV1, HEVC; and H.264 past High profile, 4:2:0, 8 bits)
+		if (Has: type n 'opus') or (Has: type n 'vp9') or (Has: type n 'vp09') or (Has: type n 'av01') or (Has: type n 'hev1') or (Has: type n 'hvc1')
+			return 0;
+		;;
+		if (Has: type n 'avc1.6e') or (Has: type n 'avc1.7a') or (Has: type n 'avc1.f4') or (Has: type n 'avc1.2c')
 			return 0;
 		;;
 		if (Starts: type n 'audio/mpeg') or (Starts: type n 'audio/mp3')
@@ -852,6 +883,13 @@ phi.PageMedia:Library
 		;;
 		if (Starts: type n 'audio/mp4') or (Starts: type n 'audio/x-m4a') or (Starts: type n 'audio/m4a')
 			if (Has: type n 'mp4a.40.2') return 2;
+			return 1;
+		;;
+		if (Starts: type n 'video/mp4') or (Starts: type n 'video/x-m4v') or (Starts: type n 'video/quicktime')
+			if (Has: type n 'avc1') or (Has: type n 'avc3')
+				if (Has: type n 'mp4a') and not (Has: type n 'mp4a.40.2') return 1;
+				return 2;
+			;;
 			return 1;
 		;;
 	[end: 0]

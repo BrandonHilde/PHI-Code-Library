@@ -1,0 +1,244 @@
+# One video decoder, whatever the codec (VP8, H.264): packets in the order they're stored, pictures
+# out in the order they're shown, each with its time. A picture taken is good until the next Decode.
+#
+#   ptr<MdVideo> v: (MdVideo.Open: m);       # 0 if medialib can't decode m's video (MdMedia.error)
+#   int n: (v.Decode: packet);                # a packet of m.vpackets: pictures ready, or -1
+#   while (v.Peek)                            # one is ready: shown at v.ahead_us
+#       call v.Take;                          # it's v's: out_y, out_u, out_v, w by h, us
+#       call v.ToArgb: pixels;
+#   ;;
+#   call v.Flush;                             # after the last packet: what's waiting is ready
+#   call v.Reset;                             # before a seek (decoding goes on from a key frame)
+#   call MdVideo.Free: v;
+
+use memory.mem;
+use medialib.media;
+use medialib.vp8;
+use medialib.h264;
+
+struct.MdVideo
+{
+	ptr<MdMedia> m;
+	int codec;
+	ptr<MdVp8> vp8;
+	ptr<MdH264> h264;
+	bln vp8_ready;              # VP8: a picture from the last packet, not taken
+	i64 vp8_us;
+	i64 ahead_us;               # (Peek) when the next picture ready is shown
+	# the picture taken
+	ptr<u8> out_y;
+	ptr<u8> out_u;
+	ptr<u8> out_v;
+	int ys;
+	int uvs;
+	int w;
+	int h;
+	i64 us;
+	# YUV to RGB, by the stream's colours: Y's part, and Cb's and Cr's (16.16)
+	int ty[256];
+	int trv[256];
+	int tgu[256];
+	int tgv[256];
+	int tbu[256];
+	int table_kind;             # what they're for: 1 + matrix * 2 + full range, 0 not made
+
+	[Decode: ptr<MdPacket> pk: 0;]
+		ptr<u8> data: m.data + pk.pos;
+		if codec is MdMedia.CODEC_VP8
+			int r: (vp8.Decode: data pk.size);
+			if r < 0
+				MdMedia.error is MdVp8.error;
+				return -1;
+			;;
+			if r is 1
+				vp8_ready is true;
+				vp8_us is pk.us;
+				return 1;
+			;;
+			return 0;
+		;;
+		int n: (h264.Decode: data pk.size pk.us);
+		if n < 0
+			MdMedia.error is MdH264.error;
+		;;
+	[end: n]
+
+	# a picture ready: true, its time in ahead_us
+	[Peek: : bln]
+		if codec is MdMedia.CODEC_VP8
+			if not vp8_ready return false;
+			ahead_us is vp8_us;
+			return true;
+		;;
+		if h264.ready_n is 0 return false;
+		ahead_us is (h264.Pic: h264.ready_q:0).us;
+	[end: true]
+
+	[Take: : bln]
+		if codec is MdMedia.CODEC_VP8
+			if not vp8_ready return false;
+			vp8_ready is false;
+			out_y is vp8.out_y;
+			out_u is vp8.out_u;
+			out_v is vp8.out_v;
+			ys is vp8.ys;
+			uvs is vp8.uvs;
+			w is vp8.w;
+			h is vp8.h;
+			us is vp8_us;
+			return true;
+		;;
+		if not (h264.Take) return false;
+		out_y is h264.out_y;
+		out_u is h264.out_u;
+		out_v is h264.out_v;
+		ys is h264.ys;
+		uvs is h264.uvs;
+		w is h264.w;
+		h is h264.h;
+		us is h264.out_us;
+	[end: true]
+
+	[Flush]
+		if codec is MdMedia.CODEC_H264
+			call h264.Flush;
+		;;
+	[end]
+
+	[Reset]
+		vp8_ready is false;
+		if codec is MdMedia.CODEC_H264
+			call h264.Reset;
+		;;
+	[end]
+
+	# the picture taken, w by h of 0xAARRGGBB
+	[ToArgb: ptr<u32> pixels: 0;]
+		if codec is MdMedia.CODEC_VP8
+			call vp8.ToArgb: pixels;
+			return;
+		;;
+		# BT.709 when the stream says so, or for HD when it doesn't say; else BT.601
+		int matrix: h264.sps.matrix;
+		bln hd: (matrix is 1 or ((matrix is 2 or matrix is 0) and h >= 720));
+		bln full: h264.sps.full_range;
+		int kind: 1;
+		if hd
+			kind++ 2;
+		;;
+		if full
+			kind++ 1;
+		;;
+		if table_kind is not kind
+			call MakeTables: hd full;
+			table_kind is kind;
+		;;
+		while int y: 0; y < h; y++;
+			ptr<u8> yr: out_y + y * ys;
+			ptr<u8> ur: out_u + (y >> 1) * uvs;
+			ptr<u8> vr: out_v + (y >> 1) * uvs;
+			ptr<u32> o: pixels + y * w * 4;
+			while int x: 0; x < w; x++;
+				int u: ur:(x >> 1);
+				int v: vr:(x >> 1);
+				int yy: ty:(yr:x);
+				int r: (yy + trv:v) >> 16;
+				int g: (yy + tgu:u + tgv:v) >> 16;
+				int b: (yy + tbu:u) >> 16;
+				if r < 0
+					r is 0;
+				;;
+				if r > 255
+					r is 255;
+				;;
+				if g < 0
+					g is 0;
+				;;
+				if g > 255
+					g is 255;
+				;;
+				if b < 0
+					b is 0;
+				;;
+				if b > 255
+					b is 255;
+				;;
+				o:x is 0xFF000000 | (r as u32 << 16) | (g as u32 << 8) | b as u32;
+			;;
+		;;
+	[end]
+
+	[MakeTables: bln hd: false; bln full: false;]
+		f64 kr: 0.299;
+		f64 kb: 0.114;
+		if hd
+			kr is 0.2126;
+			kb is 0.0722;
+		;;
+		f64 kg: 1.0 - kr - kb;
+		f64 ys_: 255.0 / 219.0;
+		f64 cs: 255.0 / 224.0;
+		f64 y0: 16.0;
+		if full
+			ys_ is 1.0;
+			cs is 1.0;
+			y0 is 0.0;
+		;;
+		f64 one: 65536.0;
+		while int i: 0; i < 256; i++;
+			f64 yv: ((i as f64) - y0) * ys_;
+			f64 cv: ((i as f64) - 128.0) * cs;
+			# (Y's part carries the rounding)
+			ty:i is (Float.Round: yv * one) as int + 32768;
+			trv:i is (Float.Round: cv * 2.0 * (1.0 - kr) * one) as int;
+			tbu:i is (Float.Round: cv * 2.0 * (1.0 - kb) * one) as int;
+			tgu:i is (Float.Round: 0.0 - cv * 2.0 * (1.0 - kb) * kb / kg * one) as int;
+			tgv:i is (Float.Round: 0.0 - cv * 2.0 * (1.0 - kr) * kr / kg * one) as int;
+		;;
+	[end]
+}
+
+phi.MdVideo:Library
+{
+	[Open: ptr<MdMedia> m: 0;]
+		if m is 0 or not m.has_video return 0 as ptr<MdVideo>;
+		if m.vcodec is not MdMedia.CODEC_VP8 and m.vcodec is not MdMedia.CODEC_H264
+			MdMedia.error is 'a video codec medialib doesn't decode';
+			return 0 as ptr<MdVideo>;
+		;;
+		ptr<MdVideo> v: new MdVideo;
+		if v is 0 return 0 as ptr<MdVideo>;
+		call Mem.Fill: v as ptr<u8> 0 sizeof MdVideo;
+		v.m is m;
+		v.codec is m.vcodec;
+		if v.codec is MdMedia.CODEC_VP8
+			v.vp8 is (MdVp8.New);
+			if v.vp8 is 0
+				free v;
+				return 0 as ptr<MdVideo>;
+			;;
+			return v;
+		;;
+		v.h264 is (MdH264.New);
+		if v.h264 is 0
+			free v;
+			return 0 as ptr<MdVideo>;
+		;;
+		if not (v.h264.Configure: m.v_priv m.v_priv_len)
+			MdMedia.error is MdH264.error;
+			call Free: v;
+			return 0 as ptr<MdVideo>;
+		;;
+	[end: v]
+
+	[Free: ptr<MdVideo> v: 0;]
+		if v is 0 return;
+		if v.vp8 is not 0
+			call MdVp8.Free: v.vp8;
+		;;
+		if v.h264 is not 0
+			call MdH264.Free: v.h264;
+		;;
+		free v;
+	[end]
+}

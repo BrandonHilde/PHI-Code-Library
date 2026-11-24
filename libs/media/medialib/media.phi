@@ -290,7 +290,7 @@ phi.MdMedia:Library
 	# whether medialib decodes a codec (a container's track of one it doesn't is passed over)
 	[Decodes: int codec: 0;]
 		if any_codec return codec is not CODEC_NONE;
-	[end: codec is CODEC_MP3 or codec is CODEC_PCM or codec is CODEC_VP8 or codec is CODEC_VORBIS or codec is CODEC_AAC]
+	[end: codec is CODEC_MP3 or codec is CODEC_PCM or codec is CODEC_VP8 or codec is CODEC_VORBIS or codec is CODEC_AAC or codec is CODEC_H264]
 
 	# Vorbis's three headers, Xiph-laced as Matroska and MP4 keep them (a count less one, then all
 	# but the last's sizes as runs of 255 and the rest): a decoder set up from them, or 0

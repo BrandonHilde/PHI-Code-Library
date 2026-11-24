@@ -1,0 +1,3840 @@
+# H.264 video (ITU-T H.264 | ISO/IEC 14496-10), progressive High profile and below: 8-bit 4:2:0
+# frames, CABAC (and CAVLC: see h264cavlc.phi), I, P and B slices with every partition, direct
+# prediction (spatial and temporal), weighted prediction (explicit and implicit), 8x8 transforms,
+# scaling matrices, long-term references and memory management, to planes of Y, U and V in the
+# order they're shown. Not done: interlaced pictures (fields, MBAFF), 4:2:2 and 4:4:4, more than
+# eight bits, FMO and ASO (Baseline's slice groups), SP and SI slices.
+#
+# Each sample of an MP4 is one picture (an access unit): its NAL units, each after its length (the
+# avcC says how many bytes that takes); without an avcC, a stream of start codes (Annex B). A
+# picture is decoded macroblock by macroblock (h264mb.phi parses and makes them), filtered
+# (h264loop.phi), marked as a reference by the slice header's rules, and waits until it's its turn
+# to be shown: as many pictures as the stream says may come out of order wait (its VUI's
+# max_num_reorder_frames, or the DPB's size), and the one with the lowest picture order count goes
+# first. A picture's numbers are exact: every conforming decoder gives the same.
+#
+#   ptr<MdH264> d: (MdH264.New);
+#   call d.Configure: avcc length;           # (an MP4's avcC; or none, for start codes)
+#   int n: (d.Decode: sample length us);     # pictures ready to show, or -1: MdH264.error says
+#   while (d.Take)                           # the next in d.out_y, out_u, out_v (d.w by d.h, rows
+#       call d.ToArgb: pixels;               # ys and uvs apart), shown at d.out_us; good until the
+#   ;;                                       # next Decode
+#   call d.Flush;                            # at the end: those still waiting are ready
+#   call MdH264.Free: d;
+
+use memory.mem;
+use user.math;
+use medialib.h264tables;
+use medialib.h264rec;
+
+# bits of a NAL unit's payload (its RBSP: the bytes with emulation prevention taken out)
+struct.MdH264Bits
+{
+	ptr<u8> d;
+	int n;
+	int pos;                    # in bits
+	bln bad;                    # read past the end, or a number too big
+
+	[Start: ptr<u8> data: 0; int length: 0;]
+		d is data;
+		n is length;
+		pos is 0;
+		bad is false;
+	[end]
+
+	[U: int k: 1;]
+		int v: 0;
+		while k > 0
+			int i: pos >> 3;
+			int b: 0;
+			if i < n
+				b is d:i;
+			;;
+			else
+				bad is true;
+			;;
+			int avail: 8 - (pos & 7);
+			int take: k;
+			if take > avail
+				take is avail;
+			;;
+			v is (v << take) | ((b >> (avail - take)) & ((1 << take) - 1));
+			k-- take;
+			pos++ take;
+		;;
+	[end: v]
+
+	[Flag: : bln]
+	[end: ((U: 1) is 1)]
+
+	# ue(v): Exp-Golomb
+	[Ue]
+		int z: 0;
+		while (U: 1) is 0
+			z++;
+			if z > 30
+				bad is true;
+				return 0;
+			;;
+		;;
+		if z is 0 return 0;
+	[end: (1 << z) - 1 + (U: z)]
+
+	# se(v)
+	[Se]
+		int k: (Ue);
+		if (k & 1) is 1 return (k + 1) >> 1;
+	[end: 0 - (k >> 1)]
+
+	# more_rbsp_data(): bits left before the stop bit
+	[More: : bln]
+		int last: n - 1;
+		while last >= 0 and d:last is 0
+			last--;
+		;;
+		if last < 0 return false;
+		int b: d:last;
+		int bit: 0;
+		while ((b >> bit) & 1) is 0
+			bit++;
+		;;
+		int stop: last * 8 + 7 - bit;
+	[end: (pos < stop)]
+}
+
+# CABAC's arithmetic decoder (9.3.1.2, 9.3.3.2) and its contexts: each a byte, pStateIdx << 1 | valMPS
+struct.MdH264Cabac
+{
+	ptr<u8> d;
+	int n;
+	int pos;                    # the next byte to take
+	u32 win;                    # bits taken, not used yet, from the top
+	int wn;
+	u32 range;
+	u32 ofs;
+	u8 ctx[1024];
+
+	[Take: int k: 1; : u32]
+		while wn <= 24
+			u32 byte: 0;
+			if pos < n
+				byte is d:pos;
+			;;
+			pos++;
+			win is win | (byte << (24 - wn));
+			wn++ 8;
+		;;
+		u32 v: win >> (32 - k);
+		win is win << k;
+		wn-- k;
+	[end: v]
+
+	# from byte at of data, n long
+	[Start: ptr<u8> data: 0; int length: 0; int start: 0;]
+		d is data;
+		n is length;
+		pos is start;
+		win is 0;
+		wn is 0;
+		range is 510;
+		ofs is (Take: 9);
+	[end]
+
+	# the bits read so far, counted from the data's start
+	[BitPos]
+	[end: pos * 8 - wn]
+
+	# a contexts' starting states for a slice: by its kind (0 I, else cabac_init_idc + 1) and QP
+	[Init: int kind: 0; int qp: 26;]
+		if qp < 0
+			qp is 0;
+		;;
+		if qp > 51
+			qp is 51;
+		;;
+		while int i: 0; i < 460; i++;
+			int m: MdH264Tables.cabac_mn:(i * 8 + kind * 2);
+			int k: MdH264Tables.cabac_mn:(i * 8 + kind * 2 + 1);
+			int pre: ((m * qp) >> 4) + k;
+			if pre < 1
+				pre is 1;
+			;;
+			if pre > 126
+				pre is 126;
+			;;
+			if pre <= 63
+				ctx:i is ((63 - pre) << 1) as u8;
+			;;
+			else
+				ctx:i is (((pre - 64) << 1) | 1) as u8;
+			;;
+		;;
+	[end]
+
+	# a bin by context i
+	[Bin: int i: 0;]
+		int s: ctx:i;
+		int st: s >> 1;
+		int mps: s & 1;
+		u32 lps: MdH264Tables.range_lps:(st * 4 + ((range >> 6) & 3) as int);
+		range-- lps;
+		if ofs >= range
+			ofs-- range;
+			range is lps;
+			if st is 0
+				mps is 1 - mps;
+			;;
+			ctx:i is ((MdH264Tables.trans:(st * 2) << 1) | mps) as u8;
+			int sh: MdH264.renorm:(range as int);
+			ofs is (ofs << sh) | (Take: sh);
+			range is range << sh;
+			return 1 - (s & 1);
+		;;
+		ctx:i is ((MdH264Tables.trans:(st * 2 + 1) << 1) | mps) as u8;
+		if range < 256
+			ofs is (ofs << 1) | (Take: 1);
+			range is range << 1;
+		;;
+	[end: mps]
+
+	# a bin of equal chances
+	[Bypass]
+		ofs is (ofs << 1) | (Take: 1);
+		if ofs >= range
+			ofs-- range;
+			return 1;
+		;;
+	[end: 0]
+
+	# end_of_slice_flag, or mb_type's I_PCM
+	[Terminate]
+		range-- 2;
+		if ofs >= range return 1;
+		if range < 256
+			ofs is (ofs << 1) | (Take: 1);
+			range is range << 1;
+		;;
+	[end: 0]
+}
+
+# a sequence parameter set (7.3.2.1)
+struct.MdH264Sps
+{
+	bln valid;
+	int profile;
+	int level;
+	int chroma_format;
+	int depth_y;
+	int depth_c;
+	bln bypass;                 # qpprime_y_zero_transform_bypass_flag
+	bln scaling;                # seq_scaling_matrix_present_flag
+	u8 ws4[96];                 # its scaling lists, by raster position (Flat_16 if it coded none)
+	u8 ws8[128];
+	int log2_frame_num;
+	int poc_type;
+	int log2_poc_lsb;
+	bln poc_zero;               # delta_pic_order_always_zero_flag
+	int poc_non_ref;
+	int poc_top_bottom;
+	int poc_cycle_n;
+	int poc_cycle[256];
+	int ref_frames;
+	bln gaps;
+	int mb_w;
+	int mb_h;
+	bln frames_only;
+	bln mbaff;
+	bln direct8;                # direct_8x8_inference_flag
+	int crop_l;
+	int crop_r;
+	int crop_t;
+	int crop_b;
+	int reorder;                # max_num_reorder_frames, or -1 if it doesn't say
+	int dpb_frames;             # max_dec_frame_buffering, or -1
+	bln full_range;
+	int matrix;                 # matrix_coefficients (2: unspecified)
+}
+
+# a picture parameter set (7.3.2.2)
+struct.MdH264Pps
+{
+	bln valid;
+	int sps_id;
+	bln cabac;
+	bln bottom_poc;             # bottom_field_pic_order_in_frame_present_flag
+	int groups;
+	int ref_l0;                 # num_ref_idx_l0_default_active_minus1 + 1
+	int ref_l1;
+	bln weighted;
+	int bipred;
+	int init_qp;
+	int cqp0;                   # chroma_qp_index_offset
+	int cqp1;                   # second_chroma_qp_index_offset
+	bln deblock_ctrl;
+	bln constrained;
+	bln redundant;
+	bln t8;                     # transform_8x8_mode_flag
+	bln scaling;                # pic_scaling_matrix_present_flag
+	u8 sent[8];                 # for each list: 0 not sent, 1 sent (in ws4 / ws8), 2 its default
+	u8 ws4[96];
+	u8 ws8[128];
+}
+
+# a picture: decoded or being decoded, a reference or waiting to be shown or neither
+struct.MdH264Pic
+{
+	ptr<u8> y;
+	ptr<u8> u;
+	ptr<u8> v;
+	int id;                     # a number of its own (references are told apart by it)
+	int poc;
+	int frame_num;
+	int num;                    # FrameNumWrap (PicNum), or LongTermPicNum for a long-term one
+	int lt_idx;                 # LongTermFrameIdx
+	int ref;                    # 0 not a reference, 1 short-term, 2 long-term
+	bln waiting;                # decoded, not shown yet
+	bln ready;                  # given to be shown (until the next Decode)
+	bln busy;                   # being decoded
+	bln gone;                   # a "non-existing" frame (a gap in frame_num): no pixels
+	i64 us;
+	# its motion, for direct prediction and the loop filter: by 4x4 block (x, y), by 8x8
+	ptr<i16> mv0;
+	ptr<i16> mv1;
+	ptr<i8> ref0;               # ref_idx, -1 if the list isn't used
+	ptr<i8> ref1;
+	ptr<int> rid0;              # the picture (its id) the ref_idx named, -1 for none
+	ptr<int> rid1;
+	ptr<u8> intra;              # by macroblock: 1 if it was predicted from the picture itself
+}
+
+phi.MdH264:Library
+{
+	ptr<u8> renorm: 0;          # renorm:r, for a range r below 256: the shift that brings it to 256 or more
+	str error: [96];
+
+	# slice types
+	const int P: 0;
+	const int B: 1;
+	const int I: 2;
+	# a macroblock's kind (mb_kind's bits)
+	const int K_INTRA: 1;
+	const int K_SKIP: 2;
+	const int K_I4: 4;
+	const int K_I8: 8;
+	const int K_I16: 16;
+	const int K_PCM: 32;
+	const int K_T8: 64;         # transform_size_8x8_flag
+	const int K_DIRECT: 128;    # B_Skip or B_Direct_16x16
+	const int PICS: 24;         # picture slots
+
+	[Tables]
+		if renorm is not 0 return;
+		renorm is new u8[512];
+		while int r: 0; r < 512; r++;
+			int s: 0;
+			if r > 0
+				while (r << s) < 256
+					s++;
+				;;
+			;;
+			renorm:r is s as u8;
+		;;
+	[end]
+
+	[New]
+		call Tables;
+		call MdH264Rec.Tables;
+		ptr<MdH264> d: new MdH264;
+		if d is 0 return 0 as ptr<MdH264>;
+		call Mem.Fill: d as ptr<u8> 0 sizeof MdH264;
+		d.sps_mem is new u8[32 * sizeof MdH264Sps];
+		d.pps_mem is new u8[256 * sizeof MdH264Pps];
+		if d.sps_mem is 0 or d.pps_mem is 0
+			call Free: d;
+			return 0 as ptr<MdH264>;
+		;;
+		call Mem.Fill: d.sps_mem 0 (32 * sizeof MdH264Sps) as u32;
+		call Mem.Fill: d.pps_mem 0 (256 * sizeof MdH264Pps) as u32;
+		d.limit is 8192 * 4352;
+		d.max_long is -1;
+	[end: d]
+
+	[Free: ptr<MdH264> d: 0;]
+		if d is 0 return;
+		call d.Release;
+		if d.sps_mem is not 0
+			free d.sps_mem;
+		;;
+		if d.pps_mem is not 0
+			free d.pps_mem;
+		;;
+		if d.rbsp is not 0
+			free d.rbsp;
+		;;
+		free d;
+	[end]
+}
+
+struct.MdH264
+{
+	u32 limit;                  # the most pixels a picture may have
+	int nal_len;                # bytes of length before each NAL unit (the avcC's), 0: start codes
+	ptr<u8> sps_mem;            # 32 MdH264Sps
+	ptr<u8> pps_mem;            # 256 MdH264Pps
+	ptr<u8> rbsp;
+	int rbsp_cap;
+	int rbsp_len;
+	MdH264Bits b;
+	MdH264Cabac c;
+	bln failed;                 # a stream this can't decode (error says why)
+	# the active parameter sets, and the size they give
+	ptr<MdH264Sps> sps;
+	ptr<MdH264Pps> pps;
+	int mb_w;
+	int mb_h;
+	int mbs;
+	int ys;                     # the planes' widths
+	int uvs;
+	int ph;                     # their heights
+	int w;                      # what's shown (cropped)
+	int h;
+	int crop_x;
+	int crop_y;
+	int dpb_size;
+	int reorder;
+	# pictures
+	MdH264Pic pics[24];
+	ptr<MdH264Pic> cur;
+	int next_id;
+	int ready_q[24];
+	int ready_n;
+	ptr<u8> out_y;
+	ptr<u8> out_u;
+	ptr<u8> out_v;
+	i64 out_us;
+	i64 cur_us;
+	ptr<u8> gray;               # a picture of mid gray, for a reference that's missing
+	# the slice
+	int nal_type;
+	int nal_ref;
+	int first_mb;
+	int slice_type;
+	int frame_num;
+	int max_frame_num;
+	int poc_lsb;
+	int delta_bottom;
+	int dpoc0;
+	int dpoc1;
+	bln direct_spatial;
+	int nref0;
+	int nref1;
+	int mod_n[2];
+	int mod_ops[132];           # list modifications: by list, up to 33 of (idc, value)
+	int cabac_init;
+	int slice_qp;
+	int deblock_idc;
+	int alpha_off;
+	int beta_off;
+	bln long_term_ref;
+	bln adaptive;
+	int mmco_n;
+	int mmco[198];              # up to 66 of (operation, value, value)
+	bln mmco5;
+	# weighted prediction: 0 none, 1 explicit, 2 implicit
+	int wmode;
+	int lwd_y;
+	int lwd_c;
+	int wy[64];                 # by list and ref_idx
+	int oy[64];
+	int wc[128];                # by list, ref_idx and Cb or Cr
+	int oc[128];
+	int iw[1024];               # implicit: w0 by (ref_idx0, ref_idx1); w1 is 64 - w0
+	int dsf[32];                # temporal direct's DistScaleFactor by ref_idx0, or 9999 for a long-term one
+	# the lists: slots of pics, or -1
+	int list0[33];
+	int list1[33];
+	int poc0[33];
+	int poc1[33];
+	# picture order and numbering
+	int prev_msb;
+	int prev_lsb;
+	int prev_fno;
+	int prev_fn;
+	int fno;
+	int prev_ref_fn;
+	int max_long;
+	int top_poc;
+	int bot_poc;
+	# what each macroblock of the picture was
+	ptr<int> mb_slice;
+	ptr<u8> mb_kind;
+	ptr<u8> mb_cbp;             # coded_block_pattern: luma 0-3, chroma 4-5 (I_PCM's: 0x2F)
+	ptr<u8> mb_qp;
+	ptr<u8> mb_cmode;           # intra_chroma_pred_mode
+	ptr<u8> mb_direct;          # the 8x8 blocks predicted directly
+	ptr<i8> ipm;                # intra 4x4 (or 8x8) modes by 4x4 block, -1 if not
+	ptr<u32> nzf;               # coded_block_flag: luma 4x4 (raster) 0-15, Cb 16-19, Cr 20-23, DC 24-26
+	ptr<u8> mvd;                # |mvd| by list, 4x4 block and component (at most 127)
+	ptr<u8> tcnt;               # CAVLC: TotalCoeff by 4x4 block: luma (raster) 0-15, Cb 16-19, Cr 20-23
+	bln cavlc;                  # this slice is CAVLC's (the PPS's entropy_coding_mode_flag is 0)
+	ptr<int> sl_info;           # by slice: deblock idc, alpha, beta offsets, chroma QP offsets
+	int sl_cap;
+	int slice_num;
+	# the dequantizing numbers for this picture: LevelScale4x4 by list (Y, Cb, Cr intra; Y, Cb, Cr
+	# inter), qP % 6 and position; LevelScale8x8 by list (intra, inter)
+	int ls4[576];
+	int ls8[768];
+	u8 ws4[96];
+	u8 ws8[128];
+	# the macroblock being decoded
+	int mx;
+	int my;
+	int mba;
+	int mb_a;                   # left, above, above right, above left: addresses, or -1
+	int mb_b;
+	int mb_c;
+	int mb_d;
+	int qp;
+	int qpc0;
+	int qpc1;
+	int last_dqp;
+	int mbt;                    # its mb_type, numbered as in its slice's table
+	int sub[4];
+	int cbp;
+	bln t8;
+	bln intra;
+	u32 bits;                   # nzf of this one, as it's read
+	# the motion of this macroblock and its neighbors: (x, y) from (-1, -1) to (4, 3) at
+	# (y + 1) * 8 + x + 1, by list: ref_idx (-2 unavailable, -1 not used), motion vectors, |mvd|
+	int refc[80];
+	int mvc[160];
+	int mvdc[160];
+	int dirc[40];               # predicted directly
+	# its residual: luma by 4x4 block (16 each) or 8x8 block (64 each), Cb, Cr by 4x4 block
+	int coef[384];
+	u32 coded;                    # blocks with coefficients: luma 4x4 0-15, Cb 16-19, Cr 20-23
+	int dcy[16];
+	int dcc[8];
+	# for making it
+	u8 pred0[256];
+	u8 pred1[256];
+	u8 cpred0[128];
+	u8 cpred1[128];
+
+	[Release]
+		while int i: 0; i < MdH264.PICS; i++;
+			call FreePic: (addr pics) + i * sizeof MdH264Pic;
+		;;
+		call FreeMbs;
+		if gray is not 0
+			free gray;
+			gray is 0;
+		;;
+	[end]
+
+	[FreePic: ptr<MdH264Pic> p: 0;]
+		if p.y is not 0
+			free p.y;
+			free p.u;
+			free p.v;
+			free p.mv0;
+			free p.mv1;
+			free p.ref0;
+			free p.ref1;
+			free p.rid0;
+			free p.rid1;
+			free p.intra;
+		;;
+		call Mem.Fill: p as ptr<u8> 0 sizeof MdH264Pic;
+	[end]
+
+	[FreeMbs]
+		if mb_slice is not 0
+			free mb_slice;
+			free mb_kind;
+			free mb_cbp;
+			free mb_qp;
+			free mb_cmode;
+			free mb_direct;
+			free ipm;
+			free nzf;
+			free mvd;
+			free tcnt;
+			mb_slice is 0;
+		;;
+		if sl_info is not 0
+			free sl_info;
+			sl_info is 0;
+			sl_cap is 0;
+		;;
+	[end]
+
+	[Pic: int slot: 0; : ptr<MdH264Pic>]
+	[end: (addr pics) + slot * sizeof MdH264Pic]
+
+	[Sps: int id: 0; : ptr<MdH264Sps>]
+	[end: (sps_mem + id * sizeof MdH264Sps) as ptr<MdH264Sps>]
+
+	[Pps: int id: 0; : ptr<MdH264Pps>]
+	[end: (pps_mem + id * sizeof MdH264Pps) as ptr<MdH264Pps>]
+
+	[Fail: ptr<u8> why: 0;]
+		MdH264.error is why;
+		failed is true;
+	[end]
+
+	# ---- the stream ----
+
+	# an MP4's avcC (ISO/IEC 14496-15): the length of the lengths, and the parameter sets
+	[Configure: ptr<u8> cfg: 0; u32 n: 0;]
+		if cfg is 0 or n < 7
+			nal_len is 0;
+			return true;
+		;;
+		nal_len is ((cfg:4) & 3) + 1;
+		u32 pos: 6;
+		int count: cfg:5 & 31;
+		while int i: 0; i < count; i++;
+			if pos + 2 > n return false;
+			u32 len: ((cfg:pos) as u32 << 8) | cfg:(pos + 1);
+			pos++ 2;
+			if pos + len > n return false;
+			call Nal: cfg + pos len as int;
+			pos++ len;
+		;;
+		if pos >= n return true;
+		count is cfg:pos;
+		pos++;
+		while int i: 0; i < count; i++;
+			if pos + 2 > n return false;
+			u32 len: ((cfg:pos) as u32 << 8) | cfg:(pos + 1);
+			pos++ 2;
+			if pos + len > n return false;
+			call Nal: cfg + pos len as int;
+			pos++ len;
+		;;
+	[end: not failed]
+
+	# a sample (an access unit): the pictures it makes ready to show, or -1
+	[Decode: ptr<u8> data: 0; u32 n: 0; i64 us: 0;]
+		# (the pictures taken last time may be used again now)
+		while int i: 0; i < MdH264.PICS; i++;
+			ptr<MdH264Pic> p: (Pic: i);
+			p.ready is false;
+		;;
+		ready_n is 0;
+		cur_us is us;
+		if failed return -1;
+		if nal_len > 0
+			u32 pos: 0;
+			while pos + nal_len as u32 <= n
+				u32 len: 0;
+				while int k: 0; k < nal_len; k++;
+					len is (len << 8) | data:(pos + k as u32);
+				;;
+				pos++ nal_len as u32;
+				if len > n - pos
+					len is n - pos;
+				;;
+				call Nal: data + pos len as int;
+				pos++ len;
+				if failed break;
+			;;
+		;;
+		else
+			# start codes: 00 00 01 (or 00 00 00 01) before each
+			u32 i: 0;
+			int start: -1;
+			while i + 2 < n
+				if data:i is 0 and data:(i + 1) is 0 and data:(i + 2) is 1
+					if start >= 0
+						u32 e: i;
+						while e > start as u32 and data:(e - 1) is 0
+							e--;
+						;;
+						call Nal: data + start as u32 (e - start as u32) as int;
+					;;
+					i++ 3;
+					start is i as int;
+					continue;
+				;;
+				i++;
+			;;
+			if start >= 0 and start as u32 < n
+				call Nal: data + start as u32 (n - start as u32) as int;
+			;;
+		;;
+		call FinishPic;
+		if failed return -1;
+	[end: ready_n]
+
+	# the next picture to show: true, with out_y, out_u, out_v and out_us set
+	[Take: : bln]
+		if ready_n is 0 return false;
+		ptr<MdH264Pic> p: (Pic: ready_q:0);
+		while int i: 1; i < ready_n; i++;
+			ready_q:(i - 1) is ready_q:i;
+		;;
+		ready_n--;
+		ptr<u8> py: p.y;
+		ptr<u8> pu: p.u;
+		ptr<u8> pv: p.v;
+		if p.gone or py is 0
+			py is gray;
+			pu is gray;
+			pv is gray;
+		;;
+		out_y is py + crop_y * ys + crop_x;
+		out_u is pu + (crop_y >> 1) * uvs + (crop_x >> 1);
+		out_v is pv + (crop_y >> 1) * uvs + (crop_x >> 1);
+		out_us is p.us;
+	[end: true]
+
+	# the end of the stream: every picture waiting is ready
+	[Flush: : int]
+		ready_n is 0;
+		while int i: 0; i < MdH264.PICS; i++;
+			ptr<MdH264Pic> p: (Pic: i);
+			p.ready is false;
+		;;
+		call FinishPic;
+		while (Bump)
+		;;
+	[end: ready_n]
+
+	# a seek: everything goes (the next picture had better be an IDR or I picture)
+	[Reset]
+		call FinishPic;
+		while int i: 0; i < MdH264.PICS; i++;
+			ptr<MdH264Pic> p: (Pic: i);
+			p.ref is 0;
+			p.waiting is false;
+			p.ready is false;
+		;;
+		ready_n is 0;
+		prev_msb is 0;
+		prev_lsb is 0;
+		prev_fno is 0;
+		prev_fn is 0;
+		prev_ref_fn is 0;
+		max_long is -1;
+	[end]
+
+	[Nal: ptr<u8> p: 0; int n: 0;]
+		if n < 1 return;
+		int head: p:0;
+		if (head & 0x80) is not 0 return;
+		int typ: head & 31;
+		if typ is not 1 and typ is not 5 and typ is not 7 and typ is not 8 return;
+		# the payload, emulation prevention bytes (00 00 03) taken out
+		if rbsp_cap < n + 8
+			if rbsp is not 0
+				free rbsp;
+			;;
+			rbsp_cap is n + 4096;
+			rbsp is new u8[rbsp_cap];
+			if rbsp is 0
+				rbsp_cap is 0;
+				call Fail: 'out of memory';
+				return;
+			;;
+		;;
+		int k: 0;
+		int zeros: 0;
+		while int i: 1; i < n; i++;
+			int v: p:i;
+			if zeros >= 2 and v is 3
+				zeros is 0;
+				continue;
+			;;
+			rbsp:k is v as u8;
+			k++;
+			if v is 0
+				zeros++;
+			;;
+			else
+				zeros is 0;
+			;;
+		;;
+		rbsp_len is k;
+		# (a few zero bytes past the end, for readers that look ahead)
+		while int i: 0; i < 8; i++;
+			rbsp:(k + i) is 0;
+		;;
+		call b.Start: rbsp k;
+		when typ
+			is 7
+				call ParseSps;
+			;;
+			is 8
+				call ParsePps;
+			;;
+			is 1 5
+				nal_type is typ;
+				nal_ref is (head >> 5) & 3;
+				call Slice;
+			;;
+		;;
+	[end]
+
+	# ---- parameter sets ----
+
+	# a scaling list into dst (raster order): true if it says to use the default
+	[ScalingList: ptr<u8> dst: 0; int size: 16; : bln]
+		int prev: 8;
+		int nxt: 8;
+		bln use_default: false;
+		while int j: 0; j < size; j++;
+			if nxt is not 0
+				int delta: (b.Se);
+				nxt is (prev + delta + 256) & 255;
+				if j is 0 and nxt is 0
+					use_default is true;
+				;;
+			;;
+			int val: nxt;
+			if nxt is 0
+				val is prev;
+			;;
+			int pos: 0;
+			if size is 16
+				pos is MdH264Tables.zigzag4:j;
+			;;
+			else
+				pos is MdH264Tables.zigzag8:j;
+			;;
+			dst:pos is val as u8;
+			prev is val;
+		;;
+	[end: use_default]
+
+	# list i's default (Table 7-3, 7-4) into dst
+	[DefaultList: int i: 0; ptr<u8> dst: 0;]
+		if i < 3
+			call Mem.Copy: dst addr MdH264Tables.default4 16;
+		;;
+		elif i < 6
+			call Mem.Copy: dst (addr MdH264Tables.default4) + 16 16;
+		;;
+		elif i is 6
+			call Mem.Copy: dst addr MdH264Tables.default8 64;
+		;;
+		else
+			call Mem.Copy: dst (addr MdH264Tables.default8) + 64 64;
+		;;
+	[end]
+
+	[ListAt: ptr<u8> ws4p: 0; ptr<u8> ws8p: 0; int i: 0; : ptr<u8>]
+		if i < 6 return ws4p + i * 16;
+	[end: ws8p + (i - 6) * 64]
+
+	[ParseSps]
+		int profile: (b.U: 8);
+		call b.U: 8;
+		int level: (b.U: 8);
+		int id: (b.Ue);
+		if id > 31 return;
+		ptr<MdH264Sps> s: (Sps: id);
+		call Mem.Fill: s as ptr<u8> 0 sizeof MdH264Sps;
+		s.profile is profile;
+		s.level is level;
+		s.chroma_format is 1;
+		s.depth_y is 8;
+		s.depth_c is 8;
+		s.reorder is -1;
+		s.dpb_frames is -1;
+		s.matrix is 2;
+		if profile is 100 or profile is 110 or profile is 122 or profile is 244 or profile is 44 or profile is 83 or profile is 86 or profile is 118 or profile is 128 or profile is 138 or profile is 139 or profile is 134 or profile is 135
+			s.chroma_format is (b.Ue);
+			if s.chroma_format is 3
+				call b.U: 1;
+			;;
+			s.depth_y is (b.Ue) + 8;
+			s.depth_c is (b.Ue) + 8;
+			s.bypass is (b.Flag);
+			s.scaling is (b.Flag);
+			if s.scaling
+				int lists: 8;
+				if s.chroma_format is 3
+					lists is 12;
+				;;
+				while int i: 0; i < lists; i++;
+					bln sent: (b.Flag);
+					if i >= 8
+						# (4:4:4's Cb and Cr 8x8 lists: read, not kept)
+						if sent
+							u8 junk[64];
+							call ScalingList: addr junk 64;
+						;;
+						continue;
+					;;
+					ptr<u8> dst: (ListAt: addr s.ws4 addr s.ws8 i);
+					int size: 16;
+					if i >= 6
+						size is 64;
+					;;
+					bln dflt: false;
+					if sent
+						dflt is (ScalingList: dst size);
+					;;
+					if dflt or (not sent and (i is 0 or i is 3 or i >= 6))
+						call DefaultList: i dst;
+					;;
+					elif not sent
+						# (fall-back rule A: the list before it)
+						call Mem.Copy: dst dst - 16 16;
+					;;
+				;;
+			;;
+		;;
+		if not s.scaling
+			call Mem.Fill: addr s.ws4 16 96;
+			call Mem.Fill: addr s.ws8 16 128;
+		;;
+		s.log2_frame_num is (b.Ue) + 4;
+		s.poc_type is (b.Ue);
+		if s.poc_type is 0
+			s.log2_poc_lsb is (b.Ue) + 4;
+		;;
+		elif s.poc_type is 1
+			s.poc_zero is (b.Flag);
+			s.poc_non_ref is (b.Se);
+			s.poc_top_bottom is (b.Se);
+			s.poc_cycle_n is (b.Ue);
+			if s.poc_cycle_n > 255
+				return;
+			;;
+			while int i: 0; i < s.poc_cycle_n; i++;
+				s.poc_cycle:i is (b.Se);
+			;;
+		;;
+		s.ref_frames is (b.Ue);
+		s.gaps is (b.Flag);
+		s.mb_w is (b.Ue) + 1;
+		int map_h: (b.Ue) + 1;
+		s.frames_only is (b.Flag);
+		if not s.frames_only
+			s.mbaff is (b.Flag);
+			s.mb_h is map_h * 2;
+		;;
+		else
+			s.mb_h is map_h;
+		;;
+		s.direct8 is (b.Flag);
+		if (b.Flag)
+			s.crop_l is (b.Ue);
+			s.crop_r is (b.Ue);
+			s.crop_t is (b.Ue);
+			s.crop_b is (b.Ue);
+		;;
+		if (b.Flag)
+			call ParseVui: s;
+		;;
+		if b.bad and s.mb_w is 0 return;
+		s.valid is true;
+	[end]
+
+	[ParseVui: ptr<MdH264Sps> s: 0;]
+		if (b.Flag)
+			if (b.U: 8) is 255
+				call b.U: 16;
+				call b.U: 16;
+			;;
+		;;
+		if (b.Flag)
+			call b.U: 1;
+		;;
+		if (b.Flag)
+			call b.U: 3;
+			s.full_range is (b.Flag);
+			if (b.Flag)
+				call b.U: 8;
+				call b.U: 8;
+				s.matrix is (b.U: 8);
+			;;
+		;;
+		if (b.Flag)
+			call b.Ue;
+			call b.Ue;
+		;;
+		if (b.Flag)
+			call b.U: 16;
+			call b.U: 16;
+			call b.U: 16;
+			call b.U: 16;
+			call b.U: 1;
+		;;
+		bln nal_hrd: (b.Flag);
+		if nal_hrd
+			call ParseHrd;
+		;;
+		bln vcl_hrd: (b.Flag);
+		if vcl_hrd
+			call ParseHrd;
+		;;
+		if nal_hrd or vcl_hrd
+			call b.U: 1;
+		;;
+		call b.U: 1;
+		if (b.Flag)
+			call b.U: 1;
+			call b.Ue;
+			call b.Ue;
+			call b.Ue;
+			call b.Ue;
+			int reorder_: (b.Ue);
+			int frames: (b.Ue);
+			if not b.bad and reorder_ <= 16 and frames <= 16
+				s.reorder is reorder_;
+				s.dpb_frames is frames;
+			;;
+		;;
+	[end]
+
+	[ParseHrd]
+		int count: (b.Ue) + 1;
+		call b.U: 8;
+		while int i: 0; i < count and i < 32; i++;
+			call b.Ue;
+			call b.Ue;
+			call b.U: 1;
+		;;
+		call b.U: 20;
+	[end]
+
+	[ParsePps]
+		int id: (b.Ue);
+		if id > 255 return;
+		ptr<MdH264Pps> q: (Pps: id);
+		call Mem.Fill: q as ptr<u8> 0 sizeof MdH264Pps;
+		q.sps_id is (b.Ue);
+		if q.sps_id > 31 return;
+		q.cabac is (b.Flag);
+		q.bottom_poc is (b.Flag);
+		q.groups is (b.Ue) + 1;
+		if q.groups > 1
+			# (Baseline's slice groups: not done)
+			return;
+		;;
+		q.ref_l0 is (b.Ue) + 1;
+		q.ref_l1 is (b.Ue) + 1;
+		q.weighted is (b.Flag);
+		q.bipred is (b.U: 2);
+		q.init_qp is 26 + (b.Se);
+		call b.Se;
+		q.cqp0 is (b.Se);
+		q.deblock_ctrl is (b.Flag);
+		q.constrained is (b.Flag);
+		q.redundant is (b.Flag);
+		q.cqp1 is q.cqp0;
+		if (b.More)
+			q.t8 is (b.Flag);
+			q.scaling is (b.Flag);
+			if q.scaling
+				int lists: 6;
+				if q.t8
+					lists is 8;
+					ptr<MdH264Sps> s: (Sps: q.sps_id);
+					if s.valid and s.chroma_format is 3
+						lists is 12;
+					;;
+				;;
+				while int i: 0; i < lists; i++;
+					if (b.Flag)
+						if i >= 8
+							u8 junk[64];
+							call ScalingList: addr junk 64;
+							continue;
+						;;
+						int size: 16;
+						if i >= 6
+							size is 64;
+						;;
+						if (ScalingList: (ListAt: addr q.ws4 addr q.ws8 i) size)
+							q.sent:i is 2;
+						;;
+						else
+							q.sent:i is 1;
+						;;
+					;;
+				;;
+			;;
+			q.cqp1 is (b.Se);
+		;;
+		if q.ref_l0 > 32 or q.ref_l1 > 32 return;
+		q.valid is true;
+	[end]
+
+	# this picture's scaling lists (7.4.2.2's fall-back rules) and the dequantizing numbers from them
+	[Scaling]
+		if not pps.scaling
+			call Mem.Copy: addr ws4 addr sps.ws4 96;
+			call Mem.Copy: addr ws8 addr sps.ws8 128;
+		;;
+		else
+			while int i: 0; i < 8; i++;
+				ptr<u8> dst: (ListAt: addr ws4 addr ws8 i);
+				int size: 16;
+				if i >= 6
+					size is 64;
+				;;
+				int sent: pps.sent:i;
+				if sent is 1
+					call Mem.Copy: dst (ListAt: addr pps.ws4 addr pps.ws8 i) size as u32;
+				;;
+				elif sent is 2
+					call DefaultList: i dst;
+				;;
+				elif i is 0 or i is 3 or i >= 6
+					if sps.scaling
+						# (fall-back rule B: the sequence's)
+						call Mem.Copy: dst (ListAt: addr sps.ws4 addr sps.ws8 i) size as u32;
+					;;
+					else
+						call DefaultList: i dst;
+					;;
+				;;
+				else
+					call Mem.Copy: dst dst - 16 16;
+				;;
+			;;
+		;;
+		while int l: 0; l < 6; l++;
+			while int m: 0; m < 6; m++;
+				while int i: 0; i < 16; i++;
+					ls4:((l * 6 + m) * 16 + i) is ws4:(l * 16 + i) * MdH264Tables.norm4:(m * 16 + i);
+				;;
+			;;
+		;;
+		while int l: 0; l < 2; l++;
+			while int m: 0; m < 6; m++;
+				while int i: 0; i < 64; i++;
+					ls8:((l * 6 + m) * 64 + i) is ws8:(l * 64 + i) * MdH264Tables.norm8:(m * 64 + i);
+				;;
+			;;
+		;;
+	[end]
+
+	# ---- slices ----
+
+	[Slice]
+		first_mb is (b.Ue);
+		int st: (b.Ue) % 5;
+		when st
+			is 0
+				slice_type is MdH264.P;
+			;;
+			is 1
+				slice_type is MdH264.B;
+			;;
+			is 2
+				slice_type is MdH264.I;
+			;;
+			is 3 4
+				call Fail: 'H.264 SP and SI slices are not supported';
+				return;
+			;;
+		;;
+		int pps_id: (b.Ue);
+		if pps_id > 255 return;
+		ptr<MdH264Pps> q: (Pps: pps_id);
+		if not q.valid
+			call Fail: 'an H.264 picture parameter set this can't use';
+			return;
+		;;
+		ptr<MdH264Sps> s: (Sps: q.sps_id);
+		if not s.valid
+			call Fail: 'an H.264 slice before its sequence parameter set';
+			return;
+		;;
+		if not s.frames_only
+			call Fail: 'interlaced H.264 is not supported';
+			return;
+		;;
+		if s.chroma_format is not 1 or s.depth_y is not 8 or s.depth_c is not 8 or s.bypass
+			call Fail: 'H.264 other than 8-bit 4:2:0 is not supported';
+			return;
+		;;
+		frame_num is (b.U: s.log2_frame_num);
+		bln idr: (nal_type is 5);
+		if idr
+			call b.Ue;
+		;;
+		poc_lsb is 0;
+		delta_bottom is 0;
+		dpoc0 is 0;
+		dpoc1 is 0;
+		if s.poc_type is 0
+			poc_lsb is (b.U: s.log2_poc_lsb);
+			if q.bottom_poc
+				delta_bottom is (b.Se);
+			;;
+		;;
+		if s.poc_type is 1 and not s.poc_zero
+			dpoc0 is (b.Se);
+			if q.bottom_poc
+				dpoc1 is (b.Se);
+			;;
+		;;
+		if q.redundant
+			if (b.Ue) > 0 return;
+		;;
+		if slice_type is MdH264.B
+			direct_spatial is (b.Flag);
+		;;
+		nref0 is q.ref_l0;
+		nref1 is q.ref_l1;
+		if slice_type is not MdH264.I
+			if (b.Flag)
+				nref0 is (b.Ue) + 1;
+				if slice_type is MdH264.B
+					nref1 is (b.Ue) + 1;
+				;;
+			;;
+		;;
+		if nref0 > 32 or nref1 > 32
+			call Fail: 'a broken H.264 slice header';
+			return;
+		;;
+		mod_n:0 is 0;
+		mod_n:1 is 0;
+		if slice_type is not MdH264.I
+			int lists: 1;
+			if slice_type is MdH264.B
+				lists is 2;
+			;;
+			while int l: 0; l < lists; l++;
+				if (b.Flag)
+					int guard: 0;
+					while guard < 33
+						guard++;
+						int idc: (b.Ue);
+						if idc is 3 or b.bad
+							break;
+						;;
+						int val: (b.Ue);
+						mod_ops:(l * 66 + mod_n:l * 2) is idc;
+						mod_ops:(l * 66 + mod_n:l * 2 + 1) is val;
+						mod_n:l is mod_n:l + 1;
+					;;
+				;;
+			;;
+		;;
+		wmode is 0;
+		if (q.weighted and slice_type is MdH264.P) or (q.bipred is 1 and slice_type is MdH264.B)
+			wmode is 1;
+			call ParseWeights;
+		;;
+		elif q.bipred is 2 and slice_type is MdH264.B
+			wmode is 2;
+		;;
+		long_term_ref is false;
+		adaptive is false;
+		mmco_n is 0;
+		if nal_ref is not 0
+			if idr
+				call b.U: 1;
+				long_term_ref is (b.Flag);
+			;;
+			else
+				adaptive is (b.Flag);
+				if adaptive
+					while mmco_n < 66
+						int op: (b.Ue);
+						if op is 0 or b.bad
+							break;
+						;;
+						int v1: 0;
+						int v2: 0;
+						if op is 1 or op is 3
+							v1 is (b.Ue);
+						;;
+						if op is 2
+							v1 is (b.Ue);
+						;;
+						if op is 3 or op is 6
+							v2 is (b.Ue);
+						;;
+						if op is 4
+							v1 is (b.Ue);
+						;;
+						mmco:(mmco_n * 3) is op;
+						mmco:(mmco_n * 3 + 1) is v1;
+						mmco:(mmco_n * 3 + 2) is v2;
+						mmco_n++;
+					;;
+				;;
+			;;
+		;;
+		cabac_init is 0;
+		if q.cabac and slice_type is not MdH264.I
+			cabac_init is (b.Ue);
+			if cabac_init > 2
+				cabac_init is 0;
+			;;
+		;;
+		slice_qp is q.init_qp + (b.Se);
+		deblock_idc is 0;
+		alpha_off is 0;
+		beta_off is 0;
+		if q.deblock_ctrl
+			deblock_idc is (b.Ue);
+			if deblock_idc is not 1
+				alpha_off is (b.Se) * 2;
+				beta_off is (b.Se) * 2;
+			;;
+		;;
+		if b.bad or slice_qp < 0 or slice_qp > 51
+			# (a slice cut short: what's there of the picture stays as it is)
+			return;
+		;;
+		# a new picture, when this slice starts one
+		if cur is 0 or first_mb is 0
+			call FinishPic;
+			if not (StartPic: s q idr) return;
+		;;
+		if pps is not q
+			# (a slice of the same picture with other parameters: its lists and offsets are its own)
+			pps is q;
+		;;
+		call SliceData;
+	[end]
+
+	[ParseWeights]
+		lwd_y is (b.Ue);
+		lwd_c is (b.Ue);
+		if lwd_y > 7 or lwd_c > 7
+			lwd_y is 0;
+			lwd_c is 0;
+		;;
+		int lists: 1;
+		if slice_type is MdH264.B
+			lists is 2;
+		;;
+		while int l: 0; l < 2; l++;
+			int n: nref0;
+			if l is 1
+				n is nref1;
+			;;
+			while int i: 0; i < 32; i++;
+				int k: l * 32 + i;
+				wy:k is 1 << lwd_y;
+				oy:k is 0;
+				wc:(k * 2) is 1 << lwd_c;
+				wc:(k * 2 + 1) is 1 << lwd_c;
+				oc:(k * 2) is 0;
+				oc:(k * 2 + 1) is 0;
+				if l < lists and i < n
+					if (b.Flag)
+						wy:k is (b.Se);
+						oy:k is (b.Se);
+					;;
+					if (b.Flag)
+						wc:(k * 2) is (b.Se);
+						oc:(k * 2) is (b.Se);
+						wc:(k * 2 + 1) is (b.Se);
+						oc:(k * 2 + 1) is (b.Se);
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	# ---- pictures ----
+
+	[StartPic: ptr<MdH264Sps> s: 0; ptr<MdH264Pps> q: 0; bln idr: false; : bln]
+		bln resized: (sps is 0 or s.mb_w is not mb_w or s.mb_h is not mb_h);
+		sps is s;
+		pps is q;
+		if resized
+			if not (Allocate) return false;
+		;;
+		max_frame_num is 1 << s.log2_frame_num;
+		# how many pictures may wait to be shown, and how many the DPB holds (A.3.1's MaxDpbMbs)
+		int dpb_mbs: 696320;
+		when s.level
+			is 9 10
+				dpb_mbs is 396;
+			;;
+			is 11
+				dpb_mbs is 900;
+				if s.profile is 66 or s.profile is 77 or s.profile is 88
+					# (level 1b is 11 with constraint_set3: about the same)
+					dpb_mbs is 900;
+				;;
+			;;
+			is 12 13 20
+				dpb_mbs is 2376;
+			;;
+			is 21
+				dpb_mbs is 4752;
+			;;
+			is 22 30
+				dpb_mbs is 8100;
+			;;
+			is 31
+				dpb_mbs is 18000;
+			;;
+			is 32
+				dpb_mbs is 20480;
+			;;
+			is 40 41
+				dpb_mbs is 32768;
+			;;
+			is 42
+				dpb_mbs is 34816;
+			;;
+			is 50
+				dpb_mbs is 110400;
+			;;
+			is 51 52
+				dpb_mbs is 184320;
+			;;
+		;;
+		dpb_size is dpb_mbs / mbs;
+		if dpb_size > 16
+			dpb_size is 16;
+		;;
+		if s.dpb_frames >= 0
+			dpb_size is s.dpb_frames;
+		;;
+		if dpb_size < s.ref_frames
+			dpb_size is s.ref_frames;
+		;;
+		if dpb_size < 1
+			dpb_size is 1;
+		;;
+		reorder is dpb_size;
+		if s.reorder >= 0 and s.reorder < reorder
+			reorder is s.reorder;
+		;;
+		w is mb_w * 16 - 2 * (s.crop_l + s.crop_r);
+		h is mb_h * 16 - 2 * (s.crop_t + s.crop_b);
+		crop_x is s.crop_l * 2;
+		crop_y is s.crop_t * 2;
+		if w <= 0 or h <= 0
+			w is mb_w * 16;
+			h is mb_h * 16;
+			crop_x is 0;
+			crop_y is 0;
+		;;
+		if idr
+			# everything before is shown first, and no longer a reference
+			while (Bump)
+			;;
+			while int i: 0; i < MdH264.PICS; i++;
+				ptr<MdH264Pic> p: (Pic: i);
+				p.ref is 0;
+			;;
+			prev_ref_fn is 0;
+			max_long is -1;
+		;;
+		elif frame_num is not prev_ref_fn and frame_num is not (prev_ref_fn + 1) % max_frame_num
+			call FillGap;
+		;;
+		call Poc: idr;
+		int slot: (FreeSlot);
+		if slot < 0
+			call Fail: 'H.264: no room for another picture';
+			return false;
+		;;
+		ptr<MdH264Pic> p: (Pic: slot);
+		if p.y is 0
+			if not (AllocPic: p) return false;
+		;;
+		next_id++;
+		p.id is next_id;
+		p.poc is (Math.Min: top_poc bot_poc);
+		p.frame_num is frame_num;
+		p.ref is 0;
+		p.lt_idx is 0;
+		p.waiting is false;
+		p.ready is false;
+		p.busy is true;
+		p.gone is false;
+		p.us is cur_us;
+		cur is p;
+		while int i: 0; i < mbs; i++;
+			mb_slice:i is -1;
+		;;
+		slice_num is -1;
+		call Scaling;
+	[end: true]
+
+	# memory for pictures of the sequence's size
+	[Allocate: : bln]
+		u32 pixels: (sps.mb_w * sps.mb_h) as u32 * 256;
+		if pixels > limit or sps.mb_w > 1024 or sps.mb_h > 1024
+			call Fail: 'an H.264 picture too big';
+			return false;
+		;;
+		# (what's waiting is shown before the size changes)
+		while (Bump)
+		;;
+		while int i: 0; i < MdH264.PICS; i++;
+			call FreePic: (Pic: i);
+		;;
+		call FreeMbs;
+		cur is 0;
+		mb_w is sps.mb_w;
+		mb_h is sps.mb_h;
+		mbs is mb_w * mb_h;
+		ys is mb_w * 16;
+		uvs is mb_w * 8;
+		ph is mb_h * 16;
+		mb_slice is new int[mbs];
+		mb_kind is new u8[mbs];
+		mb_cbp is new u8[mbs];
+		mb_qp is new u8[mbs];
+		mb_cmode is new u8[mbs];
+		mb_direct is new u8[mbs];
+		ipm is new i8[mbs * 16];
+		nzf is new u32[mbs];
+		mvd is new u8[mbs * 64];
+		tcnt is new u8[mbs * 24];
+		sl_cap is 64;
+		sl_info is new int[sl_cap * 5];
+		if mb_slice is 0 or mb_kind is 0 or mb_cbp is 0 or mb_qp is 0 or mb_cmode is 0 or mb_direct is 0 or ipm is 0 or nzf is 0 or mvd is 0 or tcnt is 0 or sl_info is 0
+			call Fail: 'out of memory';
+			return false;
+		;;
+		if gray is not 0
+			free gray;
+		;;
+		gray is new u8[ys * ph];
+		if gray is 0
+			call Fail: 'out of memory';
+			return false;
+		;;
+		call Mem.Fill: gray 128 (ys * ph) as u32;
+	[end: true]
+
+	[AllocPic: ptr<MdH264Pic> p: 0; : bln]
+		p.y is new u8[ys * ph];
+		p.u is new u8[uvs * (ph >> 1)];
+		p.v is new u8[uvs * (ph >> 1)];
+		p.mv0 is new i16[mbs * 32];
+		p.mv1 is new i16[mbs * 32];
+		p.ref0 is new i8[mbs * 4];
+		p.ref1 is new i8[mbs * 4];
+		p.rid0 is new int[mbs * 4];
+		p.rid1 is new int[mbs * 4];
+		p.intra is new u8[mbs];
+		if p.y is 0 or p.u is 0 or p.v is 0 or p.mv0 is 0 or p.mv1 is 0 or p.ref0 is 0 or p.ref1 is 0 or p.rid0 is 0 or p.rid1 is 0 or p.intra is 0
+			call Fail: 'out of memory';
+			return false;
+		;;
+	[end: true]
+
+	# a slot that's free: not a reference, not waiting, not given to be shown
+	[FreeSlot]
+		while int i: 0; i < MdH264.PICS; i++;
+			ptr<MdH264Pic> p: (Pic: i);
+			if p.ref is 0 and not p.waiting and not p.ready and not p.busy
+				return i;
+			;;
+		;;
+		# (a stream that holds more than it says: the oldest waiting picture is shown early)
+		if (Bump)
+			while int i: 0; i < MdH264.PICS; i++;
+				ptr<MdH264Pic> p: (Pic: i);
+				if p.ref is 0 and not p.waiting and not p.ready and not p.busy
+					return i;
+				;;
+			;;
+		;;
+	[end: -1]
+
+	# the picture order count (8.2.1)
+	[Poc: bln idr: false;]
+		if sps.poc_type is 0
+			if idr
+				prev_msb is 0;
+				prev_lsb is 0;
+			;;
+			int max_lsb: 1 << sps.log2_poc_lsb;
+			int msb: prev_msb;
+			if poc_lsb < prev_lsb and prev_lsb - poc_lsb >= max_lsb / 2
+				msb is prev_msb + max_lsb;
+			;;
+			elif poc_lsb > prev_lsb and poc_lsb - prev_lsb > max_lsb / 2
+				msb is prev_msb - max_lsb;
+			;;
+			top_poc is msb + poc_lsb;
+			bot_poc is top_poc + delta_bottom;
+			if nal_ref is not 0
+				# (kept for the next reference picture; a memory_management_control_operation 5
+				# changes them when the picture is marked)
+				prev_msb is msb;
+				prev_lsb is poc_lsb;
+			;;
+			return;
+		;;
+		if idr
+			fno is 0;
+		;;
+		elif prev_fn > frame_num
+			fno is prev_fno + max_frame_num;
+		;;
+		else
+			fno is prev_fno;
+		;;
+		if sps.poc_type is 1
+			int absn: 0;
+			if sps.poc_cycle_n is not 0
+				absn is fno + frame_num;
+			;;
+			if nal_ref is 0 and absn > 0
+				absn--;
+			;;
+			int expected: 0;
+			if absn > 0
+				int delta_cycle: 0;
+				while int i: 0; i < sps.poc_cycle_n; i++;
+					delta_cycle++ sps.poc_cycle:i;
+				;;
+				int cycles: (absn - 1) / sps.poc_cycle_n;
+				int within: (absn - 1) % sps.poc_cycle_n;
+				expected is cycles * delta_cycle;
+				while int i: 0; i <= within; i++;
+					expected++ sps.poc_cycle:i;
+				;;
+			;;
+			if nal_ref is 0
+				expected++ sps.poc_non_ref;
+			;;
+			top_poc is expected + dpoc0;
+			bot_poc is top_poc + sps.poc_top_bottom + dpoc1;
+		;;
+		else
+			int t: 0;
+			if not idr
+				t is 2 * (fno + frame_num);
+				if nal_ref is 0
+					t--;
+				;;
+			;;
+			top_poc is t;
+			bot_poc is t;
+		;;
+	[end]
+
+	# frames left out (gaps_in_frame_num): "non-existing" short-term references in their place (8.2.5.2)
+	[FillGap]
+		int missing: (frame_num - prev_ref_fn - 1 + max_frame_num) % max_frame_num;
+		int fn: (prev_ref_fn + 1) % max_frame_num;
+		if missing > sps.ref_frames
+			fn is (frame_num - sps.ref_frames + max_frame_num) % max_frame_num;
+			missing is sps.ref_frames;
+		;;
+		while int k: 0; k < missing; k++;
+			call Wrap: fn;
+			call Sliding;
+			int slot: (FreeSlot);
+			if slot < 0 return;
+			ptr<MdH264Pic> p: (Pic: slot);
+			if p.y is 0
+				if not (AllocPic: p) return;
+			;;
+			next_id++;
+			p.id is next_id;
+			p.frame_num is fn;
+			p.ref is 1;
+			p.gone is true;
+			p.waiting is false;
+			p.poc is 0;
+			call Mem.Fill: p.intra 1 mbs as u32;
+			prev_ref_fn is fn;
+			prev_fn is fn;
+			fn is (fn + 1) % max_frame_num;
+		;;
+	[end]
+
+	# FrameNumWrap of each short-term reference, as from a picture of frame_num fn
+	[Wrap: int fn: 0;]
+		while int i: 0; i < MdH264.PICS; i++;
+			ptr<MdH264Pic> p: (Pic: i);
+			if p.ref is 1
+				p.num is p.frame_num;
+				if p.frame_num > fn
+					p.num is p.frame_num - max_frame_num;
+				;;
+			;;
+			elif p.ref is 2
+				p.num is p.lt_idx;
+			;;
+		;;
+	[end]
+
+	# the sliding window (8.2.5.3): the oldest short-term reference goes when the DPB's references are full
+	[Sliding]
+		int shorts: 0;
+		int longs: 0;
+		int oldest: -1;
+		while int i: 0; i < MdH264.PICS; i++;
+			ptr<MdH264Pic> p: (Pic: i);
+			if p is cur
+				continue;
+			;;
+			if p.ref is 1
+				shorts++;
+				if oldest < 0 or p.num < (Pic: oldest).num
+					oldest is i;
+				;;
+			;;
+			elif p.ref is 2
+				longs++;
+			;;
+		;;
+		int most: sps.ref_frames;
+		if most < 1
+			most is 1;
+		;;
+		if shorts + longs >= most and oldest >= 0
+			ptr<MdH264Pic> pk_: (Pic: oldest);
+			pk_.ref is 0;
+		;;
+	[end]
+
+	# the reference picture lists for a P or B slice (8.2.4)
+	[Lists]
+		call Wrap: frame_num;
+		int n0: 0;
+		int n1: 0;
+		int all[24];
+		int count: 0;
+		int cpoc: cur.poc;
+		if slice_type is MdH264.P
+			# short-term by PicNum, highest first; long-term by LongTermPicNum, lowest first
+			count is (Collect: addr all 1);
+			call SortBy: addr all count 0 true;
+			n0 is count;
+			int longs[24];
+			int nl: (Collect: addr longs 2);
+			call SortBy: addr longs nl 0 false;
+			while int i: 0; i < nl; i++;
+				all:(n0 + i) is longs:i;
+			;;
+			n0++ nl;
+			while int i: 0; i < n0 and i < 33; i++;
+				list0:i is all:i;
+			;;
+		;;
+		else
+			# B: by POC, those before first (nearest first) then those after; list 1 the other way
+			int st[24];
+			int ns: (Collect: addr st 1);
+			int before[24];
+			int after[24];
+			int nb: 0;
+			int na: 0;
+			while int i: 0; i < ns; i++;
+				if (Pic: st:i).poc < cpoc
+					before:nb is st:i;
+					nb++;
+				;;
+				else
+					after:na is st:i;
+					na++;
+				;;
+			;;
+			call SortBy: addr before nb 1 true;
+			call SortBy: addr after na 1 false;
+			int longs[24];
+			int nl: (Collect: addr longs 2);
+			call SortBy: addr longs nl 0 false;
+			while int i: 0; i < nb; i++;
+				list0:n0 is before:i;
+				n0++;
+			;;
+			while int i: 0; i < na; i++;
+				list0:n0 is after:i;
+				n0++;
+			;;
+			while int i: 0; i < na; i++;
+				list1:n1 is after:i;
+				n1++;
+			;;
+			while int i: 0; i < nb; i++;
+				list1:n1 is before:i;
+				n1++;
+			;;
+			while int i: 0; i < nl; i++;
+				list0:n0 is longs:i;
+				n0++;
+				list1:n1 is longs:i;
+				n1++;
+			;;
+			if n1 > 1 and n0 is n1
+				bln same: true;
+				while int i: 0; i < n0; i++;
+					if list0:i is not list1:i
+						same is false;
+					;;
+				;;
+				if same
+					int t: list1:0;
+					list1:0 is list1:1;
+					list1:1 is t;
+				;;
+			;;
+		;;
+		while int i: n0; i < 33; i++;
+			list0:i is -1;
+		;;
+		while int i: n1; i < 33; i++;
+			list1:i is -1;
+		;;
+		if slice_type is not MdH264.B
+			while int i: 0; i < 33; i++;
+				list1:i is -1;
+			;;
+		;;
+		call Modify: 0 addr list0 nref0;
+		if slice_type is MdH264.B
+			call Modify: 1 addr list1 nref1;
+		;;
+		while int i: 0; i < 33; i++;
+			poc0:i is 0;
+			poc1:i is 0;
+			if list0:i >= 0
+				poc0:i is (Pic: list0:i).poc;
+			;;
+			if list1:i >= 0
+				poc1:i is (Pic: list1:i).poc;
+			;;
+		;;
+	[end]
+
+	# the slots of references of a kind (1 short, 2 long) into dst
+	[Collect: ptr<int> dst: 0; int kind: 1; : int]
+		int n: 0;
+		while int i: 0; i < MdH264.PICS; i++;
+			ptr<MdH264Pic> p: (Pic: i);
+			if p.ref is kind and p is not cur
+				dst:n is i;
+				n++;
+			;;
+		;;
+	[end: n]
+
+	# sorts slots by their num (by 0) or POC (by 1), highest first if down
+	[SortBy: ptr<int> v: 0; int n: 0; int by: 0; bln down: false;]
+		while int i: 1; i < n; i++;
+			int k: v:i;
+			int j: i - 1;
+			while j >= 0 and (Before: k v:j by down)
+				v:(j + 1) is v:j;
+				j--;
+			;;
+			v:(j + 1) is k;
+		;;
+	[end]
+
+	[Before: int a: 0; int b2: 0; int by: 0; bln down: false; : bln]
+		int ka: (Pic: a).num;
+		int kb: (Pic: b2).num;
+		if by is 1
+			ka is (Pic: a).poc;
+			kb is (Pic: b2).poc;
+		;;
+		if down return (ka > kb);
+	[end: (ka < kb)]
+
+	# ref_pic_list_modification (8.2.4.3) of list l (n entries active)
+	[Modify: int l: 0; ptr<int> lst: 0; int n: 0;]
+		int pred: frame_num;
+		int idx: 0;
+		while int k: 0; k < mod_n:l; k++;
+			int idc: mod_ops:(l * 66 + k * 2);
+			int val: mod_ops:(l * 66 + k * 2 + 1);
+			int found: -1;
+			if idc < 2
+				int nowrap: 0;
+				if idc is 0
+					nowrap is pred - (val + 1);
+					if nowrap < 0
+						nowrap++ max_frame_num;
+					;;
+				;;
+				else
+					nowrap is pred + (val + 1);
+					if nowrap >= max_frame_num
+						nowrap-- max_frame_num;
+					;;
+				;;
+				pred is nowrap;
+				int num: nowrap;
+				if nowrap > frame_num
+					num is nowrap - max_frame_num;
+				;;
+				while int i: 0; i < MdH264.PICS; i++;
+					ptr<MdH264Pic> p: (Pic: i);
+					if p.ref is 1 and p.num is num and p is not cur
+						found is i;
+					;;
+				;;
+			;;
+			elif idc is 2
+				while int i: 0; i < MdH264.PICS; i++;
+					ptr<MdH264Pic> p: (Pic: i);
+					if p.ref is 2 and p.lt_idx is val and p is not cur
+						found is i;
+					;;
+				;;
+			;;
+			else
+				continue;
+			;;
+			if idx >= n
+				break;
+			;;
+			# in at idx, the rest moved along, and the same picture further on taken out
+			int c: n;
+			while c > idx
+				lst:c is lst:(c - 1);
+				c--;
+			;;
+			lst:idx is found;
+			idx++;
+			int nidx: idx;
+			while int ci: idx; ci <= n; ci++;
+				if lst:ci is not found
+					lst:nidx is lst:ci;
+					nidx++;
+				;;
+			;;
+		;;
+		while int i: n; i < 33; i++;
+			lst:i is -1;
+		;;
+	[end]
+
+	# implicit weights and temporal direct's scale factors for this slice (8.4.2.3, 8.4.1.2.3)
+	[Scales]
+		int cpoc: cur.poc;
+		if slice_type is not MdH264.B return;
+		ptr<MdH264Pic> p1: 0 as ptr<MdH264Pic>;
+		if list1:0 >= 0
+			p1 is (Pic: list1:0);
+		;;
+		while int i0: 0; i0 < nref0; i0++;
+			bln long0: (list0:i0 < 0 or (Pic: list0:i0).ref is 2);
+			# temporal direct
+			dsf:i0 is 9999;
+			if not long0 and p1 is not 0
+				dsf:i0 is (Dsf: cpoc poc0:i0 poc1:0);
+			;;
+			if wmode is 2
+				while int i1: 0; i1 < nref1; i1++;
+					int w0: 32;
+					bln long1: (list1:i1 < 0 or (Pic: list1:i1).ref is 2);
+					if not long0 and not long1 and poc1:i1 is not poc0:i0
+						int f: (Dsf: cpoc poc0:i0 poc1:i1) >> 2;
+						if f >= -64 and f <= 128
+							w0 is 64 - f;
+						;;
+					;;
+					iw:(i0 * 32 + i1) is w0;
+				;;
+			;;
+		;;
+	[end]
+
+	# DistScaleFactor: tb, td from the current picture's POC and two references'
+	[Dsf: int cpoc: 0; int pa: 0; int pb: 0;]
+		int tb: (Math.Clamp: cpoc - pa (0 - 128) 127);
+		int td: (Math.Clamp: pb - pa (0 - 128) 127);
+		if td is 0 return 9999;
+		int half: td / 2;
+		if half < 0
+			half is 0 - half;
+		;;
+		int tx: (16384 + half) / td;
+	[end: (Math.Clamp: (tb * tx + 32) >> 6 (0 - 1024) 1023)]
+
+	# the picture is made: filtered, marked, and in line to be shown
+	[FinishPic]
+		if cur is 0 return;
+		call MdH264Loop.Picture: self;
+		ptr<MdH264Pic> p: cur;
+		if nal_ref is not 0
+			call Mark;
+		;;
+		prev_fn is frame_num;
+		prev_fno is fno;
+		if mmco5
+			# (the picture's POC becomes 0, and what was waiting goes first)
+			int t: (Math.Min: top_poc bot_poc);
+			if sps.poc_type is 0
+				prev_msb is 0;
+				prev_lsb is top_poc - t;
+			;;
+			prev_fno is 0;
+			prev_fn is 0;
+			while (Bump)
+			;;
+			p.poc is 0;
+		;;
+		p.busy is false;
+		p.waiting is true;
+		cur is 0;
+		# shown in POC order: as many wait as the stream allows
+		while (Waiting) > reorder or (Held) > dpb_size
+			if not (Bump) break;
+		;;
+	[end]
+
+	[Waiting: : int]
+		int n: 0;
+		while int i: 0; i < MdH264.PICS; i++;
+			if (Pic: i).waiting
+				n++;
+			;;
+		;;
+	[end: n]
+
+	# pictures the DPB holds: references, and those waiting to be shown
+	[Held: : int]
+		int n: 0;
+		while int i: 0; i < MdH264.PICS; i++;
+			ptr<MdH264Pic> p: (Pic: i);
+			if p.waiting or (p.ref is not 0 and not p.gone)
+				n++;
+			;;
+		;;
+	[end: n]
+
+	# the waiting picture with the lowest POC is ready to show: false if none waits
+	[Bump: : bln]
+		int best: -1;
+		while int i: 0; i < MdH264.PICS; i++;
+			ptr<MdH264Pic> p: (Pic: i);
+			if p.waiting and (best < 0 or p.poc < (Pic: best).poc)
+				best is i;
+			;;
+		;;
+		if best < 0 return false;
+		ptr<MdH264Pic> q: (Pic: best);
+		q.waiting is false;
+		if ready_n < 24
+			q.ready is true;
+			ready_q:ready_n is best;
+			ready_n++;
+		;;
+	[end: true]
+
+	# decoded reference picture marking (8.2.5)
+	[Mark]
+		ptr<MdH264Pic> p: cur;
+		mmco5 is false;
+		if nal_type is 5
+			if long_term_ref
+				p.ref is 2;
+				p.lt_idx is 0;
+				max_long is 0;
+			;;
+			else
+				p.ref is 1;
+				max_long is -1;
+			;;
+			prev_ref_fn is frame_num;
+			return;
+		;;
+		call Wrap: frame_num;
+		bln made_long: false;
+		if adaptive
+			while int k: 0; k < mmco_n; k++;
+				int op: mmco:(k * 3);
+				int v1: mmco:(k * 3 + 1);
+				int v2: mmco:(k * 3 + 2);
+				when op
+					is 1
+						int num: frame_num - (v1 + 1);
+						int s: (FindShort: num);
+						if s >= 0
+							ptr<MdH264Pic> pk_: (Pic: s);
+							pk_.ref is 0;
+						;;
+					;;
+					is 2
+						int s: (FindLong: v1);
+						if s >= 0
+							ptr<MdH264Pic> pk_: (Pic: s);
+							pk_.ref is 0;
+						;;
+					;;
+					is 3
+						int num: frame_num - (v1 + 1);
+						int s: (FindShort: num);
+						int other: (FindLong: v2);
+						if other >= 0 and other is not s
+							ptr<MdH264Pic> pk_: (Pic: other);
+							pk_.ref is 0;
+						;;
+						if s >= 0
+							ptr<MdH264Pic> pk_: (Pic: s);
+							pk_.ref is 2;
+							pk_.lt_idx is v2;
+							pk_.num is v2;
+						;;
+					;;
+					is 4
+						max_long is v1 - 1;
+						while int i: 0; i < MdH264.PICS; i++;
+							ptr<MdH264Pic> q: (Pic: i);
+							if q.ref is 2 and q.lt_idx > max_long and q is not cur
+								q.ref is 0;
+							;;
+						;;
+					;;
+					is 5
+						while int i: 0; i < MdH264.PICS; i++;
+							ptr<MdH264Pic> q: (Pic: i);
+							if q is not cur
+								q.ref is 0;
+							;;
+						;;
+						max_long is -1;
+						mmco5 is true;
+					;;
+					is 6
+						int other: (FindLong: v2);
+						if other >= 0
+							ptr<MdH264Pic> pk_: (Pic: other);
+							pk_.ref is 0;
+						;;
+						p.ref is 2;
+						p.lt_idx is v2;
+						made_long is true;
+					;;
+				;;
+			;;
+		;;
+		else
+			call Sliding;
+		;;
+		if not made_long
+			p.ref is 1;
+		;;
+		# (too many references, from a broken stream: the oldest short-term ones go)
+		int guard: 0;
+		while (RefCount) > sps.ref_frames and sps.ref_frames > 0 and guard < 32
+			guard++;
+			int oldest: -1;
+			while int i: 0; i < MdH264.PICS; i++;
+				ptr<MdH264Pic> q: (Pic: i);
+				if q.ref is 1 and q is not cur and (oldest < 0 or q.num < (Pic: oldest).num)
+					oldest is i;
+				;;
+			;;
+			if oldest < 0 break;
+			ptr<MdH264Pic> pk_: (Pic: oldest);
+			pk_.ref is 0;
+		;;
+		prev_ref_fn is frame_num;
+		if mmco5
+			prev_ref_fn is 0;
+		;;
+	[end]
+
+	[RefCount: : int]
+		int n: 0;
+		while int i: 0; i < MdH264.PICS; i++;
+			if (Pic: i).ref is not 0
+				n++;
+			;;
+		;;
+	[end: n]
+
+	[FindShort: int num: 0;]
+		while int i: 0; i < MdH264.PICS; i++;
+			ptr<MdH264Pic> p: (Pic: i);
+			if p.ref is 1 and p.num is num and p is not cur
+				return i;
+			;;
+		;;
+	[end: -1]
+
+	[FindLong: int idx: 0;]
+		while int i: 0; i < MdH264.PICS; i++;
+			ptr<MdH264Pic> p: (Pic: i);
+			if p.ref is 2 and p.lt_idx is idx and p is not cur
+				return i;
+			;;
+		;;
+	[end: -1]
+
+	# ---- slice data (7.3.4), CABAC ----
+
+	[SliceData]
+		slice_num++;
+		if slice_num >= sl_cap
+			ptr<int> more: new int[sl_cap * 2 * 5];
+			if more is 0 return;
+			call Mem.Copy: more as ptr<u8> sl_info as ptr<u8> (sl_cap * 5 * 4) as u32;
+			free sl_info;
+			sl_info is more;
+			sl_cap is sl_cap * 2;
+		;;
+		sl_info:(slice_num * 5) is deblock_idc;
+		sl_info:(slice_num * 5 + 1) is alpha_off;
+		sl_info:(slice_num * 5 + 2) is beta_off;
+		sl_info:(slice_num * 5 + 3) is pps.cqp0;
+		sl_info:(slice_num * 5 + 4) is pps.cqp1;
+		if slice_type is not MdH264.I
+			call Lists;
+			call Scales;
+		;;
+		qp is slice_qp;
+		last_dqp is 0;
+		if first_mb >= mbs return;
+		cavlc is not pps.cabac;
+		if cavlc
+			call MdH264Cavlc.Slice: self;
+			return;
+		;;
+		int start: (b.pos + 7) >> 3;
+		call c.Start: rbsp rbsp_len start;
+		int kind: 0;
+		if slice_type is not MdH264.I
+			kind is cabac_init + 1;
+		;;
+		call c.Init: kind slice_qp;
+		mba is first_mb;
+		while mba < mbs
+			mx is mba % mb_w;
+			my is mba / mb_w;
+			mb_slice:mba is slice_num;
+			call Neighbors;
+			bln skip: false;
+			if slice_type is not MdH264.I
+				int inc: 0;
+				if mb_a >= 0 and (mb_kind:mb_a & MdH264.K_SKIP) is 0
+					inc++;
+				;;
+				if mb_b >= 0 and (mb_kind:mb_b & MdH264.K_SKIP) is 0
+					inc++;
+				;;
+				if slice_type is MdH264.P
+					skip is ((c.Bin: 11 + inc) is 1);
+				;;
+				else
+					skip is ((c.Bin: 24 + inc) is 1);
+				;;
+			;;
+			if skip
+				call SkipMb;
+			;;
+			elif not (Macroblock)
+				# (a broken macroblock: the rest of the slice is lost)
+				return;
+			;;
+			if c.pos > c.n + 4 return;
+			if (c.Terminate) is 1 return;
+			mba++;
+		;;
+	[end]
+
+	# which neighbors are there (in this slice, decoded): mb_a left, mb_b above, mb_c above right, mb_d above left
+	[Neighbors]
+		mb_a is -1;
+		mb_b is -1;
+		mb_c is -1;
+		mb_d is -1;
+		if mx > 0 and mb_slice:(mba - 1) is slice_num
+			mb_a is mba - 1;
+		;;
+		if my > 0
+			if mb_slice:(mba - mb_w) is slice_num
+				mb_b is mba - mb_w;
+			;;
+			if mx + 1 < mb_w and mb_slice:(mba - mb_w + 1) is slice_num
+				mb_c is mba - mb_w + 1;
+			;;
+			if mx > 0 and mb_slice:(mba - mb_w - 1) is slice_num
+				mb_d is mba - mb_w - 1;
+			;;
+		;;
+	[end]
+
+	# a neighbor there for intra prediction (constrained_intra_pred: only an intra one)
+	[IntraOk: int n: 0; : bln]
+		if n < 0 return false;
+		if pps.constrained and (mb_kind:n & MdH264.K_INTRA) is 0 return false;
+	[end: true]
+
+	# a P_Skip or B_Skip macroblock
+	[SkipMb]
+		intra is false;
+		t8 is false;
+		cbp is 0;
+		coded is 0;
+		bits is 0;
+		last_dqp is 0;
+		mbt is 0;
+		int kind: MdH264.K_SKIP;
+		call FillCache;
+		if slice_type is MdH264.P
+			int mvx: 0;
+			int mvy: 0;
+			int ra: refc:(CI: (0 - 1) 0);
+			int rb: refc:(CI: 0 (0 - 1));
+			bln zero: (mb_a < 0 or mb_b < 0);
+			if ra is 0 and mvc:((CI: (0 - 1) 0) * 2) is 0 and mvc:((CI: (0 - 1) 0) * 2 + 1) is 0
+				zero is true;
+			;;
+			if rb is 0 and mvc:((CI: 0 (0 - 1)) * 2) is 0 and mvc:((CI: 0 (0 - 1)) * 2 + 1) is 0
+				zero is true;
+			;;
+			if not zero
+				int mv[2];
+				call PredMv: 0 0 0 4 0 0 addr mv;
+				mvx is mv:0;
+				mvy is mv:1;
+			;;
+			call SetRef: 0 0 0 4 4 0;
+			call SetMv: 0 0 0 4 4 mvx mvy;
+			mb_direct:mba is 0;
+		;;
+		else
+			kind is kind | MdH264.K_DIRECT;
+			call Direct: 15;
+			mb_direct:mba is 15;
+		;;
+		mb_kind:mba is kind as u8;
+		call Common;
+		call Inter;
+	[end]
+
+	# what every macroblock stores
+	[Common]
+		mb_cbp:mba is cbp as u8;
+		mb_qp:mba is qp as u8;
+		nzf:mba is bits;
+		if not intra
+			mb_cmode:mba is 0;
+			while int i: 0; i < 16; i++;
+				ipm:(mba * 16 + i) is -1;
+			;;
+		;;
+		call StoreMotion;
+	[end]
+
+	# a macroblock_layer: false if it's broken
+	[Macroblock: : bln]
+		coded is 0;
+		bits is 0;
+		t8 is false;
+		cbp is 0;
+		mb_direct:mba is 0;
+		int it: -1;                 # intra: its type in Table 7-11's numbers
+		mbt is (MbType);
+		if mbt < 0 return false;
+		if slice_type is MdH264.I
+			it is mbt;
+		;;
+		elif slice_type is MdH264.P and mbt >= 5
+			it is mbt - 5;
+		;;
+		elif slice_type is MdH264.B and mbt >= 23
+			it is mbt - 23;
+		;;
+		intra is (it >= 0);
+		if intra
+			if it is 25
+				call Pcm;
+				return true;
+			;;
+			return (IntraMb: it);
+		;;
+	[end: (InterMb)]
+
+	# mb_type (9.3.2.5): its number in the slice's table, intra ones after the slice's own
+	[MbType]
+		if cavlc
+			int v: (b.Ue);
+			if b.bad or v > 48 return -1;
+			if slice_type is MdH264.I and v > 25 return -1;
+			if slice_type is MdH264.P and v > 30 return -1;
+			return v;
+		;;
+		if slice_type is MdH264.I
+			int inc: 0;
+			if mb_a >= 0 and (mb_kind:mb_a & (MdH264.K_I16 | MdH264.K_PCM)) is not 0
+				inc++;
+			;;
+			if mb_b >= 0 and (mb_kind:mb_b & (MdH264.K_I16 | MdH264.K_PCM)) is not 0
+				inc++;
+			;;
+			if (c.Bin: 3 + inc) is 0 return 0;
+			return (IntraType: 5 true);
+		;;
+		if slice_type is MdH264.P
+			if (c.Bin: 14) is 0
+				if (c.Bin: 15) is 0
+					return 3 * (c.Bin: 16);
+				;;
+				return 2 - (c.Bin: 17);
+			;;
+			if (c.Bin: 17) is 0 return 5;
+			return 5 + (IntraType: 17 false);
+		;;
+		int inc: 0;
+		if mb_a >= 0 and (mb_kind:mb_a & MdH264.K_DIRECT) is 0
+			inc++;
+		;;
+		if mb_b >= 0 and (mb_kind:mb_b & MdH264.K_DIRECT) is 0
+			inc++;
+		;;
+		if (c.Bin: 27 + inc) is 0 return 0;
+		if (c.Bin: 30) is 0
+			return 1 + (c.Bin: 32);
+		;;
+		int v: (c.Bin: 31) << 3;
+		v is v | ((c.Bin: 32) << 2);
+		v is v | ((c.Bin: 32) << 1);
+		v is v | (c.Bin: 32);
+		if v < 8 return v + 3;
+		if v is 13
+			if (c.Bin: 32) is 0 return 23;
+			return 23 + (IntraType: 32 false);
+		;;
+		if v is 14 return 11;
+		if v is 15 return 22;
+		v is (v << 1) | (c.Bin: 32);
+	[end: v - 4]
+
+	# the rest of an intra mb_type after its first bin (1): I_PCM, or I_16x16's; ctx is where its
+	# bins' contexts start (5 in an I slice, after the first's three; 17 or 32 in P and B)
+	[IntraType: int base: 5; bln islice: true;]
+		if (c.Terminate) is 1 return 25;
+		int t: 1;
+		int k: 0;
+		if islice
+			k is 1;
+		;;
+		t++ 12 * (c.Bin: base + 1);
+		if (c.Bin: base + 2) is 1
+			t++ 4 + 4 * (c.Bin: base + 2 + k);
+		;;
+		# (the prediction mode's two bins: the first is worth 2)
+		t++ 2 * (c.Bin: base + 3 + k);
+		t++ (c.Bin: base + 3 + 2 * k);
+	[end: t]
+
+	[Pcm]
+		int pos: ((c.BitPos) + 7) >> 3;
+		if cavlc
+			pos is (b.pos + 7) >> 3;
+		;;
+		if pos + 384 > rbsp_len
+			pos is rbsp_len - 384;
+			if pos < 0
+				pos is 0;
+			;;
+		;;
+		ptr<u8> src: rbsp + pos;
+		ptr<u8> py: cur.y + my * 16 * ys + mx * 16;
+		while int r: 0; r < 16; r++;
+			call Mem.Copy: py + r * ys src + r * 16 16;
+		;;
+		ptr<u8> pu: cur.u + my * 8 * uvs + mx * 8;
+		ptr<u8> pv: cur.v + my * 8 * uvs + mx * 8;
+		while int r: 0; r < 8; r++;
+			call Mem.Copy: pu + r * uvs src + 256 + r * 8 8;
+			call Mem.Copy: pv + r * uvs src + 320 + r * 8 8;
+		;;
+		if cavlc
+			b.pos is (pos + 384) * 8;
+			while int i: 0; i < 24; i++;
+				tcnt:(mba * 24 + i) is 16;
+			;;
+		;;
+		else
+			call c.Start: rbsp rbsp_len pos + 384;
+		;;
+		mb_kind:mba is (MdH264.K_INTRA | MdH264.K_PCM) as u8;
+		cbp is 0x2F;
+		bits is 0x07FFFFFF;
+		intra is true;
+		mb_cmode:mba is 0;
+		while int i: 0; i < 16; i++;
+			ipm:(mba * 16 + i) is -1;
+		;;
+		call ClearMotion;
+		int keep: qp;
+		qp is 0;
+		call Common;
+		qp is keep;
+		last_dqp is 0;
+	[end]
+
+	[ClearMotion]
+		while int i: 0; i < 80; i++;
+			refc:i is -1;
+		;;
+		while int i: 0; i < 160; i++;
+			mvc:i is 0;
+			mvdc:i is 0;
+		;;
+		while int i: 0; i < 40; i++;
+			dirc:i is 0;
+		;;
+	[end]
+
+	[IntraMb: int it: 0; : bln]
+		int kind: MdH264.K_INTRA;
+		call ClearMotion;
+		int i16mode: 0;
+		if it is 0
+			if pps.t8
+				int inc: 0;
+				if mb_a >= 0 and (mb_kind:mb_a & MdH264.K_T8) is not 0
+					inc++;
+				;;
+				if mb_b >= 0 and (mb_kind:mb_b & MdH264.K_T8) is not 0
+					inc++;
+				;;
+				if cavlc
+					t8 is (b.Flag);
+				;;
+				else
+					t8 is ((c.Bin: 399 + inc) is 1);
+				;;
+			;;
+			if t8
+				kind is kind | MdH264.K_I8 | MdH264.K_T8;
+				while int b8: 0; b8 < 4; b8++;
+					int x: (b8 & 1) * 2;
+					int y: (b8 >> 1) * 2;
+					int pred: (PredMode: x y);
+					int mode: pred;
+					if not (PrevMode)
+						int rem: (RemMode);
+						mode is rem;
+						if rem >= pred
+							mode is rem + 1;
+						;;
+					;;
+					int r: y * 4 + x;
+					ipm:(mba * 16 + r) is mode as i8;
+					ipm:(mba * 16 + r + 1) is mode as i8;
+					ipm:(mba * 16 + r + 4) is mode as i8;
+					ipm:(mba * 16 + r + 5) is mode as i8;
+				;;
+			;;
+			else
+				kind is kind | MdH264.K_I4;
+				while int blk: 0; blk < 16; blk++;
+					int x: MdH264Rec.blk_x:blk;
+					int y: MdH264Rec.blk_y:blk;
+					int pred: (PredMode: x y);
+					int mode: pred;
+					if not (PrevMode)
+						int rem: (RemMode);
+						mode is rem;
+						if rem >= pred
+							mode is rem + 1;
+						;;
+					;;
+					ipm:(mba * 16 + y * 4 + x) is mode as i8;
+				;;
+			;;
+		;;
+		else
+			kind is kind | MdH264.K_I16;
+			i16mode is (it - 1) % 4;
+			cbp is (((it - 1) / 4) % 3) << 4;
+			if it >= 13
+				cbp is cbp | 15;
+			;;
+			while int i: 0; i < 16; i++;
+				ipm:(mba * 16 + i) is -1;
+			;;
+		;;
+		# intra_chroma_pred_mode
+		int inc: 0;
+		if (IntraOk: mb_a) and mb_cmode:mb_a is not 0
+			inc++;
+		;;
+		if (IntraOk: mb_b) and mb_cmode:mb_b is not 0
+			inc++;
+		;;
+		int cm: 0;
+		if cavlc
+			cm is (b.Ue);
+			if cm > 3 return false;
+		;;
+		elif (c.Bin: 64 + inc) is 1
+			cm is 1;
+			if (c.Bin: 67) is 1
+				cm is 2;
+				if (c.Bin: 67) is 1
+					cm is 3;
+				;;
+			;;
+		;;
+		mb_cmode:mba is cm as u8;
+		mb_kind:mba is kind as u8;
+		if it is 0
+			cbp is (Cbp: true);
+			if cbp < 0 return false;
+		;;
+		if cbp is not 0 or it > 0
+			if not (QpDelta) return false;
+			call Residual: it > 0;
+		;;
+		else
+			last_dqp is 0;
+		;;
+		call Common;
+		call MdH264Rec.IntraMb: self i16mode cm;
+	[end: true]
+
+	# prev_intra4x4_pred_mode_flag (or 8x8's), and rem_intra4x4_pred_mode
+	[PrevMode: : bln]
+		if cavlc return (b.Flag);
+	[end: ((c.Bin: 68) is 1)]
+
+	[RemMode]
+		if cavlc return (b.U: 3);
+	[end: (c.Bin: 69) | ((c.Bin: 69) << 1) | ((c.Bin: 69) << 2)]
+
+	# Intra4x4PredMode's prediction for the 4x4 block at (x, y) (8.3.1.1)
+	[PredMode: int x: 0; int y: 0;]
+		int a: -3;
+		int b2: -3;
+		if x > 0
+			a is ipm:(mba * 16 + y * 4 + x - 1);
+		;;
+		elif (IntraOk: mb_a)
+			a is ipm:(mb_a * 16 + y * 4 + 3);
+		;;
+		if y > 0
+			b2 is ipm:(mba * 16 + (y - 1) * 4 + x);
+		;;
+		elif (IntraOk: mb_b)
+			b2 is ipm:(mb_b * 16 + 12 + x);
+		;;
+		if a is -3 or b2 is -3 return 2;
+		if a < 0
+			a is 2;
+		;;
+		if b2 < 0
+			b2 is 2;
+		;;
+	[end: (Math.Min: a b2)]
+
+	# coded_block_pattern (9.3.2.6; CAVLC's by Table 9-4): -1 if broken
+	[Cbp: bln intra_nxn: false;]
+		if cavlc
+			int k: (b.Ue);
+			if b.bad or k > 47 return -1;
+			if intra_nxn return MdH264Tables.cbp_intra:k;
+			return MdH264Tables.cbp_inter:k;
+		;;
+		int v: 0;
+		int ca: 0x2F;
+		int cb: 0x2F;
+		if mb_a >= 0
+			ca is mb_cbp:mb_a;
+		;;
+		if mb_b >= 0
+			cb is mb_cbp:mb_b;
+		;;
+		while int b8: 0; b8 < 4; b8++;
+			int inc: 0;
+			if (b8 & 1) is 1
+				if ((v >> (b8 - 1)) & 1) is 0
+					inc++;
+				;;
+			;;
+			elif ((ca >> (b8 + 1)) & 1) is 0
+				inc++;
+			;;
+			if b8 >= 2
+				if ((v >> (b8 - 2)) & 1) is 0
+					inc++ 2;
+				;;
+			;;
+			elif ((cb >> (b8 + 2)) & 1) is 0
+				inc++ 2;
+			;;
+			v is v | ((c.Bin: 73 + inc) << b8);
+		;;
+		int ia: 0;
+		int ib: 0;
+		if mb_a >= 0 and ((ca >> 4) & 3) is not 0
+			ia is 1;
+		;;
+		if mb_b >= 0 and ((cb >> 4) & 3) is not 0
+			ib is 1;
+		;;
+		if (c.Bin: 77 + ia + 2 * ib) is 1
+			ia is 0;
+			ib is 0;
+			if mb_a >= 0 and ((ca >> 4) & 3) is 2
+				ia is 1;
+			;;
+			if mb_b >= 0 and ((cb >> 4) & 3) is 2
+				ib is 1;
+			;;
+			v is v | ((1 + (c.Bin: 81 + ia + 2 * ib)) << 4);
+		;;
+	[end: v]
+
+	# mb_qp_delta: the new QP
+	[QpDelta: : bln]
+		if cavlc
+			int dq: (b.Se);
+			if b.bad or dq < -26 or dq > 25 return false;
+			last_dqp is dq;
+			qp is (qp + dq + 52) % 52;
+			return true;
+		;;
+		int k: 0;
+		int inc: 0;
+		if last_dqp is not 0
+			inc is 1;
+		;;
+		if (c.Bin: 60 + inc) is 1
+			k is 1;
+			int ctx: 62;
+			while (c.Bin: ctx) is 1
+				k++;
+				ctx is 63;
+				if k > 104 return false;
+			;;
+		;;
+		int delta: (k + 1) >> 1;
+		if (k & 1) is 0
+			delta is 0 - (k >> 1);
+		;;
+		last_dqp is delta;
+		qp is (qp + delta + 52) % 52;
+		if qp < 0
+			qp++ 52;
+		;;
+	[end: true]
+
+	# ---- inter macroblocks ----
+
+	# a block's place in the motion caches: x from -1 to 4, y from -1 to 3
+	[CI: int x: 0; int y: 0;]
+	[end: (y + 1) * 8 + x + 1]
+
+	# the caches from the neighbors (the inside unavailable until it's decoded)
+	[FillCache]
+		while int i: 0; i < 80; i++;
+			refc:i is -2;
+		;;
+		while int i: 0; i < 160; i++;
+			mvc:i is 0;
+			mvdc:i is 0;
+		;;
+		while int i: 0; i < 40; i++;
+			dirc:i is 0;
+		;;
+		ptr<MdH264Pic> p: cur;
+		while int l: 0; l < 2; l++;
+			ptr<i8> refs: p.ref0;
+			ptr<i16> mvs: p.mv0;
+			if l is 1
+				refs is p.ref1;
+				mvs is p.mv1;
+			;;
+			if mb_b >= 0
+				while int x: 0; x < 4; x++;
+					call FromNeighbor: l refs mvs mb_b x 3 x (0 - 1);
+				;;
+			;;
+			if mb_a >= 0
+				while int y: 0; y < 4; y++;
+					call FromNeighbor: l refs mvs mb_a 3 y (0 - 1) y;
+				;;
+			;;
+			if mb_c >= 0
+				call FromNeighbor: l refs mvs mb_c 0 3 4 (0 - 1);
+			;;
+			if mb_d >= 0
+				call FromNeighbor: l refs mvs mb_d 3 3 (0 - 1) (0 - 1);
+			;;
+		;;
+		# (an 8x8 block's top-left 4x4 is there only once the 8x8 block is: (2, 0) and (2, 2)
+		# can be a block's above-right neighbor before they're decoded)
+	[end]
+
+	[FromNeighbor: int l: 0; ptr<i8> refs: 0; ptr<i16> mvs: 0; int n: 0; int bx: 0; int by: 0; int cx: 0; int cy: 0;]
+		int ci: (CI: cx cy);
+		int k: l * 40 + ci;
+		refc:k is refs:(n * 4 + (by >> 1) * 2 + (bx >> 1));
+		int blk: n * 16 + by * 4 + bx;
+		mvc:(k * 2) is mvs:(blk * 2);
+		mvc:(k * 2 + 1) is mvs:(blk * 2 + 1);
+		mvdc:(k * 2) is mvd:((n * 2 + l) * 32 + (by * 4 + bx) * 2);
+		mvdc:(k * 2 + 1) is mvd:((n * 2 + l) * 32 + (by * 4 + bx) * 2 + 1);
+		if ((mb_direct:n >> ((by >> 1) * 2 + (bx >> 1))) & 1) is not 0
+			dirc:ci is 1;
+		;;
+	[end]
+
+	[SetRef: int l: 0; int x: 0; int y: 0; int bw: 4; int bh: 4; int r: 0;]
+		while int j: 0; j < bh; j++;
+			while int i: 0; i < bw; i++;
+				refc:(l * 40 + (CI: x + i y + j)) is r;
+			;;
+		;;
+	[end]
+
+	[SetMv: int l: 0; int x: 0; int y: 0; int bw: 4; int bh: 4; int vx: 0; int vy: 0;]
+		while int j: 0; j < bh; j++;
+			while int i: 0; i < bw; i++;
+				int k: l * 40 + (CI: x + i y + j);
+				mvc:(k * 2) is vx;
+				mvc:(k * 2 + 1) is vy;
+			;;
+		;;
+	[end]
+
+	[SetMvd: int l: 0; int x: 0; int y: 0; int bw: 4; int bh: 4; int dx: 0; int dy: 0;]
+		if dx < 0
+			dx is 0 - dx;
+		;;
+		if dy < 0
+			dy is 0 - dy;
+		;;
+		if dx > 127
+			dx is 127;
+		;;
+		if dy > 127
+			dy is 127;
+		;;
+		while int j: 0; j < bh; j++;
+			while int i: 0; i < bw; i++;
+				int k: l * 40 + (CI: x + i y + j);
+				mvdc:(k * 2) is dx;
+				mvdc:(k * 2 + 1) is dy;
+			;;
+		;;
+	[end]
+
+	# a motion vector's prediction (8.4.1.3) for the partition at (x, y), bw 4x4 blocks wide, of
+	# reference r in list l; shape 1, 2: 16x8's upper, lower; 3, 4: 8x16's left, right
+	[PredMv: int l: 0; int x: 0; int y: 0; int bw: 4; int r: 0; int shape: 0; ptr<int> mv: 0;]
+		int ka: l * 40 + (CI: x - 1 y);
+		int kb: l * 40 + (CI: x y - 1);
+		int kc: l * 40 + (CI: x + bw y - 1);
+		if refc:kc is -2
+			kc is l * 40 + (CI: x - 1 y - 1);
+		;;
+		int ra: refc:ka;
+		int rb: refc:kb;
+		int rc: refc:kc;
+		int ax: mvc:(ka * 2);
+		int ay: mvc:(ka * 2 + 1);
+		int bx: mvc:(kb * 2);
+		int by: mvc:(kb * 2 + 1);
+		int cx: mvc:(kc * 2);
+		int cy: mvc:(kc * 2 + 1);
+		if shape is 1 and rb is r
+			mv:0 is bx;
+			mv:1 is by;
+			return;
+		;;
+		if shape is 2 and ra is r
+			mv:0 is ax;
+			mv:1 is ay;
+			return;
+		;;
+		if shape is 3 and ra is r
+			mv:0 is ax;
+			mv:1 is ay;
+			return;
+		;;
+		if shape is 4 and rc is r
+			mv:0 is cx;
+			mv:1 is cy;
+			return;
+		;;
+		if rb is -2 and rc is -2 and ra is not -2
+			mv:0 is ax;
+			mv:1 is ay;
+			return;
+		;;
+		int match: 0;
+		if ra is r
+			match++;
+		;;
+		if rb is r
+			match++;
+		;;
+		if rc is r
+			match++;
+		;;
+		if match is 1
+			if ra is r
+				mv:0 is ax;
+				mv:1 is ay;
+			;;
+			elif rb is r
+				mv:0 is bx;
+				mv:1 is by;
+			;;
+			else
+				mv:0 is cx;
+				mv:1 is cy;
+			;;
+			return;
+		;;
+		mv:0 is (Median: ax bx cx);
+		mv:1 is (Median: ay by cy);
+	[end]
+
+	[Median: int a: 0; int b2: 0; int c2: 0;]
+		int lo: (Math.Min: a b2);
+		int hi: (Math.Max: a b2);
+		if c2 < lo return lo;
+		if c2 > hi return hi;
+	[end: c2]
+
+	# ref_idx_lX for the partition at (x, y) (9.3.3.1.1.6)
+	[RefIdx: int l: 0; int x: 0; int y: 0;]
+		if cavlc
+			int n: nref0;
+			if l is 1
+				n is nref1;
+			;;
+			if n is 2 return 1 - (b.U: 1);
+			int v: (b.Ue);
+			if v >= n return 0;
+			return v;
+		;;
+		int inc: 0;
+		int ka: (CI: x - 1 y);
+		int kb: (CI: x y - 1);
+		if refc:(l * 40 + ka) > 0 and dirc:ka is 0
+			inc++;
+		;;
+		if refc:(l * 40 + kb) > 0 and dirc:kb is 0
+			inc++ 2;
+		;;
+		if (c.Bin: 54 + inc) is 0 return 0;
+		int v: 1;
+		int ctx: 58;
+		while (c.Bin: ctx) is 1
+			v++;
+			ctx is 59;
+			if v > 32 return 0;
+		;;
+	[end: v]
+
+	# mvd_lX's component (0 x, 1 y) for the partition at (x, y) (9.3.3.1.1.7)
+	[Mvd: int l: 0; int x: 0; int y: 0; int comp: 0;]
+		if cavlc return (b.Se);
+		int sum: mvdc:((l * 40 + (CI: x - 1 y)) * 2 + comp) + mvdc:((l * 40 + (CI: x y - 1)) * 2 + comp);
+		int base: 40;
+		if comp is 1
+			base is 47;
+		;;
+		int inc: 0;
+		if sum > 32
+			inc is 2;
+		;;
+		elif sum > 2
+			inc is 1;
+		;;
+		if (c.Bin: base + inc) is 0 return 0;
+		int v: 1;
+		while v < 9
+			int ci: base + v + 2;
+			if v >= 4
+				ci is base + 6;
+			;;
+			if (c.Bin: ci) is 0
+				break;
+			;;
+			v++;
+		;;
+		if v >= 9
+			# (the rest: Exp-Golomb, k 3, in bins of equal chances)
+			int k: 3;
+			while (c.Bypass) is 1 and k < 24
+				v++ 1 << k;
+				k++;
+			;;
+			while k > 0
+				k--;
+				v++ (c.Bypass) << k;
+			;;
+		;;
+		if (c.Bypass) is 1 return 0 - v;
+	[end: v]
+
+	[InterMb: : bln]
+		int kind: 0;
+		call FillCache;
+		bln b_slice: (slice_type is MdH264.B);
+		bln no_small: true;           # noSubMbPartSizeLessThan8x8Flag
+		bln eight: ((not b_slice and (mbt is 3 or mbt is 4)) or (b_slice and mbt is 22));
+		if b_slice and mbt is 0
+			# B_Direct_16x16
+			kind is MdH264.K_DIRECT;
+			call Direct: 15;
+			mb_direct:mba is 15;
+			if not sps.direct8
+				no_small is false;
+			;;
+		;;
+		elif eight
+			int dmask: 0;
+			while int k: 0; k < 4; k++;
+				if b_slice
+					sub:k is (BSub);
+					if sub:k is 0
+						dmask is dmask | (1 << k);
+						if not sps.direct8
+							no_small is false;
+						;;
+					;;
+					elif MdH264Rec.bsub_shape:(sub:k) is not 0
+						no_small is false;
+					;;
+				;;
+				else
+					sub:k is (PSub);
+					if sub:k is not 0
+						no_small is false;
+					;;
+				;;
+			;;
+			if dmask is not 0
+				call Direct: dmask;
+			;;
+			mb_direct:mba is dmask as u8;
+			# (the top-left 4x4 of the 8x8 blocks on the right: not there until they're decoded)
+			while int l: 0; l < 2; l++;
+				refc:(l * 40 + (CI: 2 0)) is -2;
+				refc:(l * 40 + (CI: 2 2)) is -2;
+			;;
+			int lists: 1;
+			if b_slice
+				lists is 2;
+			;;
+			int refs[8];
+			while int l: 0; l < lists; l++;
+				int n: nref0;
+				if l is 1
+					n is nref1;
+				;;
+				while int k: 0; k < 4; k++;
+					int x: (k & 1) * 2;
+					int y: (k >> 1) * 2;
+					int r: -1;
+					if b_slice and sub:k is 0
+						continue;
+					;;
+					if (Uses: k l)
+						r is 0;
+						if n > 1 and not (not b_slice and mbt is 4)
+							r is (RefIdx: l x y);
+						;;
+					;;
+					refs:(l * 4 + k) is r;
+					refc:(l * 40 + (CI: x + 1 y)) is r;
+					refc:(l * 40 + (CI: x y + 1)) is r;
+					refc:(l * 40 + (CI: x + 1 y + 1)) is r;
+				;;
+			;;
+			while int l: 0; l < lists; l++;
+				while int k: 0; k < 4; k++;
+					int x: (k & 1) * 2;
+					int y: (k >> 1) * 2;
+					refc:(l * 40 + (CI: x y)) is refc:(l * 40 + (CI: x + 1 y));
+					if b_slice and sub:k is 0
+						continue;
+					;;
+					if not (Uses: k l)
+						call SetMv: l x y 2 2 0 0;
+						continue;
+					;;
+					int r: refs:(l * 4 + k);
+					int shape: 0;
+					if b_slice
+						shape is MdH264Rec.bsub_shape:(sub:k);
+					;;
+					else
+						shape is sub:k;
+					;;
+					int pw: 2;
+					int ph2: 2;
+					int parts: 1;
+					when shape
+						is 1
+							ph2 is 1;
+							parts is 2;
+						;;
+						is 2
+							pw is 1;
+							parts is 2;
+						;;
+						is 3
+							pw is 1;
+							ph2 is 1;
+							parts is 4;
+						;;
+					;;
+					while int j: 0; j < parts; j++;
+						int sx: x;
+						int sy: y;
+						if pw is 1
+							sx++ j & 1;
+						;;
+						if ph2 is 1
+							if pw is 1
+								sy++ j >> 1;
+							;;
+							else
+								sy++ j;
+							;;
+						;;
+						int mv[2];
+						call PredMv: l sx sy pw r 0 addr mv;
+						int dx: (Mvd: l sx sy 0);
+						int dy: (Mvd: l sx sy 1);
+						call SetMv: l sx sy pw ph2 mv:0 + dx mv:1 + dy;
+						call SetMvd: l sx sy pw ph2 dx dy;
+					;;
+				;;
+			;;
+		;;
+		else
+			# 16x16, 16x8, 8x16
+			int shape: 0;
+			int p0: 1;
+			int p1: 1;
+			if b_slice
+				shape is MdH264Rec.b_shape:mbt;
+				p0 is MdH264Rec.b_pred0:mbt;
+				p1 is MdH264Rec.b_pred1:mbt;
+			;;
+			else
+				shape is mbt;
+			;;
+			int parts: 1;
+			if shape is not 0
+				parts is 2;
+			;;
+			int lists: 1;
+			if b_slice
+				lists is 2;
+			;;
+			int refs[4];
+			while int l: 0; l < lists; l++;
+				int n: nref0;
+				if l is 1
+					n is nref1;
+				;;
+				while int k: 0; k < parts; k++;
+					int pred: p0;
+					if k is 1
+						pred is p1;
+					;;
+					int x: 0;
+					int y: 0;
+					int bw: 4;
+					int bh: 4;
+					call PartBox: shape k addr x addr y addr bw addr bh;
+					int r: -1;
+					if (pred & (1 << l)) is not 0
+						r is 0;
+						if n > 1
+							r is (RefIdx: l x y);
+						;;
+					;;
+					refs:(l * 2 + k) is r;
+					call SetRef: l x y bw bh r;
+				;;
+			;;
+			while int l: 0; l < lists; l++;
+				while int k: 0; k < parts; k++;
+					int x: 0;
+					int y: 0;
+					int bw: 4;
+					int bh: 4;
+					call PartBox: shape k addr x addr y addr bw addr bh;
+					int r: refs:(l * 2 + k);
+					if r < 0
+						call SetMv: l x y bw bh 0 0;
+						continue;
+					;;
+					int pshape: 0;
+					if shape is 1
+						pshape is 1 + k;
+					;;
+					elif shape is 2
+						pshape is 3 + k;
+					;;
+					int mv[2];
+					call PredMv: l x y bw r pshape addr mv;
+					int dx: (Mvd: l x y 0);
+					int dy: (Mvd: l x y 1);
+					call SetMv: l x y bw bh mv:0 + dx mv:1 + dy;
+					call SetMvd: l x y bw bh dx dy;
+				;;
+			;;
+			if not b_slice
+				while int i: 0; i < 40; i++;
+					refc:(40 + i) is -1;
+				;;
+			;;
+		;;
+		if not b_slice
+			# (list 1 isn't used in a P slice)
+			while int i: 0; i < 40; i++;
+				if refc:(40 + i) is -2
+					refc:(40 + i) is -1;
+				;;
+			;;
+		;;
+		mb_kind:mba is kind as u8;
+		cbp is (Cbp: false);
+		if cbp < 0 return false;
+		if (cbp & 15) is not 0 and pps.t8 and no_small
+			int inc: 0;
+			if mb_a >= 0 and (mb_kind:mb_a & MdH264.K_T8) is not 0
+				inc++;
+			;;
+			if mb_b >= 0 and (mb_kind:mb_b & MdH264.K_T8) is not 0
+				inc++;
+			;;
+			if cavlc
+				t8 is (b.Flag);
+			;;
+			else
+				t8 is ((c.Bin: 399 + inc) is 1);
+			;;
+			if t8
+				mb_kind:mba is (kind | MdH264.K_T8) as u8;
+			;;
+		;;
+		if cbp is not 0
+			if not (QpDelta) return false;
+			call Residual: false;
+		;;
+		else
+			last_dqp is 0;
+		;;
+		call Common;
+		call Inter;
+	[end: true]
+
+	# whether sub-macroblock k uses list l
+	[Uses: int k: 0; int l: 0; : bln]
+		if slice_type is MdH264.P return (l is 0);
+		int pred: MdH264Rec.bsub_pred:(sub:k);
+	[end: ((pred & (1 << l)) is not 0)]
+
+	# partition k of a 16x16 (shape 0), 16x8 (1) or 8x16 (2) macroblock, in 4x4 blocks
+	[PartBox: int shape: 0; int k: 0; ptr<int> x: 0; ptr<int> y: 0; ptr<int> bw: 0; ptr<int> bh: 0;]
+		x:0 is 0;
+		y:0 is 0;
+		bw:0 is 4;
+		bh:0 is 4;
+		if shape is 1
+			bh:0 is 2;
+			y:0 is k * 2;
+		;;
+		elif shape is 2
+			bw:0 is 2;
+			x:0 is k * 2;
+		;;
+	[end]
+
+	[PSub]
+		if cavlc return (Math.Min: (b.Ue) 3);
+		if (c.Bin: 21) is 1 return 0;
+		if (c.Bin: 22) is 0 return 1;
+		if (c.Bin: 23) is 1 return 2;
+	[end: 3]
+
+	[BSub]
+		if cavlc return (Math.Min: (b.Ue) 12);
+		if (c.Bin: 36) is 0 return 0;
+		if (c.Bin: 37) is 0 return 1 + (c.Bin: 39);
+		int t: 3;
+		if (c.Bin: 38) is 1
+			if (c.Bin: 39) is 1 return 11 + (c.Bin: 39);
+			t++ 4;
+		;;
+		t++ 2 * (c.Bin: 39);
+		t++ (c.Bin: 39);
+	[end: t]
+
+	# direct prediction (8.4.1.2) of the 8x8 blocks in mask: their references and motion into the caches
+	[Direct: int mask: 15;]
+		ptr<MdH264Pic> col: 0 as ptr<MdH264Pic>;
+		if list1:0 >= 0
+			col is (Pic: list1:0);
+			if col.gone
+				col is 0 as ptr<MdH264Pic>;
+			;;
+		;;
+		if direct_spatial
+			# the references: the least of the neighbors' that's 0 or more, by list
+			int r0: (MinPos: refc:(CI: (0 - 1) 0) (MinPos: refc:(CI: 0 (0 - 1)) (CornerRef: 0)));
+			int r1: (MinPos: refc:(40 + (CI: (0 - 1) 0)) (MinPos: refc:(40 + (CI: 0 (0 - 1))) (CornerRef: 1)));
+			int mv0[2];
+			int mv1[2];
+			mv0:0 is 0;
+			mv0:1 is 0;
+			mv1:0 is 0;
+			mv1:1 is 0;
+			bln zero_all: false;
+			if r0 < 0
+				r0 is -1;
+			;;
+			if r1 < 0
+				r1 is -1;
+			;;
+			if r0 < 0 and r1 < 0
+				r0 is 0;
+				r1 is 0;
+				zero_all is true;
+			;;
+			else
+				if r0 >= 0
+					call PredMv: 0 0 0 4 r0 0 addr mv0;
+				;;
+				if r1 >= 0
+					call PredMv: 1 0 0 4 r1 0 addr mv1;
+				;;
+			;;
+			bln short1: (list1:0 >= 0 and (Pic: list1:0).ref is 1);
+			while int k: 0; k < 4; k++;
+				if ((mask >> k) & 1) is 0
+					continue;
+				;;
+				int x8: (k & 1) * 2;
+				int y8: (k >> 1) * 2;
+				int step: 1;
+				if sps.direct8
+					step is 2;
+				;;
+				int j: 0;
+				while j < 2
+					int i: 0;
+					while i < 2
+						int bx: x8 + i;
+						int by: y8 + j;
+						# (the co-located block: with direct_8x8_inference, the 8x8 block's corner)
+						int cbx: bx;
+						int cby: by;
+						if sps.direct8
+							cbx is (k & 1) * 3;
+							cby is (k >> 1) * 3;
+						;;
+						bln czero: false;
+						if not zero_all and short1 and col is not 0
+							int cr: 0;
+							int cvx: 0;
+							int cvy: 0;
+							call Colocated: col cbx cby addr cr addr cvx addr cvy;
+							if cr is 0 and cvx >= -1 and cvx <= 1 and cvy >= -1 and cvy <= 1
+								czero is true;
+							;;
+						;;
+						int w4: step;
+						int a0x: mv0:0;
+						int a0y: mv0:1;
+						int a1x: mv1:0;
+						int a1y: mv1:1;
+						if zero_all or (r0 is 0 and czero)
+							a0x is 0;
+							a0y is 0;
+						;;
+						if zero_all or (r1 is 0 and czero)
+							a1x is 0;
+							a1y is 0;
+						;;
+						call SetRef: 0 bx by w4 w4 r0;
+						call SetRef: 1 bx by w4 w4 r1;
+						call SetMv: 0 bx by w4 w4 a0x a0y;
+						call SetMv: 1 bx by w4 w4 a1x a1y;
+						if r0 < 0
+							call SetMv: 0 bx by w4 w4 0 0;
+						;;
+						if r1 < 0
+							call SetMv: 1 bx by w4 w4 0 0;
+						;;
+						i++ step;
+					;;
+					j++ step;
+				;;
+				call SetMvd: 0 x8 y8 2 2 0 0;
+				call SetMvd: 1 x8 y8 2 2 0 0;
+				dirc:(CI: x8 y8) is 1;
+				dirc:(CI: x8 + 1 y8) is 1;
+				dirc:(CI: x8 y8 + 1) is 1;
+				dirc:(CI: x8 + 1 y8 + 1) is 1;
+			;;
+			return;
+		;;
+		# temporal: the co-located block's motion, scaled by how far the pictures are apart
+		while int k: 0; k < 4; k++;
+			if ((mask >> k) & 1) is 0
+				continue;
+			;;
+			int x8: (k & 1) * 2;
+			int y8: (k >> 1) * 2;
+			int step: 1;
+			if sps.direct8
+				step is 2;
+			;;
+			int j: 0;
+			while j < 2
+				int i: 0;
+				while i < 2
+					int bx: x8 + i;
+					int by: y8 + j;
+					int cbx: bx;
+					int cby: by;
+					if sps.direct8
+						cbx is (k & 1) * 3;
+						cby is (k >> 1) * 3;
+					;;
+					int r0: 0;
+					int cvx: 0;
+					int cvy: 0;
+					if col is not 0
+						int cr: 0;
+						int rid: -1;
+						rid is (Colocated: col cbx cby addr cr addr cvx addr cvy);
+						if cr >= 0
+							# (the reference the co-located block used, as an index into list 0)
+							r0 is 0;
+							while int q: 0; q < nref0; q++;
+								if list0:q >= 0 and (Pic: list0:q).id is rid
+									r0 is q;
+									break;
+								;;
+							;;
+						;;
+					;;
+					int f: dsf:r0;
+					int m0x: cvx;
+					int m0y: cvy;
+					int m1x: 0;
+					int m1y: 0;
+					if f is not 9999
+						m0x is (f * cvx + 128) >> 8;
+						m0y is (f * cvy + 128) >> 8;
+						m1x is m0x - cvx;
+						m1y is m0y - cvy;
+					;;
+					call SetRef: 0 bx by step step r0;
+					call SetRef: 1 bx by step step 0;
+					call SetMv: 0 bx by step step m0x m0y;
+					call SetMv: 1 bx by step step m1x m1y;
+					i++ step;
+				;;
+				j++ step;
+			;;
+			call SetMvd: 0 x8 y8 2 2 0 0;
+			call SetMvd: 1 x8 y8 2 2 0 0;
+			dirc:(CI: x8 y8) is 1;
+			dirc:(CI: x8 + 1 y8) is 1;
+			dirc:(CI: x8 y8 + 1) is 1;
+			dirc:(CI: x8 + 1 y8 + 1) is 1;
+		;;
+	[end]
+
+	# the neighbor C (or D) of the whole macroblock's reference, list l
+	[CornerRef: int l: 0;]
+		int r: refc:(l * 40 + (CI: 4 (0 - 1)));
+		if r is -2
+			r is refc:(l * 40 + (CI: (0 - 1) (0 - 1)));
+		;;
+	[end: r]
+
+	# MinPositive: the lesser if both are 0 or more, else the greater
+	[MinPos: int a: 0; int b2: 0;]
+		if a >= 0 and b2 >= 0 return (Math.Min: a b2);
+	[end: (Math.Max: a b2)]
+
+	# the co-located 4x4 block (bx, by) of this macroblock in col: its ref_idx (-1 intra), motion
+	# vector, and the id of the picture it referred to
+	[Colocated: ptr<MdH264Pic> col: 0; int bx: 0; int by: 0; ptr<int> r: 0; ptr<int> vx: 0; ptr<int> vy: 0;]
+		r:0 is -1;
+		vx:0 is 0;
+		vy:0 is 0;
+		if col.intra:mba is not 0 return -1;
+		int b8: mba * 4 + (by >> 1) * 2 + (bx >> 1);
+		int blk: (mba * 16 + by * 4 + bx) * 2;
+		if col.ref0:b8 >= 0
+			r:0 is col.ref0:b8;
+			vx:0 is col.mv0:blk;
+			vy:0 is col.mv0:(blk + 1);
+			return col.rid0:b8;
+		;;
+		r:0 is col.ref1:b8;
+		vx:0 is col.mv1:blk;
+		vy:0 is col.mv1:(blk + 1);
+	[end: col.rid1:b8]
+
+	# the macroblock's motion into the picture (for later pictures and the loop filter), and its |mvd|
+	[StoreMotion]
+		ptr<MdH264Pic> p: cur;
+		p.intra:mba is 0;
+		if intra
+			p.intra:mba is 1;
+		;;
+		while int y: 0; y < 4; y++;
+			while int x: 0; x < 4; x++;
+				int k: (CI: x y);
+				int blk: (mba * 16 + y * 4 + x) * 2;
+				p.mv0:blk is mvc:(k * 2) as i16;
+				p.mv0:(blk + 1) is mvc:(k * 2 + 1) as i16;
+				p.mv1:blk is mvc:((40 + k) * 2) as i16;
+				p.mv1:(blk + 1) is mvc:((40 + k) * 2 + 1) as i16;
+				int m: (mba * 2) * 32 + (y * 4 + x) * 2;
+				mvd:m is mvdc:(k * 2) as u8;
+				mvd:(m + 1) is mvdc:(k * 2 + 1) as u8;
+				mvd:(m + 32) is mvdc:((40 + k) * 2) as u8;
+				mvd:(m + 33) is mvdc:((40 + k) * 2 + 1) as u8;
+			;;
+		;;
+		while int b8: 0; b8 < 4; b8++;
+			int k: (CI: (b8 & 1) * 2 (b8 >> 1) * 2);
+			int r0: refc:k;
+			int r1: refc:(40 + k);
+			if r0 < 0
+				r0 is -1;
+			;;
+			if r1 < 0
+				r1 is -1;
+			;;
+			p.ref0:(mba * 4 + b8) is r0 as i8;
+			p.ref1:(mba * 4 + b8) is r1 as i8;
+			p.rid0:(mba * 4 + b8) is (RefId: addr list0 r0);
+			p.rid1:(mba * 4 + b8) is (RefId: addr list1 r1);
+		;;
+	[end]
+
+	[RefId: ptr<int> lst: 0; int r: 0;]
+		if r < 0 or r > 31 return -1;
+		if lst:r < 0 return -2;
+	[end: (Pic: lst:r).id]
+
+	# predicted from other pictures: by 16x16, 8x8 or 4x4, as far as the motion is the same
+	[Inter]
+		if (Same: 0 0 4 4)
+			call MdH264Rec.InterPart: self 0 0 4 4;
+		;;
+		else
+			while int k: 0; k < 4; k++;
+				int x: (k & 1) * 2;
+				int y: (k >> 1) * 2;
+				if (Same: x y 2 2)
+					call MdH264Rec.InterPart: self x y 2 2;
+				;;
+				else
+					call MdH264Rec.InterPart: self x y 1 1;
+					call MdH264Rec.InterPart: self x + 1 y 1 1;
+					call MdH264Rec.InterPart: self x y + 1 1 1;
+					call MdH264Rec.InterPart: self x + 1 y + 1 1 1;
+				;;
+			;;
+		;;
+		call MdH264Rec.Residual: self;
+	[end]
+
+	[Same: int x: 0; int y: 0; int bw: 4; int bh: 4; : bln]
+		int k0: (CI: x y);
+		while int j: 0; j < bh; j++;
+			while int i: 0; i < bw; i++;
+				int k: (CI: x + i y + j);
+				if refc:k is not refc:k0 or refc:(40 + k) is not refc:(40 + k0) return false;
+				if mvc:(k * 2) is not mvc:(k0 * 2) or mvc:(k * 2 + 1) is not mvc:(k0 * 2 + 1) return false;
+				if mvc:((40 + k) * 2) is not mvc:((40 + k0) * 2) or mvc:((40 + k) * 2 + 1) is not mvc:((40 + k0) * 2 + 1) return false;
+			;;
+		;;
+	[end: true]
+
+	# ---- residual (7.3.5.3), CABAC ----
+
+	[Residual: bln is16: false;]
+		if cavlc
+			call MdH264Cavlc.Residual: self is16;
+			return;
+		;;
+		call Mem.Fill: (addr coef) as ptr<u8> 0 1536;
+		while int i: 0; i < 16; i++;
+			dcy:i is 0;
+		;;
+		while int i: 0; i < 8; i++;
+			dcc:i is 0;
+		;;
+		qpc0 is MdH264Tables.chroma_qp:(Math.Clamp: qp + pps.cqp0 0 51);
+		qpc1 is MdH264Tables.chroma_qp:(Math.Clamp: qp + pps.cqp1 0 51);
+		int ly: 3;
+		if intra
+			ly is 0;
+		;;
+		if is16
+			int inc: (CbfMb: mb_a 24) + 2 * (CbfMb: mb_b 24);
+			if (c.Bin: 85 + inc) is 1
+				call Block: 0 addr dcy 16 0 0;
+				bits is bits | (1 << 24);
+			;;
+			if (cbp & 15) is not 0
+				while int blk: 0; blk < 16; blk++;
+					int x: MdH264Rec.blk_x:blk;
+					int y: MdH264Rec.blk_y:blk;
+					int r: y * 4 + x;
+					if (c.Bin: 89 + (Cbf4: x y)) is 1
+						call Block: 1 (addr coef) + r * 64 15 ly qp;
+						bits is bits | (1 << r);
+					;;
+				;;
+			;;
+		;;
+		elif not t8
+			while int blk: 0; blk < 16; blk++;
+				if ((cbp >> (blk >> 2)) & 1) is 0
+					continue;
+				;;
+				int x: MdH264Rec.blk_x:blk;
+				int y: MdH264Rec.blk_y:blk;
+				int r: y * 4 + x;
+				if (c.Bin: 93 + (Cbf4: x y)) is 1
+					call Block: 2 (addr coef) + r * 64 16 ly qp;
+					bits is bits | (1 << r);
+				;;
+			;;
+		;;
+		else
+			int l8: 1;
+			if intra
+				l8 is 0;
+			;;
+			while int b8: 0; b8 < 4; b8++;
+				if ((cbp >> b8) & 1) is not 0
+					call Block: 5 (addr coef) + b8 * 256 64 l8 qp;
+					bits is bits | (0x33 << ((b8 >> 1) * 8 + (b8 & 1) * 2));
+				;;
+			;;
+		;;
+		if (cbp >> 4) is not 0
+			while int ch: 0; ch < 2; ch++;
+				int inc: (CbfMb: mb_a 25 + ch) + 2 * (CbfMb: mb_b 25 + ch);
+				if (c.Bin: 97 + inc) is 1
+					call Block: 3 (addr dcc) + ch * 16 4 0 0;
+					bits is bits | (1 << (25 + ch));
+				;;
+			;;
+		;;
+		if (cbp >> 4) is 2
+			while int ch: 0; ch < 2; ch++;
+				int cq: qpc0;
+				if ch is 1
+					cq is qpc1;
+				;;
+				while int k: 0; k < 4; k++;
+					int bx: k & 1;
+					int by: k >> 1;
+					int base: 16 + ch * 4;
+					int a: 0;
+					int b2: 0;
+					if bx is 1
+						a is (bits >> (base + k - 1)) & 1;
+					;;
+					else
+						a is (CbfMb: mb_a base + by * 2 + 1);
+					;;
+					if by is 1
+						b2 is (bits >> (base + k - 2)) & 1;
+					;;
+					else
+						b2 is (CbfMb: mb_b base + 2 + bx);
+					;;
+					if (c.Bin: 101 + a + 2 * b2) is 1
+						call Block: 4 (addr coef) + (256 + ch * 64 + k * 16) * 4 15 ly + 1 + ch cq;
+						bits is bits | (1 << (base + k));
+					;;
+				;;
+			;;
+		;;
+		coded is bits;
+	[end]
+
+	# a neighbor macroblock's coded_block_flag bit (one that isn't there: 1 if this one is intra)
+	[CbfMb: int n: 0; int bit: 0;]
+		if n < 0
+			if intra return 1;
+			return 0;
+		;;
+	[end: ((nzf:n >> bit) & 1) as int]
+
+	# coded_block_flag's context for the luma 4x4 block at (x, y)
+	[Cbf4: int x: 0; int y: 0;]
+		int r: y * 4 + x;
+		int a: 0;
+		int b2: 0;
+		if x > 0
+			a is ((bits >> (r - 1)) & 1) as int;
+		;;
+		else
+			a is (CbfMb: mb_a y * 4 + 3);
+		;;
+		if y > 0
+			b2 is ((bits >> (r - 4)) & 1) as int;
+		;;
+		else
+			b2 is (CbfMb: mb_b 12 + x);
+		;;
+	[end: a + 2 * b2]
+
+	# a block's coefficients (9.3.2.7, 9.3.3.1.3) of category cat, count of them, into dst by raster
+	# position: dequantized by list lst at QP bq, except DC blocks (0, 3), which stay levels
+	[Block: int cat: 0; ptr<int> dst: 0; int count: 16; int lst: 0; int bq: 0;]
+		int sig: 105;
+		int last: 166;
+		int absb: 227;
+		when cat
+			is 1
+				sig is 120;
+				last is 181;
+				absb is 237;
+			;;
+			is 2
+				sig is 134;
+				last is 195;
+				absb is 247;
+			;;
+			is 3
+				sig is 149;
+				last is 210;
+				absb is 257;
+			;;
+			is 4
+				sig is 152;
+				last is 213;
+				absb is 266;
+			;;
+			is 5
+				sig is 402;
+				last is 417;
+				absb is 426;
+			;;
+		;;
+		int pos[64];
+		int n: 0;
+		bln done: false;
+		int i: 0;
+		while i < count - 1
+			int inc: i;
+			int linc: i;
+			if cat is 3
+				inc is (Math.Min: i 2);
+				linc is inc;
+			;;
+			elif cat is 5
+				inc is MdH264Tables.sig8:i;
+				linc is MdH264Tables.last8:i;
+			;;
+			if (c.Bin: sig + inc) is 1
+				pos:n is i;
+				n++;
+				if (c.Bin: last + linc) is 1
+					done is true;
+					break;
+				;;
+			;;
+			i++;
+		;;
+		if not done
+			pos:n is count - 1;
+			n++;
+		;;
+		int gt1: 0;
+		int eq1: 0;
+		int c3: 0;
+		if cat is 3
+			c3 is 1;
+		;;
+		int q6: bq / 6;
+		int qm: bq % 6;
+		int k: n - 1;
+		while k >= 0
+			int inc0: 0;
+			if gt1 is 0
+				inc0 is (Math.Min: 4 1 + eq1);
+			;;
+			int v: 0;
+			if (c.Bin: absb + inc0) is 1
+				v is 1;
+				int ctx: absb + 5 + (Math.Min: 4 - c3 gt1);
+				while v < 14 and (c.Bin: ctx) is 1
+					v++;
+				;;
+				if v is 14
+					int e: 0;
+					while (c.Bypass) is 1 and e < 24
+						v++ 1 << e;
+						e++;
+					;;
+					while e > 0
+						e--;
+						v++ (c.Bypass) << e;
+					;;
+				;;
+			;;
+			int lev: v + 1;
+			if lev is 1
+				eq1++;
+			;;
+			else
+				gt1++;
+			;;
+			if (c.Bypass) is 1
+				lev is 0 - lev;
+			;;
+			int ix: pos:k;
+			when cat
+				is 0 2
+					int r: MdH264Tables.zigzag4:ix;
+					if cat is 0
+						dst:r is lev;
+					;;
+					else
+						dst:r is (Dq4: lev lst q6 qm r bq);
+					;;
+				;;
+				is 1 4
+					int r: MdH264Tables.zigzag4:(ix + 1);
+					dst:r is (Dq4: lev lst q6 qm r bq);
+				;;
+				is 3
+					dst:ix is lev;
+				;;
+				is 5
+					int r: MdH264Tables.zigzag8:ix;
+					int ls: ls8:((lst * 6 + qm) * 64 + r);
+					if bq >= 36
+						dst:r is (lev * ls) << (q6 - 6);
+					;;
+					else
+						dst:r is (lev * ls + (1 << (5 - q6))) >> (6 - q6);
+					;;
+				;;
+			;;
+			k--;
+		;;
+	[end]
+
+	[Dq4: int lev: 0; int lst: 0; int q6: 0; int qm: 0; int r: 0; int bq: 0;]
+		int ls: ls4:((lst * 6 + qm) * 16 + r);
+		if bq >= 24 return (lev * ls) << (q6 - 4);
+	[end: (lev * ls + (1 << (3 - q6))) >> (4 - q6)]
+}

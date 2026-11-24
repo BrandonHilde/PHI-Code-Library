@@ -1,0 +1,299 @@
+# H.264's deblocking filter (8.7), on a whole picture once its macroblocks are made: each
+# macroblock's vertical edges, left to right, then its horizontal edges, top to bottom, luma and
+# chroma, with a strength (bS) for every 4 pixels of edge from how the blocks on each side were made.
+
+use user.math;
+use medialib.h264tables;
+
+phi.MdH264Loop:Library
+{
+	[Picture: ptr<MdH264> d: 0;]
+		while int m: 0; m < d.mbs; m++;
+			if d.mb_slice:m >= 0
+				call Mb: d m;
+			;;
+		;;
+	[end]
+
+	[Mb: ptr<MdH264> d: 0; int m: 0;]
+		int sl: d.mb_slice:m;
+		int idc: d.sl_info:(sl * 5);
+		if idc is 1 return;
+		int aoff: d.sl_info:(sl * 5 + 1);
+		int boff: d.sl_info:(sl * 5 + 2);
+		int mx: m % d.mb_w;
+		int my: m / d.mb_w;
+		bln t8: ((d.mb_kind:m & MdH264.K_T8) is not 0);
+		bln left: (mx > 0 and d.mb_slice:(m - 1) >= 0 and (idc is not 2 or d.mb_slice:(m - 1) is sl));
+		bln top: (my > 0 and d.mb_slice:(m - d.mb_w) >= 0 and (idc is not 2 or d.mb_slice:(m - d.mb_w) is sl));
+		int bs[4];
+		while int dir: 0; dir < 2; dir++;
+			int pm: m - 1;
+			if dir is 1
+				pm is m - d.mb_w;
+			;;
+			while int e: 0; e < 4; e++;
+				if e is 0
+					if dir is 0 and not left
+						continue;
+					;;
+					if dir is 1 and not top
+						continue;
+					;;
+				;;
+				if (e & 1) is 1 and t8
+					continue;
+				;;
+				bln any: false;
+				while int k: 0; k < 4; k++;
+					# the blocks on each side of the edge: q here, p before it
+					int qx: e;
+					int qy: k;
+					if dir is 1
+						qx is k;
+						qy is e;
+					;;
+					int pmb: m;
+					int px: qx - 1;
+					int py: qy;
+					if dir is 1
+						px is qx;
+						py is qy - 1;
+					;;
+					if e is 0
+						pmb is pm;
+						if dir is 0
+							px is 3;
+						;;
+						else
+							py is 3;
+						;;
+					;;
+					bs:k is (Strength: d pmb px py m qx qy (e is 0));
+					if bs:k is not 0
+						any is true;
+					;;
+				;;
+				if not any
+					continue;
+				;;
+				int pq: m;
+				if e is 0
+					pq is pm;
+				;;
+				int qpav: (d.mb_qp:pq + d.mb_qp:m + 1) >> 1;
+				ptr<u8> py: d.cur.y + my * 16 * d.ys + mx * 16;
+				if dir is 0
+					call Edge: py + e * 4 1 d.ys addr bs qpav aoff boff false;
+				;;
+				else
+					call Edge: py + e * 4 * d.ys d.ys 1 addr bs qpav aoff boff false;
+				;;
+				if (e & 1) is 0
+					while int ch: 0; ch < 2; ch++;
+						int off: d.sl_info:(sl * 5 + 3 + ch);
+						int qcp: MdH264Tables.chroma_qp:(Math.Clamp: d.mb_qp:pq + off 0 51);
+						int qcq: MdH264Tables.chroma_qp:(Math.Clamp: d.mb_qp:m + off 0 51);
+						int qc: (qcp + qcq + 1) >> 1;
+						ptr<u8> plane: d.cur.u;
+						if ch is 1
+							plane is d.cur.v;
+						;;
+						ptr<u8> pc: plane + my * 8 * d.uvs + mx * 8;
+						if dir is 0
+							call Edge: pc + e * 2 1 d.uvs addr bs qc aoff boff true;
+						;;
+						else
+							call Edge: pc + e * 2 * d.uvs d.uvs 1 addr bs qc aoff boff true;
+						;;
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	# bS (8.7.2.1) between block (px, py) of macroblock pm and (qx, qy) of qm
+	[Strength: ptr<MdH264> d: 0; int pm: 0; int px: 0; int py: 0; int qm: 0; int qx: 0; int qy: 0; bln mb_edge: false;]
+		bln pi: ((d.mb_kind:pm & MdH264.K_INTRA) is not 0);
+		bln qi: ((d.mb_kind:qm & MdH264.K_INTRA) is not 0);
+		if pi or qi
+			if mb_edge return 4;
+			return 3;
+		;;
+		if ((d.nzf:pm >> (py * 4 + px)) & 1) is not 0 or ((d.nzf:qm >> (qy * 4 + qx)) & 1) is not 0 return 2;
+		ptr<MdH264Pic> p: d.cur;
+		int pb8: pm * 4 + (py >> 1) * 2 + (px >> 1);
+		int qb8: qm * 4 + (qy >> 1) * 2 + (qx >> 1);
+		int pblk: (pm * 16 + py * 4 + px) * 2;
+		int qblk: (qm * 16 + qy * 4 + qx) * 2;
+		bln p0: (p.ref0:pb8 >= 0);
+		bln p1: (p.ref1:pb8 >= 0);
+		bln q0: (p.ref0:qb8 >= 0);
+		bln q1: (p.ref1:qb8 >= 0);
+		int np: 0;
+		int nq: 0;
+		if p0
+			np++;
+		;;
+		if p1
+			np++;
+		;;
+		if q0
+			nq++;
+		;;
+		if q1
+			nq++;
+		;;
+		if np is not nq return 1;
+		if np is 1
+			int pid: p.rid0:pb8;
+			ptr<i16> pmv: p.mv0;
+			if not p0
+				pid is p.rid1:pb8;
+				pmv is p.mv1;
+			;;
+			int qid: p.rid0:qb8;
+			ptr<i16> qmv: p.mv0;
+			if not q0
+				qid is p.rid1:qb8;
+				qmv is p.mv1;
+			;;
+			if pid is not qid return 1;
+			if (Far: pmv pblk qmv qblk) return 1;
+			return 0;
+		;;
+		if np is 0 return 0;
+		int pa: p.rid0:pb8;
+		int pb: p.rid1:pb8;
+		int qa: p.rid0:qb8;
+		int qb: p.rid1:qb8;
+		if not ((pa is qa and pb is qb) or (pa is qb and pb is qa)) return 1;
+		if pa is not pb
+			if pa is qa
+				if (Far: p.mv0 pblk p.mv0 qblk) or (Far: p.mv1 pblk p.mv1 qblk) return 1;
+				return 0;
+			;;
+			if (Far: p.mv0 pblk p.mv1 qblk) or (Far: p.mv1 pblk p.mv0 qblk) return 1;
+			return 0;
+		;;
+		# (both refer to the same picture twice: either pairing close enough is close enough)
+		bln straight: ((Far: p.mv0 pblk p.mv0 qblk) or (Far: p.mv1 pblk p.mv1 qblk));
+		bln crossed: ((Far: p.mv0 pblk p.mv1 qblk) or (Far: p.mv1 pblk p.mv0 qblk));
+		if straight and crossed return 1;
+	[end: 0]
+
+	# two motion vectors four quarter pixels or more apart, across or down
+	[Far: ptr<i16> a: 0; int ia: 0; ptr<i16> b2: 0; int ib: 0; : bln]
+		int dx: a:ia - b2:ib;
+		int dy: a:(ia + 1) - b2:(ib + 1);
+	[end: (dx >= 4 or dx <= -4 or dy >= 4 or dy <= -4)]
+
+	# filters one edge (8.7.2.3, 8.7.2.4): p is its first sample on the q side, step crosses the
+	# edge, along goes down it; 16 samples (8 for chroma), bs by each 4 (2 for chroma)
+	[Edge: ptr<u8> p: 0; int step: 1; int along: 0; ptr<int> bs: 0; int qpav: 0; int aoff: 0; int boff: 0; bln chroma: false;]
+		int ia: (Math.Clamp: qpav + aoff 0 51);
+		int ib: (Math.Clamp: qpav + boff 0 51);
+		int alpha: MdH264Tables.alpha:ia;
+		int beta: MdH264Tables.beta:ib;
+		if alpha is 0 or beta is 0 return;
+		int n: 16;
+		if chroma
+			n is 8;
+		;;
+		while int i: 0; i < n; i++;
+			int s: bs:(i >> 2);
+			if chroma
+				s is bs:(i >> 1);
+			;;
+			if s is 0
+				continue;
+			;;
+			ptr<u8> q: p + i * along;
+			int p0: q:(0 - step);
+			int q0: q:0;
+			int p1: q:(-2 * step);
+			int q1: q:step;
+			int d0: p0 - q0;
+			if d0 < 0
+				d0 is 0 - d0;
+			;;
+			if d0 >= alpha
+				continue;
+			;;
+			int d1: p1 - p0;
+			if d1 < 0
+				d1 is 0 - d1;
+			;;
+			int d2: q1 - q0;
+			if d2 < 0
+				d2 is 0 - d2;
+			;;
+			if d1 >= beta or d2 >= beta
+				continue;
+			;;
+			if chroma
+				if s < 4
+					int tc: MdH264Tables.tc0:(ia * 3 + s - 1) + 1;
+					int delta: (Math.Clamp: (((q0 - p0) << 2) + (p1 - q1) + 4) >> 3 0 - tc tc);
+					q:(0 - step) is (MdH264Rec.Px: p0 + delta) as u8;
+					q:0 is (MdH264Rec.Px: q0 - delta) as u8;
+				;;
+				else
+					q:(0 - step) is ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
+					q:0 is ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
+				;;
+				continue;
+			;;
+			int p2: q:(-3 * step);
+			int q2: q:(2 * step);
+			int ap: p2 - p0;
+			if ap < 0
+				ap is 0 - ap;
+			;;
+			int aq: q2 - q0;
+			if aq < 0
+				aq is 0 - aq;
+			;;
+			if s < 4
+				int tc0: MdH264Tables.tc0:(ia * 3 + s - 1);
+				int tc: tc0;
+				if ap < beta
+					tc++;
+				;;
+				if aq < beta
+					tc++;
+				;;
+				int delta: (Math.Clamp: (((q0 - p0) << 2) + (p1 - q1) + 4) >> 3 0 - tc tc);
+				q:(0 - step) is (MdH264Rec.Px: p0 + delta) as u8;
+				q:0 is (MdH264Rec.Px: q0 - delta) as u8;
+				int avg: (p0 + q0 + 1) >> 1;
+				if ap < beta
+					q:(-2 * step) is (p1 + (Math.Clamp: (p2 + avg - (p1 << 1)) >> 1 0 - tc0 tc0)) as u8;
+				;;
+				if aq < beta
+					q:step is (q1 + (Math.Clamp: (q2 + avg - (q1 << 1)) >> 1 0 - tc0 tc0)) as u8;
+				;;
+				continue;
+			;;
+			int p3: q:(-4 * step);
+			int q3: q:(3 * step);
+			bln strong: (d0 < ((alpha >> 2) + 2));
+			if ap < beta and strong
+				q:(0 - step) is ((p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3) as u8;
+				q:(-2 * step) is ((p2 + p1 + p0 + q0 + 2) >> 2) as u8;
+				q:(-3 * step) is ((2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3) as u8;
+			;;
+			else
+				q:(0 - step) is ((2 * p1 + p0 + q1 + 2) >> 2) as u8;
+			;;
+			if aq < beta and strong
+				q:0 is ((p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3) as u8;
+				q:step is ((p0 + q0 + q1 + q2 + 2) >> 2) as u8;
+				q:(2 * step) is ((2 * q3 + 3 * q2 + q1 + q0 + p0 + 4) >> 3) as u8;
+			;;
+			else
+				q:0 is ((2 * q1 + q0 + p1 + 2) >> 2) as u8;
+			;;
+		;;
+	[end]
+}

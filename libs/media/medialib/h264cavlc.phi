@@ -1,0 +1,402 @@
+# H.264's CAVLC (9.2): slices that don't use CABAC (Baseline's always, and Main and High streams
+# that choose it). The macroblock layer is h264.phi's, which reads each syntax element as Exp-Golomb
+# or fixed bits when the slice is CAVLC's; here are the slice's loop (runs of skipped macroblocks)
+# and the residual: each block's coeff_token (by the coefficients of the blocks left and above, nC),
+# its trailing ones and levels, total_zeros and the runs before each coefficient.
+
+use memory.mem;
+use user.math;
+use medialib.h264tables;
+
+phi.MdH264Cavlc:Library
+{
+	# slice_data (7.3.4) with mb_skip_run
+	[Slice: ptr<MdH264> d: 0;]
+		d.mba is d.first_mb;
+		while d.mba < d.mbs
+			if d.slice_type is not MdH264.I
+				int run: (d.b.Ue);
+				if d.b.bad return;
+				while run > 0 and d.mba < d.mbs
+					call Begin: d;
+					call d.SkipMb;
+					d.mba++;
+					run--;
+				;;
+				if d.mba >= d.mbs return;
+				if not (d.b.More) return;
+			;;
+			call Begin: d;
+			if not (d.Macroblock) return;
+			if d.b.bad return;
+			d.mba++;
+			if not (d.b.More) return;
+		;;
+	[end]
+
+	[Begin: ptr<MdH264> d: 0;]
+		d.mx is d.mba % d.mb_w;
+		d.my is d.mba / d.mb_w;
+		d.mb_slice:(d.mba) is d.slice_num;
+		call d.Neighbors;
+		call Mem.Fill: d.tcnt + d.mba * 24 0 24;
+	[end]
+
+	# residual (7.3.5.3) by residual_block_cavlc: coefficients into d.coef (dequantized; DC levels
+	# into dcy, dcc), the blocks with any into d.bits and d.coded
+	[Residual: ptr<MdH264> d: 0; bln is16: false;]
+		call Mem.Fill: (addr d.coef) as ptr<u8> 0 1536;
+		while int i: 0; i < 16; i++;
+			d.dcy:i is 0;
+		;;
+		while int i: 0; i < 8; i++;
+			d.dcc:i is 0;
+		;;
+		d.qpc0 is MdH264Tables.chroma_qp:(Math.Clamp: d.qp + d.pps.cqp0 0 51);
+		d.qpc1 is MdH264Tables.chroma_qp:(Math.Clamp: d.qp + d.pps.cqp1 0 51);
+		int ly: 3;
+		if d.intra
+			ly is 0;
+		;;
+		int qp: d.qp;
+		int q6: qp / 6;
+		int qm: qp % 6;
+		ptr<u8> tc: d.tcnt + d.mba * 24;
+		int lev[16];
+		u32 bits: 0;
+		if is16
+			int n: (Block: d (NcLuma: d 0 0) 0 15 16 addr lev);
+			while int i: 0; i < 16; i++;
+				d.dcy:(MdH264Tables.zigzag4:i) is lev:i;
+			;;
+			if n > 0
+				bits is bits | (1 << 24);
+			;;
+		;;
+		while int b8: 0; b8 < 4; b8++;
+			if ((d.cbp >> b8) & 1) is 0
+				continue;
+			;;
+			int l8[64];
+			if d.t8
+				while int i: 0; i < 64; i++;
+					l8:i is 0;
+				;;
+			;;
+			while int k: 0; k < 4; k++;
+				int blk: b8 * 4 + k;
+				int x: MdH264Rec.blk_x:blk;
+				int y: MdH264Rec.blk_y:blk;
+				int r: y * 4 + x;
+				int nc: (NcLuma: d x y);
+				int n: 0;
+				ptr<int> dst: (addr d.coef) + r * 64;
+				if is16
+					n is (Block: d nc 0 14 15 addr lev);
+					while int i: 0; i < 15; i++;
+						if lev:i is not 0
+							int pos: MdH264Tables.zigzag4:(i + 1);
+							dst:pos is (d.Dq4: lev:i ly q6 qm pos qp);
+						;;
+					;;
+				;;
+				elif d.t8
+					# (an 8x8 block's coefficients come as four lists, interleaved)
+					n is (Block: d nc 0 15 16 addr lev);
+					while int i: 0; i < 16; i++;
+						l8:(4 * i + k) is lev:i;
+					;;
+				;;
+				else
+					n is (Block: d nc 0 15 16 addr lev);
+					while int i: 0; i < 16; i++;
+						if lev:i is not 0
+							int pos: MdH264Tables.zigzag4:i;
+							dst:pos is (d.Dq4: lev:i ly q6 qm pos qp);
+						;;
+					;;
+				;;
+				tc:r is n as u8;
+				if n > 0
+					bits is bits | (1 << r);
+				;;
+			;;
+			if d.t8
+				int l: 1;
+				if d.intra
+					l is 0;
+				;;
+				ptr<int> dst: (addr d.coef) + b8 * 256;
+				bln any: false;
+				while int j: 0; j < 64; j++;
+					int v: l8:j;
+					if v is 0
+						continue;
+					;;
+					any is true;
+					int pos: MdH264Tables.zigzag8:j;
+					int ls: d.ls8:((l * 6 + qm) * 64 + pos);
+					if qp >= 36
+						dst:pos is (v * ls) << (q6 - 6);
+					;;
+					else
+						dst:pos is (v * ls + (1 << (5 - q6))) >> (6 - q6);
+					;;
+				;;
+				if any
+					bits is bits | (0x33 << ((b8 >> 1) * 8 + (b8 & 1) * 2));
+				;;
+			;;
+		;;
+		if (d.cbp >> 4) is not 0
+			while int ch: 0; ch < 2; ch++;
+				int n: (Block: d (0 - 1) 0 3 4 addr lev);
+				while int i: 0; i < 4; i++;
+					d.dcc:(ch * 4 + i) is lev:i;
+				;;
+				if n > 0
+					bits is bits | (1 << (25 + ch));
+				;;
+			;;
+		;;
+		if (d.cbp >> 4) is 2
+			while int ch: 0; ch < 2; ch++;
+				int cq: d.qpc0;
+				if ch is 1
+					cq is d.qpc1;
+				;;
+				while int k: 0; k < 4; k++;
+					int n: (Block: d (NcChroma: d ch k) 0 14 15 addr lev);
+					ptr<int> dst: (addr d.coef) + (256 + ch * 64 + k * 16) * 4;
+					while int i: 0; i < 15; i++;
+						if lev:i is not 0
+							int pos: MdH264Tables.zigzag4:(i + 1);
+							dst:pos is (d.Dq4: lev:i ly + 1 + ch cq / 6 cq % 6 pos cq);
+						;;
+					;;
+					tc:(16 + ch * 4 + k) is n as u8;
+					if n > 0
+						bits is bits | (1 << (16 + ch * 4 + k));
+					;;
+				;;
+			;;
+		;;
+		d.bits is bits;
+		d.coded is bits;
+	[end]
+
+	# nC (9.2.1) for the luma 4x4 block at (x, y): from the blocks left and above it
+	[NcLuma: ptr<MdH264> d: 0; int x: 0; int y: 0;]
+		ptr<u8> tc: d.tcnt + d.mba * 24;
+		int na: -1;
+		int nb: -1;
+		if x > 0
+			na is tc:(y * 4 + x - 1);
+		;;
+		elif d.mb_a >= 0
+			na is d.tcnt:(d.mb_a * 24 + y * 4 + 3);
+		;;
+		if y > 0
+			nb is tc:((y - 1) * 4 + x);
+		;;
+		elif d.mb_b >= 0
+			nb is d.tcnt:(d.mb_b * 24 + 12 + x);
+		;;
+	[end: (Nc: na nb)]
+
+	# and for chroma AC block k of Cb (0) or Cr (1)
+	[NcChroma: ptr<MdH264> d: 0; int ch: 0; int k: 0;]
+		ptr<u8> tc: d.tcnt + d.mba * 24;
+		int base: 16 + ch * 4;
+		int bx: k & 1;
+		int by: k >> 1;
+		int na: -1;
+		int nb: -1;
+		if bx is 1
+			na is tc:(base + k - 1);
+		;;
+		elif d.mb_a >= 0
+			na is d.tcnt:(d.mb_a * 24 + base + by * 2 + 1);
+		;;
+		if by is 1
+			nb is tc:(base + k - 2);
+		;;
+		elif d.mb_b >= 0
+			nb is d.tcnt:(d.mb_b * 24 + base + 2 + bx);
+		;;
+	[end: (Nc: na nb)]
+
+	[Nc: int na: 0; int nb: 0;]
+		if na >= 0 and nb >= 0 return (na + nb + 1) >> 1;
+		if na >= 0 return na;
+		if nb >= 0 return nb;
+	[end: 0]
+
+	# residual_block_cavlc (7.3.5.3.2, 9.2.2 to 9.2.4): levels into lev:(start .. end), by scan
+	# position; the block's TotalCoeff
+	[Block: ptr<MdH264> d: 0; int nc: 0; int start: 0; int stop: 15; int maxn: 16; ptr<int> lev: 0;]
+		while int i: 0; i < 16; i++;
+			lev:i is 0;
+		;;
+		int tc: 0;
+		int t1: 0;
+		if nc >= 8
+			int v: (d.b.U: 6);
+			if v is not 3
+				tc is (v >> 2) + 1;
+				t1 is v & 3;
+			;;
+		;;
+		else
+			int t: 0;
+			if nc is -1
+				t is 3;
+			;;
+			elif nc >= 4
+				t is 2;
+			;;
+			elif nc >= 2
+				t is 1;
+			;;
+			int found: (Token: d t);
+			if found < 0
+				d.b.bad is true;
+				return 0;
+			;;
+			tc is found >> 2;
+			t1 is found & 3;
+		;;
+		if tc is 0 return 0;
+		if tc > maxn
+			d.b.bad is true;
+			return 0;
+		;;
+		int levels[16];
+		int suffix: 0;
+		if tc > 10 and t1 < 3
+			suffix is 1;
+		;;
+		while int i: 0; i < tc; i++;
+			if i < t1
+				levels:i is 1;
+				if (d.b.U: 1) is 1
+					levels:i is -1;
+				;;
+				continue;
+			;;
+			int prefix: 0;
+			while (d.b.U: 1) is 0
+				prefix++;
+				if prefix > 31
+					d.b.bad is true;
+					return 0;
+				;;
+			;;
+			int code: (Math.Min: 15 prefix) << suffix;
+			if suffix > 0 or prefix >= 14
+				int size: suffix;
+				if prefix is 14 and suffix is 0
+					size is 4;
+				;;
+				if prefix >= 15
+					size is prefix - 3;
+				;;
+				if size > 0
+					code++ (d.b.U: size);
+				;;
+			;;
+			if prefix >= 15 and suffix is 0
+				code++ 15;
+			;;
+			if prefix >= 16
+				code++ (1 << (prefix - 3)) - 4096;
+			;;
+			if i is t1 and t1 < 3
+				code++ 2;
+			;;
+			if (code & 1) is 0
+				levels:i is (code + 2) >> 1;
+			;;
+			else
+				levels:i is (0 - code - 1) >> 1;
+			;;
+			if suffix is 0
+				suffix is 1;
+			;;
+			int a: levels:i;
+			if a < 0
+				a is 0 - a;
+			;;
+			if a > (3 << (suffix - 1)) and suffix < 6
+				suffix++;
+			;;
+		;;
+		int zeros: 0;
+		if tc < stop - start + 1
+			if maxn is 4
+				zeros is (Vlc: d addr MdH264Tables.tzc_len addr MdH264Tables.tzc_code tc * 4 4);
+			;;
+			else
+				zeros is (Vlc: d addr MdH264Tables.tz_len addr MdH264Tables.tz_code tc * 16 16);
+			;;
+			if zeros < 0
+				d.b.bad is true;
+				return 0;
+			;;
+		;;
+		int runs[16];
+		int left: zeros;
+		while int i: 0; i < tc - 1; i++;
+			runs:i is 0;
+			if left > 0
+				int row: (Math.Min: left 7) - 1;
+				int rb: (Vlc: d addr MdH264Tables.rb_len addr MdH264Tables.rb_code row * 16 16);
+				if rb < 0
+					d.b.bad is true;
+					return 0;
+				;;
+				runs:i is rb;
+				left-- rb;
+			;;
+		;;
+		runs:(tc - 1) is left;
+		int pos: -1;
+		int i: tc - 1;
+		while i >= 0
+			pos++ runs:i + 1;
+			if start + pos > stop
+				d.b.bad is true;
+				return 0;
+			;;
+			lev:(start + pos) is levels:i;
+			i--;
+		;;
+	[end: tc]
+
+	# coeff_token by table t: TotalCoeff * 4 + TrailingOnes, or -1
+	[Token: ptr<MdH264> d: 0; int t: 0;]
+		int v: 0;
+		while int len: 1; len <= 16; len++;
+			v is (v << 1) | (d.b.U: 1);
+			while int k: 0; k < 68; k++;
+				int at_: t * 68 + k;
+				if MdH264Tables.ct_len:at_ is len and MdH264Tables.ct_code:at_ is v
+					return k;
+				;;
+			;;
+		;;
+	[end: -1]
+
+	# a code of count, from base in a table of lengths and codes: its index, or -1
+	[Vlc: ptr<MdH264> d: 0; ptr<u8> lens: 0; ptr<u8> codes: 0; int base: 0; int count: 0;]
+		int v: 0;
+		while int len: 1; len <= 16; len++;
+			v is (v << 1) | (d.b.U: 1);
+			while int k: 0; k < count; k++;
+				if lens:(base + k) is len and codes:(base + k) is v
+					return k;
+				;;
+			;;
+		;;
+	[end: -1]
+}

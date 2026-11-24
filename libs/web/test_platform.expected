@@ -47,7 +47,7 @@ sent: GET data:text/plain,made%20with
 class names: [object Request] [object Headers] [object Response]
 methods: patch DELETE
 domain: test.example SecurityError
-media: true true true 0 true  0.5 4 function 0
+media: true true true 0 true maybe 0.5 4 function 0
 sent: GET http://test.example/api/slow
 xhr abort: 4 0
 after abort: 0

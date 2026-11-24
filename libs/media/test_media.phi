@@ -1,5 +1,8 @@
 # medialib, every day: VP8 against libvpx (each frame of MDN's flower.webm, its Y, U and V planes
-# by CRC, as tools/media/vp8_reference.py had libvpx give them), MP3 by its length and samples (made
+# by CRC, as tools/media/vp8_reference.py had libvpx give them), H.264 the same way (MDN's
+# flower.mp4, High profile with B pictures, through MdVideo, in the order shown: the pictures a
+# browser's decoder gave tools/media/h264_reference.py; and a Baseline stream, CAVLC, 330x186, made
+# and decoded by a browser's WebCodecs with tools/media/make_h264_test.py), MP3 by its length and samples (made
 # by this decoder and checked against Apple's by tools/media/check_mp3.py), Vorbis and AAC against
 # their reference decoders' samples (tests/media/*.ref.raw: Brave's WebCodecs for an Ogg Vorbis
 # recording, Apple's afconvert for an AAC clip made by tools/media/make_aac_test.py), and a WAV made
@@ -12,6 +15,8 @@ phi.TestMedia:Program
 {
 	call MediaLib.Start;
 	call Vp8;
+	call H264;
+	call H264Cavlc;
 	call Mp3;
 	call Against: 'vorbis' 'tests/media/philosophy.oga' 'tests/media/philosophy.ref.raw';
 	call Against: 'aac' 'tests/media/plucks.m4a' 'tests/media/plucks.ref.raw';
@@ -80,6 +85,160 @@ phi.TestMedia:Program
 		log 'vp8: ' same ' of ' shown ' frames as libvpx (' d.w 'x' d.h ')\n';
 		call MdVp8.Free: d;
 		call MdMedia.Close: m;
+	[end]
+
+	[H264]
+		u32 len: 0;
+		ptr<u8> data: (Load: 'tests/media/flower.mp4' addr len);
+		u32 rlen: 0;
+		ptr<u8> crcs: (Load: 'tests/media/flower.h264.crcs' addr rlen);
+		ptr<MdMedia> m: (MdMedia.Open: data len);
+		if m is 0 or not m.has_video
+			log 'flower.mp4: ' MdMedia.error '\n';
+			exit 1;
+		;;
+		ptr<MdVideo> v: (MdVideo.Open: m);
+		if v is 0
+			log 'flower.mp4: ' MdMedia.error '\n';
+			exit 1;
+		;;
+		int shown: 0;
+		int same: 0;
+		bln in_order: true;
+		i64 last_us: -1;
+		u32 at_ref: 0;
+		u32 k: 0;
+		bln flushed: false;
+		while true
+			while (v.Peek)
+				call v.Take;
+				if v.us < last_us
+					in_order is false;
+				;;
+				last_us is v.us;
+				u32 cy: 0;
+				while int y: 0; y < v.h; y++;
+					call cy is Crc32.Add: cy v.out_y + y * v.ys v.w as u32;
+				;;
+				u32 cuv: 0;
+				int cw: (v.w + 1) >> 1;
+				int ch: (v.h + 1) >> 1;
+				while int y: 0; y < ch; y++;
+					call cuv is Crc32.Add: cuv v.out_u + y * v.uvs cw as u32;
+				;;
+				while int y: 0; y < ch; y++;
+					call cuv is Crc32.Add: cuv v.out_v + y * v.uvs cw as u32;
+				;;
+				u32 ry: 0;
+				u32 ruv: 0;
+				call at_ref is Line: crcs rlen at_ref addr ry addr ruv;
+				if ry is cy and ruv is cuv
+					same++;
+				;;
+				elif shown < 3
+					log 'frame ' shown ': ' cy '/' cuv ', the reference ' ry '/' ruv '\n';
+				;;
+				shown++;
+			;;
+			if k >= m.vcount
+				if flushed
+					break;
+				;;
+				call v.Flush;
+				flushed is true;
+				continue;
+			;;
+			ptr<MdPacket> p: m.vpackets + k * sizeof MdPacket;
+			k++;
+			if (v.Decode: p) < 0
+				log 'packet ' k ': ' MdMedia.error '\n';
+				exit 1;
+			;;
+		;;
+		log 'h264: ' same ' of ' shown ' frames as the reference (' v.w 'x' v.h '), in order: ' in_order '\n';
+		call MdVideo.Free: v;
+		call MdMedia.Close: m;
+	[end]
+
+	# an Annex B stream, its access units found by their first NAL unit (an access unit delimiter, a
+	# sequence parameter set, or a slice whose first_mb_in_slice is 0)
+	[H264Cavlc]
+		u32 len: 0;
+		ptr<u8> data: (Load: 'tests/media/shapes.h264' addr len);
+		u32 rlen: 0;
+		ptr<u8> crcs: (Load: 'tests/media/shapes.h264.crcs' addr rlen);
+		ptr<MdH264> d: (MdH264.New);
+		call d.Configure: 0 as ptr<u8> 0;
+		cv_crcs is crcs;
+		cv_rlen is rlen;
+		u32 au: 0;
+		int slices: 0;
+		u32 k: 0;
+		while k + 4 < len
+			if data:k is 0 and data:(k + 1) is 0 and data:(k + 2) is 1
+				int typ: data:(k + 3) & 31;
+				bln first: (typ is 9 or typ is 7 or ((typ is 1 or typ is 5) and (data:(k + 4) & 0x80) is not 0));
+				if first and slices > 0
+					u32 e: k;
+					if e > 0 and data:(e - 1) is 0
+						e--;
+					;;
+					call Unit: d data + au e - au;
+					au is e;
+					slices is 0;
+				;;
+				if typ is 1 or typ is 5
+					slices++;
+				;;
+				k++ 3;
+				continue;
+			;;
+			k++;
+		;;
+		call Unit: d data + au len - au;
+		call d.Flush;
+		call Shown: d;
+		log 'h264 cavlc: ' cv_same ' of ' cv_shown ' frames as the reference (' d.w 'x' d.h ')\n';
+		call MdH264.Free: d;
+	[end]
+
+	ptr<u8> cv_crcs: 0;
+	u32 cv_rlen: 0;
+	u32 cv_at: 0;
+	int cv_shown: 0;
+	int cv_same: 0;
+
+	[Unit: ptr<MdH264> d: 0; ptr<u8> p: 0; u32 n: 0;]
+		if (d.Decode: p n 0) < 0
+			log 'h264 cavlc: ' MdH264.error '\n';
+			exit 1;
+		;;
+		call Shown: d;
+	[end]
+
+	[Shown: ptr<MdH264> d: 0;]
+		while (d.Take)
+			u32 cy: 0;
+			while int y: 0; y < d.h; y++;
+				call cy is Crc32.Add: cy d.out_y + y * d.ys d.w as u32;
+			;;
+			u32 cuv: 0;
+			int cw: (d.w + 1) >> 1;
+			int ch: (d.h + 1) >> 1;
+			while int y: 0; y < ch; y++;
+				call cuv is Crc32.Add: cuv d.out_u + y * d.uvs cw as u32;
+			;;
+			while int y: 0; y < ch; y++;
+				call cuv is Crc32.Add: cuv d.out_v + y * d.uvs cw as u32;
+			;;
+			u32 ry: 0;
+			u32 ruv: 0;
+			call cv_at is Line: cv_crcs cv_rlen cv_at addr ry addr ruv;
+			if ry is cy and ruv is cuv
+				cv_same++;
+			;;
+			cv_shown++;
+		;;
 	[end]
 
 	# the two numbers of the next line of a .crcs file, from at; where the line after begins
