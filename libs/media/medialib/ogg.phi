@@ -1,0 +1,131 @@
+# Ogg (RFC 3533): pages of segments, a stream's packets made of them (a packet can go on from one
+# page to the next), each page's granule position saying how far the stream has got. The first
+# Vorbis stream's packets become an MdMedia's sound: its three headers set the decoder up, and
+# the rest are its packets, copied one after another (as they may cross pages) into a buffer of
+# the MdMedia's own.
+
+use memory.mem;
+
+phi.MdOgg:Library
+{
+	[U32: ptr<u8> p: 0;]
+	[end: ((p:3 as u32) << 24) | ((p:2 as u32) << 16) | ((p:1 as u32) << 8) | (p:0 as u32)]
+
+	[Open: ptr<MdMedia> m: 0;]
+		ptr<u8> d: m.data;
+		u32 n: m.length;
+		# the packets go into a buffer no bigger than the file
+		ptr<u8> own: new u8[n];
+		if own is 0
+			MdMedia.error is 'out of memory';
+			return false;
+		;;
+		u32 own_len: 0;
+		u32 serial: 0;
+		bln have_stream: false;
+		bln vorbis: false;
+		int packets: 0;              # of the stream, headers included
+		u32 packet_start: 0;          # where the packet being put together began in own
+		bln in_packet: false;
+		i64 last_granule: -1;
+		ptr<MdVorbis> dec: 0;
+		u32 pos: 0;
+		int guard: 0;
+		while pos + 27 <= n and guard < 1000000
+			guard++;
+			if d:pos is not 'O' or d:(pos + 1) is not 'g' or d:(pos + 2) is not 'g' or d:(pos + 3) is not 'S'
+				# (resync: the next page)
+				pos++;
+				continue;
+			;;
+			u32 flags: d:(pos + 5);
+			i64 granule: ((MdOgg.U32: d + pos + 10) as i64) << 32 | (MdOgg.U32: d + pos + 6) as i64;
+			u32 page_serial: (MdOgg.U32: d + pos + 14);
+			u32 segs: d:(pos + 26);
+			u32 body: pos + 27 + segs;
+			if body > n
+				break;
+			;;
+			u32 total: 0;
+			while u32 k: 0; k < segs; k++;
+				total++ d:(pos + 27 + k);
+			;;
+			if body + total > n
+				break;
+			;;
+			# the first stream that begins (bos) as Vorbis is the one
+			if not have_stream and (flags & 2) is not 0 and total >= 7 and d:body is 1 and d:(body + 1) is 'v' and d:(body + 2) is 'o' and d:(body + 3) is 'r'
+				have_stream is true;
+				vorbis is true;
+				serial is page_serial;
+				dec is (MdVorbis.New);
+				if dec is 0
+					free own;
+					MdMedia.error is 'out of memory';
+					return false;
+				;;
+			;;
+			if have_stream and page_serial is serial
+				u32 at_: body;
+				while u32 k: 0; k < segs; k++;
+					u32 seg: d:(pos + 27 + k);
+					if not in_packet
+						packet_start is own_len;
+						in_packet is true;
+					;;
+					call Mem.Copy: own + own_len d + at_ seg;
+					own_len++ seg;
+					at_++ seg;
+					if seg < 255
+						# a packet ends
+						u32 size: own_len - packet_start;
+						in_packet is false;
+						if packets < 3
+							bln ok: (dec.Header: own + packet_start size as int);
+							if not ok
+								MdMedia.error is MdVorbis.error;
+								call MdVorbis.Free: dec;
+								free own;
+								return false;
+							;;
+							own_len is packet_start;        # (the headers aren't kept)
+						;;
+						else
+							i64 us: 0;
+							if granule > 0 and dec.rate > 0
+								us is granule * 1000000 / dec.rate as i64;
+							;;
+							call m.AddPacket: packet_start size us 0;
+						;;
+						packets++;
+					;;
+				;;
+				if granule >= 0 and packets > 3
+					last_granule is granule;
+				;;
+			;;
+			pos is body + total;
+		;;
+		if not vorbis or packets < 3 or dec.headers < 3
+			if dec is not 0
+				call MdVorbis.Free: dec;
+			;;
+			free own;
+			MdMedia.error is 'an Ogg file with no Vorbis sound';
+			return false;
+		;;
+		m.own is own;
+		m.data is own;
+		m.format is MdMedia.OGG;
+		m.has_audio is true;
+		m.codec is MdMedia.CODEC_VORBIS;
+		m.vorbis is dec;
+		m.rate is dec.rate;
+		m.channels is dec.channels;
+		if last_granule > 0
+			# (the last page's granule is how many samples there are)
+			m.total is last_granule;
+			m.duration_us is last_granule * 1000000 / dec.rate as i64;
+		;;
+	[end: true]
+}

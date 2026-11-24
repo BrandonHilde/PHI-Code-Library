@@ -107,6 +107,7 @@ a:any-link:active { color: activetext; }
 :focus-visible { outline: auto; }
 img { overflow: clip; }
 video { object-fit: contain; }
+audio:not([controls]) { display: none !important; }
 iframe { border: 2px inset gray; }
 details > summary:first-of-type { list-style-type: disclosure-closed; }
 details[open] > summary:first-of-type { list-style-type: disclosure-open; }

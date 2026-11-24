@@ -1056,6 +1056,9 @@ struct.HtmlParser
 		if (Dom.IsSheetNode: node)
 			node.doc.sheet_version++;
 		;;
+		if (Dom.IsMediaNode: node)
+			node.doc.media_version++;
+		;;
 		call Dom.Changed: parent DomChange.CHILDREN;
 		# (a MutationObserver hears of what the parser puts in, and custom elements are upgraded)
 		if node.doc.on_mutation is not 0

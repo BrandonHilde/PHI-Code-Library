@@ -542,6 +542,27 @@ in each framing, and corelib's sizes are within a few percent of zlib's (`tools/
 ImageMagick (libpng) reads every file the writer makes with every pixel the same
 (`tools/image/check_png_writer.py`). Later: lazy matching, and gray and 16-bit PNGs.
 
+
+### Phase 7: sound and video (2026-11-23)
+
+The owner, 2026-11-23: "i do want you work on audio and video though. we need that base functionality
+before we polish the rest". So **medialib** ([libs/media](libs/media), prefix `Md`): containers and
+codecs, bytes in and samples or pictures out, all in whole numbers (PHI OS's emulated x87 is slow),
+its tables worked out from fdlibm's functions so every system gets the same answers. weblib's
+`page/media.phi` plays `<audio>` and `<video>` with it.
+
+| Part | Status (2026-11-23) |
+|---|---|
+| MP3 | ✓ within 1 of Apple's decoder, gapless |
+| WAV | ✓ |
+| WebM, Ogg, MP4 containers | ✓ (fragmented MP4 not yet) |
+| VP8 | ✓ every pixel libvpx's |
+| Vorbis | ✓ within 1 to 4 of Brave's (libvorbis's) |
+| AAC LC | ✓ 76 to 81 dB from Apple's; HE-AAC plays its core |
+| H.264 | next: most `<video>` on the web is MP4 with it |
+| Opus, VP9 | then: Wikipedia's and YouTube's |
+| Media Source Extensions | for YouTube, after those |
+
 ## Order, and what can run at once
 
 ```

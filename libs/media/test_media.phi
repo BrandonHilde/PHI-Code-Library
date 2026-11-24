@@ -1,0 +1,225 @@
+# medialib, every day: VP8 against libvpx (each frame of MDN's flower.webm, its Y, U and V planes
+# by CRC, as tools/media/vp8_reference.py had libvpx give them), MP3 by its length and samples (made
+# by this decoder and checked against Apple's by tools/media/check_mp3.py), Vorbis and AAC against
+# their reference decoders' samples (tests/media/*.ref.raw: Brave's WebCodecs for an Ogg Vorbis
+# recording, Apple's afconvert for an AAC clip made by tools/media/make_aac_test.py), and a WAV made
+# here.
+use medialib;
+use data.crc32;
+use memory.mem;
+
+phi.TestMedia:Program
+{
+	call MediaLib.Start;
+	call Vp8;
+	call Mp3;
+	call Against: 'vorbis' 'tests/media/philosophy.oga' 'tests/media/philosophy.ref.raw';
+	call Against: 'aac' 'tests/media/plucks.m4a' 'tests/media/plucks.ref.raw';
+	call Wav;
+	exit 0;
+
+	[Load: str path: ''; ptr<u32> len: 0; : ptr<u8>]
+		int size: (OS.FileSize: path);
+		if size <= 0
+			log 'no ' path '\n';
+			exit 1;
+		;;
+		ptr<u8> all: new u8[size];
+		int got: (OS.ReadFile: path all size);
+		len:0 is got as u32;
+	[end: all]
+
+	[Vp8]
+		u32 len: 0;
+		ptr<u8> data: (Load: 'tests/media/flower.webm' addr len);
+		u32 rlen: 0;
+		ptr<u8> crcs: (Load: 'tests/media/flower.vp8.crcs' addr rlen);
+		ptr<MdMedia> m: (MdMedia.Open: data len);
+		if m is 0 or not m.has_video
+			log 'flower.webm: ' MdMedia.error '\n';
+			exit 1;
+		;;
+		ptr<MdVp8> d: (MdVp8.New);
+		int shown: 0;
+		int same: 0;
+		u32 at_ref: 0;
+		while u32 k: 0; k < m.vcount; k++;
+			ptr<MdPacket> p: m.vpackets + k * sizeof MdPacket;
+			int r: (d.Decode: m.data + p.pos p.size);
+			if r < 0
+				log 'frame ' k ': ' MdVp8.error '\n';
+				exit 1;
+			;;
+			if r is 1
+				u32 cy: 0;
+				while int y: 0; y < d.h; y++;
+					call cy is Crc32.Add: cy d.out_y + y * d.ys d.w as u32;
+				;;
+				u32 cuv: 0;
+				int cw: (d.w + 1) >> 1;
+				int ch: (d.h + 1) >> 1;
+				while int y: 0; y < ch; y++;
+					call cuv is Crc32.Add: cuv d.out_u + y * d.uvs cw as u32;
+				;;
+				while int y: 0; y < ch; y++;
+					call cuv is Crc32.Add: cuv d.out_v + y * d.uvs cw as u32;
+				;;
+				# the reference's line: "frame N crc Y/UV"
+				u32 ry: 0;
+				u32 ruv: 0;
+				call at_ref is Line: crcs rlen at_ref addr ry addr ruv;
+				if ry is cy and ruv is cuv
+					same++;
+				;;
+				elif shown < 3
+					log 'frame ' shown ': ' cy '/' cuv ', libvpx ' ry '/' ruv '\n';
+				;;
+				shown++;
+			;;
+		;;
+		log 'vp8: ' same ' of ' shown ' frames as libvpx (' d.w 'x' d.h ')\n';
+		call MdVp8.Free: d;
+		call MdMedia.Close: m;
+	[end]
+
+	# the two numbers of the next line of a .crcs file, from at; where the line after begins
+	[Line: ptr<u8> t: 0; u32 n: 0; u32 at_: 0; ptr<u32> a: 0; ptr<u32> b: 0; : u32]
+		# past "frame N crc "
+		int spaces: 0;
+		while at_ < n and spaces < 3
+			if t:at_ is ' '
+				spaces++;
+			;;
+			at_++;
+		;;
+		u32 v: 0;
+		while at_ < n and t:at_ >= '0' and t:at_ <= '9'
+			v is v * 10 + (t:at_ - '0');
+			at_++;
+		;;
+		a:0 is v;
+		at_++;
+		v is 0;
+		while at_ < n and t:at_ >= '0' and t:at_ <= '9'
+			v is v * 10 + (t:at_ - '0');
+			at_++;
+		;;
+		b:0 is v;
+		while at_ < n and t:at_ is not 10
+			at_++;
+		;;
+	[end: at_ + 1]
+
+	[Mp3]
+		u32 len: 0;
+		ptr<u8> data: (Load: 'tests/media/t-rex-roar.mp3' addr len);
+		ptr<MdMedia> m: (MdMedia.Open: data len);
+		if m is 0
+			log 't-rex-roar.mp3: ' MdMedia.error '\n';
+			exit 1;
+		;;
+		u32 crc: 0;
+		i64 frames: 0;
+		while (m.ReadAudio) > 0
+			call crc is Crc32.Add: crc (addr m.pcm) as ptr<u8> (m.frames * 4) as u32;
+			frames++ m.frames as i64;
+		;;
+		log 'mp3: ' m.rate ' Hz, ' frames ' frames (' m.duration_us / 1000 ' ms), crc ' crc '\n';
+		# from the middle again: the same samples there
+		call m.SeekAudio: 1000000;
+		int n: (m.ReadAudio);
+		log 'mp3: sought to 1 s: at ' m.audio_us / 1000 ' ms, ' n ' frames\n';
+		call MdMedia.Close: m;
+	[end]
+
+	# a file's sound against a reference decoder's (16-bit stereo): how long, and how far apart
+	[Against: str name: ''; str path: ''; str ref_path: '';]
+		u32 len: 0;
+		ptr<u8> data: (Load: path addr len);
+		u32 rlen: 0;
+		ptr<u8> rb: (Load: ref_path addr rlen);
+		ptr<i16> ref: rb as ptr<i16>;
+		int ref_n: (rlen / 2) as int;
+		ptr<MdMedia> m: (MdMedia.Open: data len);
+		if m is 0
+			log name ': ' MdMedia.error '\n';
+			exit 1;
+		;;
+		int at_: 0;
+		int worst: 0;
+		int off: 0;
+		while (m.ReadAudio) > 0
+			while int k: 0; k < m.frames * 2; k++;
+				if at_ < ref_n
+					# (the reference's bytes, little-endian, put together one at a time)
+					int lo: rb:(at_ * 2);
+					int hi: rb:(at_ * 2 + 1);
+					int r: (hi << 8) | lo;
+					if r >= 32768
+						r is r - 65536;
+					;;
+					int d: m.pcm:k - r;
+					if d < 0
+						d is 0 - d;
+					;;
+					if d > worst
+						worst is d;
+					;;
+					if d > 1
+						off++;
+					;;
+				;;
+				at_++;
+			;;
+		;;
+		log name ': ' m.rate ' Hz, ' m.channels ' channel(s), ' at_ / 2 ' frames (the reference ' ref_n / 2 '); the largest difference ' worst ', ' off ' samples more than 1 apart\n';
+		call MdMedia.Close: m;
+	[end]
+
+	[Wav]
+		# a second of a 16-bit stereo ramp at 8000 Hz
+		int frames: 8000;
+		int size: 44 + frames * 4;
+		ptr<u8> b: new u8[size];
+		call Put: b 0 0x46464952;
+		call Put: b 4 size - 8;
+		call Put: b 8 0x45564157;
+		call Put: b 12 0x20746D66;
+		call Put: b 16 16;
+		call Put: b 20 0x00020001;
+		call Put: b 24 8000;
+		call Put: b 28 32000;
+		call Put: b 32 0x00100004;
+		call Put: b 36 0x61746164;
+		call Put: b 40 frames * 4;
+		while int i: 0; i < frames; i++;
+			int v: (i * 4) - 16000;
+			call Put: b 44 + i * 4 (v & 0xFFFF) | ((0 - v) << 16);
+		;;
+		ptr<MdMedia> m: (MdMedia.Open: b size as u32);
+		if m is 0
+			log 'wav: ' MdMedia.error '\n';
+			exit 1;
+		;;
+		int total: 0;
+		int right: 0;
+		while (m.ReadAudio) > 0
+			while int k: 0; k < m.frames; k++;
+				int i: total + k;
+				int v: (i * 4) - 16000;
+				if m.pcm:(k * 2) is v as i16 and m.pcm:(k * 2 + 1) is (0 - v) as i16
+					right++;
+				;;
+			;;
+			total++ m.frames;
+		;;
+		log 'wav: ' m.rate ' Hz, ' total ' frames, ' right ' as made\n';
+	[end]
+
+	[Put: ptr<u8> b: 0; int at_: 0; int v: 0;]
+		b:at_ is (v & 255) as u8;
+		b:(at_ + 1) is ((v >> 8) & 255) as u8;
+		b:(at_ + 2) is ((v >> 16) & 255) as u8;
+		b:(at_ + 3) is ((v >> 24) & 255) as u8;
+	[end]
+}

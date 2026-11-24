@@ -1,0 +1,38 @@
+# medialib as a compiled library, alone: a WAV made here, opened and read back.
+use medialib;
+
+phi.TestUse:Program
+{
+	call MediaLib.Start;
+	ptr<u8> b: new u8[44 + 400];
+	call Put: b 0 0x46464952;
+	call Put: b 4 436;
+	call Put: b 8 0x45564157;
+	call Put: b 12 0x20746D66;
+	call Put: b 16 16;
+	call Put: b 20 0x00010001;
+	call Put: b 24 22050;
+	call Put: b 28 44100;
+	call Put: b 32 0x00100002;
+	call Put: b 36 0x61746164;
+	call Put: b 40 400;
+	while int i: 0; i < 200; i++;
+		b:(44 + i * 2) is (i & 255) as u8;
+		b:(45 + i * 2) is 0;
+	;;
+	ptr<MdMedia> m: (MdMedia.Open: b 444);
+	if m is 0
+		log 'refused: ' MdMedia.error '\n';
+		exit 1;
+	;;
+	int n: (m.ReadAudio);
+	log 'medialib ' MediaLib.VERSION ': ' m.rate ' Hz, ' m.channels ' channel, ' n ' frames, the last ' m.pcm:(n * 2 - 2) ' ' m.pcm:(n * 2 - 1) '\n';
+	exit 0;
+
+	[Put: ptr<u8> b: 0; int at_: 0; int v: 0;]
+		b:at_ is (v & 255) as u8;
+		b:(at_ + 1) is ((v >> 8) & 255) as u8;
+		b:(at_ + 2) is ((v >> 16) & 255) as u8;
+		b:(at_ + 3) is ((v >> 24) & 255) as u8;
+	[end]
+}

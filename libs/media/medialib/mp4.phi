@@ -1,0 +1,542 @@
+# MP4 (ISO/IEC 14496-12 and 14, the ISO base media file format; .mp4, .m4a, .mov much the same):
+# boxes, each a size and a type, some holding more. A movie (moov) has tracks (trak); each track's
+# media (mdia) says its time scale (mdhd), whether it's sound or video (hdlr), and in its sample
+# table (stbl) what its samples are: their description (stsd: the codec and its setup, as AAC's
+# AudioSpecificConfig in an esds, or H.264's avcC), their sizes (stsz), how they're grouped into
+# chunks (stsc) and where those are (stco or co64), their decode times (stts), how far each is shown
+# after it's decoded (ctts) and which are key frames (stss). The first sound track and the first
+# video track of a codec medialib knows become an MdMedia's packets. An edit list (elst) whose first
+# edit starts the media later (an AAC encoder's priming) drops that much from the start.
+#
+# Fragmented files (moof, as DASH and Media Source use) aren't read yet.
+
+use memory.mem;
+
+phi.MdMp4:Library
+{
+	ptr<MdMedia> m: 0;
+	ptr<u8> d: 0;
+	u32 n: 0;
+	bln failed: false;
+
+	[U32: u32 pos: 0; : u32]
+		if pos + 4 > n
+			failed is true;
+			return 0;
+		;;
+	[end: ((d:pos as u32) << 24) | ((d:(pos + 1) as u32) << 16) | ((d:(pos + 2) as u32) << 8) | (d:(pos + 3) as u32)]
+
+	[U16: u32 pos: 0; : u32]
+		if pos + 2 > n
+			failed is true;
+			return 0;
+		;;
+	[end: ((d:pos as u32) << 8) | (d:(pos + 1) as u32)]
+
+	[U64: u32 pos: 0; : u64]
+	[end: (((U32: pos) as u64) << 32) | (U32: pos + 4) as u64]
+
+	[Is: u32 pos: 0; ptr<u8> type: 0;]
+		if pos + 4 > n return false;
+		while int i: 0; i < 4; i++;
+			if d:(pos + i) is not type:i return false;
+		;;
+	[end: true]
+
+	# A box at pos within stop: its body's start in body_at, its end in box_end; false if there isn't one
+	u32 body_at: 0;
+	u32 box_end: 0;
+	[Box: u32 pos: 0; u32 stop: 0;]
+		if pos + 8 > stop return false;
+		u64 size: (U32: pos) as u64;
+		u32 head: 8;
+		if size is 1
+			size is (U64: pos + 8);
+			head is 16;
+		;;
+		elif size is 0
+			size is (stop - pos) as u64;
+		;;
+		if size < head as u64 or pos as u64 + size > stop as u64 return false;
+		body_at is pos + head;
+		box_end is pos + size as u32;
+	[end: true]
+
+	[Open: ptr<MdMedia> media: 0;]
+		m is media;
+		d is m.data;
+		n is m.length;
+		failed is false;
+		u32 pos: 0;
+		bln moov: false;
+		while (Box: pos n)
+			u32 b: body_at;
+			u32 e: box_end;
+			if (Is: pos + 4 'moov')
+				moov is true;
+				call Movie: b e;
+				call Gapless: b e;
+			;;
+			pos is e;
+		;;
+		if not moov
+			MdMedia.error is 'an MP4 file with no movie (moov) box';
+			return false;
+		;;
+		if not m.has_audio and not m.has_video
+			MdMedia.error is 'an MP4 file with no sound or video I can play';
+			return false;
+		;;
+		m.format is MdMedia.MP4;
+	[end: true]
+
+	# iTunes's gapless note (Apple's encoders write it, not an edit list): in the movie's metadata a
+	# text called iTunSMPB, of hex numbers: 0, the encoder's delay, its padding, and how many samples
+	# there are
+	[Gapless: u32 pos: 0; u32 stop: 0;]
+		if not m.has_audio or m.codec is not MdMedia.CODEC_AAC return;
+		u32 at_: pos;
+		while at_ + 8 <= stop
+			if (Is: at_ 'iTun') and (Is: at_ + 4 'SMPB')
+				break;
+			;;
+			at_++;
+		;;
+		if at_ + 8 > stop return;
+		# the data box after it: its size and type, a type and locale (8), then the text
+		u32 look: at_ + 8;
+		while look + 8 <= stop and look < at_ + 64
+			if (Is: look 'data')
+				break;
+			;;
+			look++;
+		;;
+		if look + 12 > stop or look >= at_ + 64 return;
+		u32 t: look + 12;
+		u32 t_end: look - 4 + (U32: look - 4);
+		if t_end > stop
+			t_end is stop;
+		;;
+		u64 fields[4];
+		int f: 0;
+		while t < t_end and f < 4
+			while t < t_end and d:t is ' '
+				t++;
+			;;
+			u64 v: 0;
+			bln any: false;
+			while t < t_end and d:t is not ' '
+				u32 c: d:t;
+				u32 hex: 0;
+				if c >= '0' and c <= '9'
+					hex is c - '0';
+				;;
+				elif c >= 'A' and c <= 'F'
+					hex is c - 'A' + 10;
+				;;
+				elif c >= 'a' and c <= 'f'
+					hex is c - 'a' + 10;
+				;;
+				v is (v << 4) | hex as u64;
+				any is true;
+				t++;
+			;;
+			if any
+				fields:f is v;
+				f++;
+			;;
+		;;
+		if f < 4 or fields:1 > 100000 or m.skip > 0 return;
+		m.skip is fields:1 as i64;
+		m.lead is m.skip;
+		if fields:3 > 0
+			m.total is fields:3 as i64;
+			if m.rate > 0
+				m.duration_us is m.total * 1000000 / m.rate as i64;
+			;;
+		;;
+	[end]
+
+	[Movie: u32 pos: 0; u32 stop: 0;]
+		while (Box: pos stop)
+			u32 b: body_at;
+			u32 e: box_end;
+			if (Is: pos + 4 'trak')
+				call Track: b e;
+			;;
+			pos is e;
+		;;
+	[end]
+
+	# what a track's boxes said
+	u32 timescale: 0;
+	u64 tduration: 0;
+	bln sound: false;
+	bln video: false;
+	int codec: 0;
+	u32 cfg_at: 0;              # the codec's setup (AudioSpecificConfig, avcC), and its length
+	u32 cfg_len: 0;
+	int width: 0;
+	int height: 0;
+	int channels: 0;
+	int rate: 0;
+	i64 edit_start: 0;          # in the track's time scale
+	u32 stsz_at: 0;
+	u32 stco_at: 0;
+	bln co64: false;
+	u32 stsc_at: 0;
+	u32 stts_at: 0;
+	u32 ctts_at: 0;
+	u32 stss_at: 0;
+
+	[Track: u32 pos: 0; u32 stop: 0;]
+		timescale is 0;
+		tduration is 0;
+		sound is false;
+		video is false;
+		codec is 0;
+		cfg_at is 0;
+		cfg_len is 0;
+		edit_start is 0;
+		stsz_at is 0;
+		stco_at is 0;
+		stsc_at is 0;
+		stts_at is 0;
+		ctts_at is 0;
+		stss_at is 0;
+		call Walk: pos stop;
+		if failed or timescale is 0 or stsz_at is 0 or stco_at is 0 or stsc_at is 0 or stts_at is 0
+			failed is false;
+			return;
+		;;
+		if sound and not m.has_audio and (MdMedia.Decodes: codec)
+			call Samples: true;
+			m.has_audio is true;
+			m.codec is codec;
+			m.rate is rate;
+			m.channels is channels;
+			m.a_priv is d + cfg_at;
+			m.a_priv_len is cfg_len;
+			if tduration > 0
+				m.duration_us is (tduration * 1000000 / timescale as u64) as i64;
+			;;
+			# (an edit that starts the media later: those samples are the encoder's, dropped)
+			if edit_start > 0 and rate > 0
+				m.skip is edit_start * rate as i64 / timescale as i64;
+				m.lead is m.skip;
+			;;
+		;;
+		elif video and not m.has_video and (MdMedia.Decodes: codec)
+			call Samples: false;
+			m.has_video is true;
+			m.vcodec is codec;
+			m.width is width;
+			m.height is height;
+			m.v_priv is d + cfg_at;
+			m.v_priv_len is cfg_len;
+			if tduration > 0 and m.duration_us < 0
+				m.duration_us is (tduration * 1000000 / timescale as u64) as i64;
+			;;
+		;;
+	[end]
+
+	# the boxes in a track that hold boxes, down to the sample table
+	[Walk: u32 pos: 0; u32 stop: 0;]
+		while (Box: pos stop)
+			u32 b: body_at;
+			u32 e: box_end;
+			if (Is: pos + 4 'mdia') or (Is: pos + 4 'minf') or (Is: pos + 4 'stbl') or (Is: pos + 4 'edts')
+				call Walk: b e;
+			;;
+			elif (Is: pos + 4 'mdhd')
+				if d:b is 1
+					timescale is (U32: b + 20);
+					tduration is (U64: b + 24);
+				;;
+				else
+					timescale is (U32: b + 12);
+					tduration is (U32: b + 16) as u64;
+				;;
+			;;
+			elif (Is: pos + 4 'hdlr')
+				sound is (Is: b + 8 'soun');
+				video is (Is: b + 8 'vide');
+			;;
+			elif (Is: pos + 4 'elst')
+				# the first edit: an empty one (-1) delays, one that starts at a time drops that much
+				u32 count: (U32: b + 4);
+				if count >= 1
+					i64 media_time: 0;
+					if d:b is 1
+						media_time is (U64: b + 16) as i64;
+					;;
+					else
+						media_time is ((U32: b + 12) as int) as i64;
+					;;
+					if media_time > 0
+						edit_start is media_time;
+					;;
+				;;
+			;;
+			elif (Is: pos + 4 'stsd')
+				call Describe: b + 8 e;
+			;;
+			elif (Is: pos + 4 'stsz')
+				stsz_at is b;
+			;;
+			elif (Is: pos + 4 'stco')
+				stco_at is b;
+				co64 is false;
+			;;
+			elif (Is: pos + 4 'co64')
+				stco_at is b;
+				co64 is true;
+			;;
+			elif (Is: pos + 4 'stsc')
+				stsc_at is b;
+			;;
+			elif (Is: pos + 4 'stts')
+				stts_at is b;
+			;;
+			elif (Is: pos + 4 'ctts')
+				ctts_at is b;
+			;;
+			elif (Is: pos + 4 'stss')
+				stss_at is b;
+			;;
+			pos is e;
+		;;
+	[end]
+
+	# the first sample description: its codec, and the box with its setup
+	[Describe: u32 pos: 0; u32 stop: 0;]
+		if not (Box: pos stop) return;
+		u32 b: body_at;
+		u32 e: box_end;
+		if (Is: pos + 4 'mp4a')
+			codec is MdMedia.CODEC_AAC;
+			channels is (U16: b + 16) as int;
+			rate is ((U32: b + 24) >> 16) as int;
+			# (an esds after the 28 bytes of a sound sample entry)
+			call Inner: b + 28 e 'esds';
+		;;
+		elif (Is: pos + 4 'avc1') or (Is: pos + 4 'avc3')
+			codec is MdMedia.CODEC_H264;
+			width is (U16: b + 24) as int;
+			height is (U16: b + 26) as int;
+			call Inner: b + 78 e 'avcC';
+		;;
+		elif (Is: pos + 4 'vp09')
+			codec is MdMedia.CODEC_VP9;
+			width is (U16: b + 24) as int;
+			height is (U16: b + 26) as int;
+		;;
+		elif (Is: pos + 4 'av01')
+			codec is MdMedia.CODEC_AV1;
+			width is (U16: b + 24) as int;
+			height is (U16: b + 26) as int;
+		;;
+		elif (Is: pos + 4 'Opus')
+			codec is MdMedia.CODEC_OPUS;
+			channels is (U16: b + 16) as int;
+			rate is 48000;
+			call Inner: b + 28 e 'dOps';
+		;;
+		elif (Is: pos + 4 '.mp3')
+			codec is MdMedia.CODEC_MP3;
+			channels is (U16: b + 16) as int;
+			rate is ((U32: b + 24) >> 16) as int;
+		;;
+	[end]
+
+	# a box of the type within, as the codec's setup: an esds's AudioSpecificConfig is dug out of its
+	# descriptors (ES, then DecoderConfig, then DecoderSpecificInfo)
+	[Inner: u32 pos: 0; u32 stop: 0; ptr<u8> type: 0;]
+		while (Box: pos stop)
+			u32 b: body_at;
+			u32 e: box_end;
+			if (Is: pos + 4 type)
+				if (Is: pos + 4 'esds')
+					call Descriptors: b + 4 e;
+				;;
+				else
+					cfg_at is b;
+					cfg_len is e - b;
+				;;
+				return;
+			;;
+			pos is e;
+		;;
+	[end]
+
+	[Descriptors: u32 pos: 0; u32 stop: 0;]
+		int guard: 0;
+		while pos + 2 <= stop and guard < 16
+			guard++;
+			u32 tag: d:pos;
+			pos++;
+			u32 size: 0;
+			int k: 0;
+			while k < 4 and pos < stop
+				u32 c: d:pos;
+				pos++;
+				size is (size << 7) | (c & 127);
+				k++;
+				if (c & 128) is 0
+					break;
+				;;
+			;;
+			if tag is 3
+				# ES_Descriptor: its id, flags, and what the flags say comes before what's inside
+				u32 flags: d:(pos + 2);
+				pos++ 3;
+				if (flags & 0x80) is not 0
+					pos++ 2;
+				;;
+				if (flags & 0x40) is not 0 and pos < stop
+					pos++ 1 + d:pos;
+				;;
+				if (flags & 0x20) is not 0
+					pos++ 2;
+				;;
+				continue;
+			;;
+			if tag is 4
+				# DecoderConfigDescriptor: 13 bytes, then what's inside
+				if pos + 13 <= stop
+					u32 object: d:pos;
+					if object is 0x6B or object is 0x69
+						codec is MdMedia.CODEC_MP3;
+					;;
+				;;
+				pos++ 13;
+				continue;
+			;;
+			if tag is 5
+				cfg_at is pos;
+				cfg_len is size;
+				if pos + size > stop
+					cfg_len is stop - pos;
+				;;
+				return;
+			;;
+			pos++ size;
+		;;
+	[end]
+
+	# the track's samples as packets: from the chunks they're in, in decode order, each at the time it's
+	# shown (its decode time plus its composition offset), key frames marked
+	[Samples: bln audio: false;]
+		u32 count: (U32: stsz_at + 8);
+		u32 fixed: (U32: stsz_at + 4);
+		u32 chunks: (U32: stco_at + 4);
+		u32 stsc_count: (U32: stsc_at + 4);
+		u32 stts_count: (U32: stts_at + 4);
+		if count > 10000000 or chunks > 10000000
+			return;
+		;;
+		# (sample-to-chunk: runs of chunks with so many samples each)
+		u32 sc_i: 0;
+		u32 sc_first: (U32: stsc_at + 8);
+		u32 sc_per: (U32: stsc_at + 12);
+		u32 sc_next: 0xFFFFFFFF;
+		if stsc_count > 1
+			sc_next is (U32: stsc_at + 8 + 12);
+		;;
+		# (time-to-sample: runs of samples each so long)
+		u32 tt_i: 0;
+		u32 tt_left: (U32: stts_at + 8);
+		u32 tt_delta: (U32: stts_at + 12);
+		u64 dts: 0;
+		u32 ct_i: 0;
+		u32 ct_left: 0;
+		int ct_off: 0;
+		u32 ct_count: 0;
+		if ctts_at is not 0
+			ct_count is (U32: ctts_at + 4);
+			if ct_count > 0
+				ct_left is (U32: ctts_at + 8);
+				ct_off is (U32: ctts_at + 12) as int;
+			;;
+		;;
+		u32 ss_i: 0;
+		u32 ss_count: 0;
+		u32 ss_next: 0xFFFFFFFF;
+		if stss_at is not 0
+			ss_count is (U32: stss_at + 4);
+			if ss_count > 0
+				ss_next is (U32: stss_at + 8);
+			;;
+		;;
+		u32 sample: 0;
+		u32 chunk: 1;
+		while chunk <= chunks and sample < count and not failed
+			# the run this chunk is in
+			while chunk >= sc_next and sc_i + 1 < stsc_count
+				sc_i++;
+				sc_first is sc_next;
+				sc_per is (U32: stsc_at + 8 + sc_i * 12 + 4);
+				sc_next is 0xFFFFFFFF;
+				if sc_i + 1 < stsc_count
+					sc_next is (U32: stsc_at + 8 + (sc_i + 1) * 12);
+				;;
+			;;
+			u64 off: 0;
+			if co64
+				off is (U64: stco_at + 8 + (chunk - 1) * 8);
+			;;
+			else
+				off is (U32: stco_at + 8 + (chunk - 1) * 4) as u64;
+			;;
+			u32 k: 0;
+			while k < sc_per and sample < count and not failed
+				u32 size: fixed;
+				if fixed is 0
+					size is (U32: stsz_at + 12 + sample * 4);
+				;;
+				# when it's shown
+				i64 pts: dts as i64 + ct_off as i64 - edit_start;
+				i64 us: pts * 1000000 / timescale as i64;
+				u32 flags: 0;
+				if stss_at is 0 or sample + 1 is ss_next
+					flags is MdMedia.KEY;
+					if stss_at is not 0
+						ss_i++;
+						ss_next is 0xFFFFFFFF;
+						if ss_i < ss_count
+							ss_next is (U32: stss_at + 8 + ss_i * 4);
+						;;
+					;;
+				;;
+				if off + size as u64 <= n as u64
+					if audio
+						call m.AddPacket: off as u32 size us flags;
+					;;
+					else
+						call m.AddVideoPacket: off as u32 size us flags;
+					;;
+				;;
+				off++ size as u64;
+				sample++;
+				k++;
+				# the next sample's decode time and composition offset
+				dts++ tt_delta as u64;
+				tt_left--;
+				while tt_left is 0 and tt_i + 1 < stts_count
+					tt_i++;
+					tt_left is (U32: stts_at + 8 + tt_i * 8);
+					tt_delta is (U32: stts_at + 8 + tt_i * 8 + 4);
+				;;
+				if ct_count > 0
+					ct_left--;
+					while ct_left is 0 and ct_i + 1 < ct_count
+						ct_i++;
+						ct_left is (U32: ctts_at + 8 + ct_i * 8);
+						ct_off is (U32: ctts_at + 8 + ct_i * 8 + 4) as int;
+					;;
+				;;
+			;;
+			chunk++;
+		;;
+	[end]
+}

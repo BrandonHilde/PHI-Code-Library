@@ -1,0 +1,1070 @@
+# AAC (ISO/IEC 14496-3), the Low Complexity profile, a raw data block (an MP4 sample) at a time to
+# 16-bit samples.
+#
+# An AudioSpecificConfig says the profile, rate and channels. A block is elements: a single channel
+# (SCE), a channel pair (CPE, perhaps sharing a window and mid/side or intensity stereo), the low
+# frequency channel (LFE, read and dropped), data and fill (passed over), and the end. Each channel
+# is an individual channel stream: a gain, the window (one long, or eight short in groups), its
+# bands' Huffman books (sections), scalefactors (or intensity positions, or noise energies for
+# perceptual noise substitution), pulses, temporal noise shaping, and the spectrum, Huffman-coded in
+# twos and fours. The spectrum is dequantized (|q|^(4/3) 2^((sf - 100)/4)), stereo worked out, noise
+# put in, TNS's filters run over it, and the inverse MDCT and the windows (sine or Kaiser-Bessel
+# derived, as each frame says) overlap it with the frame before: 1024 samples a frame.
+#
+# In whole numbers, as the other decoders here: the spectrum is Q20 of full scale, with the IMDCT's
+# 2/N already in, so it's the size Vorbis's is. HE-AAC's SBR and PS (in fill elements) aren't read:
+# such a stream plays its core, at half its rate.
+
+use memory.mem;
+use medialib.mp3;
+use medialib.mdct;
+use medialib.aactables;
+
+phi.MdAac:Library
+{
+	str error: [80];
+	int rates: 96000 88200 64000 48000 44100 32000 24000 22050 16000 12000 11025 8000 7350;
+	u8 tns_bands_long: 31 31 34 40 42 51 46 46 42 42 42 39 39;
+	u8 tns_bands_short: 9 9 10 14 14 14 14 14 14 14 14 14 14;
+
+	bln started: false;
+	ptr<int> sine_long: 0;      # the windows' rising halves, Q30: sine and KBD, long (1024) and short (128)
+	ptr<int> sine_short: 0;
+	ptr<int> kbd_long: 0;
+	ptr<int> kbd_short: 0;
+	ptr<u32> fast: 0;           # each book's lookup from its first 11 bits: index << 8 | length, 0 for longer
+	MdMdct long_t;
+	MdMdct short_t;
+
+	[New]
+		call Start;
+		ptr<MdAac> d: new MdAac;
+		if d is 0 return 0 as ptr<MdAac>;
+		call Mem.Fill: d as ptr<u8> 0 sizeof MdAac;
+	[end: d]
+
+	[Free: ptr<MdAac> d: 0;]
+		if d is not 0
+			free d;
+		;;
+	[end]
+
+	[Start]
+		if started return;
+		started is true;
+		call MdMp3Math.Start;
+		sine_long is (Sine: 1024);
+		sine_short is (Sine: 128);
+		kbd_long is (Kbd: 1024 4.0);
+		kbd_short is (Kbd: 128 6.0);
+		call long_t.Init: 2048;
+		call short_t.Init: 256;
+		fast is new u32[12 * 2048];
+		call Mem.Fill: fast as ptr<u8> 0 12 * 2048 * 4;
+		while int b: 0; b < 12; b++;
+			int first: MdAacTables.book_start:b;
+			int count: 0;
+			if b < 11
+				count is MdAacTables.book_start:(b + 1) - first;
+			;;
+			else
+				count is 289;
+			;;
+			ptr<u32> f: fast + b * 2048 * 4;
+			while int i: 0; i < count; i++;
+				int l: MdAacTables.code_len:(first + i);
+				u32 c: MdAacTables.code_bits:(first + i);
+				if l <= 11
+					u32 lo: c << (11 - l);
+					u32 many: (1 as u32) << (11 - l);
+					while u32 k: 0; k < many; k++;
+						f:(lo + k) is ((i as u32) << 8) | l as u32;
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	# sin(pi / (2n) (k + 1/2)) for k < n, Q30: a window's rising half
+	[Sine: int n: 0; : ptr<int>]
+		ptr<int> w: new int[n];
+		while int k: 0; k < n; k++;
+			w:k is (Q30: (Float.Sin: 3.14159265358979323846 / (2.0 * (n as f64)) * ((k as f64) + 0.5)));
+		;;
+	[end: w]
+
+	# Kaiser-Bessel derived, of alpha, n values: the running sum of a Kaiser window, normalized
+	[Kbd: int n: 0; f64 alpha: 0.0; : ptr<int>]
+		ptr<int> w: new int[n];
+		f64 total: 0.0;
+		while int j: 0; j <= n; j++;
+			total is total + (Kaiser: j n alpha);
+		;;
+		f64 sum: 0.0;
+		while int k: 0; k < n; k++;
+			sum is sum + (Kaiser: k n alpha);
+			w:k is (Q30: (Float.Sqrt: sum / total));
+		;;
+	[end: w]
+
+	[Kaiser: int j: 0; int n: 0; f64 alpha: 0.0; : f64]
+		f64 x: 2.0 * (j as f64) / (n as f64) - 1.0;
+		f64 a: 3.14159265358979323846 * alpha;
+	[end: (BesselI0: a * (Float.Sqrt: 1.0 - x * x)) / (BesselI0: a)]
+
+	[BesselI0: f64 x: 0.0; : f64]
+		f64 sum: 1.0;
+		f64 term: 1.0;
+		f64 half: x / 2.0;
+		while int k: 1; k < 50; k++;
+			term is term * half / (k as f64);
+			sum is sum + term * term;
+		;;
+	[end: sum]
+
+	[Q30: f64 v: 0.0;]
+	[end: (Float.Round: v * 1073741824.0) as int]
+}
+
+struct.MdAac
+{
+	int object;                 # 2: AAC LC
+	int rate_index;
+	int rate;
+	int channels;               # in the stream (configuration)
+	bln ready;
+	# the block being read, MSB first
+	ptr<u8> data;
+	int len;
+	int bit;
+	bln eop;
+	# per channel being decoded now (0 and 1 of a pair): its stream's state
+	int global_gain[2];
+	int window_seq[2];
+	int window_shape[2];
+	int max_sfb[2];
+	int groups[2];
+	int group_len[16];          # [channel][group] (8 each)
+	u8 cb[256];                 # [channel][group * 16 + sfb]: a band's book
+	int sf[256];                # its scalefactor (or intensity position, or noise energy)
+	bln ms_used[128];           # [group * 16 + sfb]
+	int ms_mask;
+	int tns_n[16];              # [channel][window]: how many filters
+	int tns_len[48];            # [channel][window][filter] (3 a window at most for long)
+	int tns_order[48];
+	int tns_dir[48];
+	int tns_coef[960];          # [channel][window][filter][20]: Q20 LPC coefficients
+	ptr<i64> tns_y;             # (the filter's outputs, Q28: kept finer than the spectrum while it runs)
+	ptr<int> spec;              # [channel][1024], Q20
+	ptr<int> q;                 # quantized values [channel][1024]
+	# per output channel (0, 1): the last frame's second half, and its window's shape
+	ptr<int> overlap;
+	int last_shape[2];
+	ptr<int> work;              # 2048 for the IMDCT
+	ptr<int> frame;             # 2048 windowed
+	u32 noise_state;
+	i16 pcm[2048];              # what Decode gave: 1024 frames of left and right
+	int frames;
+
+	# The AudioSpecificConfig: false if it isn't AAC LC (or HE-AAC, played as its core).
+	[Config: ptr<u8> cfg: 0; int length: 0;]
+		if length < 2 return false;
+		data is cfg;
+		len is length;
+		bit is 0;
+		eop is false;
+		object is (Bits: 5);
+		if object is 31
+			object is 32 + (Bits: 6);
+		;;
+		rate_index is (Bits: 4);
+		if rate_index is 15
+			rate is (Bits: 24);
+			rate_index is 3;
+			# (the band tables of the nearest standard rate)
+			while int i: 0; i < 12; i++;
+				if rate >= (MdAac.rates:i + MdAac.rates:(i + 1)) / 2
+					rate_index is i;
+					break;
+				;;
+			;;
+		;;
+		else
+			if rate_index > 12 return false;
+			rate is MdAac.rates:rate_index;
+		;;
+		channels is (Bits: 4);
+		if object is 5 or object is 29
+			# HE-AAC: the extension's rate and the core's object: the core is what's decoded
+			int ext: (Bits: 4);
+			if ext is 15
+				int skip: (Bits: 24);
+			;;
+			object is (Bits: 5);
+		;;
+		if object is not 2 or channels < 1 or channels > 2 or rate_index > 11
+			MdAac.error is 'an AAC stream that isn\'t Low Complexity mono or stereo';
+			return false;
+		;;
+		spec is new int[2 * 1024];
+		q is new int[2 * 1024];
+		overlap is new int[2 * 1024];
+		work is new int[2048];
+		frame is new int[2048];
+		tns_y is new i64[1024];
+		if spec is 0 or q is 0 or overlap is 0 or work is 0 or frame is 0 or tns_y is 0 return false;
+		call Mem.Fill: overlap as ptr<u8> 0 2 * 1024 * 4;
+		noise_state is 0x1F2E3D4C;
+		ready is true;
+	[end: true]
+
+	[Bits: int n: 0;]
+		int v: 0;
+		while n > 0
+			int byte: bit >> 3;
+			int b: 0;
+			if byte < len
+				b is ((data:byte) >> (7 - (bit & 7))) & 1;
+			;;
+			else
+				eop is true;
+			;;
+			v is (v << 1) | b;
+			bit++;
+			n--;
+		;;
+	[end: v]
+
+	# the next 24 bits, without taking them
+	[Peek24]
+		int byte: bit >> 3;
+		u32 w: 0;
+		while int k: 0; k < 4; k++;
+			u32 b: 0;
+			if byte + k < len
+				b is data:(byte + k);
+			;;
+			w is (w << 8) | b;
+		;;
+		w is w << (bit & 7);
+	[end: (w >> 8) as int]
+
+	# a codeword of book b (0 the scalefactors'): its index, or -1
+	[Code: int b: 0;]
+		int peek: (Peek24);
+		u32 f: MdAac.fast:(b * 2048 + (peek >> 13));
+		if f is not 0
+			bit++ (f & 255) as int;
+			return (f >> 8) as int;
+		;;
+		int first: MdAacTables.book_start:b;
+		int count: 289;
+		if b < 11
+			count is MdAacTables.book_start:(b + 1) - first;
+		;;
+		while int i: 0; i < count; i++;
+			int l: MdAacTables.code_len:(first + i);
+			if l > 11 and ((peek as u32) >> (24 - l)) is MdAacTables.code_bits:(first + i)
+				bit++ l;
+				return i;
+			;;
+		;;
+		eop is true;
+	[end: -1]
+
+	# Decodes a raw data block: 1024 frames of left and right into pcm, or -1 (MdAac.error says).
+	[Decode: ptr<u8> block: 0; int length: 0;]
+		frames is 0;
+		int n: 0;
+		if call n is DecodeInner: block length throws err
+			MdAac.error is err.text;
+			return -1;
+		;;
+	[end: n]
+
+	[DecodeInner: ptr<u8> block: 0; int length: 0;]
+		if not ready
+			throw 'AAC without its configuration';
+		;;
+		data is block;
+		len is length;
+		bit is 0;
+		eop is false;
+		int out_ch: 0;              # how many output channels this block has made
+		int guard: 0;
+		while guard < 64
+			guard++;
+			int id: (Bits: 3);
+			if eop
+				break;
+			;;
+			if id is 7
+				break;                  # END
+			;;
+			if id is 0 or id is 3
+				# SCE or LFE: one channel (an LFE, or a third, is read and dropped)
+				int tag: (Bits: 4);
+				call Ics: 0 false;
+				if id is 0 and out_ch < 2
+					call Spectrum: 0;
+					call Synthesis: 0 out_ch;
+					out_ch++;
+				;;
+			;;
+			elif id is 1
+				int tag: (Bits: 4);
+				bln common: ((Bits: 1) is 1);
+				ms_mask is 0;
+				if common
+					call IcsInfo: 0;
+					window_seq:1 is window_seq:0;
+					window_shape:1 is window_shape:0;
+					max_sfb:1 is max_sfb:0;
+					groups:1 is groups:0;
+					while int g: 0; g < 8; g++;
+						group_len:(8 + g) is group_len:g;
+					;;
+					ms_mask is (Bits: 2);
+					if ms_mask is 1
+						while int g: 0; g < groups:0; g++;
+							while int s: 0; s < max_sfb:0; s++;
+								ms_used:(g * 16 + s) is ((Bits: 1) is 1);
+							;;
+						;;
+					;;
+				;;
+				call Ics: 0 common;
+				call Ics: 1 common;
+				if out_ch is 0
+					call Spectrum: 0;
+					call Spectrum: 1;
+					call Stereo: common;
+					call Synthesis: 0 0;
+					call Synthesis: 1 1;
+					out_ch is 2;
+				;;
+			;;
+			elif id is 4
+				# DSE: passed over
+				int tag: (Bits: 4);
+				bln align: ((Bits: 1) is 1);
+				int count: (Bits: 8);
+				if count is 255
+					count++ (Bits: 8);
+				;;
+				if align
+					bit is (bit + 7) & ~7;
+				;;
+				bit++ count * 8;
+			;;
+			elif id is 6
+				# FIL: passed over (SBR's data is in here)
+				int count: (Bits: 4);
+				if count is 15
+					count++ (Bits: 8) - 1;
+				;;
+				bit++ count * 8;
+			;;
+			elif id is 5
+				throw 'an AAC block with a program config element';
+			;;
+			else
+				throw 'an AAC block with a coupling channel element';
+			;;
+		;;
+		if out_ch is 0 return 0;
+		# into pcm: one channel to both
+		while int i: 0; i < 1024; i++;
+			if out_ch is 1
+				pcm:(i * 2 + 1) is pcm:(i * 2);
+			;;
+		;;
+		frames is 1024;
+	[end: 1024]
+
+	[IcsInfo: int ch: 0;]
+		int reserved: (Bits: 1);
+		window_seq:ch is (Bits: 2);
+		window_shape:ch is (Bits: 1);
+		if window_seq:ch is 2
+			max_sfb:ch is (Bits: 4);
+			int grouping: (Bits: 7);
+			groups:ch is 1;
+			group_len:(ch * 8) is 1;
+			while int w: 0; w < 7; w++;
+				if ((grouping >> (6 - w)) & 1) is 1
+					int gi: ch * 8 + groups:ch - 1;
+					group_len:gi is group_len:gi + 1;
+				;;
+				else
+					groups:ch is groups:ch + 1;
+					group_len:(ch * 8 + groups:ch - 1) is 1;
+				;;
+			;;
+			if max_sfb:ch > MdAacTables.short_count:rate_index
+				throw 'an AAC window with more bands than there are';
+			;;
+		;;
+		else
+			max_sfb:ch is (Bits: 6);
+			groups:ch is 1;
+			group_len:(ch * 8) is 1;
+			if (Bits: 1) is 1
+				throw 'AAC with prediction (Main profile)';
+			;;
+			if max_sfb:ch > MdAacTables.long_count:rate_index
+				throw 'an AAC window with more bands than there are';
+			;;
+		;;
+	[end]
+
+	# an individual channel stream: everything about one channel's spectrum, quantized
+	[Ics: int ch: 0; bln common: false;]
+		global_gain:ch is (Bits: 8);
+		if not common
+			call IcsInfo: ch;
+		;;
+		call Sections: ch;
+		call Scalefactors: ch;
+		ptr<int> qq: q + ch * 1024 * 4;
+		call Mem.Fill: qq as ptr<u8> 0 4096;
+		bln pulse: ((Bits: 1) is 1);
+		int pulse_n: 0;
+		int pulse_start: 0;
+		int pulse_off[4];
+		int pulse_amp[4];
+		if pulse
+			if window_seq:ch is 2
+				throw 'AAC pulses in a short window';
+			;;
+			pulse_n is (Bits: 2) + 1;
+			pulse_start is (Bits: 6);
+			while int k: 0; k < pulse_n; k++;
+				pulse_off:k is (Bits: 5);
+				pulse_amp:k is (Bits: 4);
+			;;
+		;;
+		tns_n:(ch * 8) is 0;
+		while int w: 0; w < 8; w++;
+			tns_n:(ch * 8 + w) is 0;
+		;;
+		if (Bits: 1) is 1
+			call Tns: ch;
+		;;
+		if (Bits: 1) is 1
+			throw 'AAC with gain control (SSR profile)';
+		;;
+		call SpectralData: ch;
+		if pulse
+			ptr<u16> edges: (addr MdAacTables.long_edges) + MdAacTables.long_at:rate_index * 2;
+			int k: edges:pulse_start;
+			while int i: 0; i < pulse_n; i++;
+				k++ pulse_off:i;
+				if k < 1024
+					if qq:k > 0
+						qq:k is qq:k + pulse_amp:i;
+					;;
+					else
+						qq:k is qq:k - pulse_amp:i;
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	[Sections: int ch: 0;]
+		int bits: 5;
+		int esc: 31;
+		if window_seq:ch is 2
+			bits is 3;
+			esc is 7;
+		;;
+		while int g: 0; g < groups:ch; g++;
+			int k: 0;
+			while k < max_sfb:ch
+				int book: (Bits: 4);
+				int length: 0;
+				int inc: (Bits: bits);
+				int guard: 0;
+				while inc is esc and guard < 64
+					length++ inc;
+					inc is (Bits: bits);
+					guard++;
+				;;
+				length++ inc;
+				if eop or k + length > max_sfb:ch
+					throw 'damaged AAC sections';
+				;;
+				while int i: 0; i < length; i++;
+					cb:(ch * 128 + g * 16 + k + i) is book as u8;
+				;;
+				k++ length;
+			;;
+		;;
+	[end]
+
+	[Scalefactors: int ch: 0;]
+		int scale: global_gain:ch;
+		int is_pos: 0;
+		int noise: global_gain:ch - 90;
+		bln first_noise: true;
+		while int g: 0; g < groups:ch; g++;
+			while int s: 0; s < max_sfb:ch; s++;
+				int at_: ch * 128 + g * 16 + s;
+				int book: cb:at_;
+				if book is 0
+					sf:at_ is 0;
+				;;
+				elif book is 14 or book is 15
+					is_pos++ (Code: 0) - 60;
+					sf:at_ is is_pos;
+				;;
+				elif book is 13
+					if first_noise
+						noise++ (Bits: 9) - 256;
+						first_noise is false;
+					;;
+					else
+						noise++ (Code: 0) - 60;
+					;;
+					sf:at_ is noise;
+				;;
+				else
+					scale++ (Code: 0) - 60;
+					sf:at_ is scale;
+				;;
+			;;
+		;;
+	[end]
+
+	[Tns: int ch: 0;]
+		bln short: (window_seq:ch is 2);
+		int windows: 1;
+		if short
+			windows is 8;
+		;;
+		while int w: 0; w < windows; w++;
+			int fi: ch * 8 + w;
+			int nb: 2;
+			int lb: 6;
+			int ob: 5;
+			if short
+				nb is 1;
+				lb is 4;
+				ob is 3;
+			;;
+			tns_n:fi is (Bits: nb);
+			if tns_n:fi is 0
+				continue;
+			;;
+			int res: (Bits: 1) + 3;
+			while int f: 0; f < tns_n:fi; f++;
+				int k: fi * 3 + f;
+				tns_len:k is (Bits: lb);
+				tns_order:k is (Bits: ob);
+				if tns_order:k is 0
+					continue;
+				;;
+				if tns_order:k > 20
+					throw 'an AAC TNS filter too long';
+				;;
+				tns_dir:k is (Bits: 1);
+				int compress: (Bits: 1);
+				int cbits: res - compress;
+				# the coefficients: sines of the quantized values, made into the filter's (step-up)
+				f64 parcor[20];
+				f64 iqfac: (((1 << (res - 1)) as f64) - 0.5) / (3.14159265358979323846 / 2.0);
+				f64 iqfac_m: (((1 << (res - 1)) as f64) + 0.5) / (3.14159265358979323846 / 2.0);
+				while int i: 0; i < tns_order:k; i++;
+					int c: (Bits: cbits);
+					if c >= (1 << (cbits - 1))
+						c is c - (1 << cbits);
+					;;
+					f64 x: c as f64;
+					if c >= 0
+						parcor:i is (Float.Sin: x / iqfac);
+					;;
+					else
+						parcor:i is (Float.Sin: x / iqfac_m);
+					;;
+				;;
+				f64 a[21];
+				f64 b[21];
+				a:0 is 1.0;
+				while int m: 1; m <= tns_order:k; m++;
+					while int i: 1; i < m; i++;
+						b:i is a:i + parcor:(m - 1) * a:(m - i);
+					;;
+					while int i: 1; i < m; i++;
+						a:i is b:i;
+					;;
+					a:m is parcor:(m - 1);
+				;;
+				while int i: 1; i <= tns_order:k; i++;
+					# (Q20: a step-up of 12 parcors can reach 924, too big for Q24 in an int)
+					tns_coef:(k * 20 + i - 1) is (Float.Round: a:i * 1048576.0) as int;
+				;;
+			;;
+		;;
+	[end]
+
+	# the quantized spectrum, by section and band, in twos or fours, into q (short windows' lines put
+	# back in window order)
+	[SpectralData: int ch: 0;]
+		ptr<int> qq: q + ch * 1024 * 4;
+		bln short: (window_seq:ch is 2);
+		ptr<u16> le: (addr MdAacTables.long_edges) + MdAacTables.long_at:rate_index * 2;
+		ptr<u8> se: (addr MdAacTables.short_edges) + MdAacTables.short_at:rate_index;
+		int win: 0;
+		while int g: 0; g < groups:ch; g++;
+			int gl: group_len:(ch * 8 + g);
+			while int s: 0; s < max_sfb:ch; s++;
+				int book: cb:(ch * 128 + g * 16 + s);
+				int lo: 0;
+				int hi: 0;
+				if short
+					lo is se:s;
+					hi is se:(s + 1);
+				;;
+				else
+					lo is le:s;
+					hi is le:(s + 1);
+				;;
+				if book is 0 or book >= 12
+					continue;
+				;;
+				# (in a group, a band's lines go window by window)
+				while int w: 0; w < gl; w++;
+					int base: (win + w) * 128;
+					if not short
+						base is 0;
+					;;
+					int k: lo;
+					while k < hi
+						if book <= 4
+							call Four: book qq + (base + k) * 4;
+							k++ 4;
+						;;
+						else
+							call Two: book qq + (base + k) * 4;
+							k++ 2;
+						;;
+						if eop
+							throw 'an AAC spectrum cut short';
+						;;
+					;;
+				;;
+			;;
+			win++ gl;
+		;;
+	[end]
+
+	[Four: int book: 0; ptr<int> dst: 0;]
+		int idx: (Code: book);
+		if idx < 0
+			throw 'a damaged AAC spectrum';
+		;;
+		int v0: idx / 27;
+		int v1: (idx / 9) % 3;
+		int v2: (idx / 3) % 3;
+		int v3: idx % 3;
+		if book <= 2
+			dst:0 is v0 - 1;
+			dst:1 is v1 - 1;
+			dst:2 is v2 - 1;
+			dst:3 is v3 - 1;
+			return;
+		;;
+		# unsigned: a sign bit after for each that isn't 0
+		dst:0 is (Signed: v0);
+		dst:1 is (Signed: v1);
+		dst:2 is (Signed: v2);
+		dst:3 is (Signed: v3);
+	[end]
+
+	[Two: int book: 0; ptr<int> dst: 0;]
+		int idx: (Code: book);
+		if idx < 0
+			throw 'a damaged AAC spectrum';
+		;;
+		int mod: 9;
+		int off: 4;
+		if book is 7 or book is 8
+			mod is 8;
+			off is 0;
+		;;
+		elif book is 9 or book is 10
+			mod is 13;
+			off is 0;
+		;;
+		elif book is 11
+			mod is 17;
+			off is 0;
+		;;
+		int v0: idx / mod;
+		int v1: idx % mod;
+		if off is not 0
+			dst:0 is v0 - off;
+			dst:1 is v1 - off;
+			return;
+		;;
+		dst:0 is (Signed: v0);
+		dst:1 is (Signed: v1);
+		if book is 11
+			dst:0 is (Escape: dst:0);
+			dst:1 is (Escape: dst:1);
+		;;
+	[end]
+
+	[Signed: int v: 0;]
+		if v is not 0 and (Bits: 1) is 1 return 0 - v;
+	[end: v]
+
+	# book 11's 16: a run of 1s, a 0, and that many more bits than 4
+	[Escape: int v: 0;]
+		int a: v;
+		if a < 0
+			a is 0 - a;
+		;;
+		if a is not 16 return v;
+		int n: 0;
+		while (Bits: 1) is 1 and n < 9
+			n++;
+		;;
+		int e: (1 << (n + 4)) + (Bits: n + 4);
+		if v < 0 return 0 - e;
+	[end: e]
+
+	# ---- from quantized values to the spectrum (Q20 of full scale, the IMDCT's 2/N in)
+
+	[Spectrum: int ch: 0;]
+		ptr<int> qq: q + ch * 1024 * 4;
+		ptr<int> sp: spec + ch * 1024 * 4;
+		call Mem.Fill: sp as ptr<u8> 0 4096;
+		bln short: (window_seq:ch is 2);
+		ptr<u16> le: (addr MdAacTables.long_edges) + MdAacTables.long_at:rate_index * 2;
+		ptr<u8> se: (addr MdAacTables.short_edges) + MdAacTables.short_at:rate_index;
+		# |q|^(4/3) 2^((sf - 100) / 4) is in the 16-bit output's steps: / 32768 to full scale, and the
+		# IMDCT's 2/N, N 2048 (long) or 256 (short), as powers of two
+		int extra: -25;
+		if short
+			extra is -22;
+		;;
+		int win: 0;
+		while int g: 0; g < groups:ch; g++;
+			int gl: group_len:(ch * 8 + g);
+			while int s: 0; s < max_sfb:ch; s++;
+				int at_: ch * 128 + g * 16 + s;
+				int book: cb:at_;
+				int lo: le:s;
+				int hi: le:(s + 1);
+				if short
+					lo is se:s;
+					hi is se:(s + 1);
+				;;
+				while int w: 0; w < gl; w++;
+					int base: 0;
+					if short
+						base is (win + w) * 128;
+					;;
+					if book is 13
+						call Noise: sp + (base + lo) * 4 hi - lo sf:at_ extra;
+					;;
+					elif book > 0 and book < 12
+						int e4: sf:at_ - 100 + extra * 4;
+						while int k: lo; k < hi; k++;
+							sp:(base + k) is (Scale: qq:(base + k) e4);
+						;;
+					;;
+				;;
+			;;
+			win++ gl;
+		;;
+	[end]
+
+	# |v|^(4/3) 2^(e/4), signed, Q20
+	[Scale: int v: 0; int e: 0;]
+		if v is 0 return 0;
+		bln neg: v < 0;
+		if neg
+			v is 0 - v;
+		;;
+		if v > 8191
+			v is 8191;
+		;;
+		int r: e & 3;
+		int qe: e >> 2;
+		i64 m: ((MdMp3Math.pow_m:v) as i64 * (MdMp3Math.root:r) as i64) >> 30;     # Q30
+		int sh: (MdMp3Math.pow_e:v) as int + qe - 10;                             # Q30 to Q20
+		i64 r64: 0;
+		if sh >= 0
+			if sh > 20
+				sh is 20;
+			;;
+			r64 is m << sh;
+		;;
+		elif sh > -60
+			r64 is (m + ((1 as i64) << (0 - sh - 1))) >> (0 - sh);
+		;;
+		if r64 > 0x7FFFFFFF
+			r64 is 0x7FFFFFFF;
+		;;
+		if neg return 0 - (r64 as int);
+	[end: r64 as int]
+
+	# perceptual noise substitution: random values with the band's energy 2^(sf/4) (the same scaling)
+	[Noise: ptr<int> dst: 0; int n: 0; int energy: 0; int extra: 0;]
+		i64 sum: 0;
+		while int k: 0; k < n; k++;
+			noise_state is noise_state * 1664525 + 1013904223;
+			int r: (noise_state as int) >> 16;
+			dst:k is r;
+			sum++ (r as i64) * (r as i64);
+		;;
+		if sum is 0 return;
+		# scale: 2^(energy/4), the same powers of two as Spectrum's, and Q20, over the noise's size: in
+		# floating point, once a band
+		f64 target: (Float.Pow: 2.0 ((energy as f64) / 4.0 + (extra as f64) + 20.0)) / (Float.Sqrt: sum as f64);
+		while int k: 0; k < n; k++;
+			dst:k is ((dst:k as f64) * target) as int;
+		;;
+	[end]
+
+	[Stereo: bln common: false;]
+		ptr<int> l: spec;
+		ptr<int> r: spec + 1024 * 4;
+		bln short: (window_seq:1 is 2);
+		ptr<u16> le: (addr MdAacTables.long_edges) + MdAacTables.long_at:rate_index * 2;
+		ptr<u8> se: (addr MdAacTables.short_edges) + MdAacTables.short_at:rate_index;
+		int win: 0;
+		while int g: 0; g < groups:1; g++;
+			int gl: group_len:(8 + g);
+			while int s: 0; s < max_sfb:1; s++;
+				int bk: cb:(128 + g * 16 + s);
+				int lo: le:s;
+				int hi: le:(s + 1);
+				if short
+					lo is se:s;
+					hi is se:(s + 1);
+				;;
+				bln ms: common and (ms_mask is 2 or (ms_mask is 1 and ms_used:(g * 16 + s)));
+				while int w: 0; w < gl; w++;
+					int base: 0;
+					if short
+						base is (win + w) * 128;
+					;;
+					if bk is 14 or bk is 15
+						# intensity: the right is the left, scaled by 2^(-pos/4), turned over by the
+						# book (15 is in phase) and by mid/side
+						int pos: sf:(128 + g * 16 + s);
+						int sign: 1;
+						if bk is 14
+							sign is -1;
+						;;
+						if ms
+							sign is 0 - sign;
+						;;
+						i64 scale: (Float.Round: (Float.Pow: 2.0 (0.0 - (pos as f64) / 4.0)) * 1073741824.0) as i64;
+						while int k: lo; k < hi; k++;
+							i64 v: l:(base + k);
+							int rv: ((v * scale) >> 30) as int;
+							if sign < 0
+								rv is 0 - rv;
+							;;
+							r:(base + k) is rv;
+						;;
+					;;
+					elif ms and bk is not 13 and cb:(g * 16 + s) is not 13
+						while int k: lo; k < hi; k++;
+							int m: l:(base + k);
+							int sv: r:(base + k);
+							l:(base + k) is m + sv;
+							r:(base + k) is m - sv;
+						;;
+					;;
+				;;
+			;;
+			win++ gl;
+		;;
+	[end]
+
+	# ---- TNS, then the IMDCT, windows and overlap, for channel ch into output channel o
+
+	[Synthesis: int ch: 0; int o: 0;]
+		ptr<int> sp: spec + ch * 1024 * 4;
+		call ApplyTns: ch sp;
+		ptr<int> fr: frame;
+		int seq: window_seq:ch;
+		int shape: window_shape:ch;
+		int prev: last_shape:o;
+		ptr<int> long_cur: MdAac.sine_long;
+		ptr<int> long_prev: MdAac.sine_long;
+		ptr<int> short_cur: MdAac.sine_short;
+		ptr<int> short_prev: MdAac.sine_short;
+		if shape is 1
+			long_cur is MdAac.kbd_long;
+			short_cur is MdAac.kbd_short;
+		;;
+		if prev is 1
+			long_prev is MdAac.kbd_long;
+			short_prev is MdAac.kbd_short;
+		;;
+		if seq is not 2
+			call Mem.Copy: work as ptr<u8> sp as ptr<u8> 4096;
+			call MdAac.long_t.Run: work;
+			while int i: 0; i < 2048; i++;
+				i64 w: 0;
+				if i < 1024
+					if seq is 3
+						# (stop: nothing, the short window's rise, then flat)
+						if i < 448
+							w is 0;
+						;;
+						elif i < 576
+							w is short_prev:(i - 448);
+						;;
+						else
+							w is 1073741824;
+						;;
+					;;
+					else
+						w is long_prev:i;
+					;;
+				;;
+				else
+					if seq is 1
+						# (start: flat, the short window's fall, then nothing)
+						if i < 1472
+							w is 1073741824;
+						;;
+						elif i < 1600
+							w is short_cur:(127 - (i - 1472));
+						;;
+						else
+							w is 0;
+						;;
+					;;
+					else
+						w is long_cur:(2047 - i);
+					;;
+				;;
+				fr:i is (((work:i as i64) * w + 0x20000000) >> 30) as int;
+			;;
+		;;
+		else
+			call Mem.Fill: fr as ptr<u8> 0 8192;
+			while int w8: 0; w8 < 8; w8++;
+				call Mem.Copy: work as ptr<u8> (sp + w8 * 128 * 4) as ptr<u8> 512;
+				call MdAac.short_t.Run: work;
+				ptr<int> rise: short_cur;
+				if w8 is 0
+					rise is short_prev;
+				;;
+				int at_: 448 + w8 * 128;
+				while int i: 0; i < 256; i++;
+					i64 w: 0;
+					if i < 128
+						w is rise:i;
+					;;
+					else
+						w is short_cur:(255 - i);
+					;;
+					fr:(at_ + i) is fr:(at_ + i) + (((work:i as i64) * w + 0x20000000) >> 30) as int;
+				;;
+			;;
+		;;
+		ptr<int> ov: overlap + o * 1024 * 4;
+		while int i: 0; i < 1024; i++;
+			int v: fr:i + ov:i;
+			int s: (v + 16) >> 5;
+			if s > 32767
+				s is 32767;
+			;;
+			if s < -32768
+				s is -32768;
+			;;
+			pcm:(i * 2 + o) is s as i16;
+			ov:i is fr:(1024 + i);
+		;;
+		last_shape:o is shape;
+	[end]
+
+	# TNS: each filter's all-pole filter over its bands, up or down the spectrum (Q20 coefficients;
+	# its outputs kept 8 bits finer than the spectrum's while it runs, as each feeds the next)
+	[ApplyTns: int ch: 0; ptr<int> sp: 0;]
+		bln short: (window_seq:ch is 2);
+		int windows: 1;
+		int most: MdAac.tns_bands_long:rate_index;
+		if short
+			windows is 8;
+			most is MdAac.tns_bands_short:rate_index;
+		;;
+		ptr<u16> le: (addr MdAacTables.long_edges) + MdAacTables.long_at:rate_index * 2;
+		ptr<u8> se: (addr MdAacTables.short_edges) + MdAacTables.short_at:rate_index;
+		int bands: MdAacTables.long_count:rate_index;
+		if short
+			bands is MdAacTables.short_count:rate_index;
+		;;
+		while int w: 0; w < windows; w++;
+			int fi: ch * 8 + w;
+			int top: bands;
+			while int f: 0; f < tns_n:fi; f++;
+				int k: fi * 3 + f;
+				int bottom: top - tns_len:k;
+				if bottom < 0
+					bottom is 0;
+				;;
+				int order: tns_order:k;
+				if order > 0
+					int sb: (Least: bottom most max_sfb:ch);
+					int eb: (Least: top most max_sfb:ch);
+					int start: le:sb;
+					int stop: le:eb;
+					if short
+						start is se:sb + w * 128;
+						stop is se:eb + w * 128;
+					;;
+					int size: stop - start;
+					if size > 0
+						# y[n] = x[n] - sum a[i] y[n - i], going up or down
+						int step: 1;
+						int pos: start;
+						if tns_dir:k is 1
+							step is -1;
+							pos is stop - 1;
+						;;
+						ptr<int> co: (addr tns_coef) + k * 20 * 4;
+						while int m: 0; m < size; m++;
+							# (Q28 outputs, Q20 coefficients: Q48, back to Q28)
+							i64 acc: (sp:pos as i64) << 28;
+							while int i: 1; i <= order and i <= m; i++;
+								acc is acc - (co:(i - 1) as i64) * tns_y:(m - i);
+							;;
+							i64 y: (acc + 0x80000) >> 20;
+							if y > 0x7FFFFFFFFF
+								y is 0x7FFFFFFFFF;
+							;;
+							if y < -0x7FFFFFFFFF
+								y is -0x7FFFFFFFFF;
+							;;
+							tns_y:m is y;
+							sp:pos is ((y + 128) >> 8) as int;
+							pos++ step;
+						;;
+					;;
+				;;
+				top is bottom;
+			;;
+		;;
+	[end]
+
+	[Least: int a: 0; int b: 0; int c: 0;]
+		int m: a;
+		if b < m
+			m is b;
+		;;
+		if c < m
+			m is c;
+		;;
+	[end: m]
+}

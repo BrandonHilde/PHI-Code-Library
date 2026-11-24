@@ -1,0 +1,817 @@
+# <audio> and <video> (HTMLMediaElement): finding the source, fetching it, decoding it (medialib), a
+# clock, and the events a page listens for. The page's script side is platform.js's, which asks
+# through %media.
+#
+# Sound: every element that's playing is mixed into one stream at the rate the host plays (its
+# audio_rate hook), and given to it a little ahead (audio_write), with the host saying how much of
+# that hasn't been heard yet (audio_queued): that's the clock for the elements with sound. Without
+# those hooks (or for a video with no sound), the page's own clock (Page.Tick's now) times them.
+#
+# The host calls PageMedia.Pump each turn (Page.Frame does): it fetches, decodes, mixes, keeps the
+# clock and fires the events. PageMedia.Playing says whether anything is, so a host knows to keep
+# turning.
+
+use medialib;
+
+struct.PageMediaEl
+{
+	ptr<DomNode> node;
+	ptr<u8> src;                # the address being played, absolute (the element's own), or 0
+	ptr<u8> asked_src;          # what the attributes asked for, last we looked
+	u32 req;                    # the fetch for it, while it's out
+	ptr<u8> bytes;              # the file
+	u32 len;
+	ptr<MdMedia> m;
+	int network;                # NETWORK_EMPTY 0, IDLE 1, LOADING 2, NO_SOURCE 3
+	int ready;                  # HAVE_NOTHING 0 ... HAVE_ENOUGH_DATA 4
+	int error;                  # MediaError's code: 0 none, 2 network, 3 decode, 4 not supported
+	bln paused;
+	bln ended;
+	bln seeking;
+	bln muted;
+	bln autoplay_done;          # (autoplay starts it once)
+	f64 volume;
+	f64 rate;
+	f64 duration;               # seconds; 0 until known (NaN to scripts)
+	# the clock: where it was (pos_us) when it was last started or moved, and what's played since
+	i64 pos_us;
+	i64 dev_written;            # frames given to the host for it since then
+	f64 started_now;            # the page's clock (ms) then, for an element the host doesn't time
+	bln audible;                # the host is timing it by its sound
+	bln source_done;            # every sample has been decoded
+	# decoded sound not yet mixed (frames of m.pcm from pcm_at on), and resampling's place: the
+	# fraction of a frame (Q16) between the last frame used and the next
+	int pcm_at;
+	u32 phase;
+	i16 last_l;
+	i16 last_r;
+	f64 last_update;            # when timeupdate last fired (page ms)
+	# video: its decoder, the next packet, and the picture now (0xAARRGGBB, w by h), with a number
+	# that changes when it does (for the host, which shows it)
+	ptr<MdVp8> vdec;
+	u32 vnext;
+	ptr<u32> pic;
+	int pic_w;
+	int pic_h;
+	u32 pic_version;
+	i64 pic_us;                 # when the picture is from
+}
+
+phi.PageMedia:Library
+{
+	const int MOST_ELEMENTS: 256;
+	const int LEAD_MS: 500;     # how far ahead of what's heard the host is given sound
+
+	ptr<PageMediaEl> els[256];
+	int count: 0;
+	u32 seen_version: 0xFFFFFFFF;
+	ptr<Page> owner: 0;         # the page els are of
+	u32 changes: 0;             # goes up when what shows changes: a picture, the clock, playing or not
+	i16 mix[4096];              # (2048 frames, mixed)
+
+	# the record for an element, made if it hasn't one
+	[Of: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		call Own: p;
+		while int i: 0; i < count; i++;
+			if els:i.node is n return els:i;
+		;;
+		if count >= MOST_ELEMENTS return 0 as ptr<PageMediaEl>;
+		ptr<PageMediaEl> e: new PageMediaEl;
+		if e is 0 return 0 as ptr<PageMediaEl>;
+		call Mem.Fill: e as ptr<u8> 0 sizeof PageMediaEl;
+		e.node is n;
+		e.paused is true;
+		e.volume is 1.0;
+		e.rate is 1.0;
+		e.muted is ((Dom.AttrValue: n 'muted') is not 0);
+		els:count is e;
+		count++;
+	[end: e]
+
+	# the records are one page's: another page's elements start with none
+	[Own: ptr<Page> p: 0;]
+		if owner is p return;
+		call Forget;
+		owner is p;
+	[end]
+
+	# let every record go (the page is going)
+	[Forget]
+		while int i: 0; i < count; i++;
+			call Drop: els:i;
+			free els:i;
+		;;
+		count is 0;
+		owner is 0;
+		seen_version is 0xFFFFFFFF;
+	[end]
+
+	[Drop: ptr<PageMediaEl> e: 0;]
+		if e.vdec is not 0
+			call MdVp8.Free: e.vdec;
+			e.vdec is 0;
+		;;
+		if e.pic is not 0
+			free e.pic;
+			e.pic is 0;
+		;;
+		e.pic_w is 0;
+		e.pic_h is 0;
+		e.pic_version++;
+		e.vnext is 0;
+		if e.m is not 0
+			call MdMedia.Close: e.m;
+			e.m is 0;
+		;;
+		if e.bytes is not 0
+			free e.bytes;
+			e.bytes is 0;
+		;;
+		if e.src is not 0
+			free e.src;
+			e.src is 0;
+		;;
+		e.len is 0;
+		e.req is 0;
+	[end]
+
+	# ---- each turn
+
+	[Pump: ptr<Page> p: 0;]
+		call Own: p;
+		if p.doc.media_version is not seen_version
+			seen_version is p.doc.media_version;
+			call Scan: p;
+		;;
+		if count is 0 return;
+		call Mix: p;
+		while int i: 0; i < count; i++;
+			call Advance: p els:i;
+		;;
+	[end]
+
+	# whether anything's playing: a host keeps turning while it is
+	[Playing: ptr<Page> p: 0;]
+		if owner is not p return false;
+		while int i: 0; i < count; i++;
+			if not els:i.paused and not els:i.ended return true;
+		;;
+	[end: false]
+
+	# New elements in the document, and sources changed: a media element whose source has changed
+	# loads it (and plays it, if it has autoplay and no sound or is muted)
+	[Scan: ptr<Page> p: 0;]
+		ptr<DomNode> n: p.doc.root;
+		while n is not 0
+			if n.type is DomType.ELEMENT and n.ns is DomNs.HTML and (n.tag is (WlAtoms.GetZ: 'video') or n.tag is (WlAtoms.GetZ: 'audio'))
+				ptr<PageMediaEl> e: (Of: p n);
+				if e is not 0
+					call Look: p e;
+				;;
+			;;
+			n is (Dom.ShadowNext: n p.doc.root);
+		;;
+		# (elements a script made and kept out of the document are looked at too)
+		while int i: 0; i < count; i++;
+			call Look: p els:i;
+		;;
+	[end]
+
+	# whether the element's source (its src, or its first <source> it can play) has changed: load it
+	[Look: ptr<Page> p: 0; ptr<PageMediaEl> e: 0;]
+		WlBuf want;
+		call Chosen: p e.node addr want;
+		bln same: false;
+		if e.asked_src is not 0 and want.data is not 0
+			same is (WlText.EqZ: want.data want.len e.asked_src);
+		;;
+		elif e.asked_src is 0 and want.data is 0
+			same is true;
+		;;
+		if same
+			call want.Free;
+			return;
+		;;
+		if e.asked_src is not 0
+			free e.asked_src;
+			e.asked_src is 0;
+		;;
+		if want.data is not 0
+			call want.AddZ: '';
+			e.asked_src is (want.Take);
+		;;
+		call want.Free;
+		call Load: p e;
+	[end]
+
+	# the address to play: src, or the first <source> whose type it can play
+	[Chosen: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<WlBuf> dest: 0;]
+		ptr<u8> src: (Dom.AttrValue: n 'src');
+		if src is not 0
+			if src:0 is not 0
+				call Page.Resolve: p src (WlText.LenZ: src) dest;
+			;;
+			return;
+		;;
+		ptr<DomNode> c: n.first_child;
+		while c is not 0
+			if c.type is DomType.ELEMENT and c.tag is (WlAtoms.GetZ: 'source')
+				ptr<u8> s: (Dom.AttrValue: c 'src');
+				ptr<u8> type: (Dom.AttrValue: c 'type');
+				bln fits: true;
+				if type is not 0 and type:0 is not 0
+					fits is (CanPlay: type (WlText.LenZ: type)) > 0;
+				;;
+				if s is not 0 and s:0 is not 0 and fits
+					call Page.Resolve: p s (WlText.LenZ: s) dest;
+					return;
+				;;
+			;;
+			c is c.next;
+		;;
+	[end]
+
+	# The load algorithm: what was playing stops, the new source is fetched.
+	[Load: ptr<Page> p: 0; ptr<PageMediaEl> e: 0;]
+		bln had: e.network is not 0 or e.m is not 0;
+		call Drop: e;
+		e.ready is 0;
+		e.error is 0;
+		e.duration is 0.0;
+		e.pos_us is 0;
+		e.dev_written is 0;
+		e.ended is false;
+		e.seeking is false;
+		e.source_done is false;
+		e.pcm_at is 0;
+		e.phase is 0;
+		if had
+			call Page.FireNode: p e.node 'emptied';
+		;;
+		if not e.paused
+			e.paused is true;
+			call Page.FireNode: p e.node 'pause';
+		;;
+		if e.asked_src is 0
+			e.network is 0;
+			return;
+		;;
+		e.network is 2;
+		e.src is (WlText.Dup: e.asked_src (WlText.LenZ: e.asked_src) + 1);
+		call Page.FireNode: p e.node 'loadstart';
+		e.req is (Page.Request: p e.src (WlText.LenZ: e.src) PageLoad.MEDIA e.node 0 0 0);
+	[end]
+
+	# Page.DeliverNow's, for a MEDIA request: the whole file (or a failure)
+	[Arrived: ptr<Page> p: 0; ptr<DomNode> n: 0; u32 id: 0; bln ok: false; ptr<u8> bytes: 0; u32 len: 0;]
+		call Own: p;
+		ptr<PageMediaEl> e: 0;
+		while int i: 0; i < count; i++;
+			if els:i.node is n and els:i.req is id
+				e is els:i;
+			;;
+		;;
+		if e is 0 return;
+		e.req is 0;
+		if not ok or len is 0
+			call Fail: p e 2;
+			return;
+		;;
+		e.bytes is new u8[len];
+		if e.bytes is 0
+			call Fail: p e 2;
+			return;
+		;;
+		call Mem.Copy: e.bytes bytes len;
+		e.len is len;
+		e.m is (MdMedia.Open: e.bytes e.len);
+		if e.m is 0
+			call Fail: p e 4;
+			return;
+		;;
+		e.network is 1;
+		e.ready is 4;
+		e.duration is 0.0;
+		if e.m.duration_us > 0
+			e.duration is (e.m.duration_us as f64) / 1000000.0;
+		;;
+		if e.m.has_video and e.m.vcodec is MdMedia.CODEC_VP8
+			e.vdec is (MdVp8.New);
+			# the first picture, shown before it plays
+			call Pictures: p e 0;
+		;;
+		call Page.FireNode: p n 'durationchange';
+		call Page.FireNode: p n 'loadedmetadata';
+		call Page.FireNode: p n 'loadeddata';
+		call Page.FireNode: p n 'progress';
+		call Page.FireNode: p n 'canplay';
+		call Page.FireNode: p n 'canplaythrough';
+		call Page.FireNode: p n 'suspend';
+		# autoplay: muted, or with no sound (a page can't start sound by itself)
+		if not e.autoplay_done and (Dom.AttrValue: n 'autoplay') is not 0
+			e.autoplay_done is true;
+			if e.muted or not e.m.has_audio
+				call Play: p e;
+			;;
+		;;
+		elif not e.paused
+			# (play() was asked for before it came)
+			call Start: p e;
+			call Page.FireNode: p n 'playing';
+		;;
+	[end]
+
+	[Fail: ptr<Page> p: 0; ptr<PageMediaEl> e: 0; int code: 0;]
+		call Drop: e;
+		e.error is code;
+		e.network is 3;
+		if code is 2
+			e.network is 1;
+		;;
+		call Page.FireNode: p e.node 'error';
+	[end]
+
+	# ---- what a script asks (platform.js)
+
+	[Play: ptr<Page> p: 0; ptr<PageMediaEl> e: 0;]
+		if e.network is 0 and e.asked_src is 0
+			call Look: p e;
+		;;
+		if e.ended
+			call SeekTo: p e 0;
+			e.ended is false;
+		;;
+		if not e.paused return;
+		e.paused is false;
+		changes++;
+		call Page.FireNode: p e.node 'play';
+		if e.m is not 0
+			call Start: p e;
+			call Page.FireNode: p e.node 'playing';
+		;;
+		else
+			call Page.FireNode: p e.node 'waiting';
+		;;
+	[end]
+
+	[Pause: ptr<Page> p: 0; ptr<PageMediaEl> e: 0;]
+		if e.paused return;
+		e.pos_us is (Now: p e);
+		e.paused is true;
+		changes++;
+		call Page.FireNode: p e.node 'timeupdate';
+		call Page.FireNode: p e.node 'pause';
+	[end]
+
+	# the clock starts again from pos_us
+	[Start: ptr<Page> p: 0; ptr<PageMediaEl> e: 0;]
+		e.dev_written is 0;
+		e.started_now is p.now;
+		e.last_update is p.now;
+		e.audible is (e.m is not 0 and e.m.has_audio and p.host.audio_write is not 0 and p.host.audio_rate is not 0);
+		if e.audible
+			e.audible is ((p.host.audio_rate: p) > 0);
+		;;
+		if e.audible
+			# what was decoded before is dropped: the sound starts where the clock does
+			call e.m.SeekAudio: e.pos_us;
+			e.pcm_at is 0;
+			e.phase is 0;
+			e.m.frames is 0;
+			e.source_done is false;
+		;;
+	[end]
+
+	[SeekTo: ptr<Page> p: 0; ptr<PageMediaEl> e: 0; f64 seconds: 0.0;]
+		if seconds < 0.0
+			seconds is 0.0;
+		;;
+		if e.duration > 0.0 and seconds > e.duration
+			seconds is e.duration;
+		;;
+		e.pos_us is (seconds * 1000000.0) as i64;
+		e.ended is false;
+		call Page.FireNode: p e.node 'seeking';
+		if e.vdec is not 0
+			call SeekPictures: p e e.pos_us;
+		;;
+		if e.m is not 0 and not e.paused
+			call Start: p e;
+		;;
+		call Page.FireNode: p e.node 'timeupdate';
+		call Page.FireNode: p e.node 'seeked';
+	[end]
+
+	# where it is now, in microseconds
+	[Now: ptr<Page> p: 0; ptr<PageMediaEl> e: 0; : i64]
+		if e.paused or e.ended return e.pos_us;
+		i64 t: e.pos_us;
+		if e.audible
+			int dev_rate: (p.host.audio_rate: p);
+			int queued: 0;
+			if p.host.audio_queued is not 0
+				queued is (p.host.audio_queued: p);
+			;;
+			i64 heard: e.dev_written - queued as i64;
+			if heard < 0
+				heard is 0;
+			;;
+			if dev_rate > 0
+				t++ heard * 1000000 / dev_rate as i64;
+			;;
+		;;
+		else
+			f64 ms: (p.now - e.started_now) * e.rate;
+			if ms > 0.0
+				t++ (ms * 1000.0) as i64;
+			;;
+		;;
+		if e.duration > 0.0
+			i64 most: (e.duration * 1000000.0) as i64;
+			if t > most
+				t is most;
+			;;
+		;;
+	[end: t]
+
+	# ---- sound: every element playing with sound, mixed and handed to the host ahead of time
+
+	[Mix: ptr<Page> p: 0;]
+		if p.host.audio_write is 0 or p.host.audio_rate is 0 return;
+		bln any: false;
+		while int i: 0; i < count; i++;
+			ptr<PageMediaEl> e: els:i;
+			if e.audible and not e.paused and not e.ended and not e.source_done
+				any is true;
+			;;
+		;;
+		if not any return;
+		int dev_rate: (p.host.audio_rate: p);
+		if dev_rate <= 0 return;
+		int queued: 0;
+		if p.host.audio_queued is not 0
+			queued is (p.host.audio_queued: p);
+		;;
+		int want: dev_rate * LEAD_MS / 1000 - queued;
+		int guard: 0;
+		while want > 0 and guard < 16
+			guard++;
+			int n: want;
+			if n > 2048
+				n is 2048;
+			;;
+			call Mem.Fill: addr mix as ptr<u8> 0 (n * 4) as u32;
+			int made: 0;
+			while int i: 0; i < count; i++;
+				ptr<PageMediaEl> e: els:i;
+				if e.audible and not e.paused and not e.ended and not e.source_done
+					int got: (Into: e n dev_rate);
+					if got > made
+						made is got;
+					;;
+				;;
+			;;
+			if made is 0 return;
+			int taken: (p.host.audio_write: p addr mix made);
+			while int i: 0; i < count; i++;
+				ptr<PageMediaEl> e: els:i;
+				if e.audible and not e.paused and not e.ended
+					e.dev_written++ taken as i64;
+				;;
+			;;
+			if taken < made return;
+			want-- made;
+		;;
+	[end]
+
+	# Adds up to n frames of the element's sound at the host's rate onto mix: how many it had (fewer
+	# at its end, which it then marks).
+	[Into: ptr<PageMediaEl> e: 0; int n: 0; int dev_rate: 0;]
+		ptr<MdMedia> m: e.m;
+		u32 step: ((m.rate as u64 << 16) / dev_rate as u64) as u32;
+		int vol: (e.volume * 32768.0) as int;
+		if e.muted
+			vol is 0;
+		;;
+		int done: 0;
+		while done < n
+			# the next frame of the element's own, decoding more when it's used up
+			while e.pcm_at >= m.frames
+				if (m.ReadAudio) <= 0
+					e.source_done is true;
+					return done;
+				;;
+				e.pcm_at is 0;
+			;;
+			int nl: m.pcm:(e.pcm_at * 2);
+			int nr: m.pcm:(e.pcm_at * 2 + 1);
+			# between the last frame and that one
+			int f: (e.phase >> 1) as int;            # Q15
+			int l: e.last_l + (((nl - e.last_l) * f) >> 15);
+			int r: e.last_r + (((nr - e.last_r) * f) >> 15);
+			int ml: mix:(done * 2) + ((l * vol) >> 15);
+			int mr: mix:(done * 2 + 1) + ((r * vol) >> 15);
+			mix:(done * 2) is (Clip: ml) as i16;
+			mix:(done * 2 + 1) is (Clip: mr) as i16;
+			done++;
+			e.phase++ step;
+			while e.phase >= 65536
+				e.phase-- 65536;
+				e.last_l is nl as i16;
+				e.last_r is nr as i16;
+				e.pcm_at++;
+				if e.phase >= 65536
+					while e.pcm_at >= m.frames
+						if (m.ReadAudio) <= 0
+							e.source_done is true;
+							return done;
+						;;
+						e.pcm_at is 0;
+					;;
+					nl is m.pcm:(e.pcm_at * 2);
+					nr is m.pcm:(e.pcm_at * 2 + 1);
+				;;
+			;;
+		;;
+	[end: done]
+
+	[Clip: int v: 0;]
+		if v > 32767 return 32767;
+		if v < -32768 return -32768;
+	[end: v]
+
+	# the clock's events: timeupdate four times a second, and the end
+	[Advance: ptr<Page> p: 0; ptr<PageMediaEl> e: 0;]
+		if e.paused or e.ended or e.m is 0 return;
+		i64 t: (Now: p e);
+		if e.vdec is not 0
+			call Pictures: p e t;
+		;;
+		bln at_end: false;
+		if e.audible
+			# everything decoded and heard
+			if e.source_done
+				int queued: 0;
+				if p.host.audio_queued is not 0
+					queued is (p.host.audio_queued: p);
+				;;
+				at_end is e.dev_written <= queued as i64 or queued is 0;
+			;;
+		;;
+		elif e.duration > 0.0 and t >= (e.duration * 1000000.0) as i64
+			at_end is true;
+		;;
+		if at_end
+			if (Dom.AttrValue: e.node 'loop') is not 0
+				e.pos_us is 0;
+				call Start: p e;
+				call Page.FireNode: p e.node 'seeking';
+				call Page.FireNode: p e.node 'seeked';
+				return;
+			;;
+			e.pos_us is (e.duration * 1000000.0) as i64;
+			e.ended is true;
+			e.paused is true;
+			changes++;
+			call Page.FireNode: p e.node 'timeupdate';
+			call Page.FireNode: p e.node 'pause';
+			call Page.FireNode: p e.node 'ended';
+			return;
+		;;
+		if p.now - e.last_update >= 250.0
+			e.last_update is p.now;
+			changes++;
+			call Page.FireNode: p e.node 'timeupdate';
+		;;
+	[end]
+
+	# %media(element, what, value): what platform.js's HTMLMediaElement asks (see there)
+	[Native: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		ptr<DomNode> n: (PageBind.NodeOf: (Js.Arg: args argc 0));
+		if n is 0 or p is 0 return JsV.UNDEF;
+		int what: (JsOps.ToInt32: (Js.Arg: args argc 1));
+		u64 value: (Js.Arg: args argc 2);
+		if what is 8
+			WlBuf t;
+			call Js.TextOf: value addr t;
+			int answer: (CanPlay: t.data t.len);
+			call t.Free;
+			return (JsV.Int: answer);
+		;;
+		ptr<PageMediaEl> e: (Of: p n);
+		if e is 0 return JsV.UNDEF;
+		if what is 0
+			ptr<JsObj> a: (Js.NewArray: 14);
+			call Js.ArrayPush: a (JsV.Bool: e.paused);
+			call Js.ArrayPush: a (JsV.Bool: e.ended);
+			call Js.ArrayPush: a (JsV.Bool: e.seeking);
+			call Js.ArrayPush: a (JsV.Int: e.ready);
+			call Js.ArrayPush: a (JsV.Int: e.network);
+			call Js.ArrayPush: a (JsV.Int: e.error);
+			call Js.ArrayPush: a (JsV.Num: e.duration);
+			call Js.ArrayPush: a (JsV.Num: ((Now: p e) as f64) / 1000000.0);
+			int vw: 0;
+			int vh: 0;
+			if e.m is not 0 and e.m.has_video
+				vw is e.m.width;
+				vh is e.m.height;
+			;;
+			call Js.ArrayPush: a (JsV.Int: vw);
+			call Js.ArrayPush: a (JsV.Int: vh);
+			if e.src is not 0
+				call Js.ArrayPush: a (Js.NewStringZ: e.src);
+			;;
+			else
+				call Js.ArrayPush: a (Js.NewStringZ: '');
+			;;
+			call Js.ArrayPush: a (JsV.Num: e.volume);
+			call Js.ArrayPush: a (JsV.Bool: e.muted);
+			call Js.ArrayPush: a (JsV.Num: e.rate);
+			return (JsV.Obj: a);
+		;;
+		if what is 1
+			# load(): the source is chosen again, whether or not it changed
+			if e.asked_src is not 0
+				free e.asked_src;
+				e.asked_src is 0;
+			;;
+			call Look: p e;
+			if e.asked_src is 0
+				call Load: p e;
+			;;
+			return JsV.UNDEF;
+		;;
+		if what is 2
+			call Play: p e;
+			if e.error is 4 or (e.network is 0 and e.asked_src is 0) return (JsV.Int: 4);
+			return (JsV.Int: 0);
+		;;
+		if what is 3
+			call Pause: p e;
+			return JsV.UNDEF;
+		;;
+		f64 v: (JsOps.ToNumber: value);
+		if what is 4
+			call SeekTo: p e v;
+		;;
+		elif what is 5
+			if v is not e.volume
+				e.volume is v;
+				call Page.FireNode: p n 'volumechange';
+			;;
+		;;
+		elif what is 6
+			bln m: (JsOps.ToBool: value);
+			if m is not e.muted
+				e.muted is m;
+				call Page.FireNode: p n 'volumechange';
+			;;
+		;;
+		elif what is 7
+			if v > 0.0 and v is not e.rate
+				e.pos_us is (Now: p e);
+				e.rate is v;
+				if not e.paused and e.m is not 0
+					call Start: p e;
+				;;
+				call Page.FireNode: p n 'ratechange';
+			;;
+		;;
+	[end: JsV.UNDEF]
+
+	# ---- video
+
+	# Decodes the frames due by t (microseconds): every one (each is the next one's reference), but
+	# only the last becomes the picture. At most 200 ms of work a turn; it catches up on the next.
+	[Pictures: ptr<Page> p: 0; ptr<PageMediaEl> e: 0; i64 t: 0;]
+		ptr<MdMedia> m: e.m;
+		ptr<MdVp8> d: e.vdec;
+		bln got: false;
+		f64 began: p.now;
+		int guard: 0;
+		while e.vnext < m.vcount and guard < 60
+			guard++;
+			ptr<MdPacket> pk: m.vpackets + e.vnext * sizeof MdPacket;
+			# (the first one always, so there's something to show)
+			if pk.us > t and e.pic is not 0
+				break;
+			;;
+			e.vnext++;
+			int r: (d.Decode: m.data + pk.pos pk.size);
+			if r is 1
+				got is true;
+				e.pic_us is pk.us;
+				if pk.us >= t
+					break;
+				;;
+			;;
+		;;
+		if not got return;
+		if e.pic is 0 or e.pic_w is not d.w or e.pic_h is not d.h
+			if e.pic is not 0
+				free e.pic;
+			;;
+			e.pic is new u32[d.w * d.h];
+			if e.pic is 0 return;
+			e.pic_w is d.w;
+			e.pic_h is d.h;
+			# (its size is the element's: laid out again)
+			call Page.Invalidate: p;
+		;;
+		call d.ToArgb: e.pic;
+		e.pic_version++;
+		changes++;
+	[end]
+
+	# to the picture at t: decoding from the key frame before it
+	[SeekPictures: ptr<Page> p: 0; ptr<PageMediaEl> e: 0; i64 t: 0;]
+		ptr<MdMedia> m: e.m;
+		u32 k: 0;
+		u32 key: 0;
+		while k < m.vcount
+			ptr<MdPacket> pk: m.vpackets + k * sizeof MdPacket;
+			if pk.us > t
+				break;
+			;;
+			if (pk.flags & MdMedia.KEY) is not 0
+				key is k;
+			;;
+			k++;
+		;;
+		e.vnext is key;
+		call Pictures: p e t;
+	[end]
+
+	# the record of a media element, if it has one (for the host: its picture, its state)
+	[Find: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		if owner is not p return 0 as ptr<PageMediaEl>;
+		while int i: 0; i < count; i++;
+			if els:i.node is n return els:i;
+		;;
+	[end: 0 as ptr<PageMediaEl>]
+
+	# the host's controls: play or pause, and go to a fraction of the way through
+	[Toggle: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		ptr<PageMediaEl> e: (Of: p n);
+		if e is 0 return;
+		if e.paused
+			call Play: p e;
+		;;
+		else
+			call Pause: p e;
+		;;
+	[end]
+
+	[SeekFraction: ptr<Page> p: 0; ptr<DomNode> n: 0; f64 f: 0.0;]
+		ptr<PageMediaEl> e: (Of: p n);
+		if e is 0 or e.duration <= 0.0 return;
+		call SeekTo: p e e.duration * f;
+	[end]
+
+	# where it is, in seconds, for the host's controls
+	[Seconds: ptr<Page> p: 0; ptr<PageMediaEl> e: 0;]
+	[end: ((Now: p e) as f64) / 1000000.0]
+
+	# canPlayType's answer for a MIME type (with its codecs): 0 "", 1 "maybe", 2 "probably"
+	[CanPlay: ptr<u8> type: 0; u32 n: 0;]
+		# (what medialib doesn't decode yet: Opus, H.264, VP9, AV1)
+		if (Has: type n 'opus') or (Has: type n 'avc1') or (Has: type n 'avc3') or (Has: type n 'vp9') or (Has: type n 'vp09') or (Has: type n 'av01') or (Has: type n 'hev1') or (Has: type n 'hvc1')
+			return 0;
+		;;
+		if (Starts: type n 'audio/mpeg') or (Starts: type n 'audio/mp3')
+			return 2;
+		;;
+		if (Starts: type n 'audio/wav') or (Starts: type n 'audio/wave') or (Starts: type n 'audio/x-wav')
+			return 2;
+		;;
+		if (Starts: type n 'audio/ogg') or (Starts: type n 'application/ogg') or (Starts: type n 'audio/webm')
+			if (Has: type n 'vorbis') return 2;
+			return 1;
+		;;
+		if (Starts: type n 'video/webm')
+			if (Has: type n 'vp8') return 2;
+			return 1;
+		;;
+		if (Starts: type n 'audio/mp4') or (Starts: type n 'audio/x-m4a') or (Starts: type n 'audio/m4a')
+			if (Has: type n 'mp4a.40.2') return 2;
+			return 1;
+		;;
+	[end: 0]
+
+	# whether text starts with what (in any case)
+	[Starts: ptr<u8> text: 0; u32 n: 0; ptr<u8> what: 0;]
+		u32 k: 0;
+		while what:k is not 0
+			if k >= n or (WlText.Lower: text:k) is not (WlText.Lower: what:k) return false;
+			k++;
+		;;
+	[end: true]
+
+	# whether what is anywhere in text (in any case)
+	[Has: ptr<u8> text: 0; u32 n: 0; ptr<u8> what: 0;]
+		while u32 i: 0; i < n; i++;
+			if (Starts: text + i n - i what) return true;
+		;;
+	[end: false]
+}

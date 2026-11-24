@@ -13,7 +13,7 @@
 //   DOMRect, DOMPoint, DOMMatrix   (a 2D matrix)
 //   URL attributes                 a.href, img.src and the rest resolved; <a>'s and <area>'s parts
 //   XMLHttpRequest                 made of fetch, which sends the method, headers and body it's given
-//   HTMLMediaElement               under <video> and <audio>: what a browser that plays nothing says
+//   HTMLMediaElement               under <video> and <audio>: playing them is the page's (page/media.phi)
 //   popovers                       showPopover, hidePopover, togglePopover, ToggleEvent (:popover-open)
 //   <select> and <option>          options, selectedIndex, value, add, remove; text, selected, index
 //   CSS.supports and CSS.escape, PerformanceObserver, requestIdleCallback, reportError,
@@ -2566,12 +2566,15 @@
   }
 
   // ---- <video> and <audio> ----
-  // HTMLMediaElement, under both, as the standard has it. This browser plays nothing, and says so as
-  // a browser that can't play a file does: canPlayType answers "", play() is refused with a
-  // NotSupportedError, and the state is that of a medium with nothing loaded.
+  // HTMLMediaElement, under both, as the standard has it. What's playing, its clock and its events
+  // are the page's own (page/media.phi), asked through %media(element, what, value): 0 the state
+  // as a list, 1 load(), 2 play() (an error code, 0 for none), 3 pause(), 4 seek to a time, 5 the
+  // volume, 6 muted, 7 the rate, 8 canPlayType's answer (0 "", 1 "maybe", 2 "probably").
 
   var Media = global.HTMLMediaElement;
-  if (Media) {
+  var mediaNative = global["%media"];
+  delete global["%media"];
+  if (Media && mediaNative) {
     ["HTMLVideoElement", "HTMLAudioElement"].forEach(function (name) {
       var C = global[name];
       if (!C || C.prototype instanceof Media) return;
@@ -2587,53 +2590,78 @@
       Object.defineProperty(Media, k, { value: i, enumerable: true });
       Object.defineProperty(mediaProto, k, { value: i, enumerable: true });
     });
-    var mediaState = function (el) {
-      if (!el._media) {
-        hidden(el, "_media", { paused: true, time: 0, volume: 1, muted: el.hasAttribute("muted"), rate: 1, defaultRate: 1 });
-      }
-      return el._media;
+    // the state: paused, ended, seeking, readyState, networkState, error, duration, currentTime,
+    // videoWidth, videoHeight, currentSrc, volume, muted, playbackRate
+    var state = function (el) { return mediaNative(el, 0); };
+    var errors = [null];
+    var MediaError = function MediaError(code) {
+      hidden(this, "_code", code);
     };
-    var noRanges = { length: 0, start: function () { throw new DOMException("There are no ranges", "IndexSizeError"); }, end: function () { throw new DOMException("There are no ranges", "IndexSizeError"); } };
-    var later = function (el, type) { setTimeout(function () { el.dispatchEvent(new Event(type)); }, 0); };
+    Object.defineProperty(MediaError.prototype, "code", { get: function () { return this._code; }, enumerable: true, configurable: true });
+    Object.defineProperty(MediaError.prototype, "message", { get: function () {
+      return ["", "The fetching process was aborted", "A network error made it fail", "It couldn't be decoded",
+        "Its format isn't one this browser plays"][this._code] || "";
+    }, enumerable: true, configurable: true });
+    ["MEDIA_ERR_ABORTED", "MEDIA_ERR_NETWORK", "MEDIA_ERR_DECODE", "MEDIA_ERR_SRC_NOT_SUPPORTED"].forEach(function (k, i) {
+      Object.defineProperty(MediaError, k, { value: i + 1, enumerable: true });
+      Object.defineProperty(MediaError.prototype, k, { value: i + 1, enumerable: true });
+    });
+    define("MediaError", MediaError);
+    var ranges = function (end) {
+      return {
+        length: end > 0 ? 1 : 0,
+        start: function (i) { if (i !== 0 || !(end > 0)) throw new DOMException("There's no range " + i, "IndexSizeError"); return 0; },
+        end: function (i) { if (i !== 0 || !(end > 0)) throw new DOMException("There's no range " + i, "IndexSizeError"); return end; }
+      };
+    };
     var mediaProps = {
-      paused: function () { return mediaState(this).paused; },
-      ended: function () { return false; },
-      seeking: function () { return false; },
-      duration: function () { return NaN; },
-      readyState: function () { return 0; },
-      networkState: function () { return this.hasAttribute("src") || this.querySelector("source") ? 3 : 0; },
-      error: function () { return null; },
-      currentSrc: function () { return ""; },
-      buffered: function () { return noRanges; },
-      seekable: function () { return noRanges; },
-      played: function () { return noRanges; },
+      paused: function () { return state(this)[0]; },
+      ended: function () { return state(this)[1]; },
+      seeking: function () { return state(this)[2]; },
+      readyState: function () { return state(this)[3]; },
+      networkState: function () { return state(this)[4]; },
+      error: function () { var c = state(this)[5]; return c ? new MediaError(c) : null; },
+      duration: function () { var s = state(this); return s[3] > 0 ? s[6] : NaN; },
+      currentSrc: function () { return state(this)[10]; },
+      videoWidth: function () { return state(this)[8]; },
+      videoHeight: function () { return state(this)[9]; },
+      buffered: function () { var s = state(this); return ranges(s[3] > 0 ? s[6] : 0); },
+      seekable: function () { var s = state(this); return ranges(s[3] > 0 ? s[6] : 0); },
+      played: function () { return ranges(0); },
       textTracks: function () { return []; },
       srcObject: function () { return null; }
     };
     Object.keys(mediaProps).forEach(function (k) {
       Object.defineProperty(mediaProto, k, { get: mediaProps[k], enumerable: true, configurable: true });
     });
-    [["currentTime", "time", function (v) { return Number(v) || 0; }],
-     ["volume", "volume", function (v) {
-       v = Number(v);
-       if (!(v >= 0 && v <= 1)) throw new DOMException("The volume provided (" + v + ") is outside the range [0, 1].", "IndexSizeError");
-       return v;
-     }],
-     ["muted", "muted", function (v) { return !!v; }],
-     ["playbackRate", "rate", function (v) { return Number(v); }],
-     ["defaultPlaybackRate", "defaultRate", function (v) { return Number(v); }]
-    ].forEach(function (p) {
-      Object.defineProperty(mediaProto, p[0], {
-        get: function () { return mediaState(this)[p[1]]; },
-        set: function (v) {
-          var st = mediaState(this), now = p[2](v);
-          if (st[p[1]] === now) return;
-          st[p[1]] = now;
-          if (p[0] === "volume" || p[0] === "muted") later(this, "volumechange");
-          else if (p[0] === "playbackRate") later(this, "ratechange");
-        },
-        enumerable: true, configurable: true
-      });
+    Object.defineProperty(mediaProto, "currentTime", {
+      get: function () { return state(this)[7]; },
+      set: function (v) { v = Number(v); if (v === v) mediaNative(this, 4, v); },
+      enumerable: true, configurable: true
+    });
+    Object.defineProperty(mediaProto, "volume", {
+      get: function () { return state(this)[11]; },
+      set: function (v) {
+        v = Number(v);
+        if (!(v >= 0 && v <= 1)) throw new DOMException("The volume provided (" + v + ") is outside the range [0, 1].", "IndexSizeError");
+        mediaNative(this, 5, v);
+      },
+      enumerable: true, configurable: true
+    });
+    Object.defineProperty(mediaProto, "muted", {
+      get: function () { return state(this)[12]; },
+      set: function (v) { mediaNative(this, 6, !!v); },
+      enumerable: true, configurable: true
+    });
+    Object.defineProperty(mediaProto, "playbackRate", {
+      get: function () { return state(this)[13]; },
+      set: function (v) { mediaNative(this, 7, Number(v)); },
+      enumerable: true, configurable: true
+    });
+    Object.defineProperty(mediaProto, "defaultPlaybackRate", {
+      get: function () { return this._defaultRate === undefined ? 1 : this._defaultRate; },
+      set: function (v) { hidden(this, "_defaultRate", Number(v)); },
+      enumerable: true, configurable: true
     });
     ["autoplay", "loop", "controls", "playsInline", "defaultMuted"].forEach(function (k) {
       var attr = k === "playsInline" ? "playsinline" : k === "defaultMuted" ? "muted" : k;
@@ -2643,36 +2671,49 @@
         enumerable: true, configurable: true
       });
     });
-    hidden(mediaProto, "load", function load() {
-      var st = mediaState(this);
-      st.paused = true;
-      st.time = 0;
-      if (this.hasAttribute("src") || this.querySelector("source")) {
-        later(this, "loadstart");
-        later(this, "error");
-      } else {
-        later(this, "emptied");
-      }
+    Object.defineProperty(mediaProto, "preload", {
+      get: function () { var v = (this.getAttribute("preload") || "").toLowerCase(); return v === "none" || v === "metadata" ? v : "auto"; },
+      set: function (v) { this.setAttribute("preload", String(v)); },
+      enumerable: true, configurable: true
     });
+    hidden(mediaProto, "load", function load() { mediaNative(this, 1); });
     hidden(mediaProto, "play", function play() {
-      return Promise.reject(new DOMException("The element has no supported sources.", "NotSupportedError"));
-    });
-    hidden(mediaProto, "pause", function pause() {
-      var st = mediaState(this);
-      if (!st.paused) {
-        st.paused = true;
-        later(this, "pause");
+      var el = this;
+      if (mediaNative(el, 2)) {
+        return Promise.reject(new DOMException("The element has no supported sources.", "NotSupportedError"));
       }
+      var s = state(el);
+      if (!s[0] && s[3] >= 2) return Promise.resolve();
+      return new Promise(function (resolve, reject) {
+        var done = function () {
+          el.removeEventListener("playing", ok);
+          el.removeEventListener("error", bad);
+          el.removeEventListener("pause", stopped);
+        };
+        var ok = function () { done(); resolve(); };
+        var bad = function () { done(); reject(new DOMException("Failed to load because no supported source was found.", "NotSupportedError")); };
+        var stopped = function () { done(); reject(new DOMException("The play() request was interrupted by a call to pause().", "AbortError")); };
+        el.addEventListener("playing", ok);
+        el.addEventListener("error", bad);
+        el.addEventListener("pause", stopped);
+      });
     });
-    hidden(mediaProto, "canPlayType", function canPlayType(type) { return ""; });
+    hidden(mediaProto, "pause", function pause() { mediaNative(this, 3); });
+    hidden(mediaProto, "canPlayType", function canPlayType(type) { return ["", "maybe", "probably"][mediaNative(this, 8, String(type))] || ""; });
     hidden(mediaProto, "fastSeek", function fastSeek(t) { this.currentTime = t; });
     hidden(mediaProto, "addTextTrack", function addTextTrack(kind, label, language) {
       return { kind: String(kind), label: label === undefined ? "" : String(label), language: language === undefined ? "" : String(language), mode: "hidden", cues: [], addCue: function () { }, removeCue: function () { } };
     });
-    if (global.HTMLVideoElement) {
-      ["videoWidth", "videoHeight"].forEach(function (k) {
-        Object.defineProperty(global.HTMLVideoElement.prototype, k, { get: function () { return 0; }, enumerable: true, configurable: true });
-      });
+    // new Audio(src): an <audio> with preload auto
+    if (global.HTMLAudioElement && typeof global.Audio === "undefined") {
+      var Audio = function Audio(src) {
+        var a = document.createElement("audio");
+        a.setAttribute("preload", "auto");
+        if (src !== undefined) a.setAttribute("src", String(src));
+        return a;
+      };
+      Audio.prototype = global.HTMLAudioElement.prototype;
+      define("Audio", Audio);
     }
   }
 

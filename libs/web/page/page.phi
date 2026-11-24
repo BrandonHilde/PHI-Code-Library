@@ -29,6 +29,7 @@ use page.platform;
 use page.shadow;
 use page.pmodules;
 use page.canvas;
+use page.media;
 
 # what's asked of PageHost.load
 enum.PageLoad
@@ -38,6 +39,7 @@ enum.PageLoad
 	STYLE
 	FETCH
 	IMAGE
+	MEDIA                   # an <audio> or <video>'s file (PageMedia): all of it, answered once
 }
 
 struct.PageHost
@@ -69,6 +71,12 @@ struct.PageHost
 	method<ptr<Page> ptr<u8> ptr<u8> u32 ptr<VgPath> ptr<f64>: bln> canvas_text;
 	method<ptr<Page> ptr<DomNode> ptr<PageBitmap>: bln> image_pixels;
 	method<ptr<Page> ptr<u32> int int ptr<WlBuf>: bln> encode_png;
+	# <audio> and <video>'s sound, mixed (page/media.phi): the rate the host plays at (0 or less if it
+	# has none), a block of frames of left and right to play after what it has (how many it took), and
+	# how many it has that haven't been heard yet. Without them, media play without sound.
+	method<ptr<Page>: int> audio_rate;
+	method<ptr<Page> ptr<i16> int: int> audio_write;
+	method<ptr<Page>: int> audio_queued;
 	ptr<u8> user;           # the browser's own
 }
 
@@ -201,6 +209,9 @@ phi.Page:Library
 			p.host.cookies is host.cookies;
 			p.host.set_cookie is host.set_cookie;
 			p.host.canvas_text is host.canvas_text;
+			p.host.audio_rate is host.audio_rate;
+			p.host.audio_write is host.audio_write;
+			p.host.audio_queued is host.audio_queued;
 			p.host.image_pixels is host.image_pixels;
 			p.host.encode_png is host.encode_png;
 			p.host.user is host.user;
@@ -339,6 +350,9 @@ phi.Page:Library
 
 	[Free: ptr<Page> p: 0;]
 		call PageElements.Forget;
+		if PageMedia.owner is p
+			call PageMedia.Forget;
+		;;
 		call PagePlatform.Forget: p;
 		while u32 mu: 0; mu < p.mod_urls.len; mu++;
 			free p.mod_urls:mu;
@@ -827,6 +841,9 @@ phi.Page:Library
 				call PageNet.Answer: p r status bytes n;
 				p.nest--;
 			;;
+			is PageLoad.MEDIA
+				call PageMedia.Arrived: p r.node r.id ok bytes n;
+			;;
 			else
 				if r.node is not 0
 					if ok
@@ -1194,6 +1211,8 @@ phi.Page:Library
 	[Frame: ptr<Page> p: 0; f64 now: 0.0;]
 		call Use: p;
 		p.now is now;
+		# (what's playing: its pictures, its sound and its clock)
+		call PageMedia.Pump: p;
 		int limit: p.next_timer;
 		int i: 0;
 		while i < p.timers.len as int

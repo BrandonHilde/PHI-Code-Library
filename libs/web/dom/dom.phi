@@ -120,6 +120,7 @@ struct.DomDocument
 	u32 version;            # goes up by one on every change, so a cache can see it's stale
 	u32 sheet_version;      # goes up when a <style> or <link> comes, goes, or changes
 	u32 css_reach;          # CSS's: Dom.REACH_ATTRS, REACH_ALL (see AttrChanged)
+	u32 media_version;      # goes up when a <video>, <audio> or <source> comes, goes, or changes
 	method<ptr<DomNode> int> on_change;     # called after every change (see DomChange), if set
 	# for MutationObserver: told of each change a script could see, with what it changed: the target,
 	# the kind (Dom.ADDED, REMOVED, ATTRIBUTE, TEXT), the node added or taken out, the attribute's
@@ -164,6 +165,9 @@ phi.Dom:Library
 	ptr<WlAtom> A_NAME: 0;
 	ptr<WlAtom> A_STYLE: 0;
 	ptr<WlAtom> A_LINK: 0;
+	ptr<WlAtom> A_VIDEO: 0;
+	ptr<WlAtom> A_AUDIO: 0;
+	ptr<WlAtom> A_SOURCE: 0;
 
 	# How far an attribute's change can reach, as CSS says: on a WlAtom (css), the class, id or
 	# attribute of that name is in a selector about other elements (an ancestor's .open, say); on
@@ -183,7 +187,24 @@ phi.Dom:Library
 		A_NAME is (WlAtoms.GetZ: 'name');
 		A_STYLE is (WlAtoms.GetZ: 'style');
 		A_LINK is (WlAtoms.GetZ: 'link');
+		A_VIDEO is (WlAtoms.GetZ: 'video');
+		A_AUDIO is (WlAtoms.GetZ: 'audio');
+		A_SOURCE is (WlAtoms.GetZ: 'source');
 	[end]
+
+	[IsMediaNode: ptr<DomNode> n: 0;]
+		call Start;
+	[end: n is not 0 and n.type is DomType.ELEMENT and (n.tag is A_VIDEO or n.tag is A_AUDIO or n.tag is A_SOURCE)]
+
+	# whether there's a <video>, <audio> or <source> at or under node
+	[HoldsMedia: ptr<DomNode> node: 0;]
+		call Start;
+		ptr<DomNode> n: node;
+		while n is not 0
+			if (IsMediaNode: n) return true;
+			n is (Next: n node);
+		;;
+	[end: false]
 
 	# Says node has changed to whoever looks for changes from the top (CSS): DIRTY_CHILD on it and
 	# every ancestor, through a shadow root to its host, up to one that has it already.
@@ -373,6 +394,11 @@ phi.Dom:Library
 				parent.doc.sheet_version++;
 			;;
 		;;
+		if node.type is DomType.ELEMENT and (node.first_child is not 0 or (IsMediaNode: node))
+			if (HoldsMedia: node)
+				parent.doc.media_version++;
+			;;
+		;;
 		call Changed: parent DomChange.CHILDREN;
 	[end]
 
@@ -393,6 +419,11 @@ phi.Dom:Library
 		if node.type is DomType.ELEMENT and (node.first_child is not 0 or (IsSheetNode: node))
 			if (HoldsSheet: node)
 				parent.doc.sheet_version++;
+			;;
+		;;
+		if node.type is DomType.ELEMENT and (node.first_child is not 0 or (IsMediaNode: node))
+			if (HoldsMedia: node)
+				parent.doc.media_version++;
 			;;
 		;;
 		node.parent is parent;
@@ -823,6 +854,9 @@ phi.Dom:Library
 			if (IsSheetNode: node)
 				doc.sheet_version++;
 			;;
+			if (IsMediaNode: node)
+				doc.media_version++;
+			;;
 		;;
 		elif what is DomChange.TEXT and node.parent is not 0
 			# :empty can see text come and go
@@ -836,6 +870,9 @@ phi.Dom:Library
 			call MarkUp: node;
 			if (IsSheetNode: node)
 				doc.sheet_version++;
+			;;
+			if (IsMediaNode: node)
+				doc.media_version++;
 			;;
 		;;
 		if doc.on_change is not 0

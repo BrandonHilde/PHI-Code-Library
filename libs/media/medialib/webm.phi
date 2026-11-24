@@ -1,0 +1,478 @@
+# WebM (Matroska): the tracks, and every block of the first sound track and the first video track,
+# as packets of an MdMedia.
+#
+# A Matroska file is EBML: elements, each an ID, a size and a body, the bodies of some being more
+# elements. A Segment holds Info (the time scale and how long it lasts), Tracks (each track's codec,
+# its private data, and its picture size or sample rate) and Clusters, each a time and the blocks
+# after it. A block is a track's number, a time relative to its cluster's, flags, and one frame or
+# several laced together (each their size told Xiph's way, EBML's way, or all the same).
+
+use memory.mem;
+
+phi.MdWebm:Library
+{
+	const u32 ID_EBML: 0x1A45DFA3;
+	const u32 ID_SEGMENT: 0x18538067;
+	const u32 ID_INFO: 0x1549A966;
+	const u32 ID_SCALE: 0x2AD7B1;
+	const u32 ID_DURATION: 0x4489;
+	const u32 ID_TRACKS: 0x1654AE6B;
+	const u32 ID_TRACK: 0xAE;
+	const u32 ID_NUMBER: 0xD7;
+	const u32 ID_TYPE: 0x83;
+	const u32 ID_CODEC: 0x86;
+	const u32 ID_PRIVATE: 0x63A2;
+	const u32 ID_CODEC_DELAY: 0x56AA;
+	const u32 ID_VIDEO: 0xE0;
+	const u32 ID_WIDTH: 0xB0;
+	const u32 ID_HEIGHT: 0xBA;
+	const u32 ID_AUDIO: 0xE1;
+	const u32 ID_RATE: 0xB5;
+	const u32 ID_CHANNELS: 0x9F;
+	const u32 ID_ENCODINGS: 0x6D80;
+	const u32 ID_CLUSTER: 0x1F43B675;
+	const u32 ID_TIMECODE: 0xE7;
+	const u32 ID_SIMPLE: 0xA3;
+	const u32 ID_GROUP: 0xA0;
+	const u32 ID_BLOCK: 0xA1;
+	const u32 ID_REFERENCE: 0xFB;
+	const u32 ID_CUES: 0x1C53BB6B;
+
+	const u64 UNKNOWN: 0xFFFFFFFFFFFFFFFF;
+
+	# reading an element's head: what it read (ids and sizes), and where its body begins
+	u32 id: 0;
+	u64 size: 0;
+	u32 body: 0;
+	bln failed: false;
+
+	# what the tracks said: the sound's and the video's track numbers (0 for none)
+	u64 audio_track: 0;
+	u64 video_track: 0;
+	u64 scale: 1000000;         # nanoseconds a timecode unit
+	ptr<MdMedia> m: 0;
+
+	# An EBML number at pos: its value (an ID keeps its length marker; a size doesn't), its length in
+	# n_len. 0 with failed if it isn't one.
+	u32 n_len: 0;
+	[Vint: ptr<u8> d: 0; u32 n: 0; u32 pos: 0; bln keep_marker: false; : u64]
+		if pos >= n
+			failed is true;
+			return 0;
+		;;
+		u32 first: d:pos;
+		u32 len: 1;
+		u32 mask: 0x80;
+		while len <= 8 and (first & mask) is 0
+			len++;
+			mask is mask >> 1;
+		;;
+		if len > 8 or pos + len > n
+			failed is true;
+			return 0;
+		;;
+		n_len is len;
+		u64 v: first as u64;
+		if not keep_marker
+			v is (first & (mask - 1)) as u64;
+		;;
+		bln all_ones: (v is (mask - 1) as u64);
+		while u32 k: 1; k < len; k++;
+			u32 b: d:(pos + k);
+			v is (v << 8) | b as u64;
+			if b is not 0xFF
+				all_ones is false;
+			;;
+		;;
+		if not keep_marker and all_ones
+			return UNKNOWN;
+		;;
+	[end: v]
+
+	# the element at pos: id, size (UNKNOWN for "to the end of its parent") and body; false at the end
+	[Head: ptr<u8> d: 0; u32 n: 0; u32 pos: 0;]
+		if pos >= n return false;
+		u64 v: (Vint: d n pos true);
+		if failed or n_len > 4 return false;
+		id is v as u32;
+		u32 p: pos + n_len;
+		size is (Vint: d n p false);
+		if failed return false;
+		body is p + n_len;
+	[end: true]
+
+	[Uint: ptr<u8> d: 0; u32 pos: 0; u64 len: 0; : u64]
+		u64 v: 0;
+		while u64 k: 0; k < len and k < 8; k++;
+			v is (v << 8) | d:(pos + k as u32) as u64;
+		;;
+	[end: v]
+
+	# a float element (4 or 8 bytes, big-endian), as an f64
+	[Float: ptr<u8> d: 0; u32 pos: 0; u64 len: 0; : f64]
+		if len is 8
+			u32 hi: ((d:pos as u32) << 24) | ((d:(pos + 1) as u32) << 16) | ((d:(pos + 2) as u32) << 8) | (d:(pos + 3) as u32);
+			u32 lo: ((d:(pos + 4) as u32) << 24) | ((d:(pos + 5) as u32) << 16) | ((d:(pos + 6) as u32) << 8) | (d:(pos + 7) as u32);
+			return (Float.FromWords: hi as int lo as int);
+		;;
+		if len is 4
+			u32 b: ((d:pos as u32) << 24) | ((d:(pos + 1) as u32) << 16) | ((d:(pos + 2) as u32) << 8) | (d:(pos + 3) as u32);
+			# an f32's sign, exponent and fraction, made an f64's
+			if (b & 0x7FFFFFFF) is 0 return 0.0;
+			u32 e: (b >> 23) & 255;
+			u32 hi: (b & 0x80000000) | (((e + 1023 - 127) & 2047) << 20) | ((b & 0x7FFFFF) >> 3);
+			u32 lo: (b & 7) << 29;
+			return (Float.FromWords: hi as int lo as int);
+		;;
+	[end: 0.0]
+
+	[Open: ptr<MdMedia> media: 0;]
+		m is media;
+		failed is false;
+		audio_track is 0;
+		video_track is 0;
+		scale is 1000000;
+		ptr<u8> d: m.data;
+		u32 n: m.length;
+		u32 pos: 0;
+		f64 duration: -1.0;
+		# the EBML header, then the Segment
+		if not (Head: d n pos) or id is not ID_EBML
+			MdMedia.error is 'not a WebM file';
+			return false;
+		;;
+		pos is body + size as u32;
+		if not (Head: d n pos) or id is not ID_SEGMENT
+			MdMedia.error is 'a WebM file with no segment';
+			return false;
+		;;
+		u32 seg_end: n;
+		if size is not UNKNOWN and body as u64 + size < n as u64
+			seg_end is body + size as u32;
+		;;
+		pos is body;
+		int guard: 0;
+		while pos < seg_end and guard < 1000000
+			guard++;
+			if not (Head: d seg_end pos)
+				break;
+			;;
+			u32 b: body;
+			u32 e: seg_end;
+			if size is not UNKNOWN and b as u64 + size <= seg_end as u64
+				e is b + size as u32;
+			;;
+			if id is ID_INFO
+				call Info: d b e addr duration;
+			;;
+			elif id is ID_TRACKS
+				if not (Tracks: d b e)
+					return false;
+				;;
+			;;
+			elif id is ID_CLUSTER
+				# (one of unknown size goes to the next top-level element)
+				bln open_ended: (size is UNKNOWN);
+				call e is Cluster: d b e open_ended;
+			;;
+			pos is e;
+		;;
+		if audio_track is 0 and video_track is 0
+			MdMedia.error is 'a WebM file with no sound or video I can play';
+			return false;
+		;;
+		m.format is MdMedia.WEBM;
+		if duration > 0.0
+			m.duration_us is (duration * (scale as f64) / 1000.0) as i64;
+		;;
+	[end: true]
+
+	[Info: ptr<u8> d: 0; u32 pos: 0; u32 stop: 0; ptr<f64> duration: 0;]
+		u64 dur_len: 0;
+		u32 dur_at: 0;
+		while pos < stop and (Head: d stop pos)
+			if size is UNKNOWN or body as u64 + size > stop as u64 return;
+			if id is ID_SCALE
+				scale is (Uint: d body size);
+				if scale is 0
+					scale is 1000000;
+				;;
+			;;
+			elif id is ID_DURATION
+				dur_len is size;
+				dur_at is body;
+			;;
+			pos is body + size as u32;
+		;;
+		if dur_len > 0
+			duration:0 is (Float: d dur_at dur_len);
+		;;
+	[end]
+
+	[Tracks: ptr<u8> d: 0; u32 pos: 0; u32 stop: 0;]
+		while pos < stop and (Head: d stop pos)
+			if size is UNKNOWN or body as u64 + size > stop as u64 return true;
+			u32 e: body + size as u32;
+			if id is ID_TRACK
+				call Track: d body e;
+			;;
+			pos is e;
+		;;
+	[end: true]
+
+	# one TrackEntry: taken if it's the first sound or video track of a codec medialib plays
+	[Track: ptr<u8> d: 0; u32 pos: 0; u32 stop: 0;]
+		u64 number: 0;
+		u64 type: 0;
+		u32 codec_at: 0;
+		u32 codec_len: 0;
+		u32 priv_at: 0;
+		u32 priv_len: 0;
+		u64 width: 0;
+		u64 height: 0;
+		f64 rate: 0.0;
+		u64 channels: 1;
+		u64 delay_ns: 0;
+		bln encoded: false;
+		while pos < stop and (Head: d stop pos)
+			if size is UNKNOWN or body as u64 + size > stop as u64 return;
+			u32 e: body + size as u32;
+			if id is ID_NUMBER
+				number is (Uint: d body size);
+			;;
+			elif id is ID_TYPE
+				type is (Uint: d body size);
+			;;
+			elif id is ID_CODEC
+				codec_at is body;
+				codec_len is size as u32;
+			;;
+			elif id is ID_PRIVATE
+				priv_at is body;
+				priv_len is size as u32;
+			;;
+			elif id is ID_CODEC_DELAY
+				delay_ns is (Uint: d body size);
+			;;
+			elif id is ID_ENCODINGS
+				encoded is true;
+			;;
+			elif id is ID_VIDEO or id is ID_AUDIO
+				u32 q: body;
+				while q < e and (Head: d e q)
+					if size is UNKNOWN or body as u64 + size > e as u64
+						break;
+					;;
+					if id is ID_WIDTH
+						width is (Uint: d body size);
+					;;
+					elif id is ID_HEIGHT
+						height is (Uint: d body size);
+					;;
+					elif id is ID_RATE
+						rate is (Float: d body size);
+					;;
+					elif id is ID_CHANNELS
+						channels is (Uint: d body size);
+					;;
+					q is body + size as u32;
+				;;
+			;;
+			pos is e;
+		;;
+		if encoded or number is 0 return;
+		int codec: (Codec: d codec_at codec_len);
+		if type is 2 and audio_track is 0 and (MdMedia.Decodes: codec)
+			audio_track is number;
+			m.has_audio is true;
+			m.codec is codec;
+			m.rate is rate as int;
+			m.channels is channels as int;
+			m.a_priv is d + priv_at;
+			m.a_priv_len is priv_len;
+			m.a_delay_us is (delay_ns / 1000) as i64;
+		;;
+		elif type is 1 and video_track is 0 and (MdMedia.Decodes: codec)
+			video_track is number;
+			m.has_video is true;
+			m.vcodec is codec;
+			m.width is width as int;
+			m.height is height as int;
+			m.v_priv is d + priv_at;
+			m.v_priv_len is priv_len;
+		;;
+	[end]
+
+	[Codec: ptr<u8> d: 0; u32 pos: 0; u32 len: 0;]
+		if (Is: d pos len 'A_VORBIS') return MdMedia.CODEC_VORBIS;
+		if (Is: d pos len 'A_OPUS') return MdMedia.CODEC_OPUS;
+		if (Is: d pos len 'V_VP8') return MdMedia.CODEC_VP8;
+		if (Is: d pos len 'V_VP9') return MdMedia.CODEC_VP9;
+		if (Is: d pos len 'V_AV1') return MdMedia.CODEC_AV1;
+		if (Is: d pos len 'V_MPEG4/ISO/AVC') return MdMedia.CODEC_H264;
+	[end: MdMedia.CODEC_NONE]
+
+	[Is: ptr<u8> d: 0; u32 pos: 0; u32 len: 0; ptr<u8> text: 0;]
+		u32 k: 0;
+		while text:k is not 0
+			if k >= len or d:(pos + k) is not text:k return false;
+			k++;
+		;;
+		# (a string may be padded with zeros)
+		while k < len
+			if d:(pos + k) is not 0 return false;
+			k++;
+		;;
+	[end: true]
+
+	# A cluster's blocks; where it ends (for one of unknown size, the next element it can't hold)
+	[Cluster: ptr<u8> d: 0; u32 pos: 0; u32 stop: 0; bln open_ended: false; : u32]
+		u64 time: 0;
+		while pos < stop and (Head: d stop pos)
+			if open_ended and (id is ID_CLUSTER or id is ID_CUES or id is ID_TRACKS or id is ID_INFO or id is 0x1254C367 or id is 0x114D9B74)
+				return pos;
+			;;
+			if size is UNKNOWN or body as u64 + size > stop as u64
+				return stop;
+			;;
+			u32 e: body + size as u32;
+			if id is ID_TIMECODE
+				time is (Uint: d body size);
+			;;
+			elif id is ID_SIMPLE
+				call Block: d body e time true false;
+			;;
+			elif id is ID_GROUP
+				# a Block, keyed unless a ReferenceBlock says what it depends on
+				u32 block_at: 0;
+				u32 block_end: 0;
+				bln referenced: false;
+				u32 q: body;
+				while q < e and (Head: d e q)
+					if size is UNKNOWN or body as u64 + size > e as u64
+						break;
+					;;
+					if id is ID_BLOCK
+						block_at is body;
+						block_end is body + size as u32;
+					;;
+					elif id is ID_REFERENCE
+						referenced is true;
+					;;
+					q is body + size as u32;
+				;;
+				if block_end > block_at
+					call Block: d block_at block_end time false not referenced;
+				;;
+			;;
+			pos is e;
+		;;
+	[end: stop]
+
+	# a block: its frames, as packets of its track
+	[Block: ptr<u8> d: 0; u32 pos: 0; u32 stop: 0; u64 cluster_time: 0; bln simple: false; bln keyed: false;]
+		u64 track: (Vint: d stop pos false);
+		if failed
+			failed is false;
+			return;
+		;;
+		pos++ n_len;
+		bln audio: (track is audio_track and audio_track is not 0);
+		bln video: (track is video_track and video_track is not 0);
+		if not audio and not video return;
+		if pos + 3 > stop return;
+		int rel: ((d:pos as int) << 8) | (d:(pos + 1) as int);
+		if rel >= 32768
+			rel is rel - 65536;
+		;;
+		u32 flags: d:(pos + 2);
+		pos++ 3;
+		bln key: keyed;
+		if simple
+			key is ((flags & 0x80) is not 0);
+		;;
+		i64 t: cluster_time as i64 + rel as i64;
+		i64 us: t * scale as i64 / 1000;
+		u32 packet_flags: 0;
+		if key
+			packet_flags is MdMedia.KEY;
+		;;
+		u32 lacing: (flags >> 1) & 3;
+		if lacing is 0
+			call Add: audio pos stop - pos us packet_flags;
+			return;
+		;;
+		if pos >= stop return;
+		u32 count: d:pos + 1;
+		pos++;
+		u32 sizes[256];
+		u32 total: 0;
+		if lacing is 1
+			# Xiph's: each size as 255s and the rest
+			while u32 k: 0; k + 1 < count; k++;
+				u32 s: 0;
+				while pos < stop
+					u32 b: d:pos;
+					pos++;
+					s++ b;
+					if b < 255
+						break;
+					;;
+				;;
+				sizes:k is s;
+				total++ s;
+			;;
+		;;
+		elif lacing is 3
+			# EBML's: the first size, then each the one before plus a signed difference
+			u64 first: (Vint: d stop pos false);
+			if failed
+				failed is false;
+				return;
+			;;
+			pos++ n_len;
+			sizes:0 is first as u32;
+			total is first as u32;
+			i64 last: first as i64;
+			while u32 k: 1; k + 1 < count; k++;
+				u64 raw: (Vint: d stop pos false);
+				if failed
+					failed is false;
+					return;
+				;;
+				i64 bias: ((1 as i64) << (7 * n_len - 1)) - 1;
+				i64 now: last + raw as i64 - bias;
+				pos++ n_len;
+				if now < 0
+					return;
+				;;
+				sizes:k is now as u32;
+				total++ now as u32;
+				last is now;
+			;;
+		;;
+		else
+			# all the same size
+			u32 same: (stop - pos) / count;
+			while u32 k: 0; k + 1 < count; k++;
+				sizes:k is same;
+				total++ same;
+			;;
+		;;
+		if pos + total > stop return;
+		sizes:(count - 1) is stop - pos - total;
+		while u32 k: 0; k < count; k++;
+			call Add: audio pos sizes:k us packet_flags;
+			pos++ sizes:k;
+		;;
+	[end]
+
+	[Add: bln audio: false; u32 pos: 0; u32 len: 0; i64 us: 0; u32 flags: 0;]
+		if audio
+			call m.AddPacket: pos len us flags;
+		;;
+		else
+			call m.AddVideoPacket: pos len us flags;
+		;;
+	[end]
+}

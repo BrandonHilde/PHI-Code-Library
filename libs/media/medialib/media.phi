@@ -1,0 +1,675 @@
+# A media file, whatever its format: what's in it, and its sound as 16-bit stereo samples.
+#
+# Open finds the format from the bytes and lists the file's packets (each a frame of sound or
+# video, with where it is and when it plays), which is what tells its length and lets it seek.
+# ReadAudio decodes the next packet of sound. The file's bytes are the program's, and must stay as
+# they are until Close.
+#
+#   ptr<MdMedia> m: (MdMedia.Open: bytes length);
+#   if m is 0
+#       log 'not a media file I can read: ' MdMedia.error '\n';
+#   ;;
+#   while (m.ReadAudio) > 0                   # m.pcm has m.frames of left, right; m.rate a second
+#       ...  m.audio_us is when the first of them plays
+#   ;;
+#   call m.SeekAudio: 30000000;               # to 30 s
+#   call MdMedia.Close: m;
+
+use memory.mem;
+use medialib.mp3;
+
+# a packet: where it is in the file, its bytes, and when it plays (microseconds)
+struct.MdPacket
+{
+	u32 pos;
+	u32 size;
+	i64 us;
+	u32 flags;              # MdMedia.KEY: a video frame that needs none before it
+}
+
+struct.MdMedia
+{
+	int format;             # MdMedia.MP3 ...
+	ptr<u8> data;
+	u32 length;
+	# sound
+	bln has_audio;
+	int codec;              # MdMedia.CODEC_*
+	int rate;
+	int channels;           # in the file; what ReadAudio gives is always two
+	i64 duration_us;        # how long it plays, or -1 if it can't tell
+	ptr<MdPacket> packets;  # the sound's packets, in order
+	u32 packet_count;
+	u32 packet_cap;
+	u32 next;               # the next to decode
+	# what ReadAudio gave: frames of left and right, from audio_us on
+	i16 pcm[16384];
+	int frames;
+	i64 audio_us;
+	# gapless MP3: samples to drop from the start (left of it) and the end
+	i64 skip;
+	i64 total;              # samples there are, all told, after skipping; -1 if not known
+	i64 lead;               # how many the file has before its first (what skip began as)
+	i64 given;              # samples given since the start (or since a seek)
+	ptr<u8> a_priv;         # the sound's codec data from the container (Vorbis's headers, say), in data
+	u32 a_priv_len;
+	i64 a_delay_us;         # (Opus: what to drop from the start)
+	# video
+	bln has_video;
+	int vcodec;             # MdMedia.CODEC_VP8 ...
+	int width;
+	int height;
+	ptr<u8> v_priv;
+	u32 v_priv_len;
+	ptr<MdPacket> vpackets; # its packets, in order
+	u32 vcount;
+	u32 vcap;
+	u32 vnext;
+	# the format's own
+	ptr<MdMp3> mp3;
+	ptr<MdVorbis> vorbis;
+	ptr<MdAac> aac;
+	ptr<u8> own;            # bytes the MdMedia made itself (Ogg's packets, put together), or 0
+	int wav_bits;           # WAV: bits a sample, 32 being float if wav_float
+	bln wav_float;
+	int wav_block;          # bytes a frame
+
+	# The next packet of sound decoded: frames (to 8192), or 0 at the end.
+	[ReadAudio]
+		frames is 0;
+		while frames is 0
+			if next >= packet_count return 0;
+			ptr<MdPacket> p: packets + next * sizeof MdPacket;
+			next++;
+			int n: 0;
+			if codec is MdMedia.CODEC_MP3
+				call n is DecodeMp3: p;
+			;;
+			elif codec is MdMedia.CODEC_PCM
+				call n is DecodePcm: p;
+			;;
+			elif codec is MdMedia.CODEC_VORBIS
+				call n is DecodeVorbis: p;
+			;;
+			elif codec is MdMedia.CODEC_AAC
+				call n is DecodeAac: p;
+			;;
+			# what's dropped at the start, and past the end
+			int drop: 0;
+			if skip > 0
+				drop is n;
+				if skip < n as i64
+					drop is skip as int;
+				;;
+				skip-- drop as i64;
+			;;
+			int keep: n - drop;
+			if total >= 0 and given + keep as i64 > total
+				keep is (total - given) as int;
+				if keep < 0
+					keep is 0;
+				;;
+			;;
+			if drop > 0 and keep > 0
+				call Mem.Move: addr pcm as ptr<u8> (addr pcm as ptr<u8>) + drop * 4 (keep * 4) as u32;
+			;;
+			frames is keep;
+			audio_us is given * 1000000 / rate as i64;
+			given++ keep as i64;
+			if keep is 0 and total >= 0 and given >= total
+				next is packet_count;
+				return 0;
+			;;
+		;;
+	[end: frames]
+
+	[DecodeMp3: ptr<MdPacket> p: 0;]
+		int n: (mp3.Frame: data + p.pos p.size as int);
+		if n <= 0 return 0;
+		if mp3.channels is 1
+			# one channel to both, from the end back
+			int i: n - 1;
+			while i >= 0
+				pcm:(i * 2) is mp3.pcm:i;
+				pcm:(i * 2 + 1) is mp3.pcm:i;
+				i--;
+			;;
+		;;
+		else
+			call Mem.Copy: addr pcm as ptr<u8> (addr mp3.pcm) as ptr<u8> (n * 4) as u32;
+		;;
+	[end: n]
+
+	[DecodeVorbis: ptr<MdPacket> p: 0;]
+		int n: (vorbis.Decode: data + p.pos p.size as int);
+		if n <= 0 return 0;
+		if n > 8192
+			n is 8192;
+		;;
+		call Mem.Copy: addr pcm as ptr<u8> vorbis.pcm as ptr<u8> (n * 4) as u32;
+	[end: n]
+
+	[DecodeAac: ptr<MdPacket> p: 0;]
+		int n: (aac.Decode: data + p.pos p.size as int);
+		if n <= 0 return 0;
+		call Mem.Copy: addr pcm as ptr<u8> (addr aac.pcm) as ptr<u8> (n * 4) as u32;
+	[end: n]
+
+	[DecodePcm: ptr<MdPacket> p: 0;]
+		int n: (p.size / wav_block as u32) as int;
+		if n > 2304
+			n is 2304;
+		;;
+		ptr<u8> b: data + p.pos;
+		int bytes: wav_bits / 8;
+		while int i: 0; i < n; i++;
+			ptr<u8> f: b + i * wav_block;
+			int left: (MdMedia.Sample: f wav_bits wav_float);
+			int right: left;
+			if channels > 1
+				right is (MdMedia.Sample: f + bytes wav_bits wav_float);
+			;;
+			pcm:(i * 2) is left as i16;
+			pcm:(i * 2 + 1) is right as i16;
+		;;
+	[end: n]
+
+	# To (about) the given time: the next ReadAudio starts at the packet that holds it. (MP3 decodes two
+	# frames before it and drops them, so its reservoir and filters are as they'd have been.)
+	[SeekAudio: i64 us: 0;]
+		if packet_count is 0 return;
+		u32 k: 0;
+		while k + 1 < packet_count
+			ptr<MdPacket> p: packets + (k + 1) * sizeof MdPacket;
+			if p.us > us + lead * 1000000 / rate as i64
+				break;
+			;;
+			k++;
+		;;
+		u32 from: k;
+		if codec is MdMedia.CODEC_MP3
+			call mp3.Reset;
+			if from >= 2
+				from is from - 2;
+			;;
+			else
+				from is 0;
+			;;
+		;;
+		ptr<MdPacket> pk: packets + k * sizeof MdPacket;
+		ptr<MdPacket> pf: packets + from * sizeof MdPacket;
+		i64 raw_k: pk.us * rate as i64 / 1000000;
+		i64 raw_from: pf.us * rate as i64 / 1000000;
+		next is from;
+		skip is raw_k - raw_from;
+		given is raw_k - lead;
+		if given < 0
+			skip is skip - given;
+			given is 0;
+		;;
+	[end]
+
+	[AddVideoPacket: u32 pos: 0; u32 size: 0; i64 us: 0; u32 flags: 0;]
+		if vcount >= vcap
+			u32 room: vcap * 2;
+			if room < 256
+				room is 256;
+			;;
+			ptr<MdPacket> grown: new MdPacket[room];
+			if grown is 0
+				throw 'out of memory for the packets';
+			;;
+			if vpackets is not 0
+				call Mem.Copy: grown as ptr<u8> vpackets as ptr<u8> vcount * sizeof MdPacket;
+				free vpackets;
+			;;
+			vpackets is grown;
+			vcap is room;
+		;;
+		ptr<MdPacket> p: vpackets + vcount * sizeof MdPacket;
+		p.pos is pos;
+		p.size is size;
+		p.us is us;
+		p.flags is flags;
+		vcount++;
+	[end]
+
+	[AddPacket: u32 pos: 0; u32 size: 0; i64 us: 0; u32 flags: 0;]
+		if packet_count >= packet_cap
+			u32 room: packet_cap * 2;
+			if room < 256
+				room is 256;
+			;;
+			ptr<MdPacket> grown: new MdPacket[room];
+			if grown is 0
+				throw 'out of memory for the packets';
+			;;
+			if packets is not 0
+				call Mem.Copy: grown as ptr<u8> packets as ptr<u8> packet_count * sizeof MdPacket;
+				free packets;
+			;;
+			packets is grown;
+			packet_cap is room;
+		;;
+		ptr<MdPacket> p: packets + packet_count * sizeof MdPacket;
+		p.pos is pos;
+		p.size is size;
+		p.us is us;
+		p.flags is flags;
+		packet_count++;
+	[end]
+}
+
+phi.MdMedia:Library
+{
+	const int UNKNOWN: 0;
+	const int MP3: 1;
+	const int WAV: 2;
+	const int WEBM: 3;
+	const int OGG: 4;
+	const int MP4: 5;
+
+	const int CODEC_NONE: 0;
+	const int CODEC_MP3: 1;
+	const int CODEC_PCM: 2;
+	const int CODEC_VORBIS: 3;
+	const int CODEC_OPUS: 4;
+	const int CODEC_AAC: 5;
+	const int CODEC_FLAC: 6;
+	const int CODEC_VP8: 20;
+	const int CODEC_VP9: 21;
+	const int CODEC_AV1: 22;
+	const int CODEC_H264: 23;
+
+	const u32 KEY: 1;
+
+	str error: [80];
+
+	bln any_codec: false;       # (for tools: every track is taken, whether its codec is decoded or not)
+
+	# whether medialib decodes a codec (a container's track of one it doesn't is passed over)
+	[Decodes: int codec: 0;]
+		if any_codec return codec is not CODEC_NONE;
+	[end: codec is CODEC_MP3 or codec is CODEC_PCM or codec is CODEC_VP8 or codec is CODEC_VORBIS or codec is CODEC_AAC]
+
+	# Vorbis's three headers, Xiph-laced as Matroska and MP4 keep them (a count less one, then all
+	# but the last's sizes as runs of 255 and the rest): a decoder set up from them, or 0
+	[VorbisFromLaced: ptr<u8> p: 0; u32 n: 0; : ptr<MdVorbis>]
+		if n < 3 or p:0 is not 2 return 0;
+		u32 pos: 1;
+		u32 sizes[2];
+		while int k: 0; k < 2; k++;
+			u32 s: 0;
+			while pos < n
+				u32 b: p:pos;
+				pos++;
+				s++ b;
+				if b < 255
+					break;
+				;;
+			;;
+			sizes:k is s;
+		;;
+		if pos + sizes:0 + sizes:1 > n return 0;
+		ptr<MdVorbis> d: (MdVorbis.New);
+		if d is 0 return 0;
+		bln ok: (d.Header: p + pos sizes:0 as int);
+		if ok
+			ok is (d.Header: p + pos + sizes:0 sizes:1 as int);
+		;;
+		if ok
+			ok is (d.Header: p + pos + sizes:0 + sizes:1 (n - pos - sizes:0 - sizes:1) as int);
+		;;
+		if not ok
+			error is MdVorbis.error;
+			call MdVorbis.Free: d;
+			return 0;
+		;;
+	[end: d]
+
+	# What's in the bytes: a ptr<MdMedia>, or 0 with the reason in error.
+	[Open: ptr<u8> data: 0; u32 length: 0;]
+		ptr<MdMedia> m: 0;
+		if call m is OpenInner: data length throws err
+			error is err.text;
+			return 0 as ptr<MdMedia>;
+		;;
+		# a sound codec's decoder, from what the container keeps of it
+		if m.has_audio and m.codec is CODEC_AAC and m.aac is 0
+			m.aac is (MdAac.New);
+			if m.aac is 0 or not (m.aac.Config: m.a_priv m.a_priv_len as int)
+				error is MdAac.error;
+				m.has_audio is false;
+			;;
+			else
+				m.rate is m.aac.rate;
+				m.channels is m.aac.channels;
+			;;
+		;;
+		if m.has_audio and m.codec is CODEC_VORBIS and m.vorbis is 0
+			m.vorbis is (VorbisFromLaced: m.a_priv m.a_priv_len);
+			if m.vorbis is 0
+				# (the video still plays, without it)
+				m.has_audio is false;
+			;;
+			else
+				m.rate is m.vorbis.rate;
+				m.channels is m.vorbis.channels;
+			;;
+		;;
+	[end: m]
+
+	[OpenInner: ptr<u8> data: 0; u32 length: 0;]
+		call MdMp3Math.Start;
+		ptr<MdMedia> m: new MdMedia;
+		if m is 0
+			throw 'out of memory';
+		;;
+		m.data is data;
+		m.length is length;
+		m.duration_us is -1;
+		m.total is -1;
+		bln ok: false;
+		if length >= 12 and (Is: data 'RIFF') and (Is: data + 8 'WAVE')
+			call ok is OpenWav: m;
+		;;
+		elif length >= 4 and data:0 is 0x1A and data:1 is 0x45 and data:2 is 0xDF and data:3 is 0xA3
+			call ok is MdWebm.Open: m;
+		;;
+		elif length >= 4 and (Is: data 'OggS')
+			call ok is MdOgg.Open: m;
+		;;
+		elif length >= 12 and ((Is: data + 4 'ftyp') or (Is: data + 4 'moov') or (Is: data + 4 'mdat') or (Is: data + 4 'free') or (Is: data + 4 'wide'))
+			call ok is MdMp4.Open: m;
+		;;
+		else
+			call ok is OpenMp3: m;
+		;;
+		if not ok
+			call Close: m;
+			throw error;
+		;;
+	[end: m]
+
+	[Close: ptr<MdMedia> m: 0;]
+		if m is 0 return;
+		if m.packets is not 0
+			free m.packets;
+		;;
+		if m.vpackets is not 0
+			free m.vpackets;
+		;;
+		if m.mp3 is not 0
+			call MdMp3.Free: m.mp3;
+		;;
+		if m.vorbis is not 0
+			call MdVorbis.Free: m.vorbis;
+		;;
+		if m.aac is not 0
+			call MdAac.Free: m.aac;
+		;;
+		if m.own is not 0
+			free m.own;
+		;;
+		free m;
+	[end]
+
+	[Is: ptr<u8> p: 0; ptr<u8> text: 0;]
+		while int i: 0; i < 4; i++;
+			if p:i is not text:i return false;
+		;;
+	[end: true]
+
+	[U32BE: ptr<u8> p: 0;]
+	[end: ((p:0 as u32) << 24) | ((p:1 as u32) << 16) | ((p:2 as u32) << 8) | (p:3 as u32)]
+
+	[U32LE: ptr<u8> p: 0;]
+	[end: ((p:3 as u32) << 24) | ((p:2 as u32) << 16) | ((p:1 as u32) << 8) | (p:0 as u32)]
+
+	[U16LE: ptr<u8> p: 0;]
+	[end: ((p:1 as u32) << 8) | (p:0 as u32)]
+
+	# a WAV sample as 16 bits
+	[Sample: ptr<u8> f: 0; int bits: 0; bln is_float: false;]
+		if bits is 8 return ((f:0 as int) - 128) << 8;
+		if bits is 16
+			int v: (U16LE: f) as int;
+			if v >= 32768
+				v is v - 65536;
+			;;
+			return v;
+		;;
+		if bits is 24
+			int v: ((f:2 as int) << 8) | (f:1 as int);
+			if v >= 32768
+				v is v - 65536;
+			;;
+			return v;
+		;;
+		if bits is 32 and is_float
+			# an f32's bits, to 16 bits without the x87: its exponent says the shift
+			u32 b: (U32LE: f);
+			int e: ((b >> 23) & 255) as int - 127;
+			if e < -16 return 0;
+			int m: ((b & 0x7FFFFF) | 0x800000) as int;
+			int v: 32767;
+			if e < 0
+				v is (m >> (8 - e)) as int;
+				if v > 32767
+					v is 32767;
+				;;
+			;;
+			if (b >> 31) is 1 return 0 - v;
+			return v;
+		;;
+		if bits is 32
+			int hi: ((f:3 as int) << 8) | (f:2 as int);
+			if hi >= 32768
+				hi is hi - 65536;
+			;;
+			return hi;
+		;;
+	[end: 0]
+
+	# ---- WAV: RIFF chunks; fmt says what the samples are, data has them
+
+	[OpenWav: ptr<MdMedia> m: 0;]
+		u32 pos: 12;
+		u32 data_at: 0;
+		u32 data_len: 0;
+		bln fmt: false;
+		int guard: 0;
+		while pos + 8 <= m.length and guard < 1000
+			guard++;
+			u32 size: (U32LE: m.data + pos + 4);
+			u32 body: pos + 8;
+			if size > m.length - body
+				size is m.length - body;
+			;;
+			if (Is: m.data + pos 'fmt ') and size >= 16
+				int tag: (U16LE: m.data + body) as int;
+				m.channels is (U16LE: m.data + body + 2) as int;
+				m.rate is (U32LE: m.data + body + 4) as int;
+				m.wav_block is (U16LE: m.data + body + 12) as int;
+				m.wav_bits is (U16LE: m.data + body + 14) as int;
+				if tag is 0xFFFE and size >= 26
+					tag is (U16LE: m.data + body + 24) as int;      # (WAVE_FORMAT_EXTENSIBLE: its subformat)
+				;;
+				m.wav_float is (tag is 3);
+				if tag is not 1 and tag is not 3
+					error is 'a WAV file whose samples aren\'t PCM';
+					return false;
+				;;
+				fmt is true;
+			;;
+			elif (Is: m.data + pos 'data')
+				data_at is body;
+				data_len is size;
+			;;
+			pos is body + size + (size & 1);
+		;;
+		if not fmt or data_at is 0 or m.channels < 1 or m.rate < 1000 or m.rate > 384000 or m.wav_block < 1
+			error is 'a WAV file without what it needs';
+			return false;
+		;;
+		if m.wav_bits is not 8 and m.wav_bits is not 16 and m.wav_bits is not 24 and m.wav_bits is not 32
+			error is 'a WAV file of samples I can\'t read';
+			return false;
+		;;
+		if m.wav_block < m.channels * (m.wav_bits / 8)
+			error is 'a damaged WAV file';
+			return false;
+		;;
+		m.format is WAV;
+		m.codec is CODEC_PCM;
+		m.has_audio is true;
+		u32 per: 2048 * m.wav_block as u32;
+		u32 frames_all: data_len / m.wav_block as u32;
+		u32 p: 0;
+		while p < data_len
+			u32 size: per;
+			if size > data_len - p
+				size is data_len - p;
+			;;
+			i64 us: ((p / m.wav_block as u32) as i64) * 1000000 / m.rate as i64;
+			call m.AddPacket: data_at + p size us 0;
+			p++ size;
+		;;
+		m.duration_us is (frames_all as i64) * 1000000 / m.rate as i64;
+	[end: true]
+
+	# ---- MP3: frame after frame, after any ID3v2 tag. A first frame with a Xing or Info tag says
+	# how many frames there are, and LAME's after it how many samples to drop at either end.
+
+	[OpenMp3: ptr<MdMedia> m: 0;]
+		u32 pos: 0;
+		ptr<u8> d: m.data;
+		u32 n: m.length;
+		while pos + 10 <= n and d:pos is 'I' and d:(pos + 1) is 'D' and d:(pos + 2) is '3'
+			u32 size: ((d:(pos + 6) as u32 & 127) << 21) | ((d:(pos + 7) as u32 & 127) << 14) | ((d:(pos + 8) as u32 & 127) << 7) | (d:(pos + 9) as u32 & 127);
+			pos++ 10 + size;
+			if (d:(pos - size - 10 + 5) & 0x10) is not 0
+				pos++ 10;                    # (a footer)
+			;;
+		;;
+		# the first frame: two in a row that agree, within the first 64 KB
+		u32 first: 0xFFFFFFFF;
+		u32 look: pos;
+		while look + 4 <= n and look < pos + 65536
+			if (MdMp3.Header: d + look)
+				u32 len: MdMp3.h_length as u32;
+				int rate: MdMp3.h_rate;
+				if look + len + 4 > n
+					first is look;
+					break;
+				;;
+				if (MdMp3.Header: d + look + len) and MdMp3.h_rate is rate
+					first is look;
+					break;
+				;;
+			;;
+			look++;
+		;;
+		if first is 0xFFFFFFFF
+			error is 'not a media file I know';
+			return false;
+		;;
+		call MdMp3.Header: d + first;
+		m.rate is MdMp3.h_rate;
+		m.channels is MdMp3.h_channels;
+		int spf: MdMp3.h_samples;
+		m.format is MP3;
+		m.codec is CODEC_MP3;
+		m.has_audio is true;
+		m.mp3 is (MdMp3.New);
+		if m.mp3 is 0
+			error is 'out of memory';
+			return false;
+		;;
+		# a Xing or Info frame: not sound, but what's after it is how long the sound is
+		pos is first;
+		i64 delay: -1;
+		i64 padding: 0;
+		i64 tag_frames: -1;
+		u32 side: 32;
+		if MdMp3.h_version is not 1
+			side is 17;
+			if m.channels is 1
+				side is 9;
+			;;
+		;;
+		elif m.channels is 1
+			side is 17;
+		;;
+		u32 x: first + 4 + side;
+		if (d:(first + 1) & 1) is 0
+			x++ 2;
+		;;
+		if x + 8 <= n and ((Is: d + x 'Xing') or (Is: d + x 'Info'))
+			u32 flags: (U32BE: d + x + 4);
+			u32 f: x + 8;
+			if (flags & 1) is not 0 and f + 4 <= n
+				tag_frames is (U32BE: d + f) as i64;
+				f++ 4;
+			;;
+			if (flags & 2) is not 0
+				f++ 4;
+			;;
+			if (flags & 4) is not 0
+				f++ 100;
+			;;
+			if (flags & 8) is not 0
+				f++ 4;
+			;;
+			# LAME's: its name and version (9), then 12 bytes, then delay and padding, 12 bits each
+			if f + 24 <= n and (Is: d + f 'LAME')
+				u32 dp: f + 21;
+				delay is ((d:dp as i64) << 4) | ((d:(dp + 1) as i64) >> 4);
+				padding is (((d:(dp + 1) as i64) & 15) << 8) | (d:(dp + 2) as i64);
+			;;
+			pos is first + MdMp3.h_length as u32;
+		;;
+		# every frame, to the end or the first thing that isn't one
+		i64 sample: 0;
+		int guard_skips: 0;
+		while pos + 4 <= n
+			if not (MdMp3.Header: d + pos)
+				# (junk between frames, or a tag at the end): look a little further
+				guard_skips++;
+				if guard_skips > 4096
+					break;
+				;;
+				pos++;
+				continue;
+			;;
+			u32 len: MdMp3.h_length as u32;
+			if pos + len > n
+				break;
+			;;
+			call m.AddPacket: pos len sample * 1000000 / m.rate as i64 0;
+			sample++ MdMp3.h_samples as i64;
+			pos++ len;
+		;;
+		if m.packet_count is 0
+			error is 'an MP3 file with no frames';
+			return false;
+		;;
+		i64 all: sample;
+		if delay >= 0
+			# the encoder's delay and the decoder's own (529 samples)
+			m.skip is delay + 529;
+			m.lead is m.skip;
+			m.total is all - delay - padding;
+			if tag_frames > 0
+				m.total is tag_frames * spf as i64 - delay - padding;
+			;;
+			if m.total < 0
+				m.total is 0;
+			;;
+			m.duration_us is m.total * 1000000 / m.rate as i64;
+		;;
+		else
+			m.duration_us is all * 1000000 / m.rate as i64;
+		;;
+	[end: true]
+}

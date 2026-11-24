@@ -1,0 +1,1513 @@
+# Vorbis (the Vorbis I specification, xiph.org), a packet at a time to 16-bit samples.
+#
+# Three header packets set the decoder up: the identification (channels, rate, the two block sizes),
+# comments (passed over) and the setup: codebooks (Huffman codes, and for some, vectors of values),
+# floors, residues, mappings and modes. Each audio packet then gives, for each channel, a floor (a
+# piecewise-linear curve of the spectrum's envelope, in decibels) and a residue (the detail, from
+# vector-quantized codebooks, the channels perhaps coupled as magnitude and angle). Their product is
+# the spectrum, which the inverse MDCT turns back into time; windowed and overlapped with the packet
+# before, it gives the samples between the two blocks' middles.
+#
+# In whole numbers: a vector's values are Q16, the spectrum Q20 (Q16 lost about 8 of the 16-bit
+# output's steps, the rounding of each of the n/2 values adding up in each sample), the inverse MDCT
+# an FFT of N/4 points with Q30 twiddles and 64-bit products, rounded, and the window Q30. Only floor type 1 is read (floor 0
+# was dropped by libvorbis before 1.0, and no file made since has one).
+#
+#   ptr<MdVorbis> d: (MdVorbis.New);
+#   bln ok: (d.Header: packet length);       # each of the three header packets in turn
+#   int n: (d.Decode: packet length);        # an audio packet: frames of left and right in d.pcm
+
+use memory.mem;
+use medialib.vorbistables;
+
+struct.MdVorbisBook
+{
+	int dims;
+	int entries;
+	ptr<u8> lens;               # each entry's codeword length, 0 if unused
+	ptr<u32> codes;             # each entry's codeword, its bits reversed (the order they're read)
+	ptr<u32> fast;              # by the first 10 bits read: entry << 5 | length, or 0 (longer, or none)
+	ptr<int> longs;             # entries whose codes are longer than 10 bits
+	int long_count;
+	ptr<int> vq;                # entries * dims values, Q16 (0 for a scalar-only book)
+}
+
+struct.MdVorbisFloor
+{
+	int partitions;
+	int pclass[32];
+	int cdim[16];
+	int csub[16];
+	int cmaster[16];
+	int subbooks[128];          # [class][subclass], -1 for none
+	int mult;
+	int values;
+	int x[65];
+	int order[65];              # the points by ascending x
+	int low[65];                # low_neighbor and high_neighbor of each point
+	int high[65];
+}
+
+struct.MdVorbisResidue
+{
+	int type;
+	int begin;
+	int finish;
+	int psize;
+	int classes;
+	int classbook;
+	int books[512];             # [class][pass], -1 for none
+}
+
+struct.MdVorbisMapping
+{
+	int submaps;
+	int steps;
+	int mag[256];
+	int ang[256];
+	int mux[256];
+	int sub_floor[16];
+	int sub_res[16];
+}
+
+phi.MdVorbis:Library
+{
+	str error: [80];
+	const f64 PI: 3.14159265358979323846;
+
+	[New]
+		ptr<MdVorbis> d: new MdVorbis;
+		if d is 0 return 0 as ptr<MdVorbis>;
+		call Mem.Fill: d as ptr<u8> 0 sizeof MdVorbis;
+	[end: d]
+
+	[Free: ptr<MdVorbis> d: 0;]
+		if d is 0 return;
+		call d.Release;
+		free d;
+	[end]
+
+	[Ilog: int x: 0;]
+		int n: 0;
+		while x > 0
+			n++;
+			x is x >> 1;
+		;;
+	[end: n]
+}
+
+struct.MdVorbis
+{
+	int headers;                # how many header packets have come (3: ready)
+	int channels;
+	int rate;
+	int bs0;
+	int bs1;
+	ptr<MdVorbisBook> books;
+	int book_count;
+	ptr<MdVorbisFloor> floors;
+	int floor_count;
+	ptr<MdVorbisResidue> residues;
+	int residue_count;
+	ptr<MdVorbisMapping> mappings;
+	int mapping_count;
+	int mode_flag[64];
+	int mode_mapping[64];
+	int mode_count;
+	# the packet being read, LSB first
+	ptr<u8> data;
+	int len;
+	int bit;
+	bln eop;                    # it read past the end
+	# per channel (at most 8): the spectrum, then the time samples (bs1 each); the right half of the
+	# last block, windowed, for overlapping (bs1 / 2 each); whether its floor is used; its floor's Y
+	ptr<int> spec;
+	ptr<int> prev;
+	int prev_n;                 # the last block's size, 0 before the first
+	bln used[8];
+	bln no_residue[8];
+	int floor_y[520];           # [channel][65]
+	ptr<int> curve;             # a floor's curve (bs1 / 2)
+	ptr<u8> classes;            # residue classifications [channel][partition]
+	ptr<int> flat;              # residue type 2's interleaved vector
+	# the inverse MDCT's tables, for each block size: twiddles (N/4 of cos, sin, Q30), the FFT's bit
+	# reversal, and the window's rising slope (N/2 values, Q30); and its work buffers
+	ptr<int> tw0;
+	ptr<int> tw1;
+	ptr<int> fft_tw0;           # the FFT's own twiddles (N/8 of cos, sin)
+	ptr<int> fft_tw1;
+	ptr<u16> rev0;
+	ptr<u16> rev1;
+	ptr<int> slope0;
+	ptr<int> slope1;
+	ptr<int> zr;
+	ptr<int> zi;
+	# what Decode gave: frames of left and right
+	ptr<i16> pcm;
+	int frames;
+
+	[Release]
+		if books is not 0
+			while int i: 0; i < book_count; i++;
+				ptr<MdVorbisBook> b: books + i * sizeof MdVorbisBook;
+				call FreeBook: b;
+			;;
+			free books;
+			books is 0;
+		;;
+		call FreeIf: floors as ptr<u8>;
+		call FreeIf: residues as ptr<u8>;
+		call FreeIf: mappings as ptr<u8>;
+		call FreeIf: spec as ptr<u8>;
+		call FreeIf: prev as ptr<u8>;
+		call FreeIf: curve as ptr<u8>;
+		call FreeIf: classes as ptr<u8>;
+		call FreeIf: flat as ptr<u8>;
+		call FreeIf: tw0 as ptr<u8>;
+		call FreeIf: tw1 as ptr<u8>;
+		call FreeIf: fft_tw0 as ptr<u8>;
+		call FreeIf: fft_tw1 as ptr<u8>;
+		call FreeIf: rev0 as ptr<u8>;
+		call FreeIf: rev1 as ptr<u8>;
+		call FreeIf: slope0 as ptr<u8>;
+		call FreeIf: slope1 as ptr<u8>;
+		call FreeIf: zr as ptr<u8>;
+		call FreeIf: zi as ptr<u8>;
+		call FreeIf: pcm as ptr<u8>;
+		floors is 0;
+		residues is 0;
+		mappings is 0;
+		spec is 0;
+		prev is 0;
+		curve is 0;
+		classes is 0;
+		flat is 0;
+		tw0 is 0;
+		tw1 is 0;
+		fft_tw0 is 0;
+		fft_tw1 is 0;
+		rev0 is 0;
+		rev1 is 0;
+		slope0 is 0;
+		slope1 is 0;
+		zr is 0;
+		zi is 0;
+		pcm is 0;
+	[end]
+
+	[FreeIf: ptr<u8> p: 0;]
+		if p is not 0
+			free p;
+		;;
+	[end]
+
+	[FreeBook: ptr<MdVorbisBook> b: 0;]
+		call FreeIf: b.lens;
+		call FreeIf: b.codes as ptr<u8>;
+		call FreeIf: b.fast as ptr<u8>;
+		call FreeIf: b.longs as ptr<u8>;
+		call FreeIf: b.vq as ptr<u8>;
+	[end]
+
+	# ---- reading bits, least significant first; past the end, 0s and eop
+
+	[Bits: int n: 0;]
+		int v: 0;
+		int k: 0;
+		while k < n
+			int byte: bit >> 3;
+			if byte >= len
+				eop is true;
+				return v;
+			;;
+			v is v | ((((data:byte) >> (bit & 7)) & 1) << k);
+			bit++;
+			k++;
+		;;
+	[end: v]
+
+	# the next 32 bits without taking them (past the end, 0s)
+	[Peek: : u32]
+		int byte: bit >> 3;
+		u64 w: 0;
+		while int k: 0; k < 5; k++;
+			if byte + k < len
+				w is w | ((data:(byte + k) as u64) << (k * 8));
+			;;
+		;;
+	[end: ((w >> (bit & 7)) & 0xFFFFFFFF) as u32]
+
+	# ---- the headers
+
+	# One header packet (identification, comments, setup, in that order): false if it isn't one.
+	[Header: ptr<u8> packet: 0; int length: 0;]
+		bln ok: false;
+		if call ok is HeaderInner: packet length throws err
+			MdVorbis.error is err.text;
+			return false;
+		;;
+	[end: ok]
+
+	[HeaderInner: ptr<u8> packet: 0; int length: 0;]
+		if length < 7 or packet:1 is not 'v' or packet:2 is not 'o' or packet:3 is not 'r' or packet:4 is not 'b' or packet:5 is not 'i' or packet:6 is not 's'
+			throw 'not a Vorbis header';
+		;;
+		data is packet + 7;
+		len is length - 7;
+		bit is 0;
+		eop is false;
+		int type: packet:0;
+		if type is 1
+			if headers is not 0
+				throw 'a Vorbis identification header out of place';
+			;;
+			int version: (Bits: 32);
+			channels is (Bits: 8);
+			rate is (Bits: 32);
+			int skip: (Bits: 32);
+			skip is (Bits: 32);
+			skip is (Bits: 32);
+			bs0 is 1 << (Bits: 4);
+			bs1 is 1 << (Bits: 4);
+			if version is not 0 or channels < 1 or channels > 8 or rate < 1 or bs0 < 64 or bs1 > 8192 or bs0 > bs1
+				throw 'a Vorbis stream of a kind there isn\'t';
+			;;
+			headers is 1;
+			return true;
+		;;
+		if type is 3
+			if headers is not 1
+				throw 'a Vorbis comment header out of place';
+			;;
+			headers is 2;
+			return true;
+		;;
+		if type is not 5 or headers is not 2
+			throw 'a Vorbis header out of place';
+		;;
+		call Setup;
+		if eop
+			throw 'the Vorbis setup header is cut short';
+		;;
+		call Buffers;
+		headers is 3;
+	[end: true]
+
+	[Setup]
+		# codebooks
+		book_count is (Bits: 8) + 1;
+		books is new MdVorbisBook[book_count];
+		if books is 0
+			throw 'out of memory';
+		;;
+		call Mem.Fill: books as ptr<u8> 0 (book_count as u32) * sizeof MdVorbisBook;
+		while int i: 0; i < book_count; i++;
+			call Book: books + i * sizeof MdVorbisBook;
+		;;
+		# time domain transforms: placeholders, all 0
+		int times: (Bits: 6) + 1;
+		while int i: 0; i < times; i++;
+			if (Bits: 16) is not 0
+				throw 'a Vorbis time transform there isn\'t';
+			;;
+		;;
+		# floors
+		floor_count is (Bits: 6) + 1;
+		floors is new MdVorbisFloor[floor_count];
+		if floors is 0
+			throw 'out of memory';
+		;;
+		while int i: 0; i < floor_count; i++;
+			if (Bits: 16) is not 1
+				throw 'a Vorbis floor of type 0, which isn\'t read';
+			;;
+			call Floor: floors + i * sizeof MdVorbisFloor;
+		;;
+		# residues
+		residue_count is (Bits: 6) + 1;
+		residues is new MdVorbisResidue[residue_count];
+		if residues is 0
+			throw 'out of memory';
+		;;
+		while int i: 0; i < residue_count; i++;
+			call Residue: residues + i * sizeof MdVorbisResidue;
+		;;
+		# mappings
+		mapping_count is (Bits: 6) + 1;
+		mappings is new MdVorbisMapping[mapping_count];
+		if mappings is 0
+			throw 'out of memory';
+		;;
+		while int i: 0; i < mapping_count; i++;
+			call Mapping: mappings + i * sizeof MdVorbisMapping;
+		;;
+		# modes
+		mode_count is (Bits: 6) + 1;
+		if mode_count > 64
+			throw 'too many Vorbis modes';
+		;;
+		while int i: 0; i < mode_count; i++;
+			mode_flag:i is (Bits: 1);
+			int window: (Bits: 16);
+			int transform: (Bits: 16);
+			mode_mapping:i is (Bits: 8);
+			if window is not 0 or transform is not 0 or mode_mapping:i >= mapping_count
+				throw 'a Vorbis mode there isn\'t';
+			;;
+		;;
+		if (Bits: 1) is not 1
+			throw 'the Vorbis setup header has no framing bit';
+		;;
+	[end]
+
+	[Book: ptr<MdVorbisBook> b: 0;]
+		if (Bits: 24) is not 0x564342
+			throw 'a Vorbis codebook without its sync pattern';
+		;;
+		b.dims is (Bits: 16);
+		b.entries is (Bits: 24);
+		if b.entries < 1 or b.entries > 0x100000 or b.dims < 1
+			throw 'a Vorbis codebook of a size I won\'t read';
+		;;
+		b.lens is new u8[b.entries];
+		if b.lens is 0
+			throw 'out of memory';
+		;;
+		if (Bits: 1) is 0
+			# unordered: each entry's length, perhaps with a flag for whether it's used
+			bln sparse: ((Bits: 1) is 1);
+			while int e: 0; e < b.entries; e++;
+				b.lens:e is 0;
+				if not sparse or (Bits: 1) is 1
+					b.lens:e is ((Bits: 5) + 1) as u8;
+				;;
+				if eop
+					throw 'a Vorbis codebook cut short';
+				;;
+			;;
+		;;
+		else
+			# ordered: runs of entries of each length, shortest first
+			int e: 0;
+			int length: (Bits: 5) + 1;
+			while e < b.entries
+				int count: (Bits: (MdVorbis.Ilog: b.entries - e));
+				if e + count > b.entries or length > 32 or eop
+					throw 'a damaged Vorbis codebook';
+				;;
+				while int k: 0; k < count; k++;
+					b.lens:(e + k) is length as u8;
+				;;
+				e++ count;
+				length++;
+			;;
+		;;
+		call Codes: b;
+		# its vectors
+		int lookup: (Bits: 4);
+		if lookup is 0 return;
+		if lookup > 2
+			throw 'a Vorbis codebook lookup there isn\'t';
+		;;
+		f64 low: (Float32: (Bits: 32) as u32);
+		f64 delta: (Float32: (Bits: 32) as u32);
+		int value_bits: (Bits: 4) + 1;
+		bln sequence: ((Bits: 1) is 1);
+		int values: 0;
+		if lookup is 1
+			values is (Lookup1: b.entries b.dims);
+		;;
+		else
+			values is b.entries * b.dims;
+		;;
+		if values < 1 or values > 0x100000
+			throw 'a Vorbis codebook of a size I won\'t read';
+		;;
+		ptr<int> mult: new int[values];
+		if mult is 0
+			throw 'out of memory';
+		;;
+		while int k: 0; k < values; k++;
+			mult:k is (Bits: value_bits);
+		;;
+		if eop
+			free mult;
+			throw 'a Vorbis codebook cut short';
+		;;
+		b.vq is new int[b.entries * b.dims];
+		if b.vq is 0
+			free mult;
+			throw 'out of memory';
+		;;
+		while int e: 0; e < b.entries; e++;
+			f64 last: 0.0;
+			int divisor: 1;
+			while int d: 0; d < b.dims; d++;
+				int off: e * b.dims + d;
+				if lookup is 1
+					off is (e / divisor) % values;
+					divisor is divisor * values;
+				;;
+				f64 v: (mult:off as f64) * delta + low + last;
+				if sequence
+					last is v;
+				;;
+				b.vq:(e * b.dims + d) is (Q16: v);
+			;;
+		;;
+		free mult;
+	[end]
+
+	[Q16: f64 v: 0.0;]
+		f64 s: v * 65536.0;
+		if s > 2147483000.0 return 2147483000;
+		if s < -2147483000.0 return -2147483000;
+	[end: (Float.Round: s) as int]
+
+	# the spec's float32_unpack
+	[Float32: u32 x: 0; : f64]
+		f64 mant: (x & 0x1FFFFF) as f64;
+		int exp: ((x & 0x7FE00000) >> 21) as int;
+		if (x & 0x80000000) is not 0
+			mant is 0.0 - mant;
+		;;
+	[end: (Float.Scale: mant exp - 788)]
+
+	# the greatest r for which r^dims <= entries
+	[Lookup1: int entries: 0; int dims: 0;]
+		int r: 1;
+		while true
+			# (r + 1)^dims, stopping once it's past entries
+			i64 p: 1;
+			while int d: 0; d < dims; d++;
+				p is p * (r + 1) as i64;
+				if p > entries as i64
+					break;
+				;;
+			;;
+			if p > entries as i64
+				break;
+			;;
+			r++;
+		;;
+	[end: r]
+
+	# Each used entry's codeword, as the spec assigns them (each the lowest free one of its length, in
+	# order), and a lookup from the first 10 bits read.
+	[Codes: ptr<MdVorbisBook> b: 0;]
+		b.codes is new u32[b.entries];
+		b.fast is new u32[1024];
+		if b.codes is 0 or b.fast is 0
+			throw 'out of memory';
+		;;
+		call Mem.Fill: b.fast as ptr<u8> 0 4096;
+		u32 avail[33];
+		while int k: 0; k < 33; k++;
+			avail:k is 0;
+		;;
+		int first: 0;
+		while first < b.entries and b.lens:first is 0
+			first++;
+		;;
+		int longs: 0;
+		int used: 0;
+		if first < b.entries
+			int l0: b.lens:first;
+			b.codes:first is 0;
+			used++;
+			while int k: 1; k <= l0; k++;
+				avail:k is (1 as u32) << (32 - k);
+			;;
+			if l0 > 10
+				longs++;
+			;;
+			while int e: first + 1; e < b.entries; e++;
+				int l: b.lens:e;
+				if l is 0
+					continue;
+				;;
+				int z: l;
+				while z > 0 and avail:z is 0
+					z--;
+				;;
+				if z is 0
+					throw 'a Vorbis codebook with too many codes';
+				;;
+				u32 res: avail:z;
+				avail:z is 0;
+				b.codes:e is (Reverse: res);
+				while int y: z + 1; y <= l; y++;
+					avail:y is res + ((1 as u32) << (32 - y));
+				;;
+				if l > 10
+					longs++;
+				;;
+				used++;
+			;;
+		;;
+		b.longs is new int[longs + 1];
+		if b.longs is 0
+			throw 'out of memory';
+		;;
+		b.long_count is 0;
+		while int e: 0; e < b.entries; e++;
+			int l: b.lens:e;
+			if l is 0
+				continue;
+			;;
+			if l <= 10
+				# every 10-bit start that begins with it (in the order read)
+				u32 c: b.codes:e;
+				u32 many: (1 as u32) << (10 - l);
+				while u32 k: 0; k < many; k++;
+					b.fast:(c | (k << l)) is ((e as u32) << 5) | l as u32;
+				;;
+			;;
+			else
+				b.longs:(b.long_count) is e;
+				b.long_count++;
+			;;
+		;;
+	[end]
+
+	# a codeword (MSB at bit 31) with its bits reversed: as it's read
+	[Reverse: u32 v: 0; : u32]
+		u32 r: 0;
+		while int k: 0; k < 32; k++;
+			r is (r << 1) | (v & 1);
+			v is v >> 1;
+		;;
+	[end: r]
+
+	# an entry of a book, from the packet; -1 at its end or for a code it hasn't
+	[Entry: ptr<MdVorbisBook> b: 0;]
+		u32 w: (Peek);
+		u32 f: b.fast:(w & 1023);
+		if f is not 0
+			int l: (f & 31) as int;
+			if bit + l > len * 8
+				eop is true;
+				bit is len * 8;
+				return -1;
+			;;
+			bit++ l;
+			return (f >> 5) as int;
+		;;
+		while int k: 0; k < b.long_count; k++;
+			int e: b.longs:k;
+			int l: b.lens:e;
+			u32 mask: 0xFFFFFFFF;
+			if l < 32
+				mask is ((1 as u32) << l) - 1;
+			;;
+			if (w & mask) is b.codes:e
+				if bit + l > len * 8
+					eop is true;
+					bit is len * 8;
+					return -1;
+				;;
+				bit++ l;
+				return e;
+			;;
+		;;
+		eop is true;
+	[end: -1]
+
+	[Floor: ptr<MdVorbisFloor> f: 0;]
+		f.partitions is (Bits: 5);
+		int most: -1;
+		while int i: 0; i < f.partitions; i++;
+			f.pclass:i is (Bits: 4);
+			if f.pclass:i > most
+				most is f.pclass:i;
+			;;
+		;;
+		while int c: 0; c <= most; c++;
+			f.cdim:c is (Bits: 3) + 1;
+			f.csub:c is (Bits: 2);
+			f.cmaster:c is -1;
+			if f.csub:c > 0
+				f.cmaster:c is (Bits: 8);
+				if f.cmaster:c >= book_count
+					throw 'a Vorbis floor with a book there isn\'t';
+				;;
+			;;
+			while int k: 0; k < (1 << f.csub:c); k++;
+				f.subbooks:(c * 8 + k) is (Bits: 8) - 1;
+				if f.subbooks:(c * 8 + k) >= book_count
+					throw 'a Vorbis floor with a book there isn\'t';
+				;;
+			;;
+		;;
+		f.mult is (Bits: 2) + 1;
+		int rangebits: (Bits: 4);
+		f.x:0 is 0;
+		f.x:1 is 1 << rangebits;
+		f.values is 2;
+		while int i: 0; i < f.partitions; i++;
+			int c: f.pclass:i;
+			while int k: 0; k < f.cdim:c; k++;
+				if f.values >= 65
+					throw 'a Vorbis floor with too many points';
+				;;
+				f.x:(f.values) is (Bits: rangebits);
+				f.values++;
+			;;
+		;;
+		# the points in order of x, and each point's neighbors before it
+		while int i: 0; i < f.values; i++;
+			f.order:i is i;
+		;;
+		int i: 1;
+		while i < f.values
+			int j: i;
+			while j > 0 and f.x:(f.order:(j - 1)) > f.x:(f.order:j)
+				int t: f.order:j;
+				f.order:j is f.order:(j - 1);
+				f.order:(j - 1) is t;
+				j--;
+			;;
+			i++;
+		;;
+		while int p: 2; p < f.values; p++;
+			int lo: 0;
+			int hi: 1;
+			int lx: -1;
+			int hx: 0x7FFFFFFF;
+			while int k: 0; k < p; k++;
+				int x: f.x:k;
+				if x < f.x:p and x > lx
+					lx is x;
+					lo is k;
+				;;
+				if x > f.x:p and x < hx
+					hx is x;
+					hi is k;
+				;;
+			;;
+			f.low:p is lo;
+			f.high:p is hi;
+		;;
+	[end]
+
+	[Residue: ptr<MdVorbisResidue> r: 0;]
+		r.type is (Bits: 16);
+		if r.type > 2
+			throw 'a Vorbis residue there isn\'t';
+		;;
+		r.begin is (Bits: 24);
+		r.finish is (Bits: 24);
+		r.psize is (Bits: 24) + 1;
+		r.classes is (Bits: 6) + 1;
+		r.classbook is (Bits: 8);
+		if r.classbook >= book_count
+			throw 'a Vorbis residue with a book there isn\'t';
+		;;
+		int cascade[64];
+		while int c: 0; c < r.classes; c++;
+			int low: (Bits: 3);
+			int high: 0;
+			if (Bits: 1) is 1
+				high is (Bits: 5);
+			;;
+			cascade:c is high * 8 + low;
+		;;
+		while int c: 0; c < r.classes; c++;
+			while int p: 0; p < 8; p++;
+				r.books:(c * 8 + p) is -1;
+				if (cascade:c & (1 << p)) is not 0
+					r.books:(c * 8 + p) is (Bits: 8);
+					if r.books:(c * 8 + p) >= book_count
+						throw 'a Vorbis residue with a book there isn\'t';
+					;;
+				;;
+			;;
+		;;
+	[end]
+
+	[Mapping: ptr<MdVorbisMapping> m: 0;]
+		if (Bits: 16) is not 0
+			throw 'a Vorbis mapping there isn\'t';
+		;;
+		m.submaps is 1;
+		if (Bits: 1) is 1
+			m.submaps is (Bits: 4) + 1;
+		;;
+		m.steps is 0;
+		if (Bits: 1) is 1
+			m.steps is (Bits: 8) + 1;
+			int w: (MdVorbis.Ilog: channels - 1);
+			while int s: 0; s < m.steps; s++;
+				m.mag:s is (Bits: w);
+				m.ang:s is (Bits: w);
+				if m.mag:s >= channels or m.ang:s >= channels or m.mag:s is m.ang:s
+					throw 'a Vorbis mapping that couples a channel there isn\'t';
+				;;
+			;;
+		;;
+		if (Bits: 2) is not 0
+			throw 'a Vorbis mapping with its reserved bits set';
+		;;
+		while int c: 0; c < channels; c++;
+			m.mux:c is 0;
+		;;
+		if m.submaps > 1
+			while int c: 0; c < channels; c++;
+				m.mux:c is (Bits: 4);
+				if m.mux:c >= m.submaps
+					throw 'a Vorbis mapping with a submap there isn\'t';
+				;;
+			;;
+		;;
+		while int s: 0; s < m.submaps; s++;
+			int unused: (Bits: 8);
+			m.sub_floor:s is (Bits: 8);
+			m.sub_res:s is (Bits: 8);
+			if m.sub_floor:s >= floor_count or m.sub_res:s >= residue_count
+				throw 'a Vorbis mapping with a floor or residue there isn\'t';
+			;;
+		;;
+	[end]
+
+	# the buffers and the inverse MDCT's tables, for the two block sizes
+	[Buffers]
+		spec is new int[channels * bs1];
+		prev is new int[channels * bs1 / 2];
+		curve is new int[bs1 / 2];
+		classes is new u8[channels * (bs1 / 2 + 1)];
+		flat is new int[channels * bs1 / 2];
+		zr is new int[bs1 / 4];
+		zi is new int[bs1 / 4];
+		pcm is new i16[bs1 * 2];
+		if spec is 0 or prev is 0 or curve is 0 or classes is 0 or flat is 0 or zr is 0 or zi is 0 or pcm is 0
+			throw 'out of memory';
+		;;
+		call Mem.Fill: prev as ptr<u8> 0 (channels * bs1 / 2 * 4) as u32;
+		prev_n is 0;
+		tw0 is (Twiddles: bs0);
+		tw1 is (Twiddles: bs1);
+		fft_tw0 is (FftTwiddles: bs0 / 4);
+		fft_tw1 is (FftTwiddles: bs1 / 4);
+		rev0 is (Reversal: bs0 / 4);
+		rev1 is (Reversal: bs1 / 4);
+		slope0 is (Slope: bs0 / 2);
+		slope1 is (Slope: bs1 / 2);
+	[end]
+
+	[Q30: f64 v: 0.0;]
+	[end: (Float.Round: v * 1073741824.0) as int]
+
+	# exp(-2 pi i (k + 1/8) / N) for k < N/4: cos, -sin pairs, Q30
+	[Twiddles: int n: 0; : ptr<int>]
+		ptr<int> t: new int[n / 2];
+		if t is 0
+			throw 'out of memory';
+		;;
+		while int k: 0; k < n / 4; k++;
+			f64 a: 2.0 * MdVorbis.PI * ((k as f64) + 0.125) / (n as f64);
+			t:(k * 2) is (Q30: (Float.Cos: a));
+			t:(k * 2 + 1) is (Q30: 0.0 - (Float.Sin: a));
+		;;
+	[end: t]
+
+	# an m-point FFT's twiddles, exp(-2 pi i k / m) for k < m/2: cos, -sin pairs, Q30
+	[FftTwiddles: int m: 0; : ptr<int>]
+		ptr<int> t: new int[m];
+		if t is 0
+			throw 'out of memory';
+		;;
+		while int k: 0; k < m / 2; k++;
+			f64 a: 2.0 * MdVorbis.PI * (k as f64) / (m as f64);
+			t:(k * 2) is (Q30: (Float.Cos: a));
+			t:(k * 2 + 1) is (Q30: 0.0 - (Float.Sin: a));
+		;;
+	[end: t]
+
+	[Reversal: int m: 0; : ptr<u16>]
+		ptr<u16> r: new u16[m];
+		if r is 0
+			throw 'out of memory';
+		;;
+		int bits: (MdVorbis.Ilog: m) - 1;
+		while int i: 0; i < m; i++;
+			int v: 0;
+			while int b: 0; b < bits; b++;
+				if (i & (1 << b)) is not 0
+					v is v | (1 << (bits - 1 - b));
+				;;
+			;;
+			r:i is v as u16;
+		;;
+	[end: r]
+
+	# a window's rising slope over n samples: sin(pi/2 sin^2((x + 0.5) / n * pi/2)), Q30
+	[Slope: int n: 0; : ptr<int>]
+		ptr<int> s: new int[n];
+		if s is 0
+			throw 'out of memory';
+		;;
+		while int x: 0; x < n; x++;
+			f64 t: (Float.Sin: ((x as f64) + 0.5) / (n as f64) * MdVorbis.PI / 2.0);
+			s:x is (Q30: (Float.Sin: MdVorbis.PI / 2.0 * t * t));
+		;;
+	[end: s]
+
+	# ---- an audio packet
+
+	# Decodes an audio packet: frames of left and right into pcm (the first packet gives none).
+	# Returns them, or -1 if it can't be read.
+	[Decode: ptr<u8> packet: 0; int length: 0;]
+		frames is 0;
+		int n: 0;
+		if call n is DecodeInner: packet length throws err
+			MdVorbis.error is err.text;
+			return -1;
+		;;
+	[end: n]
+
+	[DecodeInner: ptr<u8> packet: 0; int length: 0;]
+		if headers < 3
+			throw 'Vorbis audio before its headers';
+		;;
+		data is packet;
+		len is length;
+		bit is 0;
+		eop is false;
+		if length < 1 or (Bits: 1) is not 0
+			return 0;                       # (not audio: an empty packet, say)
+		;;
+		int mode: (Bits: (MdVorbis.Ilog: mode_count - 1));
+		if mode >= mode_count
+			throw 'a Vorbis packet of a mode there isn\'t';
+		;;
+		bln long: (mode_flag:mode is 1);
+		int n: bs0;
+		bln prev_long: false;
+		bln next_long: false;
+		if long
+			n is bs1;
+			prev_long is ((Bits: 1) is 1);
+			next_long is ((Bits: 1) is 1);
+		;;
+		ptr<MdVorbisMapping> map: mappings + mode_mapping:mode * sizeof MdVorbisMapping;
+		int half: n / 2;
+		# floors
+		while int c: 0; c < channels; c++;
+			ptr<MdVorbisFloor> f: floors + (map.sub_floor:(map.mux:c)) * sizeof MdVorbisFloor;
+			used:c is (FloorDecode: f c);
+			no_residue:c is not used:c;
+		;;
+		# a coupled pair is decoded if either of it is
+		while int s: 0; s < map.steps; s++;
+			if not no_residue:(map.mag:s) or not no_residue:(map.ang:s)
+				no_residue:(map.mag:s) is false;
+				no_residue:(map.ang:s) is false;
+			;;
+		;;
+		# residues, by submap
+		call Mem.Fill: spec as ptr<u8> 0 (channels * bs1 * 4) as u32;
+		while int s: 0; s < map.submaps; s++;
+			int list[8];
+			int count: 0;
+			while int c: 0; c < channels; c++;
+				if map.mux:c is s
+					list:count is c;
+					count++;
+				;;
+			;;
+			call ResidueDecode: residues + (map.sub_res:s) * sizeof MdVorbisResidue list count half;
+		;;
+		# inverse coupling, last step first
+		int s: map.steps - 1;
+		while s >= 0
+			ptr<int> mg: spec + map.mag:s * bs1 * 4;
+			ptr<int> an: spec + map.ang:s * bs1 * 4;
+			while int i: 0; i < half; i++;
+				int mv: mg:i;
+				int av: an:i;
+				if mv > 0
+					if av > 0
+						an:i is mv - av;
+					;;
+					else
+						an:i is mv;
+						mg:i is mv + av;
+					;;
+				;;
+				else
+					if av > 0
+						an:i is mv + av;
+					;;
+					else
+						an:i is mv;
+						mg:i is mv - av;
+					;;
+				;;
+			;;
+			s--;
+		;;
+		# each channel's spectrum: its residue times its floor; then back to time
+		while int c: 0; c < channels; c++;
+			ptr<int> v: spec + c * bs1 * 4;
+			if not used:c
+				call Mem.Fill: v as ptr<u8> 0 (half * 4) as u32;
+			;;
+			else
+				ptr<MdVorbisFloor> f: floors + (map.sub_floor:(map.mux:c)) * sizeof MdVorbisFloor;
+				call FloorCurve: f c half;
+				while int i: 0; i < half; i++;
+					int y: curve:i;
+					if y < 0
+						y is 0;
+					;;
+					if y > 255
+						y is 255;
+					;;
+					# (Q16 residue times the floor: the spectrum, Q20)
+					i64 p: (v:i as i64) * (MdVorbisTables.db_m:y as i64);
+					int sh: MdVorbisTables.db_s:y - 4;
+					v:i is ((p + ((1 as i64) << (sh - 1))) >> sh) as int;
+				;;
+			;;
+			call Imdct: v n;
+		;;
+		# window, overlap with the last block's right half, and keep this one's
+		call Overlap: n long prev_long next_long;
+	[end: frames]
+
+	# ---- floor 1
+
+	# a channel's floor: whether it's used, its Y values into floor_y
+	[FloorDecode: ptr<MdVorbisFloor> f: 0; int ch: 0;]
+		if (Bits: 1) is 0 or eop return false;
+		ptr<int> y: (addr floor_y) + ch * 65 * 4;
+		int range: 256;
+		if f.mult is 2
+			range is 128;
+		;;
+		elif f.mult is 3
+			range is 86;
+		;;
+		elif f.mult is 4
+			range is 64;
+		;;
+		int rb: (MdVorbis.Ilog: range - 1);
+		y:0 is (Bits: rb);
+		y:1 is (Bits: rb);
+		int offset: 2;
+		while int i: 0; i < f.partitions; i++;
+			int c: f.pclass:i;
+			int cdim: f.cdim:c;
+			int cbits: f.csub:c;
+			int csub: (1 << cbits) - 1;
+			int cval: 0;
+			if cbits > 0
+				cval is (Entry: books + f.cmaster:c * sizeof MdVorbisBook);
+			;;
+			while int j: 0; j < cdim; j++;
+				int book: f.subbooks:(c * 8 + (cval & csub));
+				cval is cval >> cbits;
+				y:(offset + j) is 0;
+				if book >= 0
+					y:(offset + j) is (Entry: books + book * sizeof MdVorbisBook);
+				;;
+			;;
+			offset++ cdim;
+		;;
+		if eop return false;
+	[end: true]
+
+	# the floor's curve (its values 0 to 255) into curve, half long
+	[FloorCurve: ptr<MdVorbisFloor> f: 0; int ch: 0; int half: 0;]
+		ptr<int> y: (addr floor_y) + ch * 65 * 4;
+		int range: 256;
+		if f.mult is 2
+			range is 128;
+		;;
+		elif f.mult is 3
+			range is 86;
+		;;
+		elif f.mult is 4
+			range is 64;
+		;;
+		int fy[65];
+		bln step2[65];
+		step2:0 is true;
+		step2:1 is true;
+		fy:0 is y:0;
+		fy:1 is y:1;
+		while int i: 2; i < f.values; i++;
+			int lo: f.low:i;
+			int hi: f.high:i;
+			int predicted: (RenderPoint: f.x:lo fy:lo f.x:hi fy:hi f.x:i);
+			int val: y:i;
+			int highroom: range - predicted;
+			int lowroom: predicted;
+			int room: lowroom * 2;
+			if highroom < lowroom
+				room is highroom * 2;
+			;;
+			if val is not 0
+				step2:lo is true;
+				step2:hi is true;
+				step2:i is true;
+				if val >= room
+					if highroom > lowroom
+						fy:i is val - lowroom + predicted;
+					;;
+					else
+						fy:i is predicted - val + highroom - 1;
+					;;
+				;;
+				elif (val & 1) is 1
+					fy:i is predicted - ((val + 1) / 2);
+				;;
+				else
+					fy:i is predicted + val / 2;
+				;;
+			;;
+			else
+				step2:i is false;
+				fy:i is predicted;
+			;;
+		;;
+		while int i: 0; i < f.values; i++;
+			if fy:i < 0
+				fy:i is 0;
+			;;
+			if fy:i >= range
+				fy:i is range - 1;
+			;;
+		;;
+		# the lines between the points that count, in order of x
+		int hx: 0;
+		int hy: 0;
+		int lx: 0;
+		int ly: fy:(f.order:0) * f.mult;
+		while int k: 1; k < f.values; k++;
+			int i: f.order:k;
+			if step2:i
+				hy is fy:i * f.mult;
+				hx is f.x:i;
+				call Line: lx ly hx hy half;
+				lx is hx;
+				ly is hy;
+			;;
+		;;
+		if hx < half
+			call Line: hx hy half hy half;
+		;;
+	[end]
+
+	[RenderPoint: int x0: 0; int y0: 0; int x1: 0; int y1: 0; int x: 0;]
+		int dy: y1 - y0;
+		int adx: x1 - x0;
+		int ady: dy;
+		if ady < 0
+			ady is 0 - ady;
+		;;
+		if adx is 0 return y0;
+		int off: (ady * (x - x0)) / adx;
+		if dy < 0 return y0 - off;
+	[end: y0 + off]
+
+	# the spec's render_line, into curve up to (not including) x1, and not past half
+	[Line: int x0: 0; int y0: 0; int x1: 0; int y1: 0; int half: 0;]
+		int dy: y1 - y0;
+		int adx: x1 - x0;
+		if adx <= 0 return;
+		int ady: dy;
+		if ady < 0
+			ady is 0 - ady;
+		;;
+		int base: dy / adx;
+		int sy: base + 1;
+		if dy < 0
+			sy is base - 1;
+		;;
+		int abase: base;
+		if abase < 0
+			abase is 0 - abase;
+		;;
+		ady is ady - abase * adx;
+		int y: y0;
+		int err: 0;
+		if x0 < half and x0 >= 0
+			curve:x0 is y;
+		;;
+		int x: x0 + 1;
+		while x < x1
+			err++ ady;
+			if err >= adx
+				err-- adx;
+				y++ sy;
+			;;
+			else
+				y++ base;
+			;;
+			if x < half
+				curve:x is y;
+			;;
+			x++;
+		;;
+	[end]
+
+	# ---- residues
+
+	[ResidueDecode: ptr<MdVorbisResidue> r: 0; ptr<int> list: 0; int count: 0; int half: 0;]
+		if r.type is 2
+			bln any: false;
+			while int k: 0; k < count; k++;
+				if not no_residue:(list:k)
+					any is true;
+				;;
+			;;
+			if not any return;
+			int total: half * count;
+			call Mem.Fill: flat as ptr<u8> 0 (total * 4) as u32;
+			call Partitions: r flat 0 1 total true;
+			# into the channels, one after another
+			while int i: 0; i < half; i++;
+				while int k: 0; k < count; k++;
+					ptr<int> v: spec + list:k * bs1 * 4;
+					v:i is flat:(i * count + k);
+				;;
+			;;
+			return;
+		;;
+		# (each channel's vector by itself)
+		while int k: 0; k < count; k++;
+			int c: list:k;
+			if no_residue:c
+				continue;
+			;;
+		;;
+		call PartitionsMany: r list count half;
+	[end]
+
+	# types 0 and 1: the channels' partitions, pass by pass
+	[PartitionsMany: ptr<MdVorbisResidue> r: 0; ptr<int> list: 0; int count: 0; int half: 0;]
+		int begin: r.begin;
+		int stop: r.finish;
+		if begin > half
+			begin is half;
+		;;
+		if stop > half
+			stop is half;
+		;;
+		int to_read: stop - begin;
+		if to_read <= 0 return;
+		int parts: to_read / r.psize;
+		ptr<MdVorbisBook> cb: books + r.classbook * sizeof MdVorbisBook;
+		int per_word: cb.dims;
+		int stride: parts + per_word;
+		while int pass: 0; pass < 8; pass++;
+			int pc: 0;
+			while pc < parts
+				if pass is 0
+					while int k: 0; k < count; k++;
+						int c: list:k;
+						if no_residue:c
+							continue;
+						;;
+						int temp: (Entry: cb);
+						if temp < 0 return;
+						int i: per_word - 1;
+						while i >= 0
+							if pc + i < stride
+								classes:(k * stride + pc + i) is (temp % r.classes) as u8;
+							;;
+							temp is temp / r.classes;
+							i--;
+						;;
+					;;
+				;;
+				int i: 0;
+				while i < per_word and pc < parts
+					while int k: 0; k < count; k++;
+						int c: list:k;
+						if no_residue:c
+							continue;
+						;;
+						int vqclass: classes:(k * stride + pc);
+						int book: r.books:(vqclass * 8 + pass);
+						if book >= 0
+							ptr<int> v: spec + c * bs1 * 4;
+							call Partition: r v begin + pc * r.psize books + book * sizeof MdVorbisBook;
+							if eop return;
+						;;
+					;;
+					pc++;
+					i++;
+				;;
+			;;
+		;;
+	[end]
+
+	# type 2's one interleaved vector (decoded as type 1)
+	[Partitions: ptr<MdVorbisResidue> r: 0; ptr<int> v: 0; int dummy: 0; int one: 0; int total: 0; bln is_type2: false;]
+		int begin: r.begin;
+		int stop: r.finish;
+		if begin > total
+			begin is total;
+		;;
+		if stop > total
+			stop is total;
+		;;
+		int to_read: stop - begin;
+		if to_read <= 0 return;
+		int parts: to_read / r.psize;
+		ptr<MdVorbisBook> cb: books + r.classbook * sizeof MdVorbisBook;
+		int per_word: cb.dims;
+		int stride: parts + per_word;
+		while int pass: 0; pass < 8; pass++;
+			int pc: 0;
+			while pc < parts
+				if pass is 0
+					int temp: (Entry: cb);
+					if temp < 0 return;
+					int i: per_word - 1;
+					while i >= 0
+						if pc + i < stride
+							classes:(pc + i) is (temp % r.classes) as u8;
+						;;
+						temp is temp / r.classes;
+						i--;
+					;;
+				;;
+				int i: 0;
+				while i < per_word and pc < parts
+					int vqclass: classes:pc;
+					int book: r.books:(vqclass * 8 + pass);
+					if book >= 0
+						call PartitionOne: v begin + pc * r.psize r.psize books + book * sizeof MdVorbisBook;
+						if eop return;
+					;;
+					pc++;
+					i++;
+				;;
+			;;
+		;;
+	[end]
+
+	# one partition of psize values from offset, added to v: interleaved (type 0) or in order (1)
+	[Partition: ptr<MdVorbisResidue> r: 0; ptr<int> v: 0; int offset: 0; ptr<MdVorbisBook> b: 0;]
+		if b.vq is 0
+			eop is true;
+			return;
+		;;
+		if r.type is 1
+			call PartitionOne: v offset r.psize b;
+			return;
+		;;
+		int dims: b.dims;
+		int step: r.psize / dims;
+		while int i: 0; i < step; i++;
+			int e: (Entry: b);
+			if e < 0 return;
+			ptr<int> vals: b.vq + e * dims * 4;
+			while int j: 0; j < dims; j++;
+				int at_: offset + i + j * step;
+				v:at_ is v:at_ + vals:j;
+			;;
+		;;
+	[end]
+
+	[PartitionOne: ptr<int> v: 0; int offset: 0; int psize: 0; ptr<MdVorbisBook> b: 0;]
+		if b.vq is 0
+			eop is true;
+			return;
+		;;
+		int dims: b.dims;
+		int i: 0;
+		while i < psize
+			int e: (Entry: b);
+			if e < 0 return;
+			ptr<int> vals: b.vq + e * dims * 4;
+			int j: 0;
+			while j < dims and i < psize
+				v:(offset + i) is v:(offset + i) + vals:j;
+				i++;
+				j++;
+			;;
+		;;
+	[end]
+
+	# ---- the inverse MDCT: n/2 values of v to n, in place (v has room for n), Q20 in and out
+
+	[Imdct: ptr<int> v: 0; int n: 0;]
+		int n2: n / 2;
+		int n4: n / 4;
+		int n8: n / 8;
+		ptr<int> tw: tw0;
+		ptr<int> ft: fft_tw0;
+		ptr<u16> rv: rev0;
+		if n is bs1 and bs1 is not bs0
+			tw is tw1;
+			ft is fft_tw1;
+			rv is rev1;
+		;;
+		# pre-twiddle: z[k] = (X[2k] + i X[n/2 - 1 - 2k]) w[k], into bit-reversed order
+		while int k: 0; k < n4; k++;
+			i64 a: v:(2 * k);
+			i64 b: v:(n2 - 1 - 2 * k);
+			i64 c: tw:(k * 2);
+			i64 s: tw:(k * 2 + 1);
+			int j: rv:k;
+			zr:j is ((a * c - b * s + 0x20000000) >> 30) as int;
+			zi:j is ((a * s + b * c + 0x20000000) >> 30) as int;
+		;;
+		call Fft: n4 ft;
+		# post-twiddle, then out to n values (the order worked out against the definition)
+		while int k: 0; k < n4; k++;
+			i64 a: zr:k;
+			i64 b: zi:k;
+			i64 c: tw:(k * 2);
+			i64 s: tw:(k * 2 + 1);
+			zr:k is ((a * c - b * s + 0x20000000) >> 30) as int;
+			zi:k is ((a * s + b * c + 0x20000000) >> 30) as int;
+		;;
+		while int j: 0; j < n8; j++;
+			v:(2 * j) is zr:(n8 + j);
+			v:(2 * j + 1) is 0 - zi:(n8 - 1 - j);
+			v:(n4 + 2 * j) is zi:j;
+			v:(n4 + 2 * j + 1) is 0 - zr:(n4 - 1 - j);
+			v:(n2 + 2 * j) is zi:(n8 + j);
+			v:(n2 + 2 * j + 1) is 0 - zr:(n8 - 1 - j);
+			v:(3 * n4 + 2 * j) is 0 - zr:j;
+			v:(3 * n4 + 2 * j + 1) is zi:(n4 - 1 - j);
+		;;
+	[end]
+
+	# an m-point FFT of zr, zi (already in bit-reversed order), in place, radix 2
+	[Fft: int m: 0; ptr<int> ft: 0;]
+		int size: 2;
+		while size <= m
+			int halfsize: size / 2;
+			int step: m / size;
+			int start: 0;
+			while start < m
+				int k: 0;
+				while k < halfsize
+					int t: k * step;
+					i64 c: ft:(t * 2);
+					i64 s: ft:(t * 2 + 1);
+					int p: start + k;
+					int q: p + halfsize;
+					i64 qr: zr:q;
+					i64 qi: zi:q;
+					int xr: ((qr * c - qi * s + 0x20000000) >> 30) as int;
+					int xi: ((qr * s + qi * c + 0x20000000) >> 30) as int;
+					int pr: zr:p;
+					int pi: zi:p;
+					zr:q is pr - xr;
+					zi:q is pi - xi;
+					zr:p is pr + xr;
+					zi:p is pi + xi;
+					k++;
+				;;
+				start++ size;
+			;;
+			size is size * 2;
+		;;
+	[end]
+
+	# Windows this block, adds the last block's right half to its left, and gives the samples from
+	# the last block's middle to this one's; keeps this one's right half.
+	[Overlap: int n: 0; bln long: false; bln prev_long: false; bln next_long: false;]
+		int half: n / 2;
+		# the window's ends (the spec's 4.3.1)
+		int ls: 0;
+		int le: half;
+		int ln: half;
+		int rs: half;
+		int re: n;
+		int rn: half;
+		if long and not prev_long
+			ls is n / 4 - bs0 / 4;
+			le is n / 4 + bs0 / 4;
+			ln is bs0 / 2;
+		;;
+		if long and not next_long
+			rs is n * 3 / 4 - bs0 / 4;
+			re is n * 3 / 4 + bs0 / 4;
+			rn is bs0 / 2;
+		;;
+		ptr<int> lslope: slope0;
+		if ln is bs1 / 2
+			lslope is slope1;
+		;;
+		ptr<int> rslope: slope0;
+		if rn is bs1 / 2
+			rslope is slope1;
+		;;
+		while int c: 0; c < channels; c++;
+			ptr<int> v: spec + c * bs1 * 4;
+			while int i: 0; i < n; i++;
+				i64 w: 0;
+				if i < ls
+					w is 0;
+				;;
+				elif i < le
+					w is lslope:(i - ls);
+				;;
+				elif i < rs
+					w is 1073741824;
+				;;
+				elif i < re
+					w is rslope:(rn - 1 - (i - rs));
+				;;
+				v:i is (((v:i as i64) * w + 0x20000000) >> 30) as int;
+			;;
+		;;
+		# the samples: from the last block's middle (its right half starts there) to this one's
+		int count: 0;
+		if prev_n > 0
+			count is prev_n / 4 + n / 4;
+			# where this block starts, from the last block's middle
+			int start: prev_n / 4 - n / 4;
+			while int i: 0; i < count; i++;
+				int l: 0;
+				int r: 0;
+				while int c: 0; c < channels and c < 2; c++;
+					ptr<int> pv: prev + c * (bs1 / 2) * 4;
+					ptr<int> v: spec + c * bs1 * 4;
+					int s: 0;
+					if i < prev_n / 2
+						s is pv:i;
+					;;
+					int j: i - start;
+					if j >= 0 and j < n
+						s is s + v:j;
+					;;
+					if c is 0
+						l is s;
+					;;
+					else
+						r is s;
+					;;
+				;;
+				if channels is 1
+					r is l;
+				;;
+				pcm:(i * 2) is (ToShort: l) as i16;
+				pcm:(i * 2 + 1) is (ToShort: r) as i16;
+			;;
+		;;
+		# this block's right half is what the next overlaps
+		while int c: 0; c < channels; c++;
+			ptr<int> pv: prev + c * (bs1 / 2) * 4;
+			ptr<int> v: spec + c * bs1 * 4;
+			call Mem.Copy: pv as ptr<u8> (v + half * 4) as ptr<u8> (half * 4) as u32;
+		;;
+		prev_n is n;
+		frames is count;
+	[end]
+
+	# Q20 to 16 bits, rounded and clamped
+	[ToShort: int v: 0;]
+		int s: (v + 16) >> 5;
+		if s > 32767 return 32767;
+		if s < -32768 return -32768;
+	[end: s]
+}

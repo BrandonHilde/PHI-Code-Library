@@ -33,6 +33,7 @@ Add each new prefix here. It must not collide with a standard library name such 
 | vectorlib | `VectorLib` | `Vg` |
 | encodinglib | `EncodingLib` | `Enc` |
 | netlib | `NetLib` | `Wire` (`Net` is taken: PHI's `NetCalls`, `NetSystem`) |
+| medialib | `MediaLib` | `Md` |
 
 `Cores` is already a standard library class, so don't use that exact name in corelib.
 
@@ -120,6 +121,7 @@ for a library whose everyday tests together take longer:
 | editlib | `.\build.ps1 edit -Test` | about 10 s (2026-11-20, on a Mac) |
 | vectorlib | `.\build.ps1 vector -Test` | about 10 s (2026-11-20, on a Mac) |
 | encodinglib | `.\build.ps1 encoding -Test` | about 10 s (2026-11-21, on a Mac) |
+| medialib | `.\build.ps1 media -Test` | about 30 s (2026-11-23, on a Mac) |
 | weblib | `.\build.ps1 web -Test -Only test_css` | about 90 s |
 | | `.\build.ps1 web -Test -Only test_html,test_page,test_core,test_weblib` | about 100 s |
 | | `.\build.ps1 web -Test -Only test_js` | about 90 s |

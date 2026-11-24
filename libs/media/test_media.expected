@@ -1,0 +1,6 @@
+vp8: 150 of 150 frames as libvpx (960x540)
+mp3: 44100 Hz, 91473 frames (2074 ms), crc 4044273480
+mp3: sought to 1 s: at 993 ms, 1152 frames
+vorbis: 11025 Hz, 1 channel(s), 9466 frames (the reference 9472); the largest difference 1, 0 samples more than 1 apart
+aac: 32000 Hz, 2 channel(s), 64000 frames (the reference 64000); the largest difference 18, 404 samples more than 1 apart
+wav: 8000 Hz, 8000 frames, 8000 as made

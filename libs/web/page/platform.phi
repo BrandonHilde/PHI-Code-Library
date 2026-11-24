@@ -14,6 +14,7 @@ phi.PagePlatform:Library
 		call Js.DefineNative: JsRt.r.global '%adopt' addr Adopt 2;
 		call Js.DefineNative: JsRt.r.global '%styleText' addr StyleText 2;
 		call Js.DefineNative: JsRt.r.global '%popover' addr Popover 2;
+		call Js.DefineNative: JsRt.r.global '%media' addr PageMedia.Native 3;
 		str js: (PagePlatformJs.Source);
 		call Page.RunSource: p addr js:0 js.len as u32 'platform';
 	[end]

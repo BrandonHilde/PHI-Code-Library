@@ -1,0 +1,133 @@
+# The inverse MDCT, in whole numbers: n/2 values to n, as x[i] = sum over k of X[k] cos(2 pi / n
+# (i + 1/2 + n/4)(k + 1/2)), through a complex FFT of n/4 points (pre-twiddle, FFT, post-twiddle,
+# and an order of the results worked out against the definition). Values are whatever fixed point
+# the caller keeps (Q20, say); twiddles are Q30, products 64-bit and rounded.
+#
+#   MdMdct t;
+#   call t.Init: 2048;                 # once
+#   call t.Run: v;                     # v holds n/2 values, and has room for n; n come back
+
+use memory.mem;
+
+struct.MdMdct
+{
+	int n;
+	ptr<int> tw;                # exp(-2 pi i (k + 1/8) / n), k < n/4: cos, -sin, Q30
+	ptr<int> ft;                # the FFT's: exp(-2 pi i k / (n/4)), k < n/8
+	ptr<u16> rev;               # bit reversal of n/4
+	ptr<int> zr;
+	ptr<int> zi;
+
+	[Init: int size: 0;]
+		n is size;
+		int n4: n / 4;
+		tw is new int[n / 2];
+		ft is new int[n4];
+		rev is new u16[n4];
+		zr is new int[n4];
+		zi is new int[n4];
+		if tw is 0 or ft is 0 or rev is 0 or zr is 0 or zi is 0
+			throw 'out of memory';
+		;;
+		f64 pi: 3.14159265358979323846;
+		while int k: 0; k < n4; k++;
+			f64 a: 2.0 * pi * ((k as f64) + 0.125) / (n as f64);
+			tw:(k * 2) is (Q30: (Float.Cos: a));
+			tw:(k * 2 + 1) is (Q30: 0.0 - (Float.Sin: a));
+		;;
+		while int k: 0; k < n4 / 2; k++;
+			f64 a: 2.0 * pi * (k as f64) / (n4 as f64);
+			ft:(k * 2) is (Q30: (Float.Cos: a));
+			ft:(k * 2 + 1) is (Q30: 0.0 - (Float.Sin: a));
+		;;
+		int bits: 0;
+		while (1 << bits) < n4
+			bits++;
+		;;
+		while int i: 0; i < n4; i++;
+			int r: 0;
+			while int b: 0; b < bits; b++;
+				if (i & (1 << b)) is not 0
+					r is r | (1 << (bits - 1 - b));
+				;;
+			;;
+			rev:i is r as u16;
+		;;
+	[end]
+
+	[Q30: f64 v: 0.0;]
+	[end: (Float.Round: v * 1073741824.0) as int]
+
+	[Free]
+		if tw is not 0
+			free tw;
+			free ft;
+			free rev;
+			free zr;
+			free zi;
+			tw is 0;
+		;;
+	[end]
+
+	[Run: ptr<int> v: 0;]
+		int n2: n / 2;
+		int n4: n / 4;
+		int n8: n / 8;
+		while int k: 0; k < n4; k++;
+			i64 a: v:(2 * k);
+			i64 b: v:(n2 - 1 - 2 * k);
+			i64 c: tw:(k * 2);
+			i64 s: tw:(k * 2 + 1);
+			int j: rev:k;
+			zr:j is ((a * c - b * s + 0x20000000) >> 30) as int;
+			zi:j is ((a * s + b * c + 0x20000000) >> 30) as int;
+		;;
+		int size: 2;
+		while size <= n4
+			int half: size / 2;
+			int step: n4 / size;
+			int start: 0;
+			while start < n4
+				int k: 0;
+				while k < half
+					int t: k * step;
+					i64 c: ft:(t * 2);
+					i64 s: ft:(t * 2 + 1);
+					int p: start + k;
+					int q: p + half;
+					i64 qr: zr:q;
+					i64 qi: zi:q;
+					int xr: ((qr * c - qi * s + 0x20000000) >> 30) as int;
+					int xi: ((qr * s + qi * c + 0x20000000) >> 30) as int;
+					int pr: zr:p;
+					int pi: zi:p;
+					zr:q is pr - xr;
+					zi:q is pi - xi;
+					zr:p is pr + xr;
+					zi:p is pi + xi;
+					k++;
+				;;
+				start++ size;
+			;;
+			size is size * 2;
+		;;
+		while int k: 0; k < n4; k++;
+			i64 a: zr:k;
+			i64 b: zi:k;
+			i64 c: tw:(k * 2);
+			i64 s: tw:(k * 2 + 1);
+			zr:k is ((a * c - b * s + 0x20000000) >> 30) as int;
+			zi:k is ((a * s + b * c + 0x20000000) >> 30) as int;
+		;;
+		while int j: 0; j < n8; j++;
+			v:(2 * j) is zr:(n8 + j);
+			v:(2 * j + 1) is 0 - zi:(n8 - 1 - j);
+			v:(n4 + 2 * j) is zi:j;
+			v:(n4 + 2 * j + 1) is 0 - zr:(n4 - 1 - j);
+			v:(n2 + 2 * j) is zi:(n8 + j);
+			v:(n2 + 2 * j + 1) is 0 - zr:(n8 - 1 - j);
+			v:(3 * n4 + 2 * j) is 0 - zr:j;
+			v:(3 * n4 + 2 * j + 1) is zi:(n4 - 1 - j);
+		;;
+	[end]
+}

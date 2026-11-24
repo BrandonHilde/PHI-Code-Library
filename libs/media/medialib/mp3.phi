@@ -1,0 +1,1258 @@
+# MP3: MPEG-1, MPEG-2 and MPEG-2.5 audio Layer III (ISO/IEC 11172-3 and 13818-3), a frame at a time
+# to 16-bit samples.
+#
+# A frame is a header, side information (how each granule of 576 frequency lines a channel was
+# coded) and main data, which may begin in the frames before it (the bit reservoir). Each granule's
+# lines are Huffman-decoded, scaled by their scalefactors (requantized), joined across the channels
+# (mid/side or intensity stereo), smoothed across subbands (aliasing reduction), turned back into
+# time (the IMDCT, overlapped with the granule before) and through the polyphase filterbank, 32
+# samples a time slot.
+#
+# The arithmetic is in whole numbers: a sample is Q24 (1.0 is 1 << 24) in an int, a constant Q30,
+# and their products are taken in 64 bits. PHI OS runs on an emulated x86 whose floating point (the
+# x87) is slow; whole numbers aren't. The tables are worked out once, from Float's functions
+# (fdlibm's, the same to the bit everywhere), so the output is the same on every system.
+#
+#   ptr<MdMp3> d: (MdMp3.New);
+#   int n: (d.Frame: bytes length);      # one frame (its header first): samples a channel, or 0
+#   # d.pcm holds n * d.channels samples, interleaved; d.rate, d.channels say what they are
+#   call MdMp3.Free: d;
+
+use memory.mem;
+use medialib.mp3tables;
+
+phi.MdMp3:Library
+{
+	const int GRANULE: 576;
+
+	# what a frame header says (MdMp3.Header fills these)
+	int h_version: 0;           # 1 (MPEG-1), 2 (MPEG-2) or 25 (MPEG-2.5)
+	int h_rate: 0;
+	int h_channels: 0;
+	int h_length: 0;            # the frame's bytes, header and all
+	int h_samples: 0;           # a channel's samples: 1152 or 576
+
+	u16 rates: 44100 48000 32000;
+	u16 bitrates1: 0 32 40 48 56 64 80 96 112 128 160 192 224 256 320;
+	u16 bitrates2: 0 8 16 24 32 40 48 56 64 80 96 112 128 144 160;
+
+	# Reads a Layer III frame header (4 bytes): whether it is one, with its fields in h_*. Free
+	# format (no bitrate) isn't taken.
+	[Header: ptr<u8> p: 0;]
+		if p:0 is not 0xFF or (p:1 & 0xE0) is not 0xE0 return false;
+		int ver: (p:1 >> 3) & 3;
+		int layer: (p:1 >> 1) & 3;
+		int br: (p:2 >> 4) & 15;
+		int sr: (p:2 >> 2) & 3;
+		if ver is 1 or layer is not 1 or br is 0 or br is 15 or sr is 3 return false;
+		int pad: (p:2 >> 1) & 1;
+		int rate: rates:sr;
+		if ver is 3
+			h_version is 1;
+			h_rate is rate;
+			h_samples is 1152;
+			h_length is 144000 * (bitrates1:br) / rate + pad;
+		;;
+		else
+			h_version is 2;
+			h_rate is rate / 2;
+			if ver is 0
+				h_version is 25;
+				h_rate is rate / 4;
+			;;
+			h_samples is 576;
+			h_length is 72000 * (bitrates2:br) / h_rate + pad;
+		;;
+		h_channels is 2;
+		if (p:3 >> 6) is 3
+			h_channels is 1;
+		;;
+	[end: true]
+
+	[New]
+		call MdMp3Math.Start;
+		ptr<MdMp3> d: new MdMp3;
+		if d is 0 return 0 as ptr<MdMp3>;
+		call d.Reset;
+	[end: d]
+
+	[Free: ptr<MdMp3> d: 0;]
+		if d is not 0
+			free d;
+		;;
+	[end]
+}
+
+# the fixed-point tables, worked out once
+phi.MdMp3Math:Library
+{
+	bln started: false;
+	ptr<u32> pow_m: 0;          # i^(4/3) for i to 8206: a Q30 mantissa in [1, 2) ...
+	ptr<u8> pow_e: 0;           # ... and its power of two
+	int root: 0 0 0 0;          # 2^(i/4), Q30
+	ptr<int> cos36: 0;          # the 36-point IMDCT's cosines, [i][k], 36 by 18, Q30
+	ptr<int> cos12: 0;          # the 12-point one's, 12 by 6
+	ptr<int> win: 0;            # the windows by block type, 4 by 36, Q30
+	ptr<int> synth: 0;          # the filterbank's matrix, cos((16 + i)(2k + 1)pi/64), 64 by 32, Q30
+	int cs: 0 0 0 0 0 0 0 0;    # aliasing reduction's butterflies, Q30
+	int ca: 0 0 0 0 0 0 0 0;
+	int is_l: 0 0 0 0 0 0 0;    # intensity stereo (MPEG-1): left's and right's shares by position, Q30
+	int is_r: 0 0 0 0 0 0 0;
+	int lsf_is: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0;
+	                            # (MPEG-2's: 2^(-k/4) [0..31], then 2^(-k/2) [32..63], Q30)
+	int sqrt_half: 0;           # 1/sqrt(2), Q30
+	# the Huffman tables' lookups: by table (0 to 33), 512 entries from its first 9 bits, each
+	# length << 16 | x << 4 | y, or 0x8000 | where its longer codes begin in long_codes
+	ptr<u32> fast: 0;
+	ptr<u32> long_codes: 0;     # (codes longer than 9 bits, as MdMp3Tables.codes has them, by table)
+	u16 long_start: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0;
+	u16 long_count: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0;
+
+	const f64 PI: 3.14159265358979323846;
+	const f64 Q30: 1073741824.0;
+
+	[Q: f64 v: 0.0;]
+		f64 r: (Float.Round: v * Q30);
+	[end: r as int]
+
+	[Start]
+		if started return;
+		started is true;
+		pow_m is new u32[8207];
+		pow_e is new u8[8207];
+		while int i: 1; i < 8207; i++;
+			f64 v: (Float.Pow: i as f64 1.0 / 3.0) * (i as f64);     # i^(4/3)
+			int e: 0;
+			while v >= 2.0
+				v is v / 2.0;
+				e++;
+			;;
+			pow_m:i is (Float.Round: v * Q30) as u32;
+			pow_e:i is e as u8;
+		;;
+		pow_m:0 is 0;
+		while int r: 0; r < 4; r++;
+			root:r is (Q: (Float.Pow: 2.0 (r as f64) / 4.0));
+		;;
+		cos36 is new int[36 * 18];
+		while int i: 0; i < 36; i++;
+			while int k: 0; k < 18; k++;
+				cos36:(i * 18 + k) is (Q: (Float.Cos: PI / 72.0 * ((2 * i + 1 + 18) * (2 * k + 1)) as f64));
+			;;
+		;;
+		cos12 is new int[12 * 6];
+		while int i: 0; i < 12; i++;
+			while int k: 0; k < 6; k++;
+				cos12:(i * 6 + k) is (Q: (Float.Cos: PI / 24.0 * ((2 * i + 1 + 6) * (2 * k + 1)) as f64));
+			;;
+		;;
+		win is new int[4 * 36];
+		while int i: 0; i < 36; i++;
+			int long_w: (Q: (Float.Sin: PI / 36.0 * ((i as f64) + 0.5)));
+			win:i is long_w;
+			# start (1): long, then flat, then the short window's fall, then nothing
+			int w1: long_w;
+			if i >= 18 and i < 24
+				w1 is (Q: 1.0);
+			;;
+			elif i >= 24 and i < 30
+				w1 is (Q: (Float.Sin: PI / 12.0 * ((i - 18) as f64 + 0.5)));
+			;;
+			elif i >= 30
+				w1 is 0;
+			;;
+			win:(36 + i) is w1;
+			# short (2): 12 points, the rest unused
+			int w2: 0;
+			if i < 12
+				w2 is (Q: (Float.Sin: PI / 12.0 * ((i as f64) + 0.5)));
+			;;
+			win:(72 + i) is w2;
+			# stop (3): the mirror of start
+			int w3: long_w;
+			if i < 6
+				w3 is 0;
+			;;
+			elif i < 12
+				w3 is (Q: (Float.Sin: PI / 12.0 * ((i - 6) as f64 + 0.5)));
+			;;
+			elif i < 18
+				w3 is (Q: 1.0);
+			;;
+			win:(108 + i) is w3;
+		;;
+		synth is new int[64 * 32];
+		while int i: 0; i < 64; i++;
+			while int k: 0; k < 32; k++;
+				synth:(i * 32 + k) is (Q: (Float.Cos: ((16 + i) * (2 * k + 1)) as f64 * PI / 64.0));
+			;;
+		;;
+		f64 ci: -0.6 -0.535 -0.33 -0.185 -0.095 -0.041 -0.0142 -0.0037;
+		while int i: 0; i < 8; i++;
+			f64 sq: (Float.Sqrt: 1.0 + ci:i * ci:i);
+			cs:i is (Q: 1.0 / sq);
+			ca:i is (Q: ci:i / sq);
+		;;
+		while int p: 0; p < 7; p++;
+			f64 t: (Float.Tan: (p as f64) * PI / 12.0);
+			if p is 6
+				# (tan(pi/2): all of it left)
+				is_l:p is (Q: 1.0);
+				is_r:p is 0;
+			;;
+			else
+				is_l:p is (Q: t / (1.0 + t));
+				is_r:p is (Q: 1.0 / (1.0 + t));
+			;;
+		;;
+		while int k: 0; k < 32; k++;
+			lsf_is:k is (Q: (Float.Pow: 2.0 -(k as f64) / 4.0));
+			lsf_is:(32 + k) is (Q: (Float.Pow: 2.0 -(k as f64) / 2.0));
+		;;
+		sqrt_half is (Q: 1.0 / (Float.Sqrt: 2.0));
+		call Huffman;
+	[end]
+
+	# a lookup from the first 9 bits of each table's codes, and the longer ones apart
+	[Huffman]
+		fast is new u32[34 * 512];
+		call Mem.Fill: fast as ptr<u8> 0 34 * 512 * 4;
+		u32 longs: 0;
+		while int t: 0; t < 34; t++;
+			u32 n: MdMp3Tables.code_count:t;
+			u32 s: MdMp3Tables.code_start:t;
+			while u32 i: 0; i < n; i++;
+				u32 c: MdMp3Tables.codes:(s + i);
+				if (c >> 27) > 9
+					longs++;
+				;;
+			;;
+		;;
+		long_codes is new u32[longs + 1];
+		u32 pos_at: 0;
+		while int t: 0; t < 34; t++;
+			u32 n: MdMp3Tables.code_count:t;
+			u32 s: MdMp3Tables.code_start:t;
+			long_start:t is pos_at as u16;
+			ptr<u32> f: fast + t * 512 * 4;
+			while u32 i: 0; i < n; i++;
+				u32 c: MdMp3Tables.codes:(s + i);
+				u32 len: c >> 27;
+				u32 xy: (c >> 19) & 0xFF;
+				u32 bits: c & 0x7FFFF;
+				if len <= 9
+					# every 9-bit start that begins with this code
+					u32 first: bits << (9 - len);
+					u32 many: 1 << (9 - len);
+					while u32 k: 0; k < many; k++;
+						f:(first + k) is (len << 16) | xy;
+					;;
+				;;
+				else
+					long_codes:pos_at is c;
+					pos_at++;
+					f:(bits >> (len - 9)) is 0x8000;
+				;;
+			;;
+			long_count:t is (pos_at - long_start:t) as u16;
+		;;
+	[end]
+}
+
+struct.MdMp3
+{
+	int rate;
+	int channels;
+	int samples;                # a channel's samples from the last frame
+	i16 pcm[2304];              # those samples, interleaved
+	bln broken;                 # the last frame couldn't be read (pcm is silence)
+	# the header
+	int version;
+	bln lsf;                    # MPEG-2 or 2.5: one granule, other scalefactors
+	int mode;
+	int mode_ext;
+	int sfreq;                  # which table of scalefactor bands: 0 to 8
+	# side information, by granule * 2 + channel
+	int main_begin;
+	int scfsi[8];               # channel * 4 + band
+	int part23[4];
+	int big_values[4];
+	int global_gain[4];
+	int sf_compress[4];
+	int block_type[4];          # 0 if no window switching
+	bln mixed[4];
+	int table_select[12];       # three a granule's channel
+	int subblock_gain[12];
+	int region0[4];
+	int region1[4];
+	int preflag[4];
+	int sf_scale[4];
+	int count1_table[4];
+	# scalefactors, by channel: long (22), short (13 bands, 3 windows); MPEG-2's intensity limits
+	int sf_l[44];
+	int sf_s[78];
+	int is_max[44];             # (MPEG-2: what a band's scalefactor is at most; that value isn't a position)
+	# the bit reservoir: main data from this frame and those before
+	u8 res[4096];
+	int res_len;
+	ptr<u8> bits;               # reading main data
+	int bits_len;               # bytes
+	int bit;                    # the next bit
+	# a granule's lines by channel, Q24, and how many might not be 0
+	int xr[1152];
+	int nonzero[2];
+	int ro[576];                # (reordering short blocks)
+	u8 is_line[576];            # (the lines intensity stereo did)
+	# what each subband's IMDCT left for the next granule, by channel
+	int overlap[1152];
+	int imdct_out[36];
+	int sub_out[1152];          # a granule's time samples, by subband: [ch][sb * 18 + t]
+	# the polyphase filterbank's V, by channel
+	int v[2048];
+	int v_off[2];
+
+	[Reset]
+		res_len is 0;
+		call Mem.Fill: addr overlap as ptr<u8> 0 1152 * 4;
+		call Mem.Fill: addr v as ptr<u8> 0 2048 * 4;
+		v_off:0 is 0;
+		v_off:1 is 0;
+	[end]
+
+	# Decodes one frame, data at its header: a channel's samples (pcm), or 0 if it isn't a frame.
+	# A frame whose main data begins before what it was given, or is damaged, gives silence.
+	[Frame: ptr<u8> data: 0; int length: 0;]
+		samples is 0;
+		broken is false;
+		if length < 4 or not (MdMp3.Header: data) return 0;
+		int flen: MdMp3.h_length;
+		if flen > length return 0;
+		version is MdMp3.h_version;
+		lsf is (version is not 1);
+		rate is MdMp3.h_rate;
+		channels is MdMp3.h_channels;
+		samples is MdMp3.h_samples;
+		mode is (data:3 >> 6) & 3;
+		mode_ext is (data:3 >> 4) & 3;
+		int sr: (data:2 >> 2) & 3;
+		sfreq is sr;
+		if version is 2
+			sfreq is 3 + sr;
+		;;
+		elif version is 25
+			sfreq is 6 + sr;
+		;;
+		int pos_at: 4;
+		if (data:1 & 1) is 0
+			pos_at is 6;                    # (a CRC, not checked)
+		;;
+		int side: 32;
+		if lsf
+			side is 17;
+			if channels is 1
+				side is 9;
+			;;
+		;;
+		elif channels is 1
+			side is 17;
+		;;
+		if pos_at + side > flen
+			call Silence;
+			return samples;
+		;;
+		# the side information
+		bits is data + pos_at;
+		bits_len is side;
+		bit is 0;
+		call SideInfo;
+		# this frame's main data goes on the end of the reservoir
+		int begin_at: res_len - main_begin;
+		int own: flen - pos_at - side;
+		if res_len + own > 4096
+			# (keep the last of it: no frame looks back further than 511 bytes)
+			int keep: 2048;
+			if keep > res_len
+				keep is res_len;
+			;;
+			call Mem.Move: addr res as ptr<u8> (addr res as ptr<u8>) + res_len - keep keep as u32;
+			begin_at is begin_at - (res_len - keep);
+			res_len is keep;
+		;;
+		call Mem.Copy: (addr res as ptr<u8>) + res_len data + pos_at + side own as u32;
+		res_len++ own;
+		if begin_at < 0
+			# what it needs from before isn't here (the stream began here, say)
+			call Silence;
+			broken is true;
+			return samples;
+		;;
+		bits is (addr res as ptr<u8>) + begin_at;
+		bits_len is res_len - begin_at;
+		bit is 0;
+		int granules: 2;
+		if lsf
+			granules is 1;
+		;;
+		while int gr: 0; gr < granules; gr++;
+			while int ch: 0; ch < channels; ch++;
+				int part2_start: bit;
+				call Scalefactors: gr ch;
+				call Lines: gr ch part2_start;
+				call Requantize: gr ch;
+			;;
+			if channels is 2 and mode is 1
+				call Stereo: gr;
+			;;
+			while int ch: 0; ch < channels; ch++;
+				int g: gr * 2 + ch;
+				if block_type:g is 2
+					call Reorder: g ch;
+				;;
+				call Antialias: g ch;
+				call Hybrid: g ch;
+				call Synthesis: gr ch;
+			;;
+		;;
+	[end: samples]
+
+	[Silence]
+		call Mem.Fill: addr pcm as ptr<u8> 0 (samples * channels * 2) as u32;
+	[end]
+
+	# ---- reading bits (past the end they're 0s)
+
+	[Bits: int n: 0;]
+		int v: 0;
+		while n > 0
+			int byte: bit >> 3;
+			int b: 0;
+			if byte < bits_len
+				b is ((bits:byte) >> (7 - (bit & 7))) & 1;
+			;;
+			v is (v << 1) | b;
+			bit++;
+			n--;
+		;;
+	[end: v]
+
+	# the next 24 bits, without taking them
+	[Peek24]
+		int byte: bit >> 3;
+		u32 w: 0;
+		while int k: 0; k < 4; k++;
+			u32 b: 0;
+			if byte + k < bits_len
+				b is bits:(byte + k);
+			;;
+			w is (w << 8) | b;
+		;;
+		w is w << (bit & 7);
+	[end: (w >> 8) as int]
+
+	[SideInfo]
+		if lsf
+			main_begin is (Bits: 8);
+			if channels is 1
+				call Bits: 1;
+			;;
+			else
+				call Bits: 2;
+			;;
+		;;
+		else
+			main_begin is (Bits: 9);
+			if channels is 1
+				call Bits: 5;
+			;;
+			else
+				call Bits: 3;
+			;;
+			while int ch: 0; ch < channels; ch++;
+				while int b: 0; b < 4; b++;
+					scfsi:(ch * 4 + b) is (Bits: 1);
+				;;
+			;;
+		;;
+		int granules: 2;
+		if lsf
+			granules is 1;
+		;;
+		while int gr: 0; gr < granules; gr++;
+			while int ch: 0; ch < channels; ch++;
+				int g: gr * 2 + ch;
+				part23:g is (Bits: 12);
+				big_values:g is (Bits: 9);
+				if big_values:g > 288
+					big_values:g is 288;
+				;;
+				global_gain:g is (Bits: 8);
+				if lsf
+					sf_compress:g is (Bits: 9);
+				;;
+				else
+					sf_compress:g is (Bits: 4);
+				;;
+				block_type:g is 0;
+				mixed:g is false;
+				if (Bits: 1) is 1
+					block_type:g is (Bits: 2);
+					mixed:g is ((Bits: 1) is 1);
+					table_select:(g * 3) is (Bits: 5);
+					table_select:(g * 3 + 1) is (Bits: 5);
+					table_select:(g * 3 + 2) is 0;
+					while int w: 0; w < 3; w++;
+						subblock_gain:(g * 3 + w) is (Bits: 3);
+					;;
+					if block_type:g is 0
+						block_type:g is 1;           # (0 with window switching is forbidden)
+					;;
+					region0:g is 7;
+					if block_type:g is 2 and not mixed:g
+						region0:g is 8;
+					;;
+					region1:g is 20 - region0:g;
+				;;
+				else
+					while int w: 0; w < 3; w++;
+						table_select:(g * 3 + w) is (Bits: 5);
+						subblock_gain:(g * 3 + w) is 0;
+					;;
+					region0:g is (Bits: 4);
+					region1:g is (Bits: 3);
+				;;
+				preflag:g is 0;
+				if not lsf
+					preflag:g is (Bits: 1);
+				;;
+				sf_scale:g is (Bits: 1);
+				count1_table:g is (Bits: 1);
+			;;
+		;;
+	[end]
+
+	# ---- scalefactors
+
+	[Scalefactors: int gr: 0; int ch: 0;]
+		if lsf
+			call ScalefactorsLsf: ch;
+			return;
+		;;
+		int g: gr * 2 + ch;
+		int slen1: MdMp3Bands.slen1:(sf_compress:g);
+		int slen2: MdMp3Bands.slen2:(sf_compress:g);
+		int bl: ch * 22;
+		int bs: ch * 39;
+		if block_type:g is 2
+			int sfb: 0;
+			if mixed:g
+				while sfb < 8
+					sf_l:(bl + sfb) is (Bits: slen1);
+					sfb++;
+				;;
+				sfb is 3;
+			;;
+			while sfb < 12
+				int len: slen1;
+				if sfb >= 6
+					len is slen2;
+				;;
+				while int w: 0; w < 3; w++;
+					sf_s:(bs + sfb * 3 + w) is (Bits: len);
+				;;
+				sfb++;
+			;;
+			while int w: 0; w < 3; w++;
+				sf_s:(bs + 36 + w) is 0;
+			;;
+			return;
+		;;
+		# long blocks: the second granule may reuse the first's, a group of bands at a time
+		int sfb: 0;
+		while sfb < 21
+			int band: 3;
+			if sfb < 6
+				band is 0;
+			;;
+			elif sfb < 11
+				band is 1;
+			;;
+			elif sfb < 16
+				band is 2;
+			;;
+			if gr is 0 or scfsi:(ch * 4 + band) is 0
+				int len: slen1;
+				if sfb >= 11
+					len is slen2;
+				;;
+				sf_l:(bl + sfb) is (Bits: len);
+			;;
+			sfb++;
+		;;
+		sf_l:(bl + 21) is 0;
+	[end]
+
+	# MPEG-2's: how many bands in each of four groups, and each group's bits, from scalefac_compress
+	[ScalefactorsLsf: int ch: 0;]
+		int g: ch;
+		int sfc: sf_compress:g;
+		int slen: 0 0 0 0;
+		int table: 0;
+		bln right_is: ch is 1 and (mode_ext & 1) is not 0 and mode is 1;
+		if right_is
+			sfc is sfc >> 1;
+			if sfc < 180
+				slen:0 is sfc / 36;
+				slen:1 is (sfc % 36) / 6;
+				slen:2 is (sfc % 36) % 6;
+				table is 3;
+			;;
+			elif sfc < 244
+				sfc is sfc - 180;
+				slen:0 is (sfc % 64) >> 4;
+				slen:1 is (sfc % 16) >> 2;
+				slen:2 is sfc % 4;
+				table is 4;
+			;;
+			else
+				sfc is sfc - 244;
+				slen:0 is sfc / 3;
+				slen:1 is sfc % 3;
+				table is 5;
+			;;
+			preflag:g is 0;
+		;;
+		else
+			if sfc < 400
+				slen:0 is (sfc >> 4) / 5;
+				slen:1 is (sfc >> 4) % 5;
+				slen:2 is (sfc & 15) >> 2;
+				slen:3 is sfc & 3;
+				table is 0;
+				preflag:g is 0;
+			;;
+			elif sfc < 500
+				sfc is sfc - 400;
+				slen:0 is (sfc >> 2) / 5;
+				slen:1 is (sfc >> 2) % 5;
+				slen:2 is sfc & 3;
+				table is 1;
+				preflag:g is 0;
+			;;
+			else
+				sfc is sfc - 500;
+				slen:0 is sfc / 3;
+				slen:1 is sfc % 3;
+				table is 2;
+				preflag:g is 1;
+			;;
+		;;
+		int kind: 0;
+		if block_type:g is 2
+			kind is 1;
+			if mixed:g
+				kind is 2;
+			;;
+		;;
+		# read the four groups into one list, then share it out
+		int vals[40];
+		int maxes[40];
+		int n: 0;
+		while int part: 0; part < 4; part++;
+			int count: MdMp3Bands.lsf_bands:(table * 12 + kind * 4 + part);
+			int len: slen:part;
+			while int k: 0; k < count; k++;
+				if n < 40
+					vals:n is (Bits: len);
+					maxes:n is (1 << len) - 1;
+					n++;
+				;;
+			;;
+		;;
+		int bl: ch * 22;
+		int bs: ch * 39;
+		int i: 0;
+		if block_type:g is 2
+			int sfb: 0;
+			if mixed:g
+				while sfb < 6
+					sf_l:(bl + sfb) is (Get: addr vals n i);
+					is_max:(bl + sfb) is (Get: addr maxes n i);
+					i++;
+					sfb++;
+				;;
+				sfb is 3;
+			;;
+			while sfb < 12
+				while int w: 0; w < 3; w++;
+					sf_s:(bs + sfb * 3 + w) is (Get: addr vals n i);
+					is_max:(bl + sfb) is (Get: addr maxes n i);
+					i++;
+				;;
+				sfb++;
+			;;
+			while int w: 0; w < 3; w++;
+				sf_s:(bs + 36 + w) is 0;
+			;;
+		;;
+		else
+			while int sfb: 0; sfb < 21; sfb++;
+				sf_l:(bl + sfb) is (Get: addr vals n i);
+				is_max:(bl + sfb) is (Get: addr maxes n i);
+				i++;
+			;;
+			sf_l:(bl + 21) is 0;
+			is_max:(bl + 21) is is_max:(bl + 20);
+		;;
+	[end]
+
+	[Get: ptr<int> list: 0; int n: 0; int i: 0;]
+		if i < n return list:i;
+	[end: 0]
+
+	# ---- the Huffman-coded lines
+
+	[Lines: int gr: 0; int ch: 0; int part2_start: 0;]
+		int g: gr * 2 + ch;
+		int end_bit: part2_start + part23:g;
+		ptr<int> q: (addr xr) + ch * 576 * 4;
+		call Mem.Fill: q as ptr<u8> 0 576 * 4;
+		int big: big_values:g * 2;
+		ptr<u16> longs: (MdMp3Bands.Long: sfreq);
+		ptr<u16> shorts: (MdMp3Bands.Short: sfreq);
+		int r1: 0;
+		int r2: 0;
+		if block_type:g is 2 and not mixed:g
+			r1 is shorts:3 * 3;
+			r2 is 576;
+		;;
+		elif block_type:g is not 0
+			r1 is longs:8;
+			r2 is 576;
+		;;
+		else
+			int a: region0:g + 1;
+			int b: region0:g + region1:g + 2;
+			if a > 22
+				a is 22;
+			;;
+			if b > 22
+				b is 22;
+			;;
+			r1 is longs:a;
+			r2 is longs:b;
+		;;
+		if r1 > big
+			r1 is big;
+		;;
+		if r2 > big
+			r2 is big;
+		;;
+		int i: 0;
+		while i < big and bit < end_bit
+			int t: table_select:(g * 3);
+			if i >= r2
+				t is table_select:(g * 3 + 2);
+			;;
+			elif i >= r1
+				t is table_select:(g * 3 + 1);
+			;;
+			call Pair: t q + i * 4;
+			i++ 2;
+		;;
+		# quadruples of 0, 1 and -1, to the end of the part
+		int t1: 32 + count1_table:g;
+		while i + 4 <= 576 and bit < end_bit
+			int was: bit;
+			int vwxy: (Code: t1) & 15;
+			int k: 0;
+			while k < 4
+				int v: (vwxy >> (3 - k)) & 1;
+				if v is not 0 and (Bits: 1) is 1
+					v is -1;
+				;;
+				q:(i + k) is v;
+				k++;
+			;;
+			if bit > end_bit
+				# (the last quadruple ran past the part: it isn't one)
+				q:i is 0;
+				q:(i + 1) is 0;
+				q:(i + 2) is 0;
+				q:(i + 3) is 0;
+				break;
+			;;
+			i++ 4;
+		;;
+		nonzero:ch is i;
+		bit is end_bit;
+	[end]
+
+	# one code of table t: x << 4 | y
+	[Code: int t: 0;]
+		ptr<u32> f: MdMp3Math.fast + t * 512 * 4;
+		int peek: (Peek24);
+		u32 e: f:(peek >> 15);
+		if (e & 0x8000) is 0
+			bit++ (e >> 16) as int;
+			return (e & 0xFF) as int;
+		;;
+		u32 s: MdMp3Math.long_start:t;
+		u32 n: MdMp3Math.long_count:t;
+		while u32 k: 0; k < n; k++;
+			u32 c: MdMp3Math.long_codes:(s + k);
+			u32 len: c >> 27;
+			if ((peek as u32) >> (24 - len)) is (c & 0x7FFFF)
+				bit++ len as int;
+				return ((c >> 19) & 0xFF) as int;
+			;;
+		;;
+		bit++ 1;                        # (no such code: the data is damaged)
+	[end: 0]
+
+	# a pair of lines from a big_values table, at out
+	[Pair: int t: 0; ptr<int> dst: 0;]
+		if t is 0 or t is 4 or t is 14
+			dst:0 is 0;
+			dst:1 is 0;
+			return;
+		;;
+		int base: t;
+		if t >= 16 and t <= 23
+			base is 16;
+		;;
+		elif t >= 24
+			base is 24;
+		;;
+		int xy: (Code: base);
+		int x: xy >> 4;
+		int y: xy & 15;
+		int lin: MdMp3Tables.linbits:t;
+		if lin > 0 and x is 15
+			x++ (Bits: lin);
+		;;
+		if x is not 0 and (Bits: 1) is 1
+			x is 0 - x;
+		;;
+		if lin > 0 and y is 15
+			y++ (Bits: lin);
+		;;
+		if y is not 0 and (Bits: 1) is 1
+			y is 0 - y;
+		;;
+		dst:0 is x;
+		dst:1 is y;
+	[end]
+
+	# ---- requantizing: q^(4/3) * 2^(e/4), into Q24
+
+	[Requantize: int gr: 0; int ch: 0;]
+		int g: gr * 2 + ch;
+		ptr<int> q: (addr xr) + ch * 576 * 4;
+		ptr<u16> longs: (MdMp3Bands.Long: sfreq);
+		ptr<u16> shorts: (MdMp3Bands.Short: sfreq);
+		int mult: 2;
+		if sf_scale:g is 1
+			mult is 4;
+		;;
+		int gain: global_gain:g - 210;
+		int n: nonzero:ch;
+		int bl: ch * 22;
+		int bs: ch * 39;
+		int i: 0;
+		# long bands: all of them, or the first two subbands of a mixed block
+		int long_end: 576;
+		if block_type:g is 2
+			long_end is 0;
+			if mixed:g
+				long_end is 36;
+			;;
+		;;
+		int sfb: 0;
+		while i < n and i < long_end and sfb < 22
+			int e: gain - mult * (sf_l:(bl + sfb) + preflag:g * MdMp3Bands.pretab:sfb);
+			int top: longs:(sfb + 1);
+			while i < top and i < n
+				q:i is (Scale: q:i e);
+				i++;
+			;;
+			sfb++;
+		;;
+		if i >= n or block_type:g is not 2
+			return;
+		;;
+		# short bands: lines grouped by band, then window
+		sfb is 0;
+		if mixed:g
+			sfb is 3;
+		;;
+		while i < n and sfb < 13
+			int width: shorts:(sfb + 1) - shorts:sfb;
+			while int w: 0; w < 3; w++;
+				int e: gain - 8 * subblock_gain:(g * 3 + w) - mult * sf_s:(bs + sfb * 3 + w);
+				int stop: i + width;
+				while i < stop and i < n
+					q:i is (Scale: q:i e);
+					i++;
+				;;
+			;;
+			sfb++;
+		;;
+	[end]
+
+	[Scale: int v: 0; int e: 0;]
+		if v is 0 return 0;
+		bln neg: v < 0;
+		if neg
+			v is 0 - v;
+		;;
+		if v > 8206
+			v is 8206;
+		;;
+		int r: e & 3;
+		int qe: e >> 2;
+		i64 m: ((MdMp3Math.pow_m:v) as i64 * (MdMp3Math.root:r) as i64) >> 30;     # Q30, below 3.4
+		int sh: (MdMp3Math.pow_e:v) as int + qe - 6;                              # Q30 to Q24
+		i64 dst: 0;
+		if sh >= 0
+			if sh > 8
+				sh is 8;
+			;;
+			dst is m << sh;
+		;;
+		elif sh > -40
+			dst is m >> (0 - sh);
+		;;
+		if dst > 0x7FFFFFFF
+			dst is 0x7FFFFFFF;
+		;;
+		if neg return 0 - (dst as int);
+	[end: dst as int]
+
+	# ---- joining the channels
+
+	[Stereo: int gr: 0;]
+		ptr<int> l: addr xr;
+		ptr<int> r: (addr xr) + 576 * 4;
+		int n: nonzero:0;
+		if nonzero:1 > n
+			n is nonzero:1;
+		;;
+		call Mem.Fill: addr is_line as ptr<u8> 0 576;
+		if (mode_ext & 1) is not 0
+			call Intensity: gr;
+		;;
+		if (mode_ext & 2) is not 0
+			int s: MdMp3Math.sqrt_half;
+			while int i: 0; i < n; i++;
+				if is_line:i is 0
+					i64 m: l:i;
+					i64 d: r:i;
+					l:i is (((m + d) * s) >> 30) as int;
+					r:i is (((m - d) * s) >> 30) as int;
+				;;
+			;;
+		;;
+		nonzero:0 is 576;
+		nonzero:1 is 576;
+	[end]
+
+	# Intensity stereo above where the right channel's lines end (in each window, for short blocks):
+	# the left channel's lines, shared out by each band's position. The lines it does are marked in
+	# is_line, so mid/side leaves them.
+	[Intensity: int gr: 0;]
+		int g1: gr * 2 + 1;
+		ptr<int> r: (addr xr) + 576 * 4;
+		ptr<u16> longs: (MdMp3Bands.Long: sfreq);
+		ptr<u16> shorts: (MdMp3Bands.Short: sfreq);
+		if block_type:g1 is 2
+			int sfb_from: 0;
+			if mixed:g1
+				sfb_from is 3;
+			;;
+			while int w: 0; w < 3; w++;
+				# the lowest band from which this window's right lines are all 0
+				int first_is: 13;
+				int sfb: 12;
+				while sfb >= sfb_from
+					int width: shorts:(sfb + 1) - shorts:sfb;
+					int base: shorts:sfb * 3 + w * width;
+					bln any: false;
+					while int k: 0; k < width; k++;
+						if r:(base + k) is not 0
+							any is true;
+						;;
+					;;
+					if any
+						break;
+					;;
+					first_is is sfb;
+					sfb--;
+				;;
+				sfb is first_is;
+				while sfb < 13
+					int width: shorts:(sfb + 1) - shorts:sfb;
+					int base: shorts:sfb * 3 + w * width;
+					int band: sfb;
+					if band is 12
+						band is 11;          # (the last band takes the one before's position)
+					;;
+					call ShareBand: base width sf_s:(39 + band * 3 + w) band;
+					sfb++;
+				;;
+			;;
+			return;
+		;;
+		# long blocks: above the right channel's last nonzero line
+		int last: 575;
+		while last >= 0 and r:last is 0
+			last--;
+		;;
+		int sfb: 0;
+		while sfb < 22 and longs:(sfb + 1) <= last
+			sfb++;
+		;;
+		if last >= 0
+			sfb++;
+		;;
+		while sfb < 22
+			int band: sfb;
+			if band is 21
+				band is 20;
+			;;
+			call ShareBand: longs:sfb longs:(sfb + 1) - longs:sfb sf_l:(22 + band) band;
+			sfb++;
+		;;
+	[end]
+
+	# one band's lines from the left channel to both, by its intensity position; a position that
+	# isn't one leaves the band to mid/side
+	[ShareBand: int base: 0; int width: 0; int pos: 0; int band: 0;]
+		ptr<int> l: addr xr;
+		ptr<int> r: (addr xr) + 576 * 4;
+		i64 kl: 0;
+		i64 kr: 0;
+		if lsf
+			if pos is is_max:(22 + band) return;
+			int base_k: 0;
+			if (sf_compress:1 & 1) is not 0
+				base_k is 32;
+			;;
+			if pos is 0
+				kl is 1 << 30;
+				kr is 1 << 30;
+			;;
+			elif (pos & 1) is 1
+				int k: (pos + 1) >> 1;
+				if k > 31
+					k is 31;
+				;;
+				kl is MdMp3Math.lsf_is:(base_k + k);
+				kr is 1 << 30;
+			;;
+			else
+				int k: pos >> 1;
+				if k > 31
+					k is 31;
+				;;
+				kl is 1 << 30;
+				kr is MdMp3Math.lsf_is:(base_k + k);
+			;;
+		;;
+		else
+			if pos >= 7 return;
+			kl is MdMp3Math.is_l:pos;
+			kr is MdMp3Math.is_r:pos;
+		;;
+		while int k: 0; k < width; k++;
+			int i: base + k;
+			if i < 576
+				i64 v: l:i;
+				l:i is ((v * kl) >> 30) as int;
+				r:i is ((v * kr) >> 30) as int;
+				is_line:i is 1;
+			;;
+		;;
+	[end]
+
+	# ---- short blocks' lines into subband order: [band][window][line] to [band][line][window]
+
+	[Reorder: int g: 0; int ch: 0;]
+		ptr<int> q: (addr xr) + ch * 576 * 4;
+		ptr<u16> shorts: (MdMp3Bands.Short: sfreq);
+		int sfb: 0;
+		if mixed:g
+			sfb is 3;
+		;;
+		int from: shorts:sfb * 3;
+		int i: from;
+		while sfb < 13
+			int start: shorts:sfb * 3;
+			int width: shorts:(sfb + 1) - shorts:sfb;
+			while int w: 0; w < 3; w++;
+				while int j: 0; j < width; j++;
+					ro:(start + 3 * j + w) is q:(start + w * width + j);
+				;;
+			;;
+			sfb++;
+		;;
+		while i < 576
+			q:i is ro:i;
+			i++;
+		;;
+	[end]
+
+	# ---- aliasing reduction between long-block subbands
+
+	[Antialias: int g: 0; int ch: 0;]
+		if block_type:g is 2 and not mixed:g return;
+		ptr<int> q: (addr xr) + ch * 576 * 4;
+		int bands: 32;
+		if block_type:g is 2
+			bands is 2;                     # (mixed: between its two long subbands only)
+		;;
+		while int sb: 1; sb < bands; sb++;
+			while int i: 0; i < 8; i++;
+				int a: 18 * sb - 1 - i;
+				int b: 18 * sb + i;
+				i64 lo: q:a;
+				i64 hi: q:b;
+				i64 c: MdMp3Math.cs:i;
+				i64 s: MdMp3Math.ca:i;
+				q:a is ((lo * c - hi * s) >> 30) as int;
+				q:b is ((hi * c + lo * s) >> 30) as int;
+			;;
+		;;
+	[end]
+
+	# ---- the IMDCT, windows and overlap, then frequency inversion
+
+	[Hybrid: int g: 0; int ch: 0;]
+		ptr<int> q: (addr xr) + ch * 576 * 4;
+		ptr<int> over: (addr overlap) + ch * 576 * 4;
+		ptr<int> dst: (addr sub_out) + ch * 576 * 4;
+		while int sb: 0; sb < 32; sb++;
+			int bt: block_type:g;
+			if mixed:g and sb < 2
+				bt is 0;
+			;;
+			ptr<int> x: q + sb * 18 * 4;
+			ptr<int> o: addr imdct_out;
+			if bt is 2
+				call Mem.Fill: o as ptr<u8> 0 36 * 4;
+				while int w: 0; w < 3; w++;
+					while int i: 0; i < 12; i++;
+						i64 sum: 0;
+						while int k: 0; k < 6; k++;
+							sum++ (x:(k * 3 + w) as i64) * (MdMp3Math.cos12:(i * 6 + k) as i64);
+						;;
+						i64 v: (sum >> 30) * (MdMp3Math.win:(72 + i) as i64);
+						o:(6 + w * 6 + i) is o:(6 + w * 6 + i) + (v >> 30) as int;
+					;;
+				;;
+			;;
+			else
+				ptr<int> wn: MdMp3Math.win + bt * 36 * 4;
+				while int i: 0; i < 36; i++;
+					i64 sum: 0;
+					while int k: 0; k < 18; k++;
+						sum++ (x:k as i64) * (MdMp3Math.cos36:(i * 18 + k) as i64);
+					;;
+					o:i is (((sum >> 30) * (wn:i as i64)) >> 30) as int;
+				;;
+			;;
+			ptr<int> ov: over + sb * 18 * 4;
+			ptr<int> res: dst + sb * 18 * 4;
+			while int i: 0; i < 18; i++;
+				res:i is o:i + ov:i;
+				ov:i is o:(18 + i);
+			;;
+			# odd subbands, odd time samples: inverted
+			if (sb & 1) is 1
+				while int i: 1; i < 18; i++ 2;
+					res:i is 0 - res:i;
+				;;
+			;;
+		;;
+	[end]
+
+	# ---- the polyphase filterbank: 18 time slots of 32 subbands into 576 samples
+
+	[Synthesis: int gr: 0; int ch: 0;]
+		ptr<int> s: (addr sub_out) + ch * 576 * 4;
+		ptr<int> vv: (addr v) + ch * 1024 * 4;
+		ptr<int> m: MdMp3Math.synth;
+		ptr<int> d: addr MdMp3Tables.window;
+		int base: gr * 576;
+		while int t: 0; t < 18; t++;
+			int off: (v_off:ch - 64) & 1023;
+			v_off:ch is off;
+			while int i: 0; i < 64; i++;
+				i64 sum: 0;
+				ptr<int> row: m + i * 32 * 4;
+				while int k: 0; k < 32; k++;
+					sum++ (s:(k * 18 + t) as i64) * (row:k as i64);
+				;;
+				vv:(off + i) is (sum >> 30) as int;
+			;;
+			while int j: 0; j < 32; j++;
+				i64 sum: 0;
+				while int i: 0; i < 8; i++;
+					sum++ (vv:((off + 128 * i + j) & 1023) as i64) * (d:(64 * i + j) as i64);
+					sum++ (vv:((off + 128 * i + 96 + j) & 1023) as i64) * (d:(64 * i + 32 + j) as i64);
+				;;
+				# Q24 times 2^16, to 16 bits: >> 25, rounded
+				i64 sample: (sum + 0x1000000) >> 25;
+				if sample > 32767
+					sample is 32767;
+				;;
+				if sample < -32768
+					sample is -32768;
+				;;
+				pcm:((base + t * 32 + j) * channels + ch) is sample as i16;
+			;;
+		;;
+	[end]
+}
+
+# scalefactor bands and the other small tables, by sample rate (MPEG-1 44100, 48000, 32000;
+# MPEG-2 22050, 24000, 16000; MPEG-2.5 11025, 12000, 8000)
+phi.MdMp3Bands:Library
+{
+	u16 longs:
+		0 4 8 12 16 20 24 30 36 44 52 62 74 90 110 134 162 196 238 288 342 418 576
+		0 4 8 12 16 20 24 30 36 42 50 60 72 88 106 128 156 190 230 276 330 384 576
+		0 4 8 12 16 20 24 30 36 44 54 66 82 102 126 156 194 240 296 364 448 550 576
+		0 6 12 18 24 30 36 44 54 66 80 96 116 140 168 200 238 284 336 396 464 522 576
+		0 6 12 18 24 30 36 44 54 66 80 96 114 136 162 194 232 278 332 394 464 540 576
+		0 6 12 18 24 30 36 44 54 66 80 96 116 140 168 200 238 284 336 396 464 522 576
+		0 6 12 18 24 30 36 44 54 66 80 96 116 140 168 200 238 284 336 396 464 522 576
+		0 6 12 18 24 30 36 44 54 66 80 96 116 140 168 200 238 284 336 396 464 522 576
+		0 12 24 36 48 60 72 88 108 132 160 192 232 280 336 400 476 566 568 570 572 574 576;
+	u16 shorts:
+		0 4 8 12 16 22 30 40 52 66 84 106 136 192
+		0 4 8 12 16 22 28 38 50 64 80 100 126 192
+		0 4 8 12 16 22 30 42 58 78 104 138 180 192
+		0 4 8 12 18 24 32 42 56 74 100 132 174 192
+		0 4 8 12 18 26 36 48 62 80 104 136 180 192
+		0 4 8 12 18 26 36 48 62 80 104 134 174 192
+		0 4 8 12 18 26 36 48 62 80 104 134 174 192
+		0 4 8 12 18 26 36 48 62 80 104 134 174 192
+		0 8 16 24 36 52 72 96 124 160 162 164 166 192;
+	u8 pretab: 0 0 0 0 0 0 0 0 0 0 0 1 1 1 1 2 2 3 3 3 2 0;
+	u8 slen1: 0 0 0 0 3 1 1 1 2 2 2 3 3 3 4 4;
+	u8 slen2: 0 1 2 3 0 1 2 3 1 2 3 1 2 3 2 3;
+	# MPEG-2's bands in each of four groups: [table][long, short, mixed][group]
+	u8 lsf_bands:
+		6 5 5 5 9 9 9 9 6 9 9 9
+		6 5 7 3 9 9 12 6 6 9 12 6
+		11 10 0 0 18 18 0 0 15 18 0 0
+		7 7 7 0 12 12 12 0 6 15 12 0
+		6 6 6 3 12 9 9 6 6 12 9 6
+		8 8 5 0 15 12 9 0 6 18 9 0;
+
+	[Long: int sfreq: 0;]
+	[end: (addr longs) + sfreq * 23 * 2]
+
+	[Short: int sfreq: 0;]
+	[end: (addr shorts) + sfreq * 14 * 2]
+}

@@ -1,0 +1,30 @@
+# medialib: sound and video files in, samples and pictures out. It reads the bytes a program gives
+# it and touches nothing else: playing the samples and showing the pictures are the program's.
+#
+#   phi build medialib.phi --library     # medialib.philib, which a program includes with `use medialib;`
+#
+# README.md says which names are its API.
+
+use medialib.mp3tables;
+use medialib.mp3;
+use medialib.media;
+use medialib.webm;
+use medialib.vp8tables;
+use medialib.vp8;
+use medialib.vorbistables;
+use medialib.vorbis;
+use medialib.ogg;
+use medialib.mp4;
+use medialib.mdct;
+use medialib.aactables;
+use medialib.aac;
+
+phi.MediaLib:Library
+{
+	const int VERSION: 1;
+
+	# Call this once, before anything else in the library. It works out the decoders' tables.
+	[Start]
+		call MdMp3Math.Start;
+	[end]
+}
