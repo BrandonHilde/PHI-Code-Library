@@ -102,6 +102,20 @@ struct.CssEngine
 	bln has_sibling;    # a sibling combinator, or :nth-child(of S): later siblings depend on earlier
 	bln has_structural; # :first-child and its kin, :empty: what's in a parent matters
 	bln has_has;
+	# ... where one of those is about an element other than the one being matched or its siblings (an
+	# ancestor's :first-child, say): then a change has to restyle everything under where it was
+	bln sibling_deep;
+	bln structural_deep;
+	bln has_deep;           # (and for :has, one about an element that isn't the rule's own)
+	bln has_in_has_sibling; # :has(+ x) or :has(~ x): an element's earlier siblings can depend on it
+	# Those compounds (with what's left of them in their selectors), whose matching an element is
+	# styled again for: when whether an element matches one changes, everything under it (and after
+	# it) is done again, and otherwise only the element. Too many of them, or one only a :has() can
+	# decide (it would be asked of every element), and watch_full says: do everything under it.
+	ptr<CssCompound> watch[64];
+	u32 watch_n;
+	bln watch_full;
+	u32 restyled;           # how many elements the last Update worked out the styles of
 	bln has_cq;         # an @container rule: what applies depends on how wide boxes were laid out
 	bln has_layers;
 	ptr<CssLayerEntry> layers;
@@ -207,6 +221,7 @@ struct.CssEngine
 	[MarkDirty: ptr<DomNode> node: 0;]
 		if node is 0 return;
 		node.flags is node.flags | Dom.DIRTY_STYLE;
+		call Dom.MarkUp: node;
 		doc.version++;
 	[end]
 
@@ -373,6 +388,15 @@ phi.CssCascade:Library
 		e.has_sibling is false;
 		e.has_structural is false;
 		e.has_has is false;
+		e.sibling_deep is false;
+		e.structural_deep is false;
+		e.has_deep is false;
+		e.has_in_has_sibling is false;
+		# (the watched compounds before, to see whether they're the same ones)
+		u64 was_watch: (WatchHash: e);
+		e.doc.css_reach is 0;
+		e.watch_n is 0;
+		e.watch_full is false;
 		e.has_layers is false;
 		e.layer_count is 0;
 		e.media_hash is 1;
@@ -410,7 +434,56 @@ phi.CssCascade:Library
 		cur_key is 0;
 		# (an @import answered during that was seen by it)
 		e.needs_index is false;
+		# (a :has() about another element that can't be watched: any change may reach anywhere)
+		if e.has_deep and e.watch_full
+			e.doc.css_reach is e.doc.css_reach | Dom.REACH_ALL;
+		;;
+		# what elements remember they matched means something else now
+		if (WatchHash: e) is not was_watch
+			e.all_dirty is true;
+		;;
 	[end]
+
+	[WatchHash: ptr<CssEngine> e: 0;]
+		u64 h: 14695981039346656037;
+		if e.watch_full
+			h is h ^ 1;
+		;;
+		while u32 i: 0; i < e.watch_n; i++;
+			h is (h ^ (e.watch:i as u64)) * 1099511628211;
+		;;
+		h is (h ^ e.watch_n) * 1099511628211;
+	[end: h]
+
+	# Watch a compound (see CssEngine.watch)
+	[Watch: ptr<CssEngine> e: 0; ptr<CssCompound> one: 0;]
+		if e.watch_full return;
+		# (one whose first test is a :has() would search under every element it's asked of)
+		ptr<CssSimple> first: one.first;
+		if first is 0 or (first.kind is CssSel.S_PSEUDO as u8 and first.pseudo is CssK.HAS as u16)
+			e.watch_full is true;
+			return;
+		;;
+		while u32 i: 0; i < e.watch_n; i++;
+			if e.watch:i is one return;
+		;;
+		if e.watch_n >= 64
+			e.watch_full is true;
+			return;
+		;;
+		e.watch:(e.watch_n) is one;
+		e.watch_n++;
+	[end]
+
+	# which of the watched compounds the element matches now
+	[WatchBits: ptr<CssEngine> e: 0; ptr<DomNode> n: 0;]
+		u64 bits: 0;
+		while u32 i: 0; i < e.watch_n; i++;
+			if (CssSel.MatchFrom: e.watch:i n)
+				bits is bits | ((1 as u64) << i);
+			;;
+		;;
+	[end: bits]
 
 	[RuleApplies: ptr<CssEngine> e: 0; ptr<CssRule> r: 0;]
 		if r.kind is CssSheetP.R_MEDIA as u8
@@ -629,9 +702,13 @@ phi.CssCascade:Library
 				if c.pseudo is not 0
 					e.has_pseudo is true;
 				;;
-				# the UA sheet's few structural rules aren't worth making every change dearer
+				# the UA sheet's few structural rules aren't worth making every change dearer (but what
+				# its attributes reach is marked, as details:not([open]) > *)
 				if rank is not RANK_UA
-					call NoteFeatures: e c;
+					call NoteFeatures: e c false false;
+				;;
+				else
+					call NoteReach: e c;
 				;;
 				call Place: e x c;
 			;;
@@ -639,39 +716,195 @@ phi.CssCascade:Library
 		;;
 	[end]
 
-	# whether invalidation has to look at siblings, or at everything
-	[NoteFeatures: ptr<CssEngine> e: 0; ptr<CssComplex> c: 0;]
+	# whether invalidation has to look at siblings, or at everything. deep: c's rightmost compound is
+	# already about an element other than the one matched (an ancestor, or an ancestor's sibling);
+	# in_has: c is inside a :has()
+	[NoteFeatures: ptr<CssEngine> e: 0; ptr<CssComplex> c: 0; bln deep: false; bln in_has: false;]
 		call WlStack.Check;
 		ptr<CssCompound> one: c.right;
 		while one is not 0
-			if one.left is not 0 and (one.comb is CssSel.C_NEXT as u8 or one.comb is CssSel.C_SIBLING as u8)
+			bln sibling: one.left is not 0 and (one.comb is CssSel.C_NEXT as u8 or one.comb is CssSel.C_SIBLING as u8);
+			if sibling
 				e.has_sibling is true;
+				if deep
+					e.sibling_deep is true;
+					call Watch: e one;
+				;;
+				if in_has
+					e.has_in_has_sibling is true;
+				;;
 			;;
 			ptr<CssSimple> s: one.first;
 			while s is not 0
+				call MarkReach: e s deep;
 				if s.kind is CssSel.S_PSEUDO as u8
 					u32 kw: s.pseudo;
 					if kw is CssK.HAS
 						e.has_has is true;
+						if deep or in_has
+							e.has_deep is true;
+							if in_has
+								e.watch_full is true;
+							;;
+							else
+								call Watch: e one;
+							;;
+						;;
 					;;
 					if kw is CssK.NTH_CHILD or kw is CssK.NTH_LAST_CHILD or kw is CssK.NTH_OF_TYPE or kw is CssK.NTH_LAST_OF_TYPE or kw is CssK.LAST_CHILD or kw is CssK.FIRST_CHILD or kw is CssK.ONLY_CHILD or kw is CssK.FIRST_OF_TYPE or kw is CssK.LAST_OF_TYPE or kw is CssK.ONLY_OF_TYPE or kw is CssK.EMPTY
 						e.has_structural is true;
+						if deep
+							e.structural_deep is true;
+							call Watch: e one;
+						;;
 						if s.sub is not 0
 							e.has_sibling is true;
+							if deep
+								e.sibling_deep is true;
+							;;
 						;;
 					;;
 					if s.sub is not 0
 						ptr<CssComplex> inner: s.sub.first;
 						while inner is not 0
-							call NoteFeatures: e inner;
+							call NoteFeatures: e inner deep (in_has or kw is CssK.HAS);
 							inner is inner.next;
 						;;
 					;;
 				;;
 				s is s.next;
 			;;
+			# past a descendant or child combinator, the compounds are about ancestors
+			if one.left is not 0 and sibling is false
+				deep is true;
+			;;
 			one is one.left;
 		;;
+	[end]
+
+	# only what NoteFeatures marks on names (MarkReach), for the UA sheet's rules
+	[NoteReach: ptr<CssEngine> e: 0; ptr<CssComplex> c: 0;]
+		call WlStack.Check;
+		bln deep: false;
+		ptr<CssCompound> one: c.right;
+		while one is not 0
+			ptr<CssSimple> s: one.first;
+			while s is not 0
+				call MarkReach: e s deep;
+				if s.kind is CssSel.S_PSEUDO as u8 and s.sub is not 0
+					ptr<CssComplex> inner: s.sub.first;
+					while inner is not 0
+						if deep
+							call NoteReachDeep: e inner;
+						;;
+						else
+							call NoteReach: e inner;
+						;;
+						inner is inner.next;
+					;;
+				;;
+				s is s.next;
+			;;
+			if one.left is not 0 and one.comb is not CssSel.C_NEXT as u8 and one.comb is not CssSel.C_SIBLING as u8
+				deep is true;
+			;;
+			one is one.left;
+		;;
+	[end]
+
+	[NoteReachDeep: ptr<CssEngine> e: 0; ptr<CssComplex> c: 0;]
+		call WlStack.Check;
+		ptr<CssCompound> one: c.right;
+		while one is not 0
+			ptr<CssSimple> s: one.first;
+			while s is not 0
+				call MarkReach: e s true;
+				if s.kind is CssSel.S_PSEUDO as u8 and s.sub is not 0
+					ptr<CssComplex> inner: s.sub.first;
+					while inner is not 0
+						call NoteReachDeep: e inner;
+						inner is inner.next;
+					;;
+				;;
+				s is s.next;
+			;;
+			one is one.left;
+		;;
+	[end]
+
+	# A simple selector in a compound about another element than the one being styled (deep), or one
+	# that looks at ancestors whatever its place (:lang, :dir, :disabled): marks the names whose
+	# change reaches further (Dom.REACH_*), so that Dom restyles what's under the element.
+	[MarkReach: ptr<CssEngine> e: 0; ptr<CssSimple> s: 0; bln deep: false;]
+		u32 kind: s.kind;
+		if kind is CssSel.S_PSEUDO
+			u32 kw: s.pseudo;
+			# (these look up the tree, so they're about other elements wherever they are)
+			if kw is CssK.LANG
+				call ReachAttr: 'lang';
+				call ReachAttr: 'xml:lang';
+				return;
+			;;
+			if kw is CssK.DIR
+				call ReachAttr: 'dir';
+				return;
+			;;
+			if kw is CssK.DISABLED or kw is CssK.ENABLED
+				call ReachAttr: 'disabled';
+				call ReachAttr: 'type';
+				return;
+			;;
+			if kw is CssK.READ_ONLY or kw is CssK.READ_WRITE
+				call ReachAttr: 'contenteditable';
+				call ReachAttr: 'readonly';
+				call ReachAttr: 'disabled';
+				call ReachAttr: 'type';
+				return;
+			;;
+			if deep is false return;
+			if kw is CssK.CHECKED or kw is CssK.DEFAULT or kw is CssK.INDETERMINATE
+				call ReachAttr: 'checked';
+				call ReachAttr: 'selected';
+				call ReachAttr: 'type';
+			;;
+			elif kw is CssK.REQUIRED or kw is CssK.OPTIONAL
+				call ReachAttr: 'required';
+				call ReachAttr: 'type';
+			;;
+			elif kw is CssK.PLACEHOLDER_SHOWN
+				call ReachAttr: 'placeholder';
+				call ReachAttr: 'value';
+				call ReachAttr: 'type';
+			;;
+			elif kw is CssK.LINK or kw is CssK.ANY_LINK or kw is CssK.VISITED
+				call ReachAttr: 'href';
+			;;
+			elif kw is CssK.VALID or kw is CssK.INVALID
+				e.doc.css_reach is e.doc.css_reach | Dom.REACH_ATTRS;
+			;;
+			# what doesn't look at attributes: states the host marks (hover, focus), the tree's
+			# shape, and what's inside :is() and the like (marked on their own)
+			elif kw is not CssK.HOVER and kw is not CssK.ACTIVE and kw is not CssK.FOCUS and kw is not CssK.FOCUS_VISIBLE and kw is not CssK.FOCUS_WITHIN and kw is not CssK.TARGET and kw is not CssK.ROOT and kw is not CssK.SCOPE and kw is not CssK.DEFINED and kw is not CssK.POPOVER_OPEN and kw is not CssK.HOST and kw is not CssK.FULLSCREEN and kw is not CssK.MODAL and kw is not CssK.IS and kw is not CssK.NOT and kw is not CssK.WHERE and kw is not CssK.HAS and kw is not CssK.EMPTY and kw is not CssK.FIRST_CHILD and kw is not CssK.LAST_CHILD and kw is not CssK.ONLY_CHILD and kw is not CssK.FIRST_OF_TYPE and kw is not CssK.LAST_OF_TYPE and kw is not CssK.ONLY_OF_TYPE and kw is not CssK.NTH_CHILD and kw is not CssK.NTH_LAST_CHILD and kw is not CssK.NTH_OF_TYPE and kw is not CssK.NTH_LAST_OF_TYPE
+				e.doc.css_reach is e.doc.css_reach | Dom.REACH_ATTRS;
+			;;
+			return;
+		;;
+		if deep is false or s.a is 0 return;
+		ptr<WlAtom> a: s.a;
+		if kind is CssSel.S_CLASS
+			a.css is a.css | Dom.REACH_CLASS;
+		;;
+		elif kind is CssSel.S_ID
+			a.css is a.css | Dom.REACH_ID;
+		;;
+		elif kind is CssSel.S_ATTR
+			a.css is a.css | Dom.REACH_ATTR;
+		;;
+	[end]
+
+	[ReachAttr: ptr<u8> name: 0;]
+		ptr<WlAtom> a: (WlAtoms.GetZ: name);
+		a.css is a.css | Dom.REACH_ATTR;
 	[end]
 
 	# in the bucket of the rightmost compound's id, else a class, else its tag, else with the rest
@@ -1099,6 +1332,7 @@ phi.CssCascade:Library
 
 	[Update: ptr<CssEngine> e: 0;]
 		ptr<DomDocument> doc: e.doc;
+		e.restyled is 0;
 		if a_style is 0
 			a_style is (WlAtoms.GetZ: 'style');
 		;;
@@ -1138,29 +1372,57 @@ phi.CssCascade:Library
 		if everything
 			force is doc.root;
 		;;
+		elif e.has_has
+			# a :has() on an ancestor (or an ancestor's earlier sibling) may hold now, or no longer
+			call MarkForHas: e doc;
+		;;
+		# what a change makes its siblings and children need: all of their own subtrees, or only
+		# their own styles (and so their subtrees only if those change)
+		# (with too many to watch, every one of them deep means the whole of it)
+		bln watching: e.watch_full is false and e.watch_n > 0;
+		u32 sibling_mark: Dom.DIRTY_SELF;
+		if e.sibling_deep and e.watch_full
+			sibling_mark is Dom.DIRTY_STYLE;
+		;;
+		u32 child_mark: Dom.DIRTY_SELF;
+		if (e.sibling_deep or e.structural_deep) and e.watch_full
+			child_mark is Dom.DIRTY_STYLE;
+		;;
+		bln has_everything: e.has_deep and e.watch_full;
 		while n is not 0
 			u32 flags: n.flags;
 			if n.type is DomType.ELEMENT
 				# (children coming and going can change :empty on the parent itself)
 				bln tree_changed: (flags & Dom.DIRTY_TREE) is not 0;
-				bln need: force is not 0 or (flags & Dom.DIRTY_STYLE) is not 0 or n.style is 0 or (tree_changed and e.has_structural);
+				# rules may match it differently: everything under it is done too
+				bln strong: (flags & Dom.DIRTY_STYLE) is not 0 or n.style is 0;
+				bln need: force is not 0 or strong or (flags & Dom.DIRTY_SELF) is not 0 or (tree_changed and (e.has_structural or e.has_deep));
 				if need
-					if force is 0
-						force is n;
-						# one dirty thing, when selectors can look anywhere: all of it
-						if e.has_has
-							force is doc.root;
-						;;
-					;;
 					if e.has_sibling
 						# what comes after it may match differently now
 						ptr<DomNode> after: (Dom.NextElement: n);
 						if after is not 0
-							after.flags is after.flags | Dom.DIRTY_STYLE;
+							after.flags is after.flags | sibling_mark;
 						;;
 					;;
-					call Restyle: e n;
-					n.flags is n.flags & (0xFFFFFFFF ^ Dom.DIRTY_STYLE);
+					if watching
+						# matching one of them differently changes what's under it
+						u64 bits: (WatchBits: e n);
+						if bits is not n.css_watch
+							n.css_watch is bits;
+							strong is true;
+						;;
+					;;
+					e.restyled++;
+					bln changed: (Restyle: e n);
+					n.flags is n.flags & (0xFFFFFFFF ^ (Dom.DIRTY_STYLE | Dom.DIRTY_SELF));
+					if force is 0 and (strong or changed or (tree_changed and has_everything))
+						force is n;
+						# one dirty thing, when selectors can look anywhere: all of it
+						if (strong or tree_changed) and has_everything
+							force is doc.root;
+						;;
+					;;
 				;;
 				# children added or taken out: their positions in it have changed
 				if tree_changed
@@ -1168,22 +1430,28 @@ phi.CssCascade:Library
 					if force is 0 and (e.has_structural or e.has_sibling)
 						ptr<DomNode> c: (Dom.FirstElementChild: n);
 						while c is not 0
-							c.flags is c.flags | Dom.DIRTY_STYLE;
+							c.flags is c.flags | child_mark;
 							c is (Dom.NextElement: c);
 						;;
 					;;
 				;;
-				# a host's shadow tree, then its own children
-				if n.shadow is not 0
-					n is n.shadow;
-					continue;
-				;;
-				if n.first_child is not 0
-					n is n.first_child;
-					continue;
+				# down only where something changed (Dom.MarkUp), or everything is being done
+				bln down: force is not 0 or (n.flags & Dom.DIRTY_CHILD) is not 0;
+				n.flags is n.flags & (0xFFFFFFFF ^ Dom.DIRTY_CHILD);
+				if down
+					# a host's shadow tree, then its own children
+					if n.shadow is not 0
+						n is n.shadow;
+						continue;
+					;;
+					if n.first_child is not 0
+						n is n.first_child;
+						continue;
+					;;
 				;;
 			;;
 			elif n.type is DomType.DOCUMENT or n.type is DomType.FRAGMENT
+				n.flags is n.flags & (0xFFFFFFFF ^ Dom.DIRTY_CHILD);
 				if n.first_child is not 0
 					n is n.first_child;
 					continue;
@@ -1268,12 +1536,87 @@ phi.CssCascade:Library
 			CssCalc.cur_rem is e.root_px;
 		;;
 		ptr<CssComputed> old: n.style as ptr<CssComputed>;
-		if old is not made
-			n.flags is n.flags | Dom.DIRTY_LAYOUT;
+		if old is made
+			call CssStyles.Release: made;
+			return false;
 		;;
+		# worked out to what it was: what's under it can keep theirs
+		if (CssStyles.Same: old made)
+			call CssStyles.Release: made;
+			return false;
+		;;
+		n.flags is n.flags | Dom.DIRTY_LAYOUT;
 		n.style is made as ptr<u8>;
 		call CssStyles.Release: old;
+	[end: true]
+
+	# Before the walk, when there are :has() rules that are only about the element they match: each
+	# element whose style or children changed makes its ancestors (and, for :has(+ x), their earlier
+	# siblings) work out their own styles again.
+	[MarkForHas: ptr<CssEngine> e: 0; ptr<DomDocument> doc: 0;]
+		# (first what changed, along the paths Dom.MarkUp left: marking as it goes would make what
+		# it marks look changed too)
+		has_n is 0;
+		ptr<DomNode> n: doc.root;
+		while n is not 0
+			bln down: (n.flags & Dom.DIRTY_CHILD) is not 0 or n.type is DomType.DOCUMENT;
+			if n.type is DomType.ELEMENT and ((n.flags & (Dom.DIRTY_STYLE | Dom.DIRTY_TREE | Dom.DIRTY_SELF)) is not 0 or n.style is 0)
+				if has_n >= has_cap
+					u32 room: has_cap * 2;
+					if room < 64
+						room is 64;
+					;;
+					ptr<ptr<DomNode>> grown: new ptr<DomNode>[room];
+					if grown is 0
+						throw 'out of memory for the style walk';
+					;;
+					if has_sources is not 0
+						call Mem.Copy: grown as ptr<u8> has_sources as ptr<u8> has_n * sizeof ptr<DomNode>;
+						free has_sources;
+					;;
+					has_sources is grown;
+					has_cap is room;
+				;;
+				has_sources:has_n is n;
+				has_n++;
+			;;
+			if down and n.first_child is not 0
+				n is n.first_child;
+			;;
+			else
+				while n is not 0 and n.next is 0
+					n is n.parent;
+				;;
+				if n is not 0
+					n is n.next;
+				;;
+			;;
+		;;
+		while u32 k: 0; k < has_n; k++;
+			ptr<DomNode> src: has_sources:k;
+			# (it too: a child it lost may have been what its :has() saw)
+			ptr<DomNode> up: src;
+			while up is not 0 and up.type is DomType.ELEMENT
+				# (an ancestor already marked has had its own ancestors and siblings marked)
+				if up is not src and (up.flags & Dom.DIRTY_SELF) is not 0 break;
+				up.flags is up.flags | Dom.DIRTY_SELF;
+				if e.has_in_has_sibling
+					ptr<DomNode> before: up.prev;
+					while before is not 0
+						if before.type is DomType.ELEMENT
+							before.flags is before.flags | Dom.DIRTY_SELF;
+						;;
+						before is before.prev;
+					;;
+				;;
+				up is up.parent;
+			;;
+		;;
 	[end]
+
+	ptr<ptr<DomNode>> has_sources: 0;
+	u32 has_n: 0;
+	u32 has_cap: 0;
 
 	[BuildPseudos: ptr<CssEngine> e: 0; ptr<CssComputed> style: 0;]
 		u32 seen: 0;

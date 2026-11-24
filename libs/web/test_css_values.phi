@@ -535,7 +535,7 @@ phi.TestCssValues:Program
 		call Say: 'style get text' (WlText.EqZ: got.data got.len 'rgb(255, 0, 0)');
 		el.flags is 0;
 		call Say: 'style set' (Css.StyleSet: el 'height' 6 '2px' 3 false);
-		call Say: 'style set dirties' (el.flags & Dom.DIRTY_STYLE) is not 0;
+		call Say: 'style set dirties' (el.flags & (Dom.DIRTY_STYLE | Dom.DIRTY_SELF)) is not 0;
 		ptr<u8> attr_text: (Dom.AttrValue: el 'style');
 		call Say: 'attribute written' (WlText.EqZ: attr_text (WlText.LenZ: attr_text) 'color: rgb(255, 0, 0); width: 1px; height: 2px;');
 		call Say: 'style invalid' (Css.StyleSet: el 'height' 6 'xx' 2 false) is false;

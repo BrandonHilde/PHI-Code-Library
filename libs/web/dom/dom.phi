@@ -106,6 +106,8 @@ struct.DomNode
 	ptr<u8> layout;         # the browser's own: a layout box, say
 	u32 box_w;              # the browser's: how wide its content box was laid out, plus 1 (0: not
 	                        # laid out yet), which a container query about it is asked of
+	u64 css_watch;          # CSS's: which of the compounds it watches this element matched when
+	                        # last styled (css/cascade.phi, CssEngine.watch)
 }
 
 struct.DomDocument
@@ -116,6 +118,8 @@ struct.DomDocument
 	bln quirks;             # no-quirks parsing unless the parser found otherwise
 	bln limited_quirks;
 	u32 version;            # goes up by one on every change, so a cache can see it's stale
+	u32 sheet_version;      # goes up when a <style> or <link> comes, goes, or changes
+	u32 css_reach;          # CSS's: Dom.REACH_ATTRS, REACH_ALL (see AttrChanged)
 	method<ptr<DomNode> int> on_change;     # called after every change (see DomChange), if set
 	# for MutationObserver: told of each change a script could see, with what it changed: the target,
 	# the kind (Dom.ADDED, REMOVED, ATTRIBUTE, TEXT), the node added or taken out, the attribute's
@@ -135,7 +139,9 @@ phi.Dom:Library
 	const int TEXT: 3;
 
 	const u32 DIRTY_STYLE: 1;        # this element's style must be worked out again
-	const u32 DIRTY_CHILD: 2;        # something under it is DIRTY_STYLE
+	const u32 DIRTY_CHILD: 2;        # something under it (or it, or its shadow tree) changed: set on
+	                                 # every ancestor by Changed and MarkUp, so CSS goes only down
+	                                 # those paths
 	const u32 DIRTY_LAYOUT: 4;       # for the browser: it needs laying out again
 	const u32 DIRTY_TREE: 8;         # children were added or taken out (CSS looks at this for :first-child and the like)
 	const u32 SHADOW_ROOT: 16;       # a FRAGMENT that is an element's shadow root
@@ -149,11 +155,25 @@ phi.Dom:Library
 	const u32 POPOVER_OPEN: 0x80000;        # the page's: a popover that's showing (CSS's :popover-open)
 	const u32 INERT: 0x100000;              # the page's: a copy of what's in a <template> (the standard's
 	                                        # inert document, where nothing is upgraded), until it's put in
+	const u32 DIRTY_SELF: 0x200000;         # CSS: this element's own style again, but what's under it
+	                                        # only if that changes (a :has() or :first-child that may hold now)
 
 	ptr<WlAtom> A_ID: 0;
 	ptr<WlAtom> A_CLASS: 0;
 	ptr<WlAtom> A_SLOT: 0;      # <slot>, and the slot attribute
 	ptr<WlAtom> A_NAME: 0;
+	ptr<WlAtom> A_STYLE: 0;
+	ptr<WlAtom> A_LINK: 0;
+
+	# How far an attribute's change can reach, as CSS says: on a WlAtom (css), the class, id or
+	# attribute of that name is in a selector about other elements (an ancestor's .open, say); on
+	# a document (css_reach), any attribute but class, id and style may be (REACH_ATTRS), or anything
+	# may be (REACH_ALL). Otherwise a change restyles the element alone (DIRTY_SELF).
+	const u32 REACH_CLASS: 1;
+	const u32 REACH_ID: 2;
+	const u32 REACH_ATTR: 4;
+	const u32 REACH_ATTRS: 1;
+	const u32 REACH_ALL: 2;
 
 	[Start]
 		if A_ID is not 0 return;
@@ -161,7 +181,42 @@ phi.Dom:Library
 		A_CLASS is (WlAtoms.GetZ: 'class');
 		A_SLOT is (WlAtoms.GetZ: 'slot');
 		A_NAME is (WlAtoms.GetZ: 'name');
+		A_STYLE is (WlAtoms.GetZ: 'style');
+		A_LINK is (WlAtoms.GetZ: 'link');
 	[end]
+
+	# Says node has changed to whoever looks for changes from the top (CSS): DIRTY_CHILD on it and
+	# every ancestor, through a shadow root to its host, up to one that has it already.
+	[MarkUp: ptr<DomNode> node: 0;]
+		ptr<DomNode> n: node;
+		while n is not 0
+			if (n.flags & DIRTY_CHILD) is not 0 return;
+			n.flags is n.flags | DIRTY_CHILD;
+			if n.parent is not 0
+				n is n.parent;
+			;;
+			elif (n.flags & SHADOW_ROOT) is not 0
+				n is n.shadow;
+			;;
+			else
+				n is 0;
+			;;
+		;;
+	[end]
+
+	# whether there's a <style> or <link> at or under node (a stylesheet coming or going)
+	[HoldsSheet: ptr<DomNode> node: 0;]
+		call Start;
+		ptr<DomNode> n: node;
+		while n is not 0
+			if n.type is DomType.ELEMENT and (n.tag is A_STYLE or n.tag is A_LINK) return true;
+			n is (Next: n node);
+		;;
+	[end: false]
+
+	[IsSheetNode: ptr<DomNode> n: 0;]
+		call Start;
+	[end: n is not 0 and n.type is DomType.ELEMENT and (n.tag is A_STYLE or n.tag is A_LINK)]
 
 	# ---- making nodes
 
@@ -313,6 +368,11 @@ phi.Dom:Library
 		node.parent is 0;
 		node.prev is 0;
 		node.next is 0;
+		if node.type is DomType.ELEMENT and (node.first_child is not 0 or (IsSheetNode: node))
+			if (HoldsSheet: node)
+				parent.doc.sheet_version++;
+			;;
+		;;
 		call Changed: parent DomChange.CHILDREN;
 	[end]
 
@@ -328,6 +388,13 @@ phi.Dom:Library
 			ref is node.next;
 		;;
 		call Remove: node;
+		# (somewhere new, it may match other rules and inherits from another parent)
+		node.flags is node.flags | DIRTY_STYLE;
+		if node.type is DomType.ELEMENT and (node.first_child is not 0 or (IsSheetNode: node))
+			if (HoldsSheet: node)
+				parent.doc.sheet_version++;
+			;;
+		;;
 		node.parent is parent;
 		node.next is ref;
 		if ref is 0
@@ -752,26 +819,83 @@ phi.Dom:Library
 		doc.version++;
 		if what is DomChange.CHILDREN
 			node.flags is node.flags | DIRTY_TREE;
+			call MarkUp: node;
+			if (IsSheetNode: node)
+				doc.sheet_version++;
+			;;
 		;;
 		elif what is DomChange.TEXT and node.parent is not 0
 			# :empty can see text come and go
 			node.parent.flags is node.parent.flags | DIRTY_TREE;
+			call MarkUp: node.parent;
+			if (IsSheetNode: node.parent)
+				doc.sheet_version++;
+			;;
+		;;
+		else
+			call MarkUp: node;
+			if (IsSheetNode: node)
+				doc.sheet_version++;
+			;;
 		;;
 		if doc.on_change is not 0
 			call doc.on_change: node what as int;
 		;;
 	[end]
 
+	# What changed decides how much CSS does again: everything under the element if a selector about
+	# other elements can see it (Dom.REACH_*), otherwise the element itself.
 	[AttrChanged: ptr<DomNode> element: 0; ptr<WlAtom> name: 0;]
+		ptr<DomDocument> doc: element.doc;
+		bln reaches: (doc.css_reach & REACH_ALL) is not 0 or doc.quirks or (name.css & REACH_ATTR) is not 0;
 		if name is A_ID
+			if element.id_atom is not 0 and (element.id_atom.css & REACH_ID) is not 0
+				reaches is true;
+			;;
 			call RefreshId: element;
+			if element.id_atom is not 0 and (element.id_atom.css & REACH_ID) is not 0
+				reaches is true;
+			;;
 		;;
 		elif name is A_CLASS
+			ptr<ptr<WlAtom>> old: element.classes;
+			u32 old_n: element.class_count;
+			element.classes is 0;
 			call RefreshClasses: element;
+			if (ClassesReach: old old_n element.classes element.class_count)
+				reaches is true;
+			;;
+			if old is not 0
+				free old;
+			;;
 		;;
-		element.flags is element.flags | DIRTY_STYLE;
+		elif name is not A_STYLE and (doc.css_reach & REACH_ATTRS) is not 0
+			reaches is true;
+		;;
+		if reaches
+			element.flags is element.flags | DIRTY_STYLE;
+		;;
+		else
+			element.flags is element.flags | DIRTY_SELF;
+		;;
 		call Changed: element DomChange.ATTR;
 	[end]
+
+	# whether a class that reaches further came or went
+	[ClassesReach: ptr<ptr<WlAtom>> a: 0; u32 an: 0; ptr<ptr<WlAtom>> b: 0; u32 bn: 0;]
+		while u32 i: 0; i < an; i++;
+			if (a:i.css & REACH_CLASS) is not 0 and not (AtomIn: a:i b bn) return true;
+		;;
+		while u32 j: 0; j < bn; j++;
+			if (b:j.css & REACH_CLASS) is not 0 and not (AtomIn: b:j a an) return true;
+		;;
+	[end: false]
+
+	[AtomIn: ptr<WlAtom> x: 0; ptr<ptr<WlAtom>> list: 0; u32 n: 0;]
+		while u32 i: 0; i < n; i++;
+			if list:i is x return true;
+		;;
+	[end: false]
 
 	[RefreshId: ptr<DomNode> element: 0;]
 		ptr<DomAttr> a: (Attr: element A_ID);

@@ -107,9 +107,7 @@ phi.PageElements:Library
 		ptr<DomNode> n: (PageBind.NodeOf: (Js.Arg: args argc 0));
 		if n is not 0
 			n.flags is n.flags | Dom.CE_DEFINED | Dom.DIRTY_STYLE;
-			if n.parent is not 0
-				n.parent.flags is n.parent.flags | Dom.DIRTY_CHILD;
-			;;
+			call Dom.MarkUp: n;
 			n.doc.version++;
 		;;
 	[end: JsV.UNDEF]

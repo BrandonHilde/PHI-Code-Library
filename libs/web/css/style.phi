@@ -17,6 +17,7 @@ use memory.mem;
 use core.text;
 use core.buf;
 use core.atoms;
+use core.stack;
 use css.tables;
 use css.values;
 use css.calc;
@@ -490,6 +491,80 @@ phi.CssStyles:Library
 		;;
 		free s;
 	[end]
+
+	# whether two styles say the same in every property, custom property and pseudo-element (a
+	# style made again that comes out as it was, so what inherits from it needn't change). Values
+	# held elsewhere (CssCx) count as the same only if they're the same one.
+	[Same: ptr<CssComputed> a: 0; ptr<CssComputed> b: 0;]
+		call WlStack.Check;
+		if a is b return true;
+		if a is 0 or b is 0 return false;
+		if a.font_px is not b.font_px or a.current_color is not b.current_color return false;
+		while u32 i: 0; i < CssP.GROUPS; i++;
+			ptr<u8> ga: a.g:i;
+			ptr<u8> gb: b.g:i;
+			if ga is not gb
+				if ga is 0 or gb is 0 return false;
+				ptr<u32> ha: ga as ptr<u32>;
+				ptr<u32> hb: gb as ptr<u32>;
+				if ha:1 is not hb:1 return false;
+				ptr<CssVal> va: (ga + 8) as ptr<CssVal>;
+				ptr<CssVal> vb: (gb + 8) as ptr<CssVal>;
+				while u32 k: 0; k < ha:1; k++;
+					if not (SameVal: addr va:k addr vb:k) return false;
+				;;
+			;;
+		;;
+		if not (SameVars: a.vars b.vars) return false;
+		if a.pseudo is not b.pseudo
+			if a.pseudo is 0 or b.pseudo is 0 return false;
+			ptr<CssPseudoSet> pa: a.pseudo;
+			ptr<CssPseudoSet> pb: b.pseudo;
+			while u32 k: 0; k <= CssSel.PE_COUNT; k++;
+				if not (Same: pa.styles:k pb.styles:k) return false;
+			;;
+		;;
+	[end: true]
+
+	# (maps made again come out as new maps, and their values as new CssCx: what they hold is compared)
+	[SameVars: ptr<CssVarMap> a: 0; ptr<CssVarMap> b: 0;]
+		while a is not b
+			if a is 0 or b is 0 return false;
+			if a.count is not b.count return false;
+			if a.count > 0
+				if not (Mem.Equal: a.names as ptr<u8> b.names as ptr<u8> a.count * sizeof ptr<WlAtom>) return false;
+				while u32 i: 0; i < a.count; i++;
+					if not (SameCx: a.values:i b.values:i) return false;
+				;;
+			;;
+			a is a.parent;
+			b is b.parent;
+		;;
+	[end: true]
+
+	[SameVal: ptr<CssVal> a: 0; ptr<CssVal> b: 0;]
+		if a.kind is not b.kind or a.code is not b.code or a.unit is not b.unit return false;
+		if a.bits is b.bits return true;
+		if a.kind < CssV.FIRST_CX as u8 return false;
+	[end: (SameCx: a.bits b.bits)]
+
+	[SameCx: u32 x: 0; u32 y: 0;]
+		call WlStack.Check;
+		if x is y return true;
+		if x is 0 or y is 0 return false;
+		ptr<CssCx> a: (CssCxs.At: x);
+		ptr<CssCx> b: (CssCxs.At: y);
+		if a.len is not b.len return false;
+		if (a.text is 0) is not (b.text is 0) or (a.items is 0) is not (b.items is 0) return false;
+		if a.text is not 0
+			if not (Mem.Equal: a.text b.text a.len) return false;
+		;;
+		elif a.items is not 0
+			while u32 i: 0; i < a.len; i++;
+				if not (SameVal: addr a.items:i addr b.items:i) return false;
+			;;
+		;;
+	[end: true]
 
 	[RetainVars: ptr<CssVarMap> m: 0;]
 		if m is not 0

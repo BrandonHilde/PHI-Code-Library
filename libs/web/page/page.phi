@@ -883,8 +883,9 @@ phi.Page:Library
 	# Finds <style> and <link rel=stylesheet> elements that are new or changed, and what's gone away. It walks
 	# the document, so only when the document has changed.
 	[ScanSheets: ptr<Page> p: 0;]
-		if p.sheets_scanned and p.sheets_version is p.doc.version return;
-		p.sheets_version is p.doc.version;
+		# (only when a <style> or <link> came, went or changed: it reads every <style>'s text)
+		if p.sheets_scanned and p.sheets_version is p.doc.sheet_version return;
+		p.sheets_version is p.doc.sheet_version;
 		p.sheets_scanned is true;
 		while each s in p.sheets
 			s.seen is false;
@@ -915,7 +916,7 @@ phi.Page:Library
 				call Disown: addr p.sheets:i;
 			;;
 		;;
-		p.sheets_version is p.doc.version;
+		p.sheets_version is p.doc.sheet_version;
 	[end]
 
 	[SheetFor: ptr<Page> p: 0; ptr<DomNode> n: 0;]

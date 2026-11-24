@@ -19,6 +19,8 @@ struct.WlAtom
 	u32 tag;                # HtmlTag number, for an HTML element's name; 0 otherwise
 	u32 prop;               # CSS property number; 0 otherwise
 	u64 js;                 # the JS engine's string for it, once it has asked; 0 before
+	u32 css;                # CSS's: Dom.REACH_* when a class, id or attribute of this name is in
+	                        # a selector about other elements than the one it's on
 }
 
 phi.WlAtoms:Library

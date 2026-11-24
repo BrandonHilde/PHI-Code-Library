@@ -514,6 +514,118 @@ phi.TestCssCascade:Program
 	call Css.FreeSheet: hv;
 	call Finish;
 
+	# ---- dynamic, done only as far as it reaches: a restyle that comes out the same doesn't redo
+	# what's under it, and :has(), siblings and :first-child are followed to who they're about
+	call Setup: 'html(body(div#box(div#mid(span#leaf)) div#a div#b div#far(div#c(p#t)) ul#ul(li#l1(i#lt) li#l2) div#s1 div#s2(p#st)))' '.box:has(.hit) { color: red; } #a:has(+ .x) { width: 1px; } #c:has(.hit) #t { width: 4px; } li:first-child #lt { height: 3px; } li:first-child { top: 2px; } .on + #s2 #st { width: 5px; } #s2 { margin-top: 1px; }';
+	call Dom.SetAttrZ: (Id: 'box') 'class' 'box';
+	call e.Update;
+	call C: 'box' 'color' 'rgb(0, 0, 0)';
+	ptr<u8> leaf_style: (Id: 'leaf').style;
+	ptr<u8> st_style: (Id: 'st').style;
+	call Dom.SetAttrZ: (Id: 'leaf') 'class' 'hit';
+	call e.Update;
+	call C: 'box' 'color' 'rgb(255, 0, 0)';
+	call C: 'leaf' 'color' 'rgb(255, 0, 0)';
+	call Say: 'far away keeps its very style' (Id: 'st').style is st_style;
+	call Dom.RemoveAttr: (Id: 'leaf') (WlAtoms.GetZ: 'class');
+	call e.Update;
+	call C: 'box' 'color' 'rgb(0, 0, 0)';
+	ptr<DomNode> hit: (Dom.CreateElementZ: doc 'b');
+	call Dom.SetAttrZ: hit 'class' 'hit';
+	call Dom.Append: (Id: 'mid') hit;
+	call e.Update;
+	call C: 'box' 'color' 'rgb(255, 0, 0)';
+	call Dom.Remove: hit;
+	call e.Update;
+	call C: 'box' 'color' 'rgb(0, 0, 0)';
+	# :has(+ x): the element before it
+	call Dom.SetAttrZ: (Id: 'b') 'class' 'x';
+	call e.Update;
+	call C: 'a' 'width' '1px';
+	call Dom.RemoveAttr: (Id: 'b') (WlAtoms.GetZ: 'class');
+	call e.Update;
+	call C: 'a' 'width' 'auto';
+	# a :has() on an ancestor of what the rule styles
+	call Dom.SetAttrZ: (Id: 't') 'class' 'hit';
+	call e.Update;
+	call C: 't' 'width' '4px';
+	call Dom.RemoveAttr: (Id: 't') (WlAtoms.GetZ: 'class');
+	call e.Update;
+	call C: 't' 'width' 'auto';
+	# :first-child on an ancestor of what the rule styles
+	call C: 'lt' 'height' '3px';
+	ptr<DomNode> l0: (Dom.CreateElementZ: doc 'li');
+	call Dom.InsertBefore: (Id: 'ul') l0 (Id: 'l1');
+	call e.Update;
+	call C: 'lt' 'height' 'auto';
+	call C: 'l1' 'top' 'auto';
+	call Dom.Remove: l0;
+	call e.Update;
+	call C: 'lt' 'height' '3px';
+	call C: 'l1' 'top' '2px';
+	# a sibling combinator on an ancestor of what the rule styles
+	call Dom.SetAttrZ: (Id: 's1') 'class' 'on';
+	call e.Update;
+	call C: 'st' 'width' '5px';
+	call C: 's2' 'margin-top' '1px';
+	call Dom.RemoveAttr: (Id: 's1') (WlAtoms.GetZ: 'class');
+	call e.Update;
+	call C: 'st' 'width' 'auto';
+	# a child coming and going leaves what's under its parent as it was
+	ptr<u8> body_style: (Dom.Body: doc).style;
+	leaf_style is (Id: 'leaf').style;
+	ptr<DomNode> extra_div: (Dom.CreateElementZ: doc 'div');
+	call Dom.Append: (Dom.Body: doc) extra_div;
+	call e.Update;
+	call Say: 'parent kept its style' (Dom.Body: doc).style is body_style;
+	call Say: 'cousin kept its style' (Id: 'leaf').style is leaf_style;
+	call Finish;
+
+	# ---- an attribute's change reaches as far as the selectors that look at it
+	call Setup: 'html(body(div#top(div#mid2(p#q span#sp)) div#lg(p#lp)))' '[data-on] #q { width: 7px; } p:lang(fr) { height: 8px; }';
+	ptr<u8> sp_style: (Id: 'sp').style;
+	ptr<u8> q_style: (Id: 'q').style;
+	# not in any selector: what's under it keeps its very style
+	call Dom.SetAttrZ: (Id: 'top') 'data-x' '1';
+	call e.Update;
+	call Say: 'unseen attribute leaves children' (Id: 'sp').style is sp_style;
+	# the style attribute: what's under it inherits the change, and keeps its style otherwise
+	call Dom.SetAttrZ: (Id: 'top') 'style' 'color: green; margin-left: 3px';
+	call e.Update;
+	call C: 'sp' 'color' 'rgb(0, 128, 0)';
+	call C: 'sp' 'margin-left' '0px';
+	call C: 'top' 'margin-left' '3px';
+	call Dom.SetAttrZ: (Id: 'top') 'style' 'margin-left: 4px';
+	call e.Update;
+	call C: 'sp' 'color' 'rgb(0, 0, 0)';
+	q_style is (Id: 'q').style;
+	call Dom.SetAttrZ: (Id: 'top') 'style' 'margin-left: 5px';
+	call e.Update;
+	call Say: 'style attribute leaves children' (Id: 'q').style is q_style;
+	# an attribute in a selector about what's under it
+	call Dom.SetAttrZ: (Id: 'mid2') 'data-on' '';
+	call e.Update;
+	call C: 'q' 'width' '7px';
+	call Dom.RemoveAttr: (Id: 'mid2') (WlAtoms.GetZ: 'data-on');
+	call e.Update;
+	call C: 'q' 'width' 'auto';
+	# :lang() looks up the tree, wherever it is in a selector
+	call Dom.SetAttrZ: (Id: 'lg') 'lang' 'fr';
+	call e.Update;
+	call C: 'lp' 'height' '8px';
+	call Dom.SetAttrZ: (Id: 'lg') 'lang' 'en';
+	call e.Update;
+	call C: 'lp' 'height' 'auto';
+	call Finish;
+
+	# ---- moved, with no structural rules to make its parent look again
+	call Setup: 'html(body(div#from(span#m) div#to.in))' '.in span { color: red; }';
+	call C: 'm' 'color' 'rgb(0, 0, 0)';
+	call Dom.Append: (Id: 'to') (Id: 'm');
+	call e.Update;
+	call C: 'm' 'color' 'rgb(255, 0, 0)';
+	call Finish;
+
 	# ---- sharing: 1000 elements alike are one style
 	WlBuf big;
 	call big.AddZ: 'html(body(div#w(';
