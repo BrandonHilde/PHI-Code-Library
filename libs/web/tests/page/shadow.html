@@ -4,6 +4,10 @@
 .in { color: rgb(255, 0, 0) }
 x-card { font-size: 20px }
 x-card.outer { color: rgb(10, 10, 10) }
+x-card::part(lbl) { color: rgb(11, 22, 33) }
+x-card.outer::part(lbl) { font-size: 41px }
+x-card::part(nope) { color: rgb(0, 0, 1) }
+div::part(lbl) { color: rgb(0, 0, 2) }
 </style>
 </head><body>
 <x-card id="card"><span id="s1">slotted</span><b slot="b" id="named">named</b>text</x-card>
@@ -17,8 +21,8 @@ class XCard extends HTMLElement {
   constructor() {
     super();
     var root = this.attachShadow({ mode: "open" });
-    root.innerHTML = "<style>:host { display: block; color: rgb(1, 2, 3) } .in { color: rgb(4, 5, 6) } ::slotted(span) { color: rgb(7, 8, 9) } #wrap { font-size: 30px }</style>" +
-      "<div id='wrap'><div class='in' id='inner'>inside</div><slot id='d'></slot><slot name='b' id='b'>fallback</slot><slot name='c' id='c'><i>c fallback</i></slot></div>";
+    root.innerHTML = "<style>:host { display: block; color: rgb(1, 2, 3) } .in { color: rgb(4, 5, 6) } ::slotted(span) { color: rgb(7, 8, 9) } #wrap { font-size: 30px } #lbl, #other { color: rgb(255, 255, 0) }</style>" +
+      "<div id='wrap'><div class='in' id='inner'>inside</div><slot id='d'></slot><slot name='b' id='b'>fallback</slot><slot name='c' id='c'><i>c fallback</i></slot><span part='x lbl' id='lbl'>label</span><span part='other' id='other'>other</span></div>";
   }
 }
 customElements.define("x-card", XCard);
@@ -78,4 +82,6 @@ log("insertRule:", style(xa.shadowRoot.getElementById("ap"), "font-size"), share
 xb.shadowRoot.adoptedStyleSheets = [];
 log("unadopted:", style(xb, "color"), style(xa, "color"));
 log("DOMParser:", parsed.title, parsed.body.innerHTML.length > 0, parsed.querySelector(".x").textContent, parsed.querySelector("div").shadowRoot !== null, parsed === document);
+var lbl = root.getElementById("lbl");
+log("::part:", style(lbl, "color"), style(lbl, "font-size"), style(root.getElementById("other"), "color"), style(document.getElementById("card2").shadowRoot.getElementById("lbl"), "font-size"), document.querySelector("x-card::part(lbl)"));
 </script></body></html>

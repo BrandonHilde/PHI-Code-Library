@@ -264,6 +264,7 @@ phi.CssCascade:Library
 	const u32 AIM_ANY: 1;
 	const u32 AIM_HOST: 2;
 	const u32 AIM_SLOTTED: 3;
+	const u32 AIM_PART: 4;      # ::part(): elements of the shadow trees of hosts in the rule's own tree
 
 	ptr<DomNode> cur_scope: 0;      # the sheet being indexed
 	u32 cur_key: 0;
@@ -1020,6 +1021,10 @@ phi.CssCascade:Library
 				elif aim is AIM_SLOTTED
 					for_it is (node.parent is not 0 and node.parent.shadow is not 0 and (Adopts: node.parent.shadow x.adopt_key));
 				;;
+				elif aim is AIM_PART
+					ptr<DomNode> ph: (CssSel.PartHost: node);
+					for_it is (ph is not 0 and (Adopts: (TreeOf: ph) x.adopt_key));
+				;;
 			;;
 			elif aim is AIM_TREE
 				for_it is (x.scope is cur_tree);
@@ -1030,9 +1035,17 @@ phi.CssCascade:Library
 			elif aim is AIM_SLOTTED
 				for_it is (node.parent is not 0 and node.parent.shadow is x.scope and x.scope is not 0);
 			;;
+			elif aim is AIM_PART
+				ptr<DomNode> ph2: (CssSel.PartHost: node);
+				for_it is (ph2 is not 0 and (TreeOf: ph2) is x.scope);
+			;;
 			# (a shadow tree's own rules for its host and slotted children give way to the outside's)
 			if aim is AIM_HOST or aim is AIM_SLOTTED
 				rank is RANK_HINTS;
+			;;
+			# (and the outside's rules for a part come before the tree's own: the outer tree wins)
+			elif aim is AIM_PART and rank is RANK_UNLAYERED
+				rank is RANK_UNLAYERED + 4;
 			;;
 			CssSel.in_shadow is (x.scope is not 0 or x.adopt_key is not 0);
 			if for_it and x.cq is not 0
@@ -1125,6 +1138,7 @@ phi.CssCascade:Library
 			if s.kind is CssSel.S_PSEUDO as u8
 				if s.pseudo is CssK.HOST as u16 or s.pseudo is CssSel.P_HOST_CONTEXT as u16 return AIM_HOST;
 				if s.pseudo is CssSel.P_SLOTTED as u16 return AIM_SLOTTED;
+				if s.pseudo is CssSel.P_PART as u16 return AIM_PART;
 			;;
 			s is s.next;
 		;;

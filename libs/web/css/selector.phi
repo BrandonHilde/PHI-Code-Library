@@ -80,6 +80,7 @@ phi.CssSel:Library
 	const u32 C_CHILD: 1;
 	const u32 C_NEXT: 2;
 	const u32 C_SIBLING: 3;
+	const u32 C_PART: 4;        # ::part(): the compound before it is the shadow host of the element
 
 	const u32 PE_NONE: 0;
 	const u32 PE_BEFORE: 1;
@@ -98,6 +99,10 @@ phi.CssSel:Library
 	# children shown in its slots)
 	const u32 P_HOST_CONTEXT: 0xFFF0;
 	const u32 P_SLOTTED: 0xFFF1;
+	# ::part(name): an element of a shadow tree whose part attribute has that name (CssSimple.a),
+	# styled from outside the tree. The compound it's in is split there: what's before it is the
+	# tree's host (C_PART), it and what follows (::part(x):hover) the element itself.
+	const u32 P_PART: 0xFFF2;
 
 	# whether the rule being matched is a shadow tree's (the cascade says): :host matches only then
 	bln in_shadow: false;
@@ -394,8 +399,23 @@ phi.CssSel:Library
 				if t:pos.type is CssLex.COLON
 					pos++;
 					slotted is 0;
+					part_s is 0;
 					if (PseudoElement: whole true) is false return false;
 					spec:0 is (AddSpec: spec:0 1);
+					if part_s is not 0
+						# ::part(): what's written before it is the host's compound, to the left
+						ptr<CssCompound> host_c: (Alloc: sizeof CssCompound) as ptr<CssCompound>;
+						host_c.first is c.first;
+						host_c.left is c.left;
+						host_c.comb is c.comb;
+						c.left is host_c;
+						c.comb is C_PART as u8;
+						c.first is part_s;
+						last is part_s;
+						part_s is 0;
+						parts++;
+						continue;
+					;;
 					if slotted is not 0
 						# ::slotted(S) stands for the whole compound
 						spec:0 is (AddSpec: spec:0 (MaxSpec: slotted.sub));
@@ -443,6 +463,9 @@ phi.CssSel:Library
 		if t:pos.type is CssLex.FUNCTION and two_colons and (WlText.EqNoCaseZ: t:pos.text t:pos.len 'slotted')
 			return (Slotted: whole);
 		;;
+		if t:pos.type is CssLex.FUNCTION and two_colons and (WlText.EqNoCaseZ: t:pos.text t:pos.len 'part')
+			return (Part);
+		;;
 		if t:pos.type is not CssLex.IDENT return false;
 		ptr<CssTok> tk: addr t:pos;
 		u32 kw: (CssVp.Kw: tk);
@@ -487,6 +510,25 @@ phi.CssSel:Library
 		;;
 		whole.pseudo is pe as u8;
 		pos++;
+	[end: true]
+
+	# ::part(name): one name (several, ::part(a b), are each to be there: only the first is looked at)
+	ptr<CssSimple> part_s: 0;
+
+	[Part]
+		ptr<CssTok> tk: addr t:pos;
+		u32 close: tk.match;
+		if close > stop return false;
+		u32 i: pos + 1;
+		while i < close and t:i.type is CssLex.WS
+			i++;
+		;;
+		if i >= close or t:i.type is not CssLex.IDENT return false;
+		ptr<CssSimple> f: (NewSimple: S_PSEUDO);
+		f.pseudo is P_PART as u16;
+		f.a is (WlAtoms.Get: t:i.text t:i.len);
+		part_s is f;
+		pos is close + 1;
 	[end: true]
 
 	# ::slotted(S): the compound it ends becomes a P_SLOTTED of S alone (what's before it in the compound,
@@ -783,6 +825,16 @@ phi.CssSel:Library
 				ptr<CssCompound> left: c.left;
 				if left is 0 return true;
 				u32 comb: c.comb;
+				if comb is C_PART
+					# (from a part to the host of the shadow tree it's in)
+					ptr<DomNode> host: (PartHost: e);
+					if host is 0 return false;
+					desc_c is 0;
+					sib_c is 0;
+					c is left;
+					e is host;
+					continue;
+				;;
 				if comb is C_DESCENDANT or comb is C_CHILD
 					ptr<DomNode> up: (Up: e);
 					if up is 0 return false;
@@ -824,6 +876,40 @@ phi.CssSel:Library
 			desc_e is further;
 			c is desc_c;
 			e is further;
+		;;
+	[end: false]
+
+	# the host of the shadow tree e is in, or 0 when it's in the document's
+	[PartHost: ptr<DomNode> e: 0;]
+		ptr<DomNode> top: (Dom.TreeRoot: e);
+		if top is 0 or top.type is not DomType.FRAGMENT or (top.flags & Dom.SHADOW_ROOT) is 0 return 0 as ptr<DomNode>;
+	[end: top.shadow]
+
+	# whether e's part attribute has the name among its words
+	[HasPart: ptr<DomNode> e: 0; ptr<WlAtom> name: 0; : bln]
+		ptr<u8> v: (Dom.AttrValue: e 'part');
+		if v is 0 or name is 0 return false;
+		u32 i: 0;
+		unsafe
+			while v:i is not 0
+				while v:i is 32 or v:i is 9 or v:i is 10 or v:i is 12 or v:i is 13
+					i++;
+				;;
+				u32 from: i;
+				while v:i is not 0 and v:i is not 32 and v:i is not 9 and v:i is not 10 and v:i is not 12 and v:i is not 13
+					i++;
+				;;
+				if i > from and i - from is name.len
+					bln same: true;
+					while u32 k: 0; k < name.len; k++;
+						if v:(from + k) is not name.text:k
+							same is false;
+							break;
+						;;
+					;;
+					if same return true;
+				;;
+			;;
 		;;
 	[end: false]
 
@@ -1142,6 +1228,9 @@ phi.CssSel:Library
 			is P_SLOTTED
 				if (Dom.AssignedSlot: e) is 0 return false;
 				return (AnyOf: s.sub e);
+			;;
+			is P_PART
+				return (HasPart: e s.a);
 			;;
 			is CssK.DEFINED
 				# built in, or a custom element that has been made by its class (a name with a hyphen is a

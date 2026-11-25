@@ -21,6 +21,7 @@ adopted: rgb(20, 30, 40) 33px rgb(20, 30, 40) rgb(50, 60, 70) 3 .q true true tru
 insertRule: 11px 4
 unadopted: rgb(0, 0, 0) rgb(20, 30, 40)
 DOMParser: t true parsed false false
+::part: rgb(11, 22, 33) 30px rgb(255, 255, 0) 41px 
 --- a timer
 --- a frame
 --- later
