@@ -89,7 +89,9 @@ kernel with less room would want the library's lines alone marked, or a switch.
 **Tests slower than their limit under emulation aren't failures of the code.** On a Mac, the 64-bit
 Linux runs go through Lima's x86 emulation: imagelib's `test_png_fuzz` printed exactly its expected
 output and was still cut off at 300 s. Give the emulated runs a longer `-Timeout` before reading a
-timeout as a bug.
+timeout as a bug. (2026-11-25: weblib's `test_css_fuzz` takes 59–60 s in Lima on both Linux targets,
+right at the default 60 s, so it fails or passes by a second; its output is exact, and it passes with
+`-Timeout 180`.)
 
 **A method's result reads a variable declared again after a block that had one of the same name as
 another class's (or fails to build).** Found writing imagelib's VP8 decoder, 2026-11-20, in 1.0 on ARM
