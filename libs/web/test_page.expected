@@ -45,6 +45,7 @@ console[0]: btoa aGVsbG8= hello
 console[0]: matchMedia true false
 console[0]: computed rgb(16, 32, 48) block
 console[0]: written written
+console[0]: navigator function false
 console[0]: microtask
 console[0]: queued microtask
 console[0]: timing number 1 0
@@ -207,6 +208,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
+log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
 </script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
 <p>after the script</p>
 <script>
@@ -363,6 +365,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
+log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
 </script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
 <p>after the script</p>
 <script>
@@ -429,6 +432,7 @@ console[0]: btoa aGVsbG8= hello
 console[0]: matchMedia true false
 console[0]: computed rgb(16, 32, 48) block
 console[0]: written written
+console[0]: navigator function false
 console[0]: microtask
 console[0]: queued microtask
 console[0]: timing number 1 0
@@ -591,6 +595,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
+log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
 </script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
 <p>after the script</p>
 <script>
@@ -747,6 +752,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
+log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
 </script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
 <p>after the script</p>
 <script>

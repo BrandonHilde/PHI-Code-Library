@@ -425,6 +425,8 @@ phi.PageWindow:Library
 		call Js.Define: n 'cookieEnabled' JsV.TRUE JsObjs.E;
 		call Js.Define: n 'hardwareConcurrency' (JsV.Int: 1) JsObjs.E;
 		call Js.Define: n 'maxTouchPoints' JsV.INT_BASE JsObjs.E;
+		# (no Java, as in every browser now: Apple's pages ask)
+		call Js.DefineNative: n 'javaEnabled' addr FalseFn 0;
 		call JsObjs.DefineZ: JsRt.r.global 'navigator' (JsV.Obj: n) JsObjs.E | JsObjs.C;
 	[end]
 
