@@ -17,4 +17,7 @@ box scroll event: scrollTop 45
 --- the host scrolls the window (the wheel, say)
 scrollY now 333; far is at 667 in the window (1000 on the page)
 window scroll event: scrollY 333, pageYOffset 333
+--- document.elementFromPoint (the host says <p id=far> is at 900 to 1020 on the page; the window is 600 tall)
+at (10, 580) in the window: far; elementsFromPoint: P BODY HTML
+at (10, 5): null; outside the window (10, -3): null, (10, 672): null; elementsFromPoint there: 0
 --- a frame with nothing new: no events

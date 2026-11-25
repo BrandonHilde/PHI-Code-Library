@@ -2103,11 +2103,14 @@
   // A <style>'s sheet (style.sheet, document.styleSheets) has the rules its text has; once a script
   // changes them (insertRule, as styled-components and emotion do) they're what styles the page
   // (%styleText), until the element's text changes, which they're read from again. A <link>'s
-  // rules aren't a script's to see here: its cssRules are empty, and rules put in it do nothing.
+  // rules are those of the sheet it brought (%linkText), none until it's come; one from another
+  // origin that wasn't asked for by CORS can't be read (SecurityError). Rules a script puts in a
+  // <link>'s sheet are kept in it but don't style the page here.
 
   var sheetNew = global["%sheetNew"], sheetSet = global["%sheetSet"], adopt = global["%adopt"];
-  var styleText = global["%styleText"];
+  var styleText = global["%styleText"], linkText = global["%linkText"];
   delete global["%sheetNew"]; delete global["%sheetSet"]; delete global["%adopt"]; delete global["%styleText"];
+  delete global["%linkText"];
 
   // a sheet's text, cut into its rules at the top level (strings and comments looked past)
   function splitRules(text) {
@@ -2166,6 +2169,18 @@
     // (a <style>'s: its text again if that's changed since its rules were read)
     _sync() {
       var el = this._owner;
+      if (el && el.localName === "link") {
+        // (read once it's come, from the sheet it brought; again if its href changes)
+        var href = el.getAttribute("href");
+        if (this._base !== null && this._href === href) return;
+        var text = linkText(el);
+        if (text === null) { this._rules = []; return; }
+        this._href = href;
+        this._base = "";
+        this._cross = text === false;
+        this._rules = text === false ? [] : splitRules(text);
+        return;
+      }
       if (!el || el.localName !== "style") return;
       var text = el.textContent;
       if (text !== this._base) {
@@ -2173,7 +2188,12 @@
         this._rules = splitRules(text);
       }
     }
-    get cssRules() { this._sync(); var self = this; return this._rules.map(function (t) { return new CSSRule(t, self); }); }
+    get cssRules() {
+      this._sync();
+      if (this._cross) throw new DOMException("Cannot access rules of a stylesheet from another origin", "SecurityError");
+      var self = this;
+      return this._rules.map(function (t) { return new CSSRule(t, self); });
+    }
     get rules() { return this.cssRules; }
     get type() { return "text/css"; }
     get href() { return this._owner && this._owner.localName === "link" ? this._owner.href : null; }
@@ -2236,6 +2256,8 @@
       hidden(sheet, "_disabled", false);
       hidden(sheet, "_owner", el);
       hidden(sheet, "_base", null);
+      hidden(sheet, "_href", null);
+      hidden(sheet, "_cross", false);
       ownSheets.set(el, sheet);
     }
     return sheet;

@@ -2089,6 +2089,35 @@ phi.PageBind:Library
 		call InWindow: addr box:0;
 	[end: (RectObject: addr box:0)]
 
+	# document.elementFromPoint(x, y): the element on top at (x, y) in the window (the host's hit
+	# hook says); null outside the window or if nothing's there
+	[FromPoint: ptr<u64> args: 0; int argc: 0;]
+	[end: (Wrap: (PointHit: args argc))]
+
+	# document.elementsFromPoint(x, y): that element, then those it's in, out to <html>
+	[AllFromPoint: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (PointHit: args argc);
+		ptr<JsObj> list: (JsObjs.NewArray: 4);
+		while n is not 0
+			if n.type is DomType.ELEMENT
+				call JsObjs.ArrayPush: list (Wrap: n);
+			;;
+			n is n.parent;
+		;;
+	[end: (JsV.Obj: list)]
+
+	[PointHit: ptr<u64> args: 0; int argc: 0; : ptr<DomNode>]
+		ptr<Page> p: Page.current;
+		if p is 0 or p.host.hit is 0 return 0 as ptr<DomNode>;
+		f64 x: (JsOps.ToNumber: (Js.Arg: args argc 0));
+		f64 y: (JsOps.ToNumber: (Js.Arg: args argc 1));
+		if not (x >= 0.0 and y >= 0.0 and x < p.width and y < p.height) return 0 as ptr<DomNode>;
+		ptr<DomNode> n: (p.host.hit: p x + p.scroll_x y + p.scroll_y);
+		while n is not 0 and n.type is not DomType.ELEMENT
+			n is n.parent;
+		;;
+	[end: n]
+
 	[InWindow: ptr<f64> box: 0;]
 		ptr<Page> p: Page.current;
 		if p is 0 return;
@@ -2190,6 +2219,8 @@ phi.PageBind:Library
 		call Method: p 'createComment' addr CreateCommentFn 1 0;
 		call Method: p 'createDocumentFragment' addr CreateFragmentFn 0 0;
 		call Method: p 'getElementById' addr GetElementById 1 0;
+		call Method: p 'elementFromPoint' addr FromPoint 2 0;
+		call Method: p 'elementsFromPoint' addr AllFromPoint 2 0;
 		call Method: p 'getElementsByTagName' addr ByTag 1 0;
 		call Method: p 'getElementsByClassName' addr ByClass 1 0;
 		call Method: p 'getElementsByName' addr ByName 1 0;

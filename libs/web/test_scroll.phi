@@ -2,6 +2,7 @@
 # where things went (Page.Scrolled), scrollX, scrollY, scrollTop ... say so at once, and a scroll
 # event comes in the next frame (at the document, heard by the window, for the window; at the
 # element, not bubbling, for a box). The pretend host keeps the window to 0..500 and boxes to 0..200.
+# And document.elementFromPoint / elementsFromPoint, by the host's hit hook, in the window's terms.
 use weblib;
 
 phi.TestScroll:Program
@@ -11,6 +12,7 @@ phi.TestScroll:Program
 	host.logger is addr Print;
 	host.scroll is addr Scroll;
 	host.box is addr Box;
+	host.hit is addr Hit;
 	str html: '<!doctype html><body><div id=box style="height:50px;overflow:auto"><p>a</p><p>b</p></div><p id=far>far</p><script>var box = document.getElementById("box"); window.addEventListener("scroll", function () { console.log("window scroll event: scrollY " + scrollY + ", pageYOffset " + pageYOffset); }); box.addEventListener("scroll", function () { console.log("box scroll event: scrollTop " + box.scrollTop); }); document.body.addEventListener("scroll", function () { console.log("body heard a box scroll: wrong, it does not bubble"); }); console.log("at first: scrollY " + scrollY + ", box " + box.scrollTop + ", scrollingElement " + document.scrollingElement.tagName);</script></body>';
 	ptr<Page> page: (Page.New: addr host 800.0 600.0);
 	call Page.Load: page html html.len as u32 'https://scroll.example/';
@@ -27,6 +29,9 @@ phi.TestScroll:Program
 	call Page.Scrolled: page 0 as ptr<DomNode> 0.0 333.0;
 	call Run: page 'console.log("scrollY now " + scrollY + "; far is at " + document.getElementById("far").getBoundingClientRect().top + " in the window (1000 on the page)")';
 	call Page.Frame: page 40.0;
+	log '--- document.elementFromPoint (the host says <p id=far> is at 900 to 1020 on the page; the window is 600 tall)\n';
+	call Run: page 'var e = document.elementFromPoint(10, 580); console.log("at (10, 580) in the window: " + (e && e.id) + "; elementsFromPoint: " + document.elementsFromPoint(10, 580).map(function (x) { return x.tagName; }).join(" "))';
+	call Run: page 'console.log("at (10, 5): " + document.elementFromPoint(10, 5) + "; outside the window (10, -3): " + document.elementFromPoint(10, -3) + ", (10, 672): " + document.elementFromPoint(10, 672) + "; elementsFromPoint there: " + document.elementsFromPoint(10, 672).length)';
 	log '--- a frame with nothing new: no events\n';
 	call Page.Frame: page 60.0;
 	call Page.Free: page;
@@ -47,6 +52,14 @@ phi.TestScroll:Program
 		box:2 is 100.0;
 		box:3 is 20.0;
 	[end]
+
+	# (what's at a place on the page: <p id=far> from 900 to 1020, nothing elsewhere; a text node in
+	# it, as a host's layout might say, which is taken as its element)
+	[Hit: ptr<Page> p: 0; f64 x: 0.0; f64 y: 0.0; : ptr<DomNode>]
+		if y < 900.0 or y >= 1020.0 return 0 as ptr<DomNode>;
+		ptr<DomNode> far: (Dom.FindById: p.doc.root (WlAtoms.Get: 'far' 3));
+		if far is 0 return far;
+	[end: far.first_child]
 
 	[Scroll: ptr<Page> p: 0; ptr<DomNode> n: 0; f64 x: 0.0; f64 y: 0.0; int kind: 0;]
 		str what: 'the window';

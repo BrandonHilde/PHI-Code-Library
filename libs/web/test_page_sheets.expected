@@ -1,5 +1,7 @@
 load http://test.example/screen.css
 load http://test.example/words.css
+load https://cdn.example/theirs.css
+load https://cdn.example/shared.css
 --- styles worked out
 load http://test.example/imported.css
 load http://test.example/nested.css
@@ -7,6 +9,16 @@ screen 16843263 print 255 words 50529279 alternate 255 narrow 255 off 255
 style for print 255 style with blank media 134744319 own 117901311 imported 168430335 imported by the import 185273343
 inside a closed details: display none hidden, its summary shown, inside an open one shown
 a fraction: inline-block 1, its top a block 1, an annotation hidden
+--- a script reads the <link>s' sheets
+screen.css: 1 rules, the first #screen { color: rgb(1, 1, 1); }
+print.css: 0 rules
+words.css: 1 rules, the first #words { color: rgb(3, 3, 3); }
+alternate.css: 0 rules
+narrow.css: 0 rules
+off.css: 0 rules
+https://cdn.example/theirs.css: SecurityError
+https://cdn.example/shared.css: 2 rules, the first p.x { color: rgb(13, 13, 13); }
+styleSheets: 11, the first one's href ends screen.css
 --- the window made 400 wide
 load http://test.example/narrow.css
 screen 16843263 print 255 words 50529279 alternate 255 narrow 84215295 off 255

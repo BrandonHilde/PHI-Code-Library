@@ -2,7 +2,9 @@
 # asked for), nor is an alternate sheet; a sheet another names with @import is asked of the host
 # and used when it comes; a change of the window's width brings in a sheet whose media holds now.
 # And two things the built-in sheet says: what's in a closed <details> but its <summary> isn't
-# shown, and MathML's fraction is a box of two.
+# shown, and MathML's fraction is a box of two. And what a script reads of a <link>'s sheet
+# (cssRules): its rules once it's come, none for one not asked for, and a SecurityError for one
+# from another origin unless the <link> asked for it with crossorigin.
 use weblib;
 
 phi.TestPageSheets:Program
@@ -12,6 +14,7 @@ phi.TestPageSheets:Program
 	call Weblib.Start: 900000;
 	PageHost host;
 	host.load is addr Load;
+	host.logger is addr Print;
 	ptr<u8> html: '<!DOCTYPE html><html><head>
 <link rel="stylesheet" href="screen.css" media="screen">
 <link rel="stylesheet" href="print.css" media="print">
@@ -19,6 +22,8 @@ phi.TestPageSheets:Program
 <link rel="alternate stylesheet" href="alternate.css">
 <link rel="stylesheet" href="narrow.css" media="(max-width: 500px)">
 <link rel="stylesheet" href="off.css" disabled>
+<link rel="stylesheet" href="https://cdn.example/theirs.css" id="theirs">
+<link rel="stylesheet" href="https://cdn.example/shared.css" id="shared" crossorigin>
 <style media="print">#styled { color: rgb(9, 9, 9); }</style>
 <style media=" ">#blank { color: rgb(8, 8, 8); }</style>
 <style>@import url("imported.css"); @import "paper.css" print; #own { color: rgb(7, 7, 7); }</style>
@@ -40,6 +45,9 @@ phi.TestPageSheets:Program
 	ptr<CssComputed> frac: (Css.StyleOf: (Css.Query: page.doc.root '#frac' 5));
 	ptr<CssComputed> over: (Css.StyleOf: (Css.Query: page.doc.root '#over' 5));
 	log 'a fraction: inline-block ' (frac.Is: CssP.DISPLAY CssK.INLINE_BLOCK) ', its top a block ' (over.Is: CssP.DISPLAY CssK.BLOCK) ', an annotation ' (Shown: '#note') '\n';
+	log '--- a script reads the <link>s\' sheets\n';
+	ptr<u8> js: 'var links = document.querySelectorAll("link[rel~=stylesheet], link[rel~=StyleSheet]"); for (var i = 0; i < links.length; i++) { var l = links[i], said; try { var r = l.sheet.cssRules; said = r.length + " rules" + (r.length ? ", the first " + r[0].selectorText + " { " + r[0].cssText.slice(r[0].cssText.indexOf("{") + 1, -1).trim() + " }" : ""); } catch (e) { said = e.name; } console.log(l.getAttribute("href") + ": " + said); } console.log("styleSheets: " + document.styleSheets.length + ", the first one\'s href ends " + document.styleSheets[0].href.slice(-10));';
+	call Page.RunSource: page js (WlText.LenZ: js) 'x';
 
 	log '--- the window made 400 wide\n';
 	call Page.SetViewport: page 400.0 600.0;
@@ -105,11 +113,18 @@ phi.TestPageSheets:Program
 		elif (Ends: url 'paper.css')
 			css is '#own { color: rgb(12, 12, 12); }';
 		;;
+		elif (Ends: url 'theirs.css') or (Ends: url 'shared.css')
+			css is 'p.x { color: rgb(13, 13, 13); } @media print { p { color: black } }';
+		;;
 		if css is 0
 			call Page.Delivered: p id 404 0 0;
 			return;
 		;;
 		call Page.Delivered: p id 200 css (WlText.LenZ: css);
+	[end]
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
 	[end]
 
 	[Ends: ptr<u8> text: 0; ptr<u8> ending: 0;]

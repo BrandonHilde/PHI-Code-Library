@@ -81,6 +81,9 @@ struct.PageHost
 	method<ptr<Page> ptr<u8> ptr<u8> u32> storage_save;
 	# where layout put a node: fills in x, y, width, height. Without it, layout queries answer 0.
 	method<ptr<Page> ptr<DomNode> ptr<f64>> box;
+	# what's drawn at (x, y) on the page (from its top left, not the window's), on top: the node, or
+	# 0 for none (document.elementFromPoint). Without it, those answer null.
+	method<ptr<Page> f64 f64: ptr<DomNode>> hit;
 	# window.alert
 	method<ptr<Page> ptr<u8>> alert;
 	# document.cookie: the cookies for the page (into a buffer of the size given: their length), and one
@@ -152,6 +155,10 @@ struct.PageSheet
 	u32 own_len;
 	u32 own_base;
 	bln owned;
+	# a <link>'s sheet as it came, and where from: for a script that reads its rules (%linkText)
+	ptr<u8> link_text;
+	u32 link_len;
+	ptr<u8> link_from;
 }
 
 struct.Page
@@ -273,6 +280,7 @@ phi.Page:Library
 			p.host.ws_close is host.ws_close;
 			p.host.scroll is host.scroll;
 			p.host.box is host.box;
+			p.host.hit is host.hit;
 			p.host.alert is host.alert;
 			p.host.cookies is host.cookies;
 			p.host.set_cookie is host.set_cookie;
@@ -1066,6 +1074,7 @@ phi.Page:Library
 		;;
 		s.text_hash is 0;
 		s.text_len is 0;
+		call ForgetLink: s;
 	[end]
 
 	# whether a rel attribute names a stylesheet to use: 'stylesheet' is one of its words, in
@@ -1139,7 +1148,35 @@ phi.Page:Library
 		s.own is 0;
 		s.own_len is 0;
 		s.owned is false;
+		call ForgetLink: s;
 	[end]
+
+	[ForgetLink: ptr<PageSheet> s: 0;]
+		if s.link_text is not 0
+			free s.link_text;
+		;;
+		if s.link_from is not 0
+			free s.link_from;
+		;;
+		s.link_text is 0;
+		s.link_len is 0;
+		s.link_from is 0;
+	[end]
+
+	# the sheet a <link> brought, as it came (len into link_len), and where from; 0 if it hasn't
+	# come (or n isn't one)
+	ptr<u8> link_from: 0;
+	u32 link_len: 0;
+
+	[LinkText: ptr<Page> p: 0; ptr<DomNode> n: 0; : ptr<u8>]
+		while u32 i: 0; i < p.sheets.len; i++;
+			if p.sheets:i.node is n and p.sheets:i.link_text is not 0
+				link_from is p.sheets:i.link_from;
+				link_len is p.sheets:i.link_len;
+				return p.sheets:i.link_text;
+			;;
+		;;
+	[end: 0 as ptr<u8>]
 
 	# A script's rules for a <style> (%styleText): text, or with no text its own text again
 	[OwnStyle: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<u8> text: 0; u32 len: 0; bln clear: false;]
@@ -1203,6 +1240,24 @@ phi.Page:Library
 		if s.sheet is not 0
 			s.sheet.scope is (SheetScope: n);
 			call p.css.AddSheet: s.sheet;
+		;;
+		# (kept as it came, for a script that reads its rules)
+		call ForgetLink: s;
+		if n is not 0 and len < 0x4000000
+			s.link_text is new u8[len + 1];
+			if s.link_text is not 0
+				call Mem.Copy: s.link_text bytes len;
+				s.link_text:len is 0;
+				s.link_len is len;
+				if base_url is not 0
+					u32 bl: (WlText.LenZ: base_url);
+					s.link_from is new u8[bl + 1];
+					if s.link_from is not 0
+						call Mem.Copy: s.link_from base_url bl;
+						s.link_from:bl is 0;
+					;;
+				;;
+			;;
 		;;
 	[end]
 

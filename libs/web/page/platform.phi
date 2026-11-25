@@ -15,6 +15,7 @@ phi.PagePlatform:Library
 		call Js.DefineNative: JsRt.r.global '%sheetSet' addr SheetSet 2;
 		call Js.DefineNative: JsRt.r.global '%adopt' addr Adopt 2;
 		call Js.DefineNative: JsRt.r.global '%styleText' addr StyleText 2;
+		call Js.DefineNative: JsRt.r.global '%linkText' addr LinkText 1;
 		call Js.DefineNative: JsRt.r.global '%popover' addr Popover 2;
 		call Js.DefineNative: JsRt.r.global '%media' addr PageMedia.Native 3;
 		call Js.DefineNative: JsRt.r.global '%post' addr Post 3;
@@ -106,6 +107,29 @@ phi.PagePlatform:Library
 		call Page.OwnStyle: p n text.data text.len false;
 		call text.Free;
 	[end: JsV.UNDEF]
+
+	# %linkText(link element): the text of the sheet it brought; null if it hasn't come; false if it
+	# came from another origin and the <link> didn't ask for it by CORS (crossorigin), which a script
+	# may not read (cssRules throws, as browsers have it)
+	[LinkText: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		ptr<DomNode> n: (PageBind.NodeOf: (Js.Arg: args argc 0));
+		if p is 0 or n is 0 return JsV.NULL;
+		ptr<u8> text: (Page.LinkText: p n);
+		if text is 0 return JsV.NULL;
+		ptr<u8> from: Page.link_from;
+		u32 len: Page.link_len;
+		if from is not 0 and p.url is not 0 and (Dom.AttrValue: n 'crossorigin') is 0
+			WlBuf mine;
+			WlBuf theirs;
+			call PageWindow.Origin: p.url addr mine;
+			call PageWindow.Origin: from addr theirs;
+			bln same: mine.len is theirs.len and (WlText.EqNoCase: mine.data mine.len theirs.data theirs.len);
+			call mine.Free;
+			call theirs.Free;
+			if not same return (JsV.Bool: false);
+		;;
+	[end: (Js.NewString: text len)]
 
 	# %adopt(document or shadow root, [keys]): the sheets that tree has adopted, from now on
 	[Adopt: ptr<u64> args: 0; int argc: 0;]
