@@ -22,6 +22,7 @@ insertRule: 11px 4
 unadopted: rgb(0, 0, 0) rgb(20, 30, 40)
 DOMParser: t true parsed false false
 ::part: rgb(11, 22, 33) 30px rgb(255, 255, 0) 41px 
+element.part: a b 2 true false b true c true true SyntaxError noopener noreferrer 2
 --- a timer
 --- a frame
 --- later

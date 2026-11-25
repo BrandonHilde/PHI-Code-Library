@@ -2487,6 +2487,72 @@
     });
   }
 
+  // element.part, and a link's relList: DOMTokenLists of an attribute's words (classList is the
+  // engine's own). Shoelace's icons mark their <svg> with part.add("svg") and stop if it's missing.
+  if (global.Element && !Object.getOwnPropertyDescriptor(global.Element.prototype, "part")) {
+    var attrWords = function (el, attr) {
+      var v = el.getAttribute(attr), out = [];
+      if (v) v.split(/[ \t\n\f\r]+/).forEach(function (w) { if (w && out.indexOf(w) < 0) out.push(w); });
+      return out;
+    };
+    var tokenOf = function (t) {
+      t = String(t);
+      if (t === "") throw new DOMException("The token provided must not be empty.", "SyntaxError");
+      if (/[ \t\n\f\r]/.test(t)) throw new DOMException("The token provided ('" + t + "') contains HTML space characters, which are not valid in tokens.", "InvalidCharacterError");
+      return t;
+    };
+    var AttrTokens = function (el, attr) { hidden(this, "_el", el); hidden(this, "_attr", attr); };
+    AttrTokens.prototype = Object.create(global.DOMTokenList ? global.DOMTokenList.prototype : Object.prototype);
+    var tp = AttrTokens.prototype;
+    var keep = function (self, list) { self._el.setAttribute(self._attr, list.join(" ")); };
+    Object.defineProperty(tp, "length", { get: function () { return attrWords(this._el, this._attr).length; }, configurable: true });
+    Object.defineProperty(tp, "value", {
+      get: function () { var v = this._el.getAttribute(this._attr); return v === null ? "" : v; },
+      set: function (v) { this._el.setAttribute(this._attr, String(v)); }, configurable: true
+    });
+    hidden(tp, "item", function (i) { var l = attrWords(this._el, this._attr); i = Math.floor(Number(i)); return i >= 0 && i < l.length ? l[i] : null; });
+    hidden(tp, "contains", function (t) { return attrWords(this._el, this._attr).indexOf(String(t)) >= 0; });
+    hidden(tp, "add", function () {
+      var l = attrWords(this._el, this._attr);
+      for (var i = 0; i < arguments.length; i++) { var t = tokenOf(arguments[i]); if (l.indexOf(t) < 0) l.push(t); }
+      keep(this, l);
+    });
+    hidden(tp, "remove", function () {
+      var l = attrWords(this._el, this._attr);
+      for (var i = 0; i < arguments.length; i++) { var k = l.indexOf(tokenOf(arguments[i])); if (k >= 0) l.splice(k, 1); }
+      keep(this, l);
+    });
+    hidden(tp, "toggle", function (t, force) {
+      t = tokenOf(t);
+      var has = this.contains(t);
+      if (has && force !== true) { this.remove(t); return false; }
+      if (!has && force !== false) { this.add(t); return true; }
+      return has;
+    });
+    hidden(tp, "replace", function (a, b) {
+      a = tokenOf(a); b = tokenOf(b);
+      var l = attrWords(this._el, this._attr), k = l.indexOf(a);
+      if (k < 0) return false;
+      if (l.indexOf(b) >= 0 && l.indexOf(b) !== k) l.splice(k, 1); else l[k] = b;
+      keep(this, l);
+      return true;
+    });
+    hidden(tp, "supports", function () { return true; });
+    hidden(tp, "toString", function () { return this.value; });
+    hidden(tp, "forEach", function (fn, self) { var l = attrWords(this._el, this._attr); for (var i = 0; i < l.length; i++) fn.call(self, l[i], i, this); });
+    hidden(tp, Symbol.iterator, function () { return attrWords(this._el, this._attr)[Symbol.iterator](); });
+    var tokensOf = function (attr, key) {
+      return {
+        get: function () { if (!this[key]) hidden(this, key, new AttrTokens(this, attr)); return this[key]; },
+        set: function (v) { this.setAttribute(attr, String(v)); }, configurable: true, enumerable: true
+      };
+    };
+    Object.defineProperty(global.Element.prototype, "part", tokensOf("part", "_partList"));
+    ["HTMLAnchorElement", "HTMLAreaElement", "HTMLLinkElement"].forEach(function (k) {
+      if (global[k] && !Object.getOwnPropertyDescriptor(global[k].prototype, "relList")) Object.defineProperty(global[k].prototype, "relList", tokensOf("rel", "_relList"));
+    });
+  }
+
   // node.isEqualNode(other): the same kind of node, saying the same, with equal children
   if (global.Node && !global.Node.prototype.isEqualNode) {
     var equalNodes = function (a, b) {
