@@ -3,6 +3,8 @@ load http://test.example/dir/site.css kind 2
 load http://test.example/dir/lib.js kind 1
 console[0]: external script ran
 console[0]: lib says 42
+console[0]:
+console[0]: after an empty trace
 console[0]: tag DIV DIV 1 box
 console[0]: style attr 3px padding: 3px
 console[0]: after set rgb(255, 0, 0) | padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);
@@ -30,8 +32,8 @@ console[0]: events doc capture / list capture 1 / target 2 true / once / list bu
 console[0]: no bubble doc capture / list capture 1 / target 2 true
 console[0]: stop false stopped
 console[2]: Uncaught Error: in a listener
-    at inline script:83
     at inline script:85
+    at inline script:87
 console[0]: next listener still ran
 console[0]: sync end
 load http://test.example/dir/data.json kind 3
@@ -87,6 +89,8 @@ serialized <!DOCTYPE html><html><head>
 <script>
 var log = console.log;
 log('lib says', window.fromLib);
+console.trace();
+log('after an empty trace');
 
 // finding things, and changing them
 var box = document.getElementById('box');
@@ -241,6 +245,8 @@ console.log('canvas context', document.createElement('canvas').getContext('2d'))
 <script>
 var log = console.log;
 log('lib says', window.fromLib);
+console.trace();
+log('after an empty trace');
 
 // finding things, and changing them
 var box = document.getElementById('box');
@@ -381,6 +387,8 @@ load http://test.example/dir/site.css kind 2
 load http://test.example/dir/lib.js kind 1
 console[0]: external script ran
 console[0]: lib says 42
+console[0]:
+console[0]: after an empty trace
 console[0]: tag DIV DIV 1 box
 console[0]: style attr 3px padding: 3px
 console[0]: after set rgb(255, 0, 0) | padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);
@@ -408,8 +416,8 @@ console[0]: events doc capture / list capture 1 / target 2 true / once / list bu
 console[0]: no bubble doc capture / list capture 1 / target 2 true
 console[0]: stop false stopped
 console[2]: Uncaught Error: in a listener
-    at inline script:83
     at inline script:85
+    at inline script:87
 console[0]: next listener still ran
 console[0]: sync end
 load http://test.example/dir/data.json kind 3
@@ -465,6 +473,8 @@ serialized <!DOCTYPE html><html><head>
 <script>
 var log = console.log;
 log('lib says', window.fromLib);
+console.trace();
+log('after an empty trace');
 
 // finding things, and changing them
 var box = document.getElementById('box');
@@ -619,6 +629,8 @@ console.log('canvas context', document.createElement('canvas').getContext('2d'))
 <script>
 var log = console.log;
 log('lib says', window.fromLib);
+console.trace();
+log('after an empty trace');
 
 // finding things, and changing them
 var box = document.getElementById('box');

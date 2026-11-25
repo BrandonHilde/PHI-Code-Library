@@ -679,6 +679,12 @@ phi.Page:Library
 	[end]
 
 	[Log: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		# (an empty line, as console.trace() with nothing to say gives, comes as '' and never as
+		# no text at all: hosts read it up to its 0)
+		if text is 0
+			text is '';
+			n is 0;
+		;;
 		if p.host.logger is not 0
 			call p.host.logger: p text n level;
 		;;
