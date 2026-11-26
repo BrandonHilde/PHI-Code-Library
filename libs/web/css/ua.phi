@@ -16,7 +16,7 @@ ruby { display: ruby; }
 rt { display: ruby-text; }
 noscript { display: none; }
 img, video, canvas, audio, iframe, embed, object, select, button, input, textarea, meter, progress { display: inline-block; }
-html { color: canvastext; font-family: serif; font-size: 16px; }
+html { color: canvastext; font-family: serif; }
 body { margin: 8px; }
 address, blockquote, center, dialog, div, figure, figcaption, footer, form, header, hr, legend, listing,
 main, p, plaintext, pre, search, xmp { unicode-bidi: isolate; }

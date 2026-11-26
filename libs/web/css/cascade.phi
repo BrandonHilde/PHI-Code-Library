@@ -355,6 +355,8 @@ phi.CssCascade:Library
 		;;
 		s.refs is 1;
 		s.font_px is 16.0;
+		s.font_kw is 4;
+		s.font_rel is 1;
 		s.current_color is 0x000000FF;
 		while u32 g: 0; g < CssP.GROUPS; g++;
 			s.g:g is (CssStyles.NewGroup: g);
@@ -1751,6 +1753,8 @@ phi.CssCascade:Library
 		;;
 		s.refs is 1;
 		s.font_px is base.font_px;
+		s.font_kw is base.font_kw;
+		s.font_rel is base.font_rel;
 		s.current_color is base.current_color;
 		s.vars is base.vars;
 		call CssStyles.RetainVars: s.vars;
@@ -1826,6 +1830,11 @@ phi.CssCascade:Library
 			if prop is not CssP.FONT_SIZE and (Early: prop)
 				call ApplyWinner: prop;
 			;;
+		;;
+		call MonoSize;
+		CssCalc.cur_em is s.font_px;
+		if is_root
+			CssCalc.cur_rem is s.font_px;
 		;;
 		CssCalc.cur_lh is (s.LineHeightPx);
 		CssCalc.cur_ch is -1.0;
@@ -2035,9 +2044,13 @@ phi.CssCascade:Library
 		if prop is CssP.FONT_SIZE
 			if inherit
 				cur.font_px is parent_style.font_px;
+				cur.font_kw is parent_style.font_kw;
+				cur.font_rel is parent_style.font_rel;
 			;;
 			else
 				cur.font_px is 16.0;
+				cur.font_kw is 4;
+				cur.font_rel is 1;
 			;;
 		;;
 		elif prop is CssP.COLOR
@@ -2230,38 +2243,21 @@ phi.CssCascade:Library
 		f64 parent_px: parent_style.font_px;
 		f64 px: parent_px;
 		u32 kind: v.kind;
+		# (a size of a keyword, or relative to one, is put right for monospace when the family's known)
+		u8 kw: 0;
+		u8 rel: parent_style.font_rel;
 		if kind is CssV.KW
-			when v.code as u32
-				is CssK.XX_SMALL
-					px is 9.0;
-				;;
-				is CssK.X_SMALL
-					px is 10.0;
-				;;
-				is CssK.SMALL
-					px is 13.0;
-				;;
-				is CssK.MEDIUM
-					px is 16.0;
-				;;
-				is CssK.LARGE
-					px is 18.0;
-				;;
-				is CssK.X_LARGE
-					px is 24.0;
-				;;
-				is CssK.XX_LARGE
-					px is 32.0;
-				;;
-				is CssK.XXX_LARGE
-					px is 48.0;
-				;;
-				is CssK.LARGER
-					px is parent_px * 1.2;
-				;;
-				is CssK.SMALLER
-					px is parent_px / 1.2;
-				;;
+			u32 k: (KwIndex: v.code as u32);
+			if k is not 0
+				kw is k as u8;
+				rel is 1;
+				px is (KwPx: k false);
+			;;
+			elif v.code as u32 is CssK.LARGER
+				px is parent_px * 1.2;
+			;;
+			elif v.code as u32 is CssK.SMALLER
+				px is parent_px / 1.2;
 			;;
 		;;
 		elif kind is CssV.PCT
@@ -2269,13 +2265,128 @@ phi.CssCascade:Library
 		;;
 		elif kind is CssV.LEN
 			px is (v.Num) * (CssCalc.PxOf: v.unit);
+			u32 unit: v.unit;
+			if unit is not CssU.EM and unit is not CssU.EX and unit is not CssU.CH
+				rel is 0;
+			;;
 		;;
 		elif kind is CssV.CALC
 			px is (CssCalc.Resolve: v parent_px);
+			rel is 0;
 		;;
 		if px < 0.0
 			px is 0.0;
 		;;
+		cur.font_px is px;
+		cur.font_kw is kw;
+		cur.font_rel is rel;
+		call CssV.SetLen: addr cv px CssU.PX;
+		call SetSlot: CssP.FONT_SIZE addr cv;
+	[end]
+
+	# xx-small .. xxx-large as 1 .. 8; 0 for anything else
+	[KwIndex: u32 code: 0;]
+		when code
+			is CssK.XX_SMALL
+				return 1;
+			;;
+			is CssK.X_SMALL
+				return 2;
+			;;
+			is CssK.SMALL
+				return 3;
+			;;
+			is CssK.MEDIUM
+				return 4;
+			;;
+			is CssK.LARGE
+				return 5;
+			;;
+			is CssK.X_LARGE
+				return 6;
+			;;
+			is CssK.XX_LARGE
+				return 7;
+			;;
+			is CssK.XXX_LARGE
+				return 8;
+			;;
+		;;
+	[end: 0 as u32]
+
+	# a keyword's size: for monospace alone, Chrome's and Firefox's from a medium of 13px
+	[KwPx: u32 k: 0; bln mono: false; : f64]
+		if mono
+			when k
+				is 1
+					return 9.0;
+				;;
+				is 2
+					return 10.0;
+				;;
+				is 3
+					return 12.0;
+				;;
+				is 5
+					return 16.0;
+				;;
+				is 6
+					return 20.0;
+				;;
+				is 7
+					return 26.0;
+				;;
+				is 8
+					return 39.0;
+				;;
+			;;
+			return 13.0;
+		;;
+		when k
+			is 1
+				return 9.0;
+			;;
+			is 2
+				return 10.0;
+			;;
+			is 3
+				return 13.0;
+			;;
+			is 5
+				return 18.0;
+			;;
+			is 6
+				return 24.0;
+			;;
+			is 7
+				return 32.0;
+			;;
+			is 8
+				return 48.0;
+			;;
+		;;
+	[end: 16.0]
+
+	# a font-size of a keyword, or relative to one, going into or out of monospace alone: keywords
+	# take that table's size, the rest are scaled by 13/16 (what Chrome and Firefox do)
+	[MonoSize]
+		if cur.font_rel is 0 return;
+		bln mono: (cur.MonoOnly);
+		bln was: (parent_style.MonoOnly);
+		f64 px: cur.font_px;
+		if cur.font_kw is not 0
+			px is (KwPx: cur.font_kw as u32 mono);
+		;;
+		elif mono is was
+			return;
+		;;
+		elif mono
+			px is px * 13.0 / 16.0;
+		;;
+		else
+			px is px * 16.0 / 13.0;
+		;;
+		if px as f32 is cur.font_px return;
 		cur.font_px is px;
 		call CssV.SetLen: addr cv px CssU.PX;
 		call SetSlot: CssP.FONT_SIZE addr cv;

@@ -47,7 +47,7 @@ phi.TestCssCascade:Program
 	call C: 'em' 'font-style' 'italic';
 	call C: 'str' 'font-weight' '700';
 	call C: 'co' 'font-family' 'monospace';
-	call C: 'sm' 'font-size' '13.33333px';
+	call C: 'sm' 'font-size' '13.3333px';
 	call C: 'su' 'vertical-align' 'sub';
 	call C: 'inp' 'display' 'inline-block';
 	call C: 'bt' 'display' 'inline-block';
@@ -59,6 +59,30 @@ phi.TestCssCascade:Program
 	call C: 'a2' 'color' 'rgb(0, 0, 0)';
 	call C: 'h' 'font-family' 'serif';
 	call C: 'hr' 'border-top-width' '1px';
+	call Finish;
+
+	# ---- monospace alone: keyword sizes from 13px, sizes relative to a keyword scaled by 13/16
+	# going into or out of it, lengths of their own kept (what Brave does, measured)
+	call Setup: 'html(body(code#a code#b.sm code#c.xl code#d.em code#e.px code#f.mm code#g.cr div#h.big(code#i) div#j.half(code#k) div#l.px(code#m) div#n.lg(code#o) code#p(span#q.ss) code#r.em(span#s.ss) code#t(span#u.lr) code#v.inh code#w.calc pre#x span#y.mono(span#z.rem)))'
+		'.sm { font-size: small; } .xl { font-size: xx-large; } .em { font-size: 0.9em; } .px { font-size: 14px; } .mm { font-family: monospace, monospace; } .cr { font-family: Courier; } .big { font-size: 1.5em; } .half { font-size: smaller; } .lg { font-size: large; } .ss { font-family: sans-serif; } .lr { font-size: larger; } .inh { font-size: inherit; } .calc { font-size: calc(1em + 2px); } .mono { font-family: monospace; } .rem { font-size: 1rem; }';
+	call C: 'a' 'font-size' '13px';
+	call C: 'b' 'font-size' '12px';
+	call C: 'c' 'font-size' '26px';
+	call C: 'd' 'font-size' '11.7px';
+	call C: 'e' 'font-size' '14px';
+	call C: 'f' 'font-size' '16px';
+	call C: 'g' 'font-size' '16px';
+	call C: 'i' 'font-size' '19.5px';
+	call C: 'k' 'font-size' '10.8333px';
+	call C: 'm' 'font-size' '14px';
+	call C: 'o' 'font-size' '16px';
+	call C: 'q' 'font-size' '16px';
+	call C: 's' 'font-size' '14.4px';
+	call C: 'u' 'font-size' '15.6px';
+	call C: 'v' 'font-size' '13px';
+	call C: 'w' 'font-size' '18px';
+	call C: 'x' 'font-size' '13px';
+	call C: 'z' 'font-size' '16px';
 	call Finish;
 
 	# ---- order: specificity, source order, !important, inline
@@ -129,11 +153,11 @@ phi.TestCssCascade:Program
 	call C: 'd' 'width' '40px';
 	call C: 'd' 'height' '30px';
 	call C: 'd' 'margin-top' '96px';
-	call C: 'd' 'margin-right' '37.79528px';
-	call C: 'd' 'margin-bottom' '1.333333px';
+	call C: 'd' 'margin-right' '37.7953px';
+	call C: 'd' 'margin-bottom' '1.33333px';
 	call C: 'd' 'margin-left' '16px';
-	call C: 'd' 'padding-top' '37.79528px';
-	call C: 'd' 'padding-right' '3.779528px';
+	call C: 'd' 'padding-top' '37.7953px';
+	call C: 'd' 'padding-right' '3.77953px';
 	call C: 'd' 'padding-bottom' '10px';
 	call C: 'd' 'padding-left' '10px';
 	call C: 'd' 'top' '80px';

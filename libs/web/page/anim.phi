@@ -938,6 +938,8 @@ phi.PageAnim:Library
 		s.refs is 1;
 		s.font_px is made.font_px;
 		s.current_color is made.current_color;
+		s.font_kw is made.font_kw;
+		s.font_rel is made.font_rel;
 		while u32 g: 0; g < CssP.GROUPS; g++;
 			s.g:g is made.g:g;
 			if s.g:g is not 0

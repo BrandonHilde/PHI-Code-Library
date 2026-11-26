@@ -98,7 +98,7 @@ phi.CssSer:Library
 		;;
 	[end]
 
-	# a single value (not a LIST)
+	# a single value (not a LIST); numbers to 6 significant digits, as Chrome writes them
 	[Value: ptr<CssVal> v: 0; ptr<WlBuf> b: 0;]
 		u32 kind: v.kind;
 		if kind is CssV.KW or kind is CssV.WIDE
@@ -106,19 +106,19 @@ phi.CssSer:Library
 			return;
 		;;
 		if kind is CssV.LEN or kind is CssV.ANGLE or kind is CssV.TIME or kind is CssV.FLEX or kind is CssV.RES
-			call CssNum.Add: b (v.Num) 7;
+			call CssNum.Add: b (v.Num) 6;
 			if v.unit is not 0
 				call b.AddZ: (CssProps.UnitName: v.unit);
 			;;
 			return;
 		;;
 		if kind is CssV.PCT
-			call CssNum.Add: b (v.Num) 7;
+			call CssNum.Add: b (v.Num) 6;
 			call b.Add: 37;
 			return;
 		;;
 		if kind is CssV.NUM
-			call CssNum.Add: b (v.Num) 7;
+			call CssNum.Add: b (v.Num) 6;
 			return;
 		;;
 		if kind is CssV.INT

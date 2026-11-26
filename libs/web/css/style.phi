@@ -46,6 +46,10 @@ struct.CssComputed
 	u32 refs;
 	f32 font_px;            # font-size, computed
 	u32 current_color;      # color, computed: 0xRRGGBBAA
+	# what font-size came from, for a change into or out of monospace: the keyword (1 xx-small ..
+	# 8 xxx-large, 0 if not one), and whether it's relative to a keyword (not a length of its own)
+	u8 font_kw;
+	u8 font_rel;
 	ptr<u8> g[18];
 	ptr<CssVarMap> vars;
 	ptr<CssPseudoSet> pseudo;
@@ -374,6 +378,16 @@ struct.CssComputed
 		if items:0.kind is CssV.KW as u8 return items:0.code as u32;
 	[end: 0 as u32]
 
+	# whether font-family is the generic monospace and nothing else (a browser's fixed-width size
+	# goes with that only: `monospace, monospace` keeps the usual one)
+	[MonoOnly]
+		ptr<CssVal> v: (Val: CssP.FONT_FAMILY);
+		ptr<CssVal> items: (CssV.Items: v);
+		if CssV.item_count is not 1 return false;
+		if items:0.kind is not CssV.IDENT as u8 return false;
+		ptr<CssVal> it: addr items:0;
+	[end: (WlText.EqNoCaseZ: (CssV.Text: it) (CssV.TextLen: it) 'monospace')]
+
 	# font-family, one name at a time: 0 past the last
 	[FontFamily: u32 index: 0;]
 		ptr<CssVal> v: (Val: CssP.FONT_FAMILY);
@@ -500,6 +514,7 @@ phi.CssStyles:Library
 		if a is b return true;
 		if a is 0 or b is 0 return false;
 		if a.font_px is not b.font_px or a.current_color is not b.current_color return false;
+		if a.font_kw is not b.font_kw or a.font_rel is not b.font_rel return false;
 		while u32 i: 0; i < CssP.GROUPS; i++;
 			ptr<u8> ga: a.g:i;
 			ptr<u8> gb: b.g:i;
