@@ -2588,8 +2588,9 @@
     });
   }
 
-  // an <img>'s state: its picture is the browser's to draw, so as far as a script can tell it has
-  // come once asked for (its load event says so), with no size of its own to report
+  // an <img>'s state, where page/bind.phi hasn't given it (complete, naturalWidth and naturalHeight
+  // are its, from PageHost.picture): its picture is the browser's to draw, so as far as a script
+  // can tell it has come once asked for (its load event says so), with no size of its own to report
   if (global.HTMLImageElement) {
     var imgProto = global.HTMLImageElement.prototype;
     [["complete", function () { return true; }], ["naturalWidth", function () { return 0; }],

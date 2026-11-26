@@ -249,3 +249,15 @@ the longhands left over are written alone. A named colour stays its name (`color
 Brave: 22 of 25 cases match. The three that don't are Chrome's own longhand order after
 `font-kerning`, `background` with a `url()` (Chrome keeps it relative and writes `center center`)
 and `outline`'s order.
+
+## An image's natural size and the window's load wait for the picture (2026-11-26)
+
+`img.naturalWidth`, `naturalHeight` and `complete` were 0, 0 and true whatever the picture, and the
+window's `load` fired without waiting for images. `PageHost` now has a `picture` hook
+(`method<ptr<Page> ptr<DomNode> ptr<int>: int>`): the host says 0 (it knows nothing), 1 (coming),
+2 (here; the two ints are its width and height) or 3 (can't be had). `naturalWidth` and
+`naturalHeight` are the size only at 2, and `complete` is false only at 1. With no hook, an image
+whose IMAGE request is still waiting counts as coming. Settle's wait for the window's `load` now
+counts an image's request unless the host has no hook or the image is `loading="lazy"`; FETCH
+requests are not waited for (as in Chrome). A host that answers IMAGE with 200 at once still works
+as before. PHI OS FINDINGS #50 has the browser side.

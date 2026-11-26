@@ -104,6 +104,11 @@ struct.PageHost
 	method<ptr<Page>: int> audio_rate;
 	method<ptr<Page> ptr<i16> int: int> audio_write;
 	method<ptr<Page>: int> audio_queued;
+	# an <img>'s picture: 0 if none's been asked for, 1 if it's coming, 2 if it's here (its width
+	# and height into the two ints), 3 if it can't be had. A host that has it answers an <img>'s
+	# PageLoad.IMAGE only once its picture is in (or can't be), and the window's load waits for
+	# those. Without it, a picture has come as soon as it's asked for, with no size.
+	method<ptr<Page> ptr<DomNode> ptr<int>: int> picture;
 	ptr<u8> user;           # the browser's own
 }
 
@@ -290,6 +295,7 @@ phi.Page:Library
 			p.host.audio_queued is host.audio_queued;
 			p.host.image_pixels is host.image_pixels;
 			p.host.encode_png is host.encode_png;
+			p.host.picture is host.picture;
 			p.host.user is host.user;
 		;;
 		p.width is width;
@@ -983,13 +989,19 @@ phi.Page:Library
 			call RunJobs: p;
 		;;
 		if p.parse_done and not p.load_fired
-			# (a request of the parser's, a stylesheet or a script, holds up load)
+			# (a request of the parser's, a stylesheet or a script, holds up load; and an <img>'s,
+			# when the host answers those once they're in, unless it's loading="lazy")
 			bln waiting: (PageModules.Waiting: p);
 			while u32 r: 0; r < p.requests.len; r++;
-				if not p.requests:r.done and p.requests:r.kind is not PageLoad.FETCH and p.requests:r.kind is not PageLoad.IMAGE
-					waiting is true;
-					break;
+				ptr<PageRequest> q: addr p.requests:r;
+				if q.done or q.kind is PageLoad.FETCH
+					continue;
 				;;
+				if q.kind is PageLoad.IMAGE and (p.host.picture is 0 or (Lazy: q.node))
+					continue;
+				;;
+				waiting is true;
+				break;
 			;;
 			if not waiting
 				p.load_fired is true;
@@ -998,6 +1010,13 @@ phi.Page:Library
 			;;
 		;;
 	[end]
+
+	# an <img loading="lazy">: what it's waiting for doesn't hold up the window's load
+	[Lazy: ptr<DomNode> n: 0;]
+		if n is 0 return false;
+		ptr<DomAttr> a: (Dom.Attr: n (WlAtoms.GetZ: 'loading'));
+		if a is 0 return false;
+	[end: (WlText.EqNoCaseZ: a.value a.value_len 'lazy')]
 
 	# ---- styles ----
 

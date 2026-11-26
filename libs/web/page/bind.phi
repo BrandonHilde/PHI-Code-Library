@@ -1057,6 +1057,9 @@ phi.PageBind:Library
 		call OnTags: 'input select textarea option button output progress meter data li param ' 'value' addr ValueProp addr ValuePropSet 0;
 		call OnTags: 'img canvas video iframe embed object source input ' 'width' addr NumberAttr addr ReflectSet (AtomMagic: 'width');
 		call OnTags: 'img canvas video iframe embed object source input ' 'height' addr NumberAttr addr ReflectSet (AtomMagic: 'height');
+		call OnTags: 'img ' 'naturalWidth' addr PictureGet 0 0;
+		call OnTags: 'img ' 'naturalHeight' addr PictureGet 0 1;
+		call OnTags: 'img ' 'complete' addr PictureGet 0 2;
 		ptr<u8> events: 'onclick ondblclick onmousedown onmouseup onmouseover onmouseout onmousemove onkeydown onkeyup onkeypress onfocus onblur onchange oninput onsubmit onload onerror onresize onscroll ';
 		call EventProps: h events;
 		call EventProps: document_proto events;
@@ -2047,6 +2050,35 @@ phi.PageBind:Library
 		f64 box[4];
 		call BoxOf: n addr box:0;
 	[end: (JsV.Num: box:(self.magic))]
+
+	# img.naturalWidth, naturalHeight (magic 0, 1): its picture's size once it's come, else 0; and
+	# complete (2): whether there's nothing more to wait for, its picture come or not to be had,
+	# or no src. From PageHost.picture; without it a picture's complete and has no size.
+	[PictureGet: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsNativeFn> self: (Js.CalleeOf: args);
+		ptr<DomNode> n: (ThisElement: args);
+		ptr<Page> p: Page.current;
+		int size[2];
+		size:0 is 0;
+		size:1 is 0;
+		int state: 0;
+		if p is not 0 and p.host.picture is not 0
+			state is (p.host.picture: p n addr size:0);
+			if state is 0
+				# (asked for, and the host hasn't heard yet)
+				while u32 r: 0; r < p.requests.len; r++;
+					if p.requests:r.node is n and p.requests:r.kind is PageLoad.IMAGE and not p.requests:r.done
+						state is 1;
+						break;
+					;;
+				;;
+			;;
+		;;
+		if self.magic is 2
+			return (JsV.Bool: state is not 1);
+		;;
+		if state is not 2 return (JsV.Num: 0.0);
+	[end: (JsV.Num: size:(self.magic) as f64)]
 
 	# el.clientWidth and clientHeight: its box's, but the root element's (and in quirks mode the
 	# body's) are the window's, as CSSOM View has them
