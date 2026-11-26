@@ -3326,6 +3326,134 @@
     Object.defineProperty(global.Document.prototype, "timeline", { get: function () { return timeline; }, configurable: true, enumerable: true });
   }
 
+  // ---- document.fonts (a FontFaceSet) and FontFace ----
+  // The faces are the page's @font-face rules, through %fontFaces() (each [family, lowest weight,
+  // highest weight, style]), and any a script adds. A face is taken as loaded: the host fetches a
+  // rule's font when text is drawn in it, and a FontFace a script makes isn't drawn with (yet).
+  // What pages ask of it is mostly document.fonts.load(font).then(faces => ...) and
+  // document.fonts.ready, to know when to show text in a web font (FontFaceObserver).
+
+  var facesNative = global["%fontFaces"];
+  delete global["%fontFaces"];
+  if (facesNative && global.Document && !("fonts" in global.Document.prototype)) {
+    var FontFace = function FontFace(family, source, descriptors) {
+      if (!(this instanceof FontFace)) throw new TypeError("Failed to construct 'FontFace': Please use the 'new' operator");
+      if (arguments.length < 2) throw new TypeError("Failed to construct 'FontFace': 2 arguments required, but only " + arguments.length + " present.");
+      var d = descriptors || {};
+      hidden(this, "_family", String(family).replace(/^\s*["']|["']\s*$/g, ""));
+      hidden(this, "_style", d.style !== undefined ? String(d.style) : "normal");
+      hidden(this, "_weight", d.weight !== undefined ? String(d.weight) : "normal");
+      hidden(this, "_stretch", d.stretch !== undefined ? String(d.stretch) : "normal");
+      hidden(this, "_unicodeRange", d.unicodeRange !== undefined ? String(d.unicodeRange) : "U+0-10FFFF");
+      hidden(this, "_display", d.display !== undefined ? String(d.display) : "auto");
+      var self = this;
+      hidden(this, "_status", "unloaded");
+      hidden(this, "_loaded", new Promise(function (resolve) { hidden(self, "_resolve", resolve); }));
+      if (typeof source !== "string") this.load();
+    };
+    ["family", "style", "weight", "stretch", "unicodeRange", "display"].forEach(function (k) {
+      Object.defineProperty(FontFace.prototype, k, {
+        get: function () { return this["_" + k]; },
+        set: function (v) { this["_" + k] = String(v); },
+        configurable: true, enumerable: true
+      });
+    });
+    ["featureSettings", "variationSettings"].forEach(function (k) {
+      Object.defineProperty(FontFace.prototype, k, { get: function () { return "normal"; }, set: function () {}, configurable: true, enumerable: true });
+    });
+    Object.defineProperty(FontFace.prototype, "status", { get: function () { return this._status; }, configurable: true, enumerable: true });
+    Object.defineProperty(FontFace.prototype, "loaded", { get: function () { return this._loaded; }, configurable: true, enumerable: true });
+    hidden(FontFace.prototype, "load", function load() {
+      if (this._status !== "loaded") {
+        this._status = "loaded";
+        this._resolve(this);
+      }
+      return this._loaded;
+    });
+    hidden(global, "FontFace", FontFace);
+
+    // the page's rules as faces: the same object for the same rule each time it's asked
+    var ruleFaces = {};
+    var fromRules = function () {
+      var list = facesNative() || [];
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        var r = list[i];
+        var weight = r[1] === r[2] ? String(r[1]) : r[1] + " " + r[2];
+        var key = r[0] + "|" + weight + "|" + r[3];
+        var face = ruleFaces[key];
+        if (!face) {
+          face = new FontFace(r[0], "local()", { weight: weight, style: r[3] });
+          face.load();
+          ruleFaces[key] = face;
+        }
+        out.push(face);
+      }
+      return out;
+    };
+    var added = [];
+    var all = function () { return fromRules().concat(added); };
+    // the families a CSS font shorthand names ("bold 16px 'Noto Sans', serif"), lower case
+    var families = function (font) {
+      var m = /(?:^|\s)(?:[\d.]+(?:px|pt|pc|em|rem|ex|ch|%|vw|vh|vmin|vmax|in|cm|mm|q)|xx-small|x-small|small|medium|large|x-large|xx-large|xxx-large|smaller|larger)(?:\s*\/\s*\S+)?\s+(.+)$/i.exec(String(font).trim());
+      if (!m) throw new DOMException("Could not resolve '" + font + "' as a font.", "SyntaxError");
+      return m[1].split(",").map(function (s) { return s.trim().replace(/^["']|["']$/g, "").toLowerCase(); });
+    };
+    var matching = function (font) {
+      var names = families(font);
+      return all().filter(function (f) { return names.indexOf(f.family.toLowerCase()) >= 0; });
+    };
+
+    var FontFaceSet = function FontFaceSet() { throw new TypeError("Illegal constructor"); };
+    var fonts = new EventTarget();
+    Object.setPrototypeOf(FontFaceSet.prototype, EventTarget.prototype);
+    Object.setPrototypeOf(fonts, FontFaceSet.prototype);
+    hidden(global, "FontFaceSet", FontFaceSet);
+    var ready = Promise.resolve(fonts);
+    Object.defineProperty(FontFaceSet.prototype, "ready", { get: function () { return ready; }, configurable: true, enumerable: true });
+    Object.defineProperty(FontFaceSet.prototype, "status", { get: function () { return "loaded"; }, configurable: true, enumerable: true });
+    Object.defineProperty(FontFaceSet.prototype, "size", { get: function () { return all().length; }, configurable: true, enumerable: true });
+    ["onloading", "onloadingdone", "onloadingerror"].forEach(function (k) {
+      var store = null;
+      Object.defineProperty(FontFaceSet.prototype, k, { get: function () { return store; }, set: function (v) { store = v; }, configurable: true, enumerable: true });
+    });
+    hidden(FontFaceSet.prototype, "load", function load(font, text) {
+      try {
+        var faces = matching(font);
+        return Promise.all(faces.map(function (f) { return f.load(); }));
+      } catch (e) {
+        return Promise.reject(e);
+      }
+    });
+    hidden(FontFaceSet.prototype, "check", function check(font, text) {
+      var faces = matching(font);
+      for (var i = 0; i < faces.length; i++) if (faces[i].status !== "loaded") return false;
+      return true;
+    });
+    hidden(FontFaceSet.prototype, "add", function add(face) {
+      if (!(face instanceof FontFace)) throw new TypeError("Failed to execute 'add' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.");
+      if (added.indexOf(face) < 0) added.push(face);
+      return this;
+    });
+    hidden(FontFaceSet.prototype, "delete", function (face) {
+      var i = added.indexOf(face);
+      if (i < 0) return false;
+      added.splice(i, 1);
+      return true;
+    });
+    hidden(FontFaceSet.prototype, "has", function has(face) { return all().indexOf(face) >= 0; });
+    hidden(FontFaceSet.prototype, "clear", function clear() { added.length = 0; });
+    hidden(FontFaceSet.prototype, "forEach", function forEach(fn, that) {
+      var list = all();
+      for (var i = 0; i < list.length; i++) fn.call(that, list[i], list[i], this);
+    });
+    hidden(FontFaceSet.prototype, "values", function values() { return all()[Symbol.iterator](); });
+    hidden(FontFaceSet.prototype, "keys", FontFaceSet.prototype.values);
+    hidden(FontFaceSet.prototype, "entries", function entries() { return all().map(function (f) { return [f, f]; })[Symbol.iterator](); });
+    hidden(FontFaceSet.prototype, Symbol.iterator, FontFaceSet.prototype.values);
+    Object.defineProperty(global.Document.prototype, "fonts", { get: function () { return fonts; }, configurable: true, enumerable: true });
+  }
+
   // ---- <video> and <audio> ----
   // HTMLMediaElement, under both, as the standard has it. What's playing, its clock and its events
   // are the page's own (page/media.phi), asked through %media(element, what, value): 0 the state

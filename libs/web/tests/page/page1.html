@@ -135,6 +135,15 @@ log('computed', getComputedStyle(box).color, getComputedStyle(box).display);
 document.body.insertAdjacentHTML('beforeend', '<svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"/><path id="sq" fill="currentColor"/><stop id="st" stop-color="blue" stop-opacity=".5"/></g></svg>');
 var svgc = function (i) { return getComputedStyle(document.getElementById(i)); };
 log('svg hints', svgc('sv').fill, svgc('sv').color, svgc('sg').fill, svgc('sg').strokeWidth, svgc('sg').strokeDasharray, svgc('sp').fill, svgc('sq').fill, svgc('st').stopColor, svgc('st').stopOpacity);
+// line-height as getComputedStyle resolves it, and <center>'s alignment
+document.body.insertAdjacentHTML('beforeend', '<span id="lh" style="font-size: 20px; line-height: 1.5">x</span><center id="ce">c</center>');
+log('resolved', getComputedStyle(document.getElementById('lh')).lineHeight, getComputedStyle(document.getElementById('ce')).textAlign);
+// document.fonts: the page's @font-face rules, as FontFaceObserver asks of them
+var ffs = document.createElement('style');
+ffs.textContent = '@font-face { font-family: "Test Face"; src: url(t.woff2); font-weight: 700; }';
+document.head.appendChild(ffs);
+log('fonts', typeof document.fonts, document.fonts.status, document.fonts.size, document.fonts.check('16px serif'), typeof FontFace, new FontFace('X', 'url(x.woff2)').status, document.fonts instanceof EventTarget);
+document.fonts.load('bold 16px "Test Face", serif').then(function (f) { log('fonts load', f.length, f[0].family, f[0].weight, f[0].status); });
 
 document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
 window.addEventListener('load', function () { log('load', document.readyState); });

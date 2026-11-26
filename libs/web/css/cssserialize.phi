@@ -230,6 +230,12 @@ phi.CssSer:Library
 			call Color: s.current_color b;
 			return;
 		;;
+		if prop is CssP.LINE_HEIGHT and v.kind is CssV.NUM as u8
+			# (a number's resolved value is the length it comes to, as browsers give it: 1.5 is 24px)
+			call CssNum.Add: b (v.Num) * s.font_px 6;
+			call b.AddZ: 'px';
+			return;
+		;;
 		call Value: v b;
 	[end]
 

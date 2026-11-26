@@ -51,7 +51,7 @@ phi.TestCssCascade:Program
 	call C: 'su' 'vertical-align' 'sub';
 	call C: 'inp' 'display' 'inline-block';
 	call C: 'bt' 'display' 'inline-block';
-	call C: 'ce' 'text-align' 'center';
+	call C: 'ce' 'text-align' '-webkit-center';
 	call C: 'bq' 'margin-left' '40px';
 	call C: 'a1' 'text-decoration-line' 'underline';
 	call C: 'a2' 'text-decoration-line' 'none';
@@ -114,7 +114,7 @@ phi.TestCssCascade:Program
 	call C: 'm' 'margin-top' '0px';
 	call C: 'm' 'background-color' 'rgba(0, 0, 0, 0)';
 	call C: 'm' 'text-align' 'right';
-	call C: 'm' 'line-height' '1.5';
+	call C: 'm' 'line-height' '60px';
 	call C: 'm' 'border-top-color' 'rgb(255, 0, 0)';
 	call C: 'i' 'margin-top' '0px';
 	call C: 'i' 'background-color' 'rgba(0, 0, 0, 0)';
@@ -122,7 +122,7 @@ phi.TestCssCascade:Program
 	call C: 'i' 'visibility' 'hidden';
 	call C: 'i' 'border-top-width' '0px';
 	call C: 's' 'font-size' '20px';
-	call C: 's' 'line-height' '1.5';
+	call C: 's' 'line-height' '30px';
 	call Finish;
 
 	# inheriting a value that's a list (a font's families, here from a variable) leaves the
@@ -199,7 +199,7 @@ phi.TestCssCascade:Program
 	call C: 'a' 'right' 'calc(100% - 10px)';
 	call C: 'a' 'opacity' '0.5';
 	call C: 'a' 'z-index' '3';
-	call C: 'a' 'line-height' '1.5';
+	call C: 'a' 'line-height' '15px';
 	call C: 'a' 'rotate' '90deg';
 	call C: 'a' 'transition-duration' '1.5s';
 	call C: 'a' 'bottom' '6px';
@@ -237,7 +237,7 @@ phi.TestCssCascade:Program
 	call C: 'd' 'width' 'auto';
 	call C: 'd' 'height' '10px';
 	call C: 'd' 'font-size' '20px';
-	call C: 'd' 'line-height' '2';
+	call C: 'd' 'line-height' '40px';
 	call C: 'd' 'z-index' 'auto';
 	call C: 'e' 'color' 'rgb(128, 0, 128)';
 	call C: 'e' 'background-color' 'rgb(128, 0, 128)';

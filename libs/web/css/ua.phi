@@ -53,7 +53,7 @@ tbody { display: table-row-group; vertical-align: middle; border-color: inherit;
 tfoot { display: table-footer-group; vertical-align: middle; border-color: inherit; }
 tr { display: table-row; vertical-align: inherit; border-color: inherit; }
 td, th { display: table-cell; vertical-align: inherit; padding: 1px; }
-th { font-weight: bold; text-align: -webkit-center; }
+th { font-weight: bold; text-align: center; }
 table[border], table[rules] { border-style: outset; }
 table[border] > tr > td, table[border] > tr > th, table[border] > tbody > tr > td, table[border] > tbody > tr > th, table[border] > thead > tr > td, table[border] > thead > tr > th, table[border] > tfoot > tr > td, table[border] > tfoot > tr > th { border-width: 1px; border-style: inset; }
 table[frame=void i] { border-style: hidden; }
@@ -92,7 +92,7 @@ s, strike, del { text-decoration: line-through; }
 abbr[title], acronym[title] { text-decoration: dotted underline; }
 nobr { white-space: nowrap; }
 wbr { display: inline; }
-center { text-align: center; }
+center { text-align: -webkit-center; }
 mark { background-color: mark; color: marktext; }
 q::before { content: open-quote; }
 q::after { content: close-quote; }

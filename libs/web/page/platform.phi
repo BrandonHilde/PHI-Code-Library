@@ -19,10 +19,38 @@ phi.PagePlatform:Library
 		call Js.DefineNative: JsRt.r.global '%popover' addr Popover 2;
 		call Js.DefineNative: JsRt.r.global '%media' addr PageMedia.Native 3;
 		call Js.DefineNative: JsRt.r.global '%post' addr Post 3;
+		call Js.DefineNative: JsRt.r.global '%fontFaces' addr FontFaces 0;
 		call PageSocket.Install;
 		str js: (PagePlatformJs.Source);
 		call Page.RunSource: p addr js:0 js.len as u32 'platform';
 	[end]
+
+	# %fontFaces(): the page's @font-face rules, each [family, lowest weight, highest weight, style]
+	[FontFaces: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		ptr<JsObj> a: (Js.NewArray: 0);
+		if p is 0 or p.css is 0 return (JsV.Obj: a);
+		call Page.UpdateStyle: p;
+		while u32 i: 0; i < p.css.face_count; i++;
+			ptr<CssFontFace> f: p.css.faces:i;
+			if f.family is 0
+				continue;
+			;;
+			ptr<JsObj> one: (Js.NewArray: 4);
+			call Js.ArrayPush: one (Js.NewString: f.family (WlText.LenZ: f.family));
+			call Js.ArrayPush: one (JsV.Num: f.weight_low as f64);
+			call Js.ArrayPush: one (JsV.Num: f.weight_high as f64);
+			ptr<u8> st: 'normal';
+			if f.style is CssK.ITALIC as u16
+				st is 'italic';
+			;;
+			elif f.style is CssK.OBLIQUE as u16
+				st is 'oblique';
+			;;
+			call Js.ArrayPush: one (Js.NewString: st (WlText.LenZ: st));
+			call Js.ArrayPush: a (JsV.Obj: one);
+		;;
+	[end: (JsV.Obj: a)]
 
 	# %post(url, type, body): a form sent by POST, through the host (true if it has a way to)
 	[Post: ptr<u64> args: 0; int argc: 0;]

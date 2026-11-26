@@ -2217,8 +2217,10 @@ phi.CssCascade:Library
 				if v.kind is CssV.KW as u8
 					u32 word: 0;
 					when v.code as u32
-						is CssK._WEBKIT_CENTER CssK._MOZ_CENTER
-							word is CssK.CENTER;
+						# (-webkit-center stays itself, as in Chrome: it centres blocks as well as
+						# lines, which <center> does)
+						is CssK._MOZ_CENTER
+							word is CssK._WEBKIT_CENTER;
 						;;
 						is CssK._WEBKIT_LEFT
 							word is CssK.LEFT;
