@@ -171,7 +171,14 @@ phi.PageWindow:Library
 		if n is 0 or n.type is not DomType.ELEMENT
 			call JsErr.Type: 'getComputedStyle needs an Element';
 		;;
-	[end: (PageBind.NewComputed: n)]
+		u32 which: 0;
+		if argc > 1 and not (JsV.IsNil: args:1)
+			WlBuf b;
+			call Js.TextOf: args:1 addr b;
+			which is (Css.PseudoNamed: b.data b.len);
+			call b.Free;
+		;;
+	[end: (PageBind.NewComputed: n which)]
 
 	[MatchMedia: ptr<u64> args: 0; int argc: 0;]
 		WlBuf b;

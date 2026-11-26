@@ -73,6 +73,7 @@ phi.Css:Library
 {
 	const u32 PE_BEFORE: 1;
 	const u32 PE_AFTER: 2;
+	const u32 PE_INVALID: 255;  # getComputedStyle(el, '::nonsense'): a style with nothing in it
 
 	ptr<u8> error: 0;       # why the last thing failed
 	bln invalid: false;     # the last selector asked about couldn't be parsed
@@ -324,6 +325,37 @@ phi.Css:Library
 		ptr<CssComputed> s: node.style as ptr<CssComputed>;
 	[end: (s.Pseudo: which)]
 
+	# The pseudo-element getComputedStyle's second argument names: 0 for the element itself, a
+	# CssSel.PE_* for one it knows, PE_INVALID for anything else. As Chrome reads it: the four CSS 2
+	# ones may have one colon or none, text that doesn't start with a colon otherwise means the
+	# element, and so does a vendor's (::-webkit-anything).
+	[PseudoNamed: ptr<u8> text: 0; u32 n: 0;]
+		if n is 0 return 0;
+		ptr<u8> name: text;
+		u32 len: n;
+		bln legacy: true;
+		if name:0 is ':'
+			name is name + 1;
+			len is len - 1;
+			if len > 0 and name:0 is ':'
+				name is name + 1;
+				len is len - 1;
+				legacy is false;
+			;;
+		;;
+		if len > 0 and name:0 is '-' return 0;
+		if (WlText.EqNoCaseZ: name len 'before') return CssSel.PE_BEFORE;
+		if (WlText.EqNoCaseZ: name len 'after') return CssSel.PE_AFTER;
+		if (WlText.EqNoCaseZ: name len 'first-line') return CssSel.PE_FIRST_LINE;
+		if (WlText.EqNoCaseZ: name len 'first-letter') return CssSel.PE_FIRST_LETTER;
+		if text:0 is not ':' return 0;
+		if legacy return PE_INVALID;
+		if (WlText.EqNoCaseZ: name len 'marker') return CssSel.PE_MARKER;
+		if (WlText.EqNoCaseZ: name len 'selection') return CssSel.PE_SELECTION;
+		if (WlText.EqNoCaseZ: name len 'placeholder') return CssSel.PE_PLACEHOLDER;
+		if (WlText.EqNoCaseZ: name len 'backdrop') return CssSel.PE_BACKDROP;
+	[end: PE_INVALID]
+
 	[HasContent: ptr<CssComputed> s: 0;]
 		if s is 0 return false;
 		ptr<CssVal> v: (s.Val: CssP.CONTENT);
@@ -362,18 +394,31 @@ phi.Css:Library
 	[end]
 
 	# the property's value as getComputedStyle reads it (custom properties too): whether it has one
-	[ComputedText: ptr<DomNode> node: 0; ptr<u8> name: 0; u32 name_len: 0; ptr<WlBuf> b: 0;]
+	# (which: a pseudo-element, as PseudoNamed gives, or 0)
+	[ComputedText: ptr<DomNode> node: 0; ptr<u8> name: 0; u32 name_len: 0; ptr<WlBuf> b: 0; u32 which: 0;]
 		bln ok: false;
-		if call ok is ComputedInner: node name name_len b throws err
+		if call ok is ComputedInner: node name name_len b which throws err
 			call Fail: err.text;
 			return false;
 		;;
 	[end: ok]
 
-	[ComputedInner: ptr<DomNode> node: 0; ptr<u8> name: 0; u32 name_len: 0; ptr<WlBuf> b: 0;]
+	[ComputedInner: ptr<DomNode> node: 0; ptr<u8> name: 0; u32 name_len: 0; ptr<WlBuf> b: 0; u32 which: 0;]
 		call Start;
+		if which is PE_INVALID return false;
 		ptr<CssComputed> s: (StyleOf: node);
 		if s is 0 return false;
+		# a pseudo-element no rule styles: what it would inherit from the element, else the initial value
+		bln bare: false;
+		if which is not 0
+			ptr<CssComputed> ps: (PseudoOf: node which);
+			if ps is not 0
+				s is ps;
+			;;
+			else
+				bare is true;
+			;;
+		;;
 		if name_len > 2 and name:0 is 45 and name:1 is 45
 			u32 cx: (CssStyles.FindVar: s.vars (WlAtoms.Get: name name_len));
 			if cx is 0 return false;
@@ -383,6 +428,22 @@ phi.Css:Library
 		;;
 		int id: (CssProps.Find: name name_len);
 		if id < 0 return false;
+		if bare and not (CssProps.IsShorthand: id as u32) and not (CssProps.IsInherited: id as u32)
+			# (in a flex or grid container it would be an item, so a block)
+			if id is CssP.DISPLAY as int and (which is CssSel.PE_BEFORE or which is CssSel.PE_AFTER)
+				u32 pd: (s.Kw: CssP.DISPLAY);
+				if pd is CssK.FLEX or pd is CssK.INLINE_FLEX or pd is CssK.GRID or pd is CssK.INLINE_GRID
+					call b.AddZ: 'block';
+					return true;
+				;;
+			;;
+			s is CssStyles.initial;
+		;;
+		# content: normal is none on a ::before or ::after
+		if id is CssP.CONTENT as int and (which is CssSel.PE_BEFORE or which is CssSel.PE_AFTER) and not (HasContent: s)
+			call b.AddZ: 'none';
+			return true;
+		;;
 		call CssSer.Computed: s id as u32 b;
 	[end: true]
 

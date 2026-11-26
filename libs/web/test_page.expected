@@ -47,6 +47,7 @@ console[0]: computed rgb(16, 32, 48) block
 console[0]: svg hints rgb(255, 0, 0) rgb(0, 170, 0) none 2px 1px, 2px rgb(0, 0, 0) rgb(0, 170, 0) rgb(0, 0, 255) 0.5
 console[0]: resolved 30px -webkit-center
 console[0]: fonts object loaded 1 true function unloaded true
+console[0]: pseudo rgb(0, 0, 255) block "x" none rgb(255, 0, 0) block true 0 block  flex
 console[0]: written written
 console[0]: navigator function false
 console[0]: microtask
@@ -83,7 +84,7 @@ serialized <!DOCTYPE html><html><head>
   .fresh { color: rgb(200, 100, 50); margin-top: 2em; }
   p { margin: 1em 0; }
 </style>
-<style>@font-face { font-family: "Test Face"; src: url(t.woff2); font-weight: 700; }</style></head>
+<style>@font-face { font-family: "Test Face"; src: url(t.woff2); font-weight: 700; }</style><style>#pe::after { content: "x"; color: rgb(0, 0, 255); display: block; } #pe { color: rgb(255, 0, 0); display: flex; }</style></head>
 <body>
 <h1 id="top" class="b c d">Hello</h1>
 <p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
@@ -218,6 +219,13 @@ ffs.textContent = '@font-face { font-family: "Test Face"; src: url(t.woff2); fon
 document.head.appendChild(ffs);
 log('fonts', typeof document.fonts, document.fonts.status, document.fonts.size, document.fonts.check('16px serif'), typeof FontFace, new FontFace('X', 'url(x.woff2)').status, document.fonts instanceof EventTarget);
 document.fonts.load('bold 16px "Test Face", serif').then(function (f) { log('fonts load', f.length, f[0].family, f[0].weight, f[0].status); });
+// getComputedStyle of a pseudo-element, styled or not
+var pss = document.createElement('style');
+pss.textContent = '#pe::after { content: "x"; color: rgb(0, 0, 255); display: block; } #pe { color: rgb(255, 0, 0); display: flex; }';
+document.head.appendChild(pss);
+document.body.insertAdjacentHTML('beforeend', '<div id="pe">p</div>');
+var pe = document.getElementById('pe');
+log('pseudo', getComputedStyle(pe, '::after').color, getComputedStyle(pe, ':after').display, getComputedStyle(pe, '::after').content, getComputedStyle(pe, '::before').content, getComputedStyle(pe, '::before').color, getComputedStyle(pe, '::before').display, getComputedStyle(pe, '::nope').color === '', getComputedStyle(pe, '::nope').length, getComputedStyle(pe, 'after').display, getComputedStyle(pe, ':marker').display, getComputedStyle(pe, null).display);
 
 document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
 window.addEventListener('load', function () { log('load', document.readyState); });
@@ -226,7 +234,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
-</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><span id="lh" style="font-size: 20px; line-height: 1.5">x</span><center id="ce">c</center><p id="written">written</p>
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><span id="lh" style="font-size: 20px; line-height: 1.5">x</span><center id="ce">c</center><div id="pe">p</div><p id="written">written</p>
 <p>after the script</p>
 <script>
 // the old ways a page asks about its loading, makes an event, and asks to draw
@@ -253,7 +261,7 @@ console.log('canvas context', document.createElement('canvas').getContext('2d'))
   .fresh { color: rgb(200, 100, 50); margin-top: 2em; }
   p { margin: 1em 0; }
 </style>
-<style>@font-face { font-family: "Test Face"; src: url(t.woff2); font-weight: 700; }</style></head>
+<style>@font-face { font-family: "Test Face"; src: url(t.woff2); font-weight: 700; }</style><style>#pe::after { content: "x"; color: rgb(0, 0, 255); display: block; } #pe { color: rgb(255, 0, 0); display: flex; }</style></head>
 <body>
 <h1 id="top" class="b c d">Hello</h1>
 <p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
@@ -388,6 +396,13 @@ ffs.textContent = '@font-face { font-family: "Test Face"; src: url(t.woff2); fon
 document.head.appendChild(ffs);
 log('fonts', typeof document.fonts, document.fonts.status, document.fonts.size, document.fonts.check('16px serif'), typeof FontFace, new FontFace('X', 'url(x.woff2)').status, document.fonts instanceof EventTarget);
 document.fonts.load('bold 16px "Test Face", serif').then(function (f) { log('fonts load', f.length, f[0].family, f[0].weight, f[0].status); });
+// getComputedStyle of a pseudo-element, styled or not
+var pss = document.createElement('style');
+pss.textContent = '#pe::after { content: "x"; color: rgb(0, 0, 255); display: block; } #pe { color: rgb(255, 0, 0); display: flex; }';
+document.head.appendChild(pss);
+document.body.insertAdjacentHTML('beforeend', '<div id="pe">p</div>');
+var pe = document.getElementById('pe');
+log('pseudo', getComputedStyle(pe, '::after').color, getComputedStyle(pe, ':after').display, getComputedStyle(pe, '::after').content, getComputedStyle(pe, '::before').content, getComputedStyle(pe, '::before').color, getComputedStyle(pe, '::before').display, getComputedStyle(pe, '::nope').color === '', getComputedStyle(pe, '::nope').length, getComputedStyle(pe, 'after').display, getComputedStyle(pe, ':marker').display, getComputedStyle(pe, null).display);
 
 document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
 window.addEventListener('load', function () { log('load', document.readyState); });
@@ -396,7 +411,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
-</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><span id="lh" style="font-size: 20px; line-height: 1.5">x</span><center id="ce">c</center><p id="written">written</p>
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><span id="lh" style="font-size: 20px; line-height: 1.5">x</span><center id="ce">c</center><div id="pe">p</div><p id="written">written</p>
 <p>after the script</p>
 <script>
 // the old ways a page asks about its loading, makes an event, and asks to draw
@@ -464,6 +479,7 @@ console[0]: computed rgb(16, 32, 48) block
 console[0]: svg hints rgb(255, 0, 0) rgb(0, 170, 0) none 2px 1px, 2px rgb(0, 0, 0) rgb(0, 170, 0) rgb(0, 0, 255) 0.5
 console[0]: resolved 30px -webkit-center
 console[0]: fonts object loaded 1 true function unloaded true
+console[0]: pseudo rgb(0, 0, 255) block "x" none rgb(255, 0, 0) block true 0 block  flex
 console[0]: written written
 console[0]: navigator function false
 console[0]: microtask
@@ -500,7 +516,7 @@ serialized <!DOCTYPE html><html><head>
   .fresh { color: rgb(200, 100, 50); margin-top: 2em; }
   p { margin: 1em 0; }
 </style>
-<style>@font-face { font-family: "Test Face"; src: url(t.woff2); font-weight: 700; }</style></head>
+<style>@font-face { font-family: "Test Face"; src: url(t.woff2); font-weight: 700; }</style><style>#pe::after { content: "x"; color: rgb(0, 0, 255); display: block; } #pe { color: rgb(255, 0, 0); display: flex; }</style></head>
 <body>
 <h1 id="top" class="b c d">Hello</h1>
 <p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
@@ -635,6 +651,13 @@ ffs.textContent = '@font-face { font-family: "Test Face"; src: url(t.woff2); fon
 document.head.appendChild(ffs);
 log('fonts', typeof document.fonts, document.fonts.status, document.fonts.size, document.fonts.check('16px serif'), typeof FontFace, new FontFace('X', 'url(x.woff2)').status, document.fonts instanceof EventTarget);
 document.fonts.load('bold 16px "Test Face", serif').then(function (f) { log('fonts load', f.length, f[0].family, f[0].weight, f[0].status); });
+// getComputedStyle of a pseudo-element, styled or not
+var pss = document.createElement('style');
+pss.textContent = '#pe::after { content: "x"; color: rgb(0, 0, 255); display: block; } #pe { color: rgb(255, 0, 0); display: flex; }';
+document.head.appendChild(pss);
+document.body.insertAdjacentHTML('beforeend', '<div id="pe">p</div>');
+var pe = document.getElementById('pe');
+log('pseudo', getComputedStyle(pe, '::after').color, getComputedStyle(pe, ':after').display, getComputedStyle(pe, '::after').content, getComputedStyle(pe, '::before').content, getComputedStyle(pe, '::before').color, getComputedStyle(pe, '::before').display, getComputedStyle(pe, '::nope').color === '', getComputedStyle(pe, '::nope').length, getComputedStyle(pe, 'after').display, getComputedStyle(pe, ':marker').display, getComputedStyle(pe, null).display);
 
 document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
 window.addEventListener('load', function () { log('load', document.readyState); });
@@ -643,7 +666,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
-</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><span id="lh" style="font-size: 20px; line-height: 1.5">x</span><center id="ce">c</center><p id="written">written</p>
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><span id="lh" style="font-size: 20px; line-height: 1.5">x</span><center id="ce">c</center><div id="pe">p</div><p id="written">written</p>
 <p>after the script</p>
 <script>
 // the old ways a page asks about its loading, makes an event, and asks to draw
@@ -670,7 +693,7 @@ console.log('canvas context', document.createElement('canvas').getContext('2d'))
   .fresh { color: rgb(200, 100, 50); margin-top: 2em; }
   p { margin: 1em 0; }
 </style>
-<style>@font-face { font-family: "Test Face"; src: url(t.woff2); font-weight: 700; }</style></head>
+<style>@font-face { font-family: "Test Face"; src: url(t.woff2); font-weight: 700; }</style><style>#pe::after { content: "x"; color: rgb(0, 0, 255); display: block; } #pe { color: rgb(255, 0, 0); display: flex; }</style></head>
 <body>
 <h1 id="top" class="b c d">Hello</h1>
 <p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
@@ -805,6 +828,13 @@ ffs.textContent = '@font-face { font-family: "Test Face"; src: url(t.woff2); fon
 document.head.appendChild(ffs);
 log('fonts', typeof document.fonts, document.fonts.status, document.fonts.size, document.fonts.check('16px serif'), typeof FontFace, new FontFace('X', 'url(x.woff2)').status, document.fonts instanceof EventTarget);
 document.fonts.load('bold 16px "Test Face", serif').then(function (f) { log('fonts load', f.length, f[0].family, f[0].weight, f[0].status); });
+// getComputedStyle of a pseudo-element, styled or not
+var pss = document.createElement('style');
+pss.textContent = '#pe::after { content: "x"; color: rgb(0, 0, 255); display: block; } #pe { color: rgb(255, 0, 0); display: flex; }';
+document.head.appendChild(pss);
+document.body.insertAdjacentHTML('beforeend', '<div id="pe">p</div>');
+var pe = document.getElementById('pe');
+log('pseudo', getComputedStyle(pe, '::after').color, getComputedStyle(pe, ':after').display, getComputedStyle(pe, '::after').content, getComputedStyle(pe, '::before').content, getComputedStyle(pe, '::before').color, getComputedStyle(pe, '::before').display, getComputedStyle(pe, '::nope').color === '', getComputedStyle(pe, '::nope').length, getComputedStyle(pe, 'after').display, getComputedStyle(pe, ':marker').display, getComputedStyle(pe, null).display);
 
 document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
 window.addEventListener('load', function () { log('load', document.readyState); });
@@ -813,7 +843,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
-</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><span id="lh" style="font-size: 20px; line-height: 1.5">x</span><center id="ce">c</center><p id="written">written</p>
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><span id="lh" style="font-size: 20px; line-height: 1.5">x</span><center id="ce">c</center><div id="pe">p</div><p id="written">written</p>
 <p>after the script</p>
 <script>
 // the old ways a page asks about its loading, makes an event, and asks to draw

@@ -144,6 +144,13 @@ ffs.textContent = '@font-face { font-family: "Test Face"; src: url(t.woff2); fon
 document.head.appendChild(ffs);
 log('fonts', typeof document.fonts, document.fonts.status, document.fonts.size, document.fonts.check('16px serif'), typeof FontFace, new FontFace('X', 'url(x.woff2)').status, document.fonts instanceof EventTarget);
 document.fonts.load('bold 16px "Test Face", serif').then(function (f) { log('fonts load', f.length, f[0].family, f[0].weight, f[0].status); });
+// getComputedStyle of a pseudo-element, styled or not
+var pss = document.createElement('style');
+pss.textContent = '#pe::after { content: "x"; color: rgb(0, 0, 255); display: block; } #pe { color: rgb(255, 0, 0); display: flex; }';
+document.head.appendChild(pss);
+document.body.insertAdjacentHTML('beforeend', '<div id="pe">p</div>');
+var pe = document.getElementById('pe');
+log('pseudo', getComputedStyle(pe, '::after').color, getComputedStyle(pe, ':after').display, getComputedStyle(pe, '::after').content, getComputedStyle(pe, '::before').content, getComputedStyle(pe, '::before').color, getComputedStyle(pe, '::before').display, getComputedStyle(pe, '::nope').color === '', getComputedStyle(pe, '::nope').length, getComputedStyle(pe, 'after').display, getComputedStyle(pe, ':marker').display, getComputedStyle(pe, null).display);
 
 document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
 window.addEventListener('load', function () { log('load', document.readyState); });

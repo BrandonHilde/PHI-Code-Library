@@ -2860,6 +2860,9 @@ phi.PageBind:Library
 	[StyleLength: ptr<u64> args: 0; int argc: 0;]
 		ptr<JsObj> o: (ThisStyle: args);
 		if o.cls is computed_class
+			if o.length is Css.PE_INVALID
+				return JsV.INT_BASE;
+			;;
 			return (JsV.Uint: (Css.LonghandCount));
 		;;
 		ptr<CssDecls> d: (Css.StyleDecls: o.data as ptr<DomNode>);
@@ -2875,7 +2878,7 @@ phi.PageBind:Library
 			return (JsV.Str: JsRt.blank);
 		;;
 		if o.cls is computed_class
-			if i >= ((Css.LonghandCount) as f64)
+			if i >= ((Css.LonghandCount) as f64) or o.length is Css.PE_INVALID
 				return (JsV.Str: JsRt.blank);
 			;;
 			return (Js.NewStringZ: (Css.PropertyName: i as u32));
@@ -2897,7 +2900,7 @@ phi.PageBind:Library
 		else
 			# (computed: as the page's styles are now)
 			call Page.UpdateStyle: Page.current;
-			call Css.ComputedText: o.data as ptr<DomNode> name.data name.len addr text;
+			call Css.ComputedText: o.data as ptr<DomNode> name.data name.len addr text o.length;
 		;;
 		u64 r: (Js.NewString: text.data text.len);
 		call name.Free;
@@ -2959,14 +2962,18 @@ phi.PageBind:Library
 		;;
 		call Page.UpdateStyle: Page.current;
 		WlBuf text;
-		call Css.ComputedText: o.data as ptr<DomNode> name.data name.len addr text;
+		call Css.ComputedText: o.data as ptr<DomNode> name.data name.len addr text o.length;
 		output:0 is (Js.NewString: text.data text.len);
 		call name.Free;
 		call text.Free;
 	[end: 1]
 
-	[NewComputed: ptr<DomNode> n: 0;]
-	[end: (JsV.Obj: (JsObjs.NewHost: computed_class style_proto n as ptr<u8>))]
+	# (which: the pseudo-element, as Css.PseudoNamed gives, or 0; kept in the object's length, which
+	# only an array uses)
+	[NewComputed: ptr<DomNode> n: 0; u32 which: 0;]
+		ptr<JsObj> o: (JsObjs.NewHost: computed_class style_proto n as ptr<u8>);
+		o.length is which;
+	[end: (JsV.Obj: o)]
 
 	# ---- el.dataset ----
 
