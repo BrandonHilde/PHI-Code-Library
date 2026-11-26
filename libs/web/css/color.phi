@@ -34,7 +34,11 @@ phi.CssColor:Library
 			;;
 			u32 rgba: CssProps.color_of:kw;
 			if rgba is 0 and kw is not CssK.TRANSPARENT return false;
-			call CssV.SetColor: (CssVp.Emit) rgba;
+			# (its name is kept, as element.style gives back what was written: "red", not
+			# "rgb(255, 0, 0)"; what's computed is the color)
+			ptr<CssVal> named: (CssVp.Emit);
+			call CssV.SetColor: named rgba;
+			named.code is kw as u16;
 			call Advance;
 			return true;
 		;;

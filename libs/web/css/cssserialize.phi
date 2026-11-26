@@ -126,6 +126,10 @@ phi.CssSer:Library
 			return;
 		;;
 		if kind is CssV.COLOR
+			if v.code is not 0 and computing is false
+				call b.AddZ: (CssProps.KwName: v.code);
+				return;
+			;;
 			call Color: v.bits b;
 			return;
 		;;
@@ -219,8 +223,18 @@ phi.CssSer:Library
 
 	# ---- a computed value
 
+	# (true while a computed value is written: a color named in the sheet comes out as the color)
+	bln computing: false;
+
 	# a longhand as getComputedStyle reads it: currentcolor comes out as the color
 	[Computed: ptr<CssComputed> s: 0; u32 prop: 0; ptr<WlBuf> b: 0;]
+		bln was: computing;
+		computing is true;
+		call ComputedInner: s prop b;
+		computing is was;
+	[end]
+
+	[ComputedInner: ptr<CssComputed> s: 0; u32 prop: 0; ptr<WlBuf> b: 0;]
 		if (CssProps.IsShorthand: prop)
 			call ComputedShorthand: s prop b;
 			return;
@@ -358,14 +372,45 @@ phi.CssSer:Library
 			call c.Free;
 			return true;
 		;;
-		if kind is CssProps.SH_SLASH
+		if kind is CssProps.SH_FLEX
+			# (all three, as Chrome writes it: flex: 1 is "1 1 0%")
 			while u32 k: 0; k < info.sub_count; k++;
+				if k > 0
+					call b.Add: 32;
+				;;
+				call Value: (DeclVal: d info.subs:k) b;
+			;;
+			return true;
+		;;
+		if kind is CssProps.SH_BORDER
+			return (Border: d info b);
+		;;
+		if kind is CssProps.SH_FONT
+			return (Font: d info b);
+		;;
+		if kind is CssProps.SH_SLASH
+			# (those at the end that are auto go without saying: grid-area: 1 / 2)
+			u32 last: info.sub_count;
+			while last > 1
+				ptr<CssVal> end_: (DeclVal: d info.subs:(last - 1));
+				if end_.kind is not CssV.KW as u8 or end_.code is not CssK.AUTO as u16
+					break;
+				;;
+				last--;
+			;;
+			while u32 k: 0; k < last; k++;
 				if k > 0
 					call b.AddZ: ' / ';
 				;;
 				call Value: (DeclVal: d info.subs:k) b;
 			;;
 			return true;
+		;;
+		if kind is CssProps.SH_LAYERS
+			return (Layered: d info b false);
+		;;
+		if kind is CssProps.SH_BACKGROUND
+			return (Layered: d info b true);
 		;;
 		# the ones that say something: their initial values go without saying
 		bln any: false;
@@ -385,6 +430,207 @@ phi.CssSer:Library
 		;;
 	[end: true]
 
+	# border: only when its four sides are alike and border-image is as it starts, and not when
+	# all of it is (as Chrome has it: border: none reads as ""); widths, styles, colors, then
+	# what isn't initial of a width, a style and a color
+	[Border: ptr<CssDecls> d: 0; ptr<CssPropInfo> info: 0; ptr<WlBuf> b: 0;]
+		if info.sub_count < 12 return false;
+		while u32 k: 12; k < info.sub_count; k++;
+			if (SameValue: (DeclVal: d info.subs:k) (CssSh.Initial: info.subs:k)) is false return false;
+		;;
+		while u32 g: 0; g < 3; g++;
+			while u32 side: 1; side < 4; side++;
+				if (SameValue: (DeclVal: d info.subs:(g * 4)) (DeclVal: d info.subs:(g * 4 + side))) is false return false;
+			;;
+		;;
+		bln any: false;
+		while u32 g2: 0; g2 < 3; g2++;
+			u32 sub: info.subs:(g2 * 4);
+			if (SameValue: (DeclVal: d sub) (CssSh.Initial: sub)) is false
+				if any
+					call b.Add: 32;
+				;;
+				call Value: (DeclVal: d sub) b;
+				any is true;
+			;;
+		;;
+	[end: any]
+
+	# font: [style] [variant] [weight] [stretch] size [/ line-height] family, and only when the
+	# longhands it can't say (font-kerning, font-feature-settings...) are as it sets them
+	[Font: ptr<CssDecls> d: 0; ptr<CssPropInfo> info: 0; ptr<WlBuf> b: 0;]
+		if info.sub_count < 7 return false;
+		while u32 k: 7; k < info.sub_count; k++;
+			if (SameValue: (DeclVal: d info.subs:k) (CssSh.Initial: info.subs:k)) is false return false;
+		;;
+		while u32 k2: 0; k2 < 4; k2++;
+			u32 sub: info.subs:k2;
+			if (SameValue: (DeclVal: d sub) (CssSh.Initial: sub)) is false
+				call Value: (DeclVal: d sub) b;
+				call b.Add: 32;
+			;;
+		;;
+		call Value: (DeclVal: d info.subs:4) b;
+		if (SameValue: (DeclVal: d info.subs:5) (CssSh.Initial: info.subs:5)) is false
+			call b.AddZ: ' / ';
+			call Value: (DeclVal: d info.subs:5) b;
+		;;
+		call b.Add: 32;
+		call Value: (DeclVal: d info.subs:6) b;
+	[end: true]
+
+	# transition, animation and background: a layer at a time, with commas between, each
+	# what isn't initial of its longhands' items for it (background: position / size, and its
+	# color only in the last); not when the longhands have different numbers of layers
+	[Layered: ptr<CssDecls> d: 0; ptr<CssPropInfo> info: 0; ptr<WlBuf> b: 0; bln bg: false;]
+		u32 n: info.sub_count;
+		if n > 8 return false;
+		WlBuf vals[8];
+		WlBuf inits[8];
+		while u32 k: 0; k < n; k++;
+			call Value: (DeclVal: d info.subs:k) addr vals:k;
+			call Value: (CssSh.Initial: info.subs:k) addr inits:k;
+		;;
+		u32 layers: (Segments: addr vals:0);
+		bln ok: true;
+		while u32 k2: 1; k2 < n; k2++;
+			if not (bg and k2 is 7) and (Segments: addr vals:k2) is not layers
+				ok is false;
+			;;
+		;;
+		WlBuf piece;
+		WlBuf init_;
+		WlBuf size;
+		WlBuf init_size;
+		while u32 layer: 0; layer < layers and ok; layer++;
+			if layer > 0
+				call b.AddZ: ', ';
+			;;
+			bln any: false;
+			while u32 k3: 0; k3 < n; k3++;
+				if bg and (k3 is 2 or k3 is 7)
+					continue;
+				;;
+				call piece.Clear;
+				call init_.Clear;
+				call Segment: addr vals:k3 layer addr piece;
+				call Segment: addr inits:k3 0 addr init_;
+				bln differs: not (WlText.Eq: piece.data piece.len init_.data init_.len);
+				bln sized: false;
+				if bg and k3 is 1
+					call size.Clear;
+					call init_size.Clear;
+					call Segment: addr vals:2 layer addr size;
+					call Segment: addr inits:2 0 addr init_size;
+					sized is not (WlText.Eq: size.data size.len init_size.data init_size.len);
+				;;
+				if differs or sized
+					if any
+						call b.Add: 32;
+					;;
+					call b.AddN: piece.data piece.len;
+					if sized
+						call b.AddZ: ' / ';
+						call b.AddN: size.data size.len;
+					;;
+					any is true;
+				;;
+			;;
+			if bg and layer + 1 is layers and n > 7
+				if not (WlText.Eq: vals:7.data vals:7.len inits:7.data inits:7.len)
+					if any
+						call b.Add: 32;
+					;;
+					call b.AddN: vals:7.data vals:7.len;
+					any is true;
+				;;
+			;;
+			if any is false
+				call piece.Clear;
+				call Segment: addr vals:0 layer addr piece;
+				call b.AddN: piece.data piece.len;
+			;;
+		;;
+		call piece.Free;
+		call init_.Free;
+		call size.Free;
+		call init_size.Free;
+		while u32 k4: 0; k4 < n; k4++;
+			call vals:k4.Free;
+			call inits:k4.Free;
+		;;
+	[end: ok]
+
+	# how many comma-separated items a value's text has, at its top level (not in brackets or quotes)
+	[Segments: ptr<WlBuf> t: 0; : u32]
+		u32 count: 1;
+		int depth: 0;
+		bln quoted: false;
+		while u32 i: 0; i < t.len; i++;
+			u8 c: t.data:i;
+			if c is 34
+				quoted is not quoted;
+			;;
+			elif quoted is false
+				if c is 40
+					depth++;
+				;;
+				elif c is 41
+					depth--;
+				;;
+				elif c is 44 and depth is 0
+					count++;
+				;;
+			;;
+		;;
+	[end: count]
+
+	# the which-th of them, without the spaces around it, added to into_
+	[Segment: ptr<WlBuf> t: 0; u32 which: 0; ptr<WlBuf> into_: 0;]
+		u32 at_: 0;
+		int depth: 0;
+		bln quoted: false;
+		u32 from: 0;
+		u32 i: 0;
+		while i <= t.len
+			bln cut: i is t.len;
+			if cut is false
+				u8 c: t.data:i;
+				if c is 34
+					quoted is not quoted;
+				;;
+				elif quoted is false
+					if c is 40
+						depth++;
+					;;
+					elif c is 41
+						depth--;
+					;;
+					elif c is 44 and depth is 0
+						cut is true;
+					;;
+				;;
+			;;
+			if cut
+				if at_ is which
+					u32 a: from;
+					u32 z: i;
+					while a < z and t.data:a is 32
+						a++;
+					;;
+					while z > a and t.data:(z - 1) is 32
+						z--;
+					;;
+					call into_.AddN: addr t.data:a z - a;
+					return;
+				;;
+				at_++;
+				from is i + 1;
+			;;
+			i++;
+		;;
+	[end]
+
 	[DeclVal: ptr<CssDecls> d: 0; u32 prop: 0;]
 		ptr<CssDecl> one: (d.Find: prop);
 	[end: addr one.val]
@@ -401,13 +647,32 @@ phi.CssSer:Library
 		call y.Free;
 	[end: same]
 
-	# the whole block as cssText. Longhands that came from one shorthand aren't put back together.
+	# The whole block as cssText. Longhands are put back together as a shorthand where they can
+	# be, as CSSOM says, where the first of them was: the shorthand with the most longhands that
+	# has all of its own here first (border, then border-width..., then border-top...).
+	u8 done[348];
+
 	[Block: ptr<CssDecls> d: 0; ptr<WlBuf> b: 0;]
+		while u32 z: 0; z < CssP.COUNT and z < 348; z++;
+			done:z is 0;
+		;;
+		bln first: true;
 		while u32 i: 0; i < d.count; i++;
 			ptr<CssDecl> one: addr d.items:i;
-			if i > 0
+			u32 prop: one.prop;
+			if prop is not CssP.CUSTOM
+				if prop < 348 and done:prop is not 0
+					continue;
+				;;
+				if prop < CssP.LONGHANDS and (Combined: d prop b first)
+					first is false;
+					continue;
+				;;
+			;;
+			if first is false
 				call b.Add: 32;
 			;;
+			first is false;
 			if one.prop is CssP.CUSTOM as u16
 				call b.AddN: one.name.text one.name.len;
 			;;
@@ -420,6 +685,78 @@ phi.CssSer:Library
 				call b.AddZ: ' !important';
 			;;
 			call b.Add: 59;
+		;;
+	[end]
+
+	# a shorthand for longhand prop, written to b ("margin: 1px;") if there's one the block has all
+	# of that's not been written yet
+	[Combined: ptr<CssDecls> d: 0; u32 prop: 0; ptr<WlBuf> b: 0; bln first: true;]
+		u32 tried: 0;
+		while tried < 8
+			# (the next biggest that has prop in it)
+			int best: -1;
+			u32 best_n: 0;
+			# (not the logical ones, margin-inline and after, nor all: Chrome writes physical ones)
+			while u32 sh: CssP.LONGHANDS; sh < CssP.MARGIN_INLINE and sh < 348; sh++;
+				ptr<CssPropInfo> info: addr CssProps.info:sh;
+				if done:sh is not 0 or info.sh_kind is CssProps.SH_ALL or info.sub_count <= best_n
+					continue;
+				;;
+				bln holds: false;
+				while u32 k: 0; k < info.sub_count; k++;
+					if info.subs:k is prop
+						holds is true;
+					;;
+				;;
+				if holds
+					best is sh as int;
+					best_n is info.sub_count;
+				;;
+			;;
+			if best < 0 return false;
+			# (tried: not to be tried again for this one)
+			done:best is 2;
+			tried++;
+			ptr<CssPropInfo> bi: addr CssProps.info:best;
+			bln free_: true;
+			while u32 k2: 0; k2 < bi.sub_count; k2++;
+				if done:(bi.subs:k2) is 1
+					free_ is false;
+				;;
+			;;
+			if free_
+				WlBuf v;
+				if (Declared: d best as u32 addr v) and v.len > 0
+					if first is false
+						call b.Add: 32;
+					;;
+					call b.AddZ: (CssProps.Name: best as u32);
+					call b.AddZ: ': ';
+					call b.AddN: v.data v.len;
+					ptr<CssDecl> lead: (d.Find: prop);
+					if lead is not 0 and lead.important is not 0
+						call b.AddZ: ' !important';
+					;;
+					call b.Add: 59;
+					call v.Free;
+					while u32 k3: 0; k3 < bi.sub_count; k3++;
+						done:(bi.subs:k3) is 1;
+					;;
+					call Unmark;
+					return true;
+				;;
+				call v.Free;
+			;;
+		;;
+		call Unmark;
+	[end: false]
+
+	# shorthands marked as tried go back to untried (longhands written stay written)
+	[Unmark]
+		while u32 sh: CssP.LONGHANDS; sh < CssP.COUNT and sh < 348; sh++;
+			if done:sh is 2
+				done:sh is 0;
+			;;
 		;;
 	[end]
 }

@@ -7,7 +7,7 @@ console[0]:
 console[0]: after an empty trace
 console[0]: tag DIV DIV 1 box
 console[0]: style attr 3px padding: 3px
-console[0]: after set rgb(255, 0, 0) | padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);
+console[0]: after set red | padding: 3px; background-color: red;
 console[0]: in style true true true false true true false
 console[0]: classList 2 true a b
 console[0]: className b c d
@@ -88,7 +88,7 @@ serialized <!DOCTYPE html><html><head>
 <body>
 <h1 id="top" class="b c d">Hello</h1>
 <p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
-<div id="box" style="padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);">box</div>
+<div id="box" style="padding: 3px; background-color: red;">box</div>
 <ul id="list"><li>one</li><li>two</li><li>three</li><li>four</li></ul>
 <button id="go" onclick="console.log('inline handler', event.type, this.id); return false;">Go</button>
 <a class="out" href="next.html">next</a>
@@ -265,7 +265,7 @@ console.log('canvas context', document.createElement('canvas').getContext('2d'))
 <body>
 <h1 id="top" class="b c d">Hello</h1>
 <p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
-<div id="box" style="padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);">box</div>
+<div id="box" style="padding: 3px; background-color: red;">box</div>
 <ul id="list"><li>one</li><li>two</li><li>three</li><li>four</li></ul>
 <button id="go" onclick="console.log('inline handler', event.type, this.id); return false;">Go</button>
 <a class="out" href="next.html">next</a>
@@ -439,7 +439,7 @@ console[0]:
 console[0]: after an empty trace
 console[0]: tag DIV DIV 1 box
 console[0]: style attr 3px padding: 3px
-console[0]: after set rgb(255, 0, 0) | padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);
+console[0]: after set red | padding: 3px; background-color: red;
 console[0]: in style true true true false true true false
 console[0]: classList 2 true a b
 console[0]: className b c d
@@ -520,7 +520,7 @@ serialized <!DOCTYPE html><html><head>
 <body>
 <h1 id="top" class="b c d">Hello</h1>
 <p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
-<div id="box" style="padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);">box</div>
+<div id="box" style="padding: 3px; background-color: red;">box</div>
 <ul id="list"><li>one</li><li>two</li><li>three</li><li>four</li></ul>
 <button id="go" onclick="console.log('inline handler', event.type, this.id); return false;">Go</button>
 <a class="out" href="next.html">next</a>
@@ -697,7 +697,7 @@ console.log('canvas context', document.createElement('canvas').getContext('2d'))
 <body>
 <h1 id="top" class="b c d">Hello</h1>
 <p class="linked" data-user-name="ada" data-foo-bar="baz">Some <b>bold</b> text</p>
-<div id="box" style="padding-top: 3px; padding-right: 3px; padding-bottom: 3px; padding-left: 3px; background-color: rgb(255, 0, 0);">box</div>
+<div id="box" style="padding: 3px; background-color: red;">box</div>
 <ul id="list"><li>one</li><li>two</li><li>three</li><li>four</li></ul>
 <button id="go" onclick="console.log('inline handler', event.type, this.id); return false;">Go</button>
 <a class="out" href="next.html">next</a>

@@ -238,3 +238,14 @@ the program stopped at its first use. weblib's `CssEngine.on_style` (page/anim.p
 transitions and animations) is one. Fixed on PHI's macos branch in `6cf41dc` (a pointer or method
 value keeps its type; other numbers are still an int); weblib needs a PHI built from it. PHI OS
 FINDINGS #45.
+
+## cssText keeps shorthands and colour names (2026-11-26)
+
+`style.cssText`, a rule's `style.cssText` and the style attribute written from them now give
+shorthands back as Chrome does: when every longhand of `margin`, `border`, `font`, `background`,
+`flex` and the like is set, they are written as the shorthand, the largest one first, and only
+the longhands left over are written alone. A named colour stays its name (`color: red`, and
+`style.color` is `red`), while `getComputedStyle` still gives `rgb(255, 0, 0)`. Checked against
+Brave: 22 of 25 cases match. The three that don't are Chrome's own longhand order after
+`font-kerning`, `background` with a `url()` (Chrome keeps it relative and writes `center center`)
+and `outline`'s order.

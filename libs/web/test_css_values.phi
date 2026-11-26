@@ -77,8 +77,8 @@ phi.TestCssValues:Program
 	call V: 'opacity' '0.5' '0.5';
 	call V: 'opacity' '50%' '50%';
 	call V: 'opacity' 'none' 0;
-	call V: 'color' 'red' 'rgb(255, 0, 0)';
-	call V: 'color' 'RED' 'rgb(255, 0, 0)';
+	call V: 'color' 'red' 'red';
+	call V: 'color' 'RED' 'red';
 	call V: 'color' '#abc' 'rgb(170, 187, 204)';
 	call V: 'color' '#abcd' 'rgba(170, 187, 204, 0.867)';
 	call V: 'color' '#aabbcc' 'rgb(170, 187, 204)';
@@ -86,7 +86,7 @@ phi.TestCssValues:Program
 	call V: 'color' '#ab' 0;
 	call V: 'color' '#abcde' 0;
 	call V: 'color' '#gggggg' 0;
-	call V: 'color' 'transparent' 'rgba(0, 0, 0, 0)';
+	call V: 'color' 'transparent' 'transparent';
 	call V: 'color' 'currentcolor' 'currentcolor';
 	call V: 'color' 'currentColor' 'currentcolor';
 	call V: 'color' 'rgb(1, 2, 3)' 'rgb(1, 2, 3)';
@@ -103,7 +103,7 @@ phi.TestCssValues:Program
 	call V: 'color' 'hsla(0.5turn, 100%, 50%, 0.25)' 'rgba(0, 255, 255, 0.25)';
 	call V: 'color' 'hsl(120, 100, 50)' 0;
 	call V: 'color' 'hwb(0 0% 0%)' 'rgb(255, 0, 0)';
-	call V: 'color' 'canvastext' 'rgb(0, 0, 0)';
+	call V: 'color' 'canvastext' 'canvastext';
 	call V: 'color' 'notacolor' 0;
 	call V: 'color' 'rgb(calc(1 + 1), 2, 3)' 'rgb(2, 2, 3)';
 	call V: 'background-color' 'color-mix(in srgb, red, blue)' 'rgb(128, 0, 128)';
@@ -145,13 +145,13 @@ phi.TestCssValues:Program
 	call V: 'align-items' 'nonsense' 0;
 	call V: 'box-shadow' 'none' 'none';
 	call V: 'box-shadow' '1px 2px' '1px 2px';
-	call V: 'box-shadow' '1px 2px 3px 4px red' '1px 2px 3px 4px rgb(255, 0, 0)';
-	call V: 'box-shadow' 'inset 1px 2px red, 0 0 3px blue' 'inset 1px 2px rgb(255, 0, 0), 0px 0px 3px rgb(0, 0, 255)';
-	call V: 'box-shadow' 'red 1px 2px inset' 'rgb(255, 0, 0) 1px 2px inset';
+	call V: 'box-shadow' '1px 2px 3px 4px red' '1px 2px 3px 4px red';
+	call V: 'box-shadow' 'inset 1px 2px red, 0 0 3px blue' 'inset 1px 2px red, 0px 0px 3px blue';
+	call V: 'box-shadow' 'red 1px 2px inset' 'red 1px 2px inset';
 	call V: 'box-shadow' '1px' 0;
 	call V: 'box-shadow' '1px 2px 3px 4px 5px' 0;
 	call V: 'box-shadow' 'none, 1px 2px' 0;
-	call V: 'text-shadow' '1px 1px 2px black' '1px 1px 2px rgb(0, 0, 0)';
+	call V: 'text-shadow' '1px 1px 2px black' '1px 1px 2px black';
 	call V: 'text-shadow' '1px 1px 2px 3px' 0;
 	call V: 'transform' 'none' 'none';
 	call V: 'transform' 'translate(10px, 20%) rotate(45deg) scale(2)' 'translate(10px, 20%) rotate(45deg) scale(2)';
@@ -173,14 +173,14 @@ phi.TestCssValues:Program
 	call V: 'animation-iteration-count' 'infinite, 3' 'infinite, 3';
 	call V: 'animation-name' 'none, spin' 'none, spin';
 	call V: 'filter' 'blur(2px) brightness(50%)' 'blur(2px) brightness(50%)';
-	call V: 'filter' 'drop-shadow(1px 2px 3px red)' 'drop-shadow(1px 2px 3px rgb(255, 0, 0))';
+	call V: 'filter' 'drop-shadow(1px 2px 3px red)' 'drop-shadow(1px 2px 3px red)';
 	call V: 'filter' 'blur(-1px)' 0;
 	call V: 'background-image' 'none, url(a.png)' 'none, url("a.png")';
-	call V: 'background-image' 'linear-gradient(red, blue)' 'linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))';
-	call V: 'background-image' 'linear-gradient(to right, red 10%, blue)' 'linear-gradient(to right, rgb(255, 0, 0) 10%, rgb(0, 0, 255))';
-	call V: 'background-image' 'linear-gradient(45deg, red, blue)' 'linear-gradient(45deg, rgb(255, 0, 0), rgb(0, 0, 255))';
-	call V: 'background-image' 'radial-gradient(circle at center, red, blue)' 'radial-gradient(circle at center, rgb(255, 0, 0), rgb(0, 0, 255))';
-	call V: 'background-image' 'conic-gradient(from 0deg, red, blue)' 'conic-gradient(from 0deg, rgb(255, 0, 0), rgb(0, 0, 255))';
+	call V: 'background-image' 'linear-gradient(red, blue)' 'linear-gradient(red, blue)';
+	call V: 'background-image' 'linear-gradient(to right, red 10%, blue)' 'linear-gradient(to right, red 10%, blue)';
+	call V: 'background-image' 'linear-gradient(45deg, red, blue)' 'linear-gradient(45deg, red, blue)';
+	call V: 'background-image' 'radial-gradient(circle at center, red, blue)' 'radial-gradient(circle at center, red, blue)';
+	call V: 'background-image' 'conic-gradient(from 0deg, red, blue)' 'conic-gradient(from 0deg, red, blue)';
 	call V: 'background-image' 'linear-gradient(nonsense)' 0;
 	call V: 'background-position' 'left 10px top 20px' 'left 10px top 20px';
 	call V: 'background-position' 'center' 'center';
@@ -259,10 +259,10 @@ phi.TestCssValues:Program
 	call E: 'inset' '1px 2px' 'left' '2px';
 	call E: 'border-width' 'thin 2px' 'border-left-width' '2px';
 	call E: 'border-style' 'solid dashed' 'border-bottom-style' 'solid';
-	call E: 'border-color' 'red blue' 'border-left-color' 'rgb(0, 0, 255)';
+	call E: 'border-color' 'red blue' 'border-left-color' 'blue';
 	call E: 'border' '1px solid red' 'border-top-width' '1px';
 	call E: 'border' '1px solid red' 'border-left-style' 'solid';
-	call E: 'border' 'red 1px solid' 'border-right-color' 'rgb(255, 0, 0)';
+	call E: 'border' 'red 1px solid' 'border-right-color' 'red';
 	call E: 'border' 'solid' 'border-top-width' 'medium';
 	call E: 'border' 'solid' 'border-top-color' 'currentcolor';
 	call E: 'border' 'solid' 'border-image-source' 'none';
@@ -272,7 +272,7 @@ phi.TestCssValues:Program
 	call E: 'border' 'none' 'border-bottom-style' 'none';
 	call E: 'border-top' '2px dotted' 'border-top-style' 'dotted';
 	call E: 'border-top' '2px dotted' 'border-top-color' 'currentcolor';
-	call E: 'border-left' 'blue' 'border-left-color' 'rgb(0, 0, 255)';
+	call E: 'border-left' 'blue' 'border-left-color' 'blue';
 	call E: 'border-radius' '1px' 'border-bottom-left-radius' '1px';
 	call E: 'border-radius' '1px 2px' 'border-top-right-radius' '2px';
 	call E: 'border-radius' '1px 2px 3px' 'border-bottom-left-radius' '2px';
@@ -280,7 +280,7 @@ phi.TestCssValues:Program
 	call E: 'border-radius' '1px / 2px' 'border-top-left-radius' '1px 2px';
 	call E: 'border-radius' '1px 2px / 3px 4px' 'border-top-right-radius' '2px 4px';
 	call E: 'border-radius' '1px /' 'border-top-left-radius' 0;
-	call E: 'outline' '1px solid red' 'outline-color' 'rgb(255, 0, 0)';
+	call E: 'outline' '1px solid red' 'outline-color' 'red';
 	call E: 'outline' 'solid' 'outline-width' 'medium';
 	call E: 'overflow' 'hidden' 'overflow-x' 'hidden';
 	call E: 'overflow' 'hidden' 'overflow-y' 'hidden';
@@ -335,7 +335,7 @@ phi.TestCssValues:Program
 	call E: 'font' 'Arial' 'font-family' 0;
 	call E: 'font' '700 1em a' 'font-weight' '700';
 	call E: 'font' 'caption' 'font-size' '13px';
-	call E: 'background' 'red' 'background-color' 'rgb(255, 0, 0)';
+	call E: 'background' 'red' 'background-color' 'red';
 	call E: 'background' 'red' 'background-image' 'none';
 	call E: 'background' 'red' 'background-position' '0% 0%';
 	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-image' 'url("a.png")';
@@ -345,12 +345,12 @@ phi.TestCssValues:Program
 	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-attachment' 'fixed';
 	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-origin' 'padding-box';
 	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-clip' 'content-box';
-	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-color' 'rgb(0, 0, 255)';
+	call E: 'background' 'url(a.png) no-repeat center / cover fixed padding-box content-box blue' 'background-color' 'blue';
 	call E: 'background' 'border-box' 'background-origin' 'border-box';
 	call E: 'background' 'border-box' 'background-clip' 'border-box';
 	call E: 'background' 'url(a), url(b) repeat-x, red' 'background-image' 'url("a"), url("b"), none';
 	call E: 'background' 'url(a), url(b) repeat-x, red' 'background-repeat' 'repeat, repeat-x, repeat';
-	call E: 'background' 'url(a), url(b) repeat-x, red' 'background-color' 'rgb(255, 0, 0)';
+	call E: 'background' 'url(a), url(b) repeat-x, red' 'background-color' 'red';
 	call E: 'background' 'red, url(b)' 'background-color' 0;
 	call E: 'background' 'none' 'background-image' 'none';
 	call E: 'background' 'nonsense' 'background-image' 0;
@@ -408,6 +408,7 @@ phi.TestCssValues:Program
 
 	# ---- reading a whole block, and setting and removing
 	call Block;
+	call Joined;
 
 	# ---- number text
 	call Num: 0.1 '0.1';
@@ -489,12 +490,56 @@ phi.TestCssValues:Program
 		call text.Free;
 	[end]
 
+	# ---- longhands put back together in cssText, as Brave writes them
+
+	[Joined]
+		call J: 'font: italic bold 16px/1.5 Arial, sans-serif' 'font: italic bold 16px / 1.5 Arial, sans-serif;';
+		call J: 'font: 12px Arial; line-height: 20px' 'font: 12px / 20px Arial;';
+		call J: 'border: 1px solid red; border-left-color: blue' 'border-width: 1px; border-style: solid; border-color: red red red blue; border-image: none;';
+		call J: 'border: 2px dotted' 'border: 2px dotted;';
+		call J: 'border: none' 'border-width: medium; border-style: none; border-color: currentcolor; border-image: none;';
+		call J: 'border-top: 1px solid red' 'border-top: 1px solid red;';
+		call J: 'flex: auto' 'flex: 1 1 auto;';
+		call J: 'flex: none' 'flex: 0 0 auto;';
+		call J: 'flex: 2' 'flex: 2 1 0%;';
+		call J: 'margin: 1px; margin-left: 2px !important' 'margin-top: 1px; margin-right: 1px; margin-bottom: 1px; margin-left: 2px !important;';
+		call J: 'color: #f00; background-color: transparent' 'color: rgb(255, 0, 0); background-color: transparent;';
+		call J: 'overflow: hidden auto' 'overflow: hidden auto;';
+		call J: 'gap: 4px' 'gap: 4px;';
+		call J: 'inset: 0 auto auto 0' 'inset: 0px auto auto 0px;';
+		call J: 'transition: opacity 1s, transform .5s ease-in' 'transition: opacity 1s, transform 0.5s ease-in;';
+		call J: 'grid-area: 1 / 2' 'grid-area: 1 / 2;';
+		call J: 'padding: 1px 2px 3px' 'padding: 1px 2px 3px;';
+		call J: 'border-radius: 4px' 'border-radius: 4px;';
+		call J: 'text-decoration: underline red' 'text-decoration: underline red;';
+		call J: 'list-style: none' 'list-style: none;';
+		call J: 'border-width: 1px; border-style: solid; border-color: red' 'border-width: 1px; border-style: solid; border-color: red;';
+		call J: 'background: red' 'background: red;';
+	[end]
+
+	[J: ptr<u8> source: 0; ptr<u8> want: 0;]
+		ptr<CssDecls> d: (Css.ParseInline: source (WlText.LenZ: source) 0);
+		WlBuf text;
+		call Css.DeclText: d addr text;
+		if (WlText.EqZ: text.data text.len want)
+			passed++;
+		;;
+		else
+			failed++;
+			log 'FAIL cssText of ' source ' want ' want ' got ';
+			call text.Add: 0;
+			log text.data '\n';
+		;;
+		call text.Free;
+		call Css.FreeDecls: d;
+	[end]
+
 	[Block]
 		ptr<u8> source: 'color: red; margin: 1px 2px; width: bogus; --x: 1 ; height: 5px !important; color: blue; nonsense: 1; ;; { a:b } top: 1px; @foo bar; left: 2px';
 		ptr<CssDecls> d: (Css.ParseInline: source (WlText.LenZ: source) 0);
 		WlBuf text;
 		call Css.DeclText: d addr text;
-		ptr<u8> want: 'margin-top: 1px; margin-right: 2px; margin-bottom: 1px; margin-left: 2px; --x: 1; height: 5px !important; color: rgb(0, 0, 255); left: 2px;';
+		ptr<u8> want: 'margin: 1px 2px; --x: 1; height: 5px !important; color: blue; left: 2px;';
 		call Say: 'block text' (WlText.EqZ: text.data text.len want);
 		if (WlText.EqZ: text.data text.len want) is false
 			log '  got ' text.data '\n';
@@ -517,7 +562,7 @@ phi.TestCssValues:Program
 		call Say: 'set invalid' (Css.DeclSet: d 'color' 5 'xx' 2 false) is false;
 		call text.Clear;
 		call Css.DeclGet: d 'color' 5 addr text;
-		call Say: 'after set' (WlText.EqZ: text.data text.len 'rgb(0, 255, 0)');
+		call Say: 'after set' (WlText.EqZ: text.data text.len 'lime');
 		call Say: 'semicolon refused' (Css.DeclSet: d 'top' 3 '1px; left: 2px' 14 false) is false;
 		call Say: 'important refused in a value' (Css.DeclSet: d 'top' 3 '1px !important' 14 false) is false;
 		call Say: 'important said separately' (Css.DeclSet: d 'top' 3 '1px' 3 true);
@@ -532,17 +577,17 @@ phi.TestCssValues:Program
 		call Dom.SetAttrZ: el 'style' 'color: red; width: 1px';
 		WlBuf got;
 		call Say: 'style get' (Css.StyleGet: el 'color' 5 addr got);
-		call Say: 'style get text' (WlText.EqZ: got.data got.len 'rgb(255, 0, 0)');
+		call Say: 'style get text' (WlText.EqZ: got.data got.len 'red');
 		el.flags is 0;
 		call Say: 'style set' (Css.StyleSet: el 'height' 6 '2px' 3 false);
 		call Say: 'style set dirties' (el.flags & (Dom.DIRTY_STYLE | Dom.DIRTY_SELF)) is not 0;
 		ptr<u8> attr_text: (Dom.AttrValue: el 'style');
-		call Say: 'attribute written' (WlText.EqZ: attr_text (WlText.LenZ: attr_text) 'color: rgb(255, 0, 0); width: 1px; height: 2px;');
+		call Say: 'attribute written' (WlText.EqZ: attr_text (WlText.LenZ: attr_text) 'color: red; width: 1px; height: 2px;');
 		call Say: 'style invalid' (Css.StyleSet: el 'height' 6 'xx' 2 false) is false;
 		call Say: 'style remove' (Css.StyleRemove: el 'width' 5);
 		call got.Clear;
 		call Css.StyleText: el addr got;
-		call Say: 'style text' (WlText.EqZ: got.data got.len 'color: rgb(255, 0, 0); height: 2px;');
+		call Say: 'style text' (WlText.EqZ: got.data got.len 'color: red; height: 2px;');
 		call Css.StyleSetText: el 'margin: 3px' 11;
 		call got.Clear;
 		call Css.StyleGet: el 'margin-left' 11 addr got;
