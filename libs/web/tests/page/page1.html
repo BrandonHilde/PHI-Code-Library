@@ -131,6 +131,10 @@ log('storage', localStorage.getItem('k'), localStorage.getItem('none'), localSto
 log('btoa', btoa('hello'), atob('aGVsbG8='));
 log('matchMedia', matchMedia('(min-width: 500px)').matches, matchMedia('(min-width: 900px)').matches);
 log('computed', getComputedStyle(box).color, getComputedStyle(box).display);
+// SVG's attributes that paint are styles of no specificity: a rule beats them, and they're inherited
+document.body.insertAdjacentHTML('beforeend', '<svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"/><path id="sq" fill="currentColor"/><stop id="st" stop-color="blue" stop-opacity=".5"/></g></svg>');
+var svgc = function (i) { return getComputedStyle(document.getElementById(i)); };
+log('svg hints', svgc('sv').fill, svgc('sv').color, svgc('sg').fill, svgc('sg').strokeWidth, svgc('sg').strokeDasharray, svgc('sp').fill, svgc('sq').fill, svgc('st').stopColor, svgc('st').stopOpacity);
 
 document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
 window.addEventListener('load', function () { log('load', document.readyState); });

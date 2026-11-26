@@ -2105,6 +2105,19 @@ phi.CssCascade:Library
 			;;
 			return;
 		;;
+		if prop is CssP.STROKE_WIDTH or prop is CssP.STROKE_DASHOFFSET or prop is CssP.STROKE_DASHARRAY
+			# (SVG's lengths may be written as plain numbers: they're px)
+			if v.kind is CssV.NUM as u8
+				call CssV.SetLen: addr cv (v.Num) CssU.PX;
+				call SetSlot: prop addr cv;
+				return;
+			;;
+			if prop is CssP.STROKE_DASHARRAY and v.kind is CssV.LIST as u8
+				call DashList: v;
+				call SetSlot: prop addr cv;
+				return;
+			;;
+		;;
 		if (IsSpecial: prop)
 			if (Special: prop v) return;
 		;;
@@ -2466,6 +2479,49 @@ phi.CssCascade:Library
 			;;
 		;;
 		u32 index: (CssCxs.NewList: copy n);
+		free copy;
+		cv.kind is CssV.LIST as u8;
+		cv.code is 0;
+		cv.unit is 0;
+		cv.bits is index;
+	[end]
+
+	# stroke-dasharray as computed, into cv: its lengths in px (a number is so many px), commas
+	# between them, as Chrome writes it ("1px, 2px")
+	[DashList: ptr<CssVal> v: 0;]
+		ptr<CssVal> items: (CssV.Items: v);
+		u32 n: CssV.item_count;
+		ptr<CssVal> copy: new CssVal[n * 2 + 1];
+		if copy is 0
+			throw 'out of memory for a CSS list';
+		;;
+		u32 k: 0;
+		while u32 i: 0; i < n; i++;
+			ptr<CssVal> one: addr items:i;
+			if one.kind is CssV.SEP as u8
+				continue;
+			;;
+			if k > 0
+				copy:k.kind is CssV.SEP as u8;
+				copy:k.code is 44;
+				copy:k.unit is 0;
+				copy:k.bits is 0;
+				k++;
+			;;
+			if one.kind is CssV.NUM as u8
+				call CssV.SetLen: addr copy:k (one.Num) CssU.PX;
+			;;
+			elif (NeedsComputing: one)
+				call ComputeGeneric: one;
+				call SimpleCopy: addr copy:k addr cv;
+			;;
+			else
+				call SimpleCopy: addr copy:k one;
+				call CssV.Retain: addr copy:k;
+			;;
+			k++;
+		;;
+		u32 index: (CssCxs.NewList: copy k);
 		free copy;
 		cv.kind is CssV.LIST as u8;
 		cv.code is 0;
@@ -2895,6 +2951,7 @@ phi.CssHints:Library
 
 	# the block for this element's attributes: 0 if they say nothing
 	[Of: ptr<DomNode> node: 0;]
+		if node.attrs is not 0 and node.ns is DomNs.SVG return (Svg: node);
 		if node.attrs is 0 or node.ns is not DomNs.HTML return 0;
 		call text.Clear;
 		ptr<DomAttr> a: node.attrs;
@@ -2956,6 +3013,34 @@ phi.CssHints:Library
 		if text.len is 0 return 0;
 		ptr<CssDecls> found: (Cached);
 	[end: found]
+
+	# SVG's presentation attributes, the ones of painting (fill="none", stroke-width="2"): the
+	# property of the same name, as an author rule of no specificity, so a rule beats them and
+	# what they say is inherited as a style is
+	[Svg: ptr<DomNode> node: 0;]
+		call text.Clear;
+		ptr<DomAttr> a: node.attrs;
+		while a is not 0
+			ptr<WlAtom> name: a.name;
+			if (Presents: name.text name.len)
+				call text.AddN: name.text name.len;
+				call Add: '' a.value a.value_len;
+			;;
+			a is a.next;
+		;;
+		if text.len is 0 return 0;
+		ptr<CssDecls> found: (Cached);
+	[end: found]
+
+	[Presents: ptr<u8> t: 0; u32 n: 0;]
+		if n < 4 return false;
+		if t:0 is 'f'
+			return (WlText.EqZ: t n 'fill') or (WlText.EqZ: t n 'fill-opacity') or (WlText.EqZ: t n 'fill-rule') or (WlText.EqZ: t n 'flood-color') or (WlText.EqZ: t n 'flood-opacity');
+		;;
+		if t:0 is 's'
+			return (WlText.EqZ: t n 'stroke') or (WlText.EqZ: t n 'stroke-width') or (WlText.EqZ: t n 'stroke-opacity') or (WlText.EqZ: t n 'stroke-linecap') or (WlText.EqZ: t n 'stroke-linejoin') or (WlText.EqZ: t n 'stroke-miterlimit') or (WlText.EqZ: t n 'stroke-dasharray') or (WlText.EqZ: t n 'stroke-dashoffset') or (WlText.EqZ: t n 'stop-color') or (WlText.EqZ: t n 'stop-opacity');
+		;;
+	[end: (WlText.EqZ: t n 'color') or (WlText.EqZ: t n 'clip-rule') or (WlText.EqZ: t n 'lighting-color') or (WlText.EqZ: t n 'paint-order')]
 
 	# A block for each different text, found by its hash. Normally a page has few; if one has very
 	# many, they're let go between walks, when nothing refers to them.

@@ -1024,6 +1024,10 @@ phi.Page:Library
 					call SeeLink: p n;
 				;;
 			;;
+			elif n.type is DomType.ELEMENT and n.ns is DomNs.SVG and n.tag is style_tag
+				# (an <svg>'s own <style> is the page's as much as one in <head>)
+				call SeeStyle: p n;
+			;;
 			n is (Dom.ShadowNext: n p.doc.root);
 		;;
 		# whatever wasn't found has left the document

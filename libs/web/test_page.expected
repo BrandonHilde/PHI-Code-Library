@@ -44,6 +44,7 @@ console[0]: storage 1 null 1
 console[0]: btoa aGVsbG8= hello
 console[0]: matchMedia true false
 console[0]: computed rgb(16, 32, 48) block
+console[0]: svg hints rgb(255, 0, 0) rgb(0, 170, 0) none 2px 1px, 2px rgb(0, 0, 0) rgb(0, 170, 0) rgb(0, 0, 255) 0.5
 console[0]: written written
 console[0]: navigator function false
 console[0]: microtask
@@ -201,6 +202,10 @@ log('storage', localStorage.getItem('k'), localStorage.getItem('none'), localSto
 log('btoa', btoa('hello'), atob('aGVsbG8='));
 log('matchMedia', matchMedia('(min-width: 500px)').matches, matchMedia('(min-width: 900px)').matches);
 log('computed', getComputedStyle(box).color, getComputedStyle(box).display);
+// SVG's attributes that paint are styles of no specificity: a rule beats them, and they're inherited
+document.body.insertAdjacentHTML('beforeend', '<svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"/><path id="sq" fill="currentColor"/><stop id="st" stop-color="blue" stop-opacity=".5"/></g></svg>');
+var svgc = function (i) { return getComputedStyle(document.getElementById(i)); };
+log('svg hints', svgc('sv').fill, svgc('sv').color, svgc('sg').fill, svgc('sg').strokeWidth, svgc('sg').strokeDasharray, svgc('sp').fill, svgc('sq').fill, svgc('st').stopColor, svgc('st').stopOpacity);
 
 document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
 window.addEventListener('load', function () { log('load', document.readyState); });
@@ -209,7 +214,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
-</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><p id="written">written</p>
 <p>after the script</p>
 <script>
 // the old ways a page asks about its loading, makes an event, and asks to draw
@@ -358,6 +363,10 @@ log('storage', localStorage.getItem('k'), localStorage.getItem('none'), localSto
 log('btoa', btoa('hello'), atob('aGVsbG8='));
 log('matchMedia', matchMedia('(min-width: 500px)').matches, matchMedia('(min-width: 900px)').matches);
 log('computed', getComputedStyle(box).color, getComputedStyle(box).display);
+// SVG's attributes that paint are styles of no specificity: a rule beats them, and they're inherited
+document.body.insertAdjacentHTML('beforeend', '<svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"/><path id="sq" fill="currentColor"/><stop id="st" stop-color="blue" stop-opacity=".5"/></g></svg>');
+var svgc = function (i) { return getComputedStyle(document.getElementById(i)); };
+log('svg hints', svgc('sv').fill, svgc('sv').color, svgc('sg').fill, svgc('sg').strokeWidth, svgc('sg').strokeDasharray, svgc('sp').fill, svgc('sq').fill, svgc('st').stopColor, svgc('st').stopOpacity);
 
 document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
 window.addEventListener('load', function () { log('load', document.readyState); });
@@ -366,7 +375,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
-</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><p id="written">written</p>
 <p>after the script</p>
 <script>
 // the old ways a page asks about its loading, makes an event, and asks to draw
@@ -431,6 +440,7 @@ console[0]: storage 1 null 1
 console[0]: btoa aGVsbG8= hello
 console[0]: matchMedia true false
 console[0]: computed rgb(16, 32, 48) block
+console[0]: svg hints rgb(255, 0, 0) rgb(0, 170, 0) none 2px 1px, 2px rgb(0, 0, 0) rgb(0, 170, 0) rgb(0, 0, 255) 0.5
 console[0]: written written
 console[0]: navigator function false
 console[0]: microtask
@@ -588,6 +598,10 @@ log('storage', localStorage.getItem('k'), localStorage.getItem('none'), localSto
 log('btoa', btoa('hello'), atob('aGVsbG8='));
 log('matchMedia', matchMedia('(min-width: 500px)').matches, matchMedia('(min-width: 900px)').matches);
 log('computed', getComputedStyle(box).color, getComputedStyle(box).display);
+// SVG's attributes that paint are styles of no specificity: a rule beats them, and they're inherited
+document.body.insertAdjacentHTML('beforeend', '<svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"/><path id="sq" fill="currentColor"/><stop id="st" stop-color="blue" stop-opacity=".5"/></g></svg>');
+var svgc = function (i) { return getComputedStyle(document.getElementById(i)); };
+log('svg hints', svgc('sv').fill, svgc('sv').color, svgc('sg').fill, svgc('sg').strokeWidth, svgc('sg').strokeDasharray, svgc('sp').fill, svgc('sq').fill, svgc('st').stopColor, svgc('st').stopOpacity);
 
 document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
 window.addEventListener('load', function () { log('load', document.readyState); });
@@ -596,7 +610,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
-</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><p id="written">written</p>
 <p>after the script</p>
 <script>
 // the old ways a page asks about its loading, makes an event, and asks to draw
@@ -745,6 +759,10 @@ log('storage', localStorage.getItem('k'), localStorage.getItem('none'), localSto
 log('btoa', btoa('hello'), atob('aGVsbG8='));
 log('matchMedia', matchMedia('(min-width: 500px)').matches, matchMedia('(min-width: 900px)').matches);
 log('computed', getComputedStyle(box).color, getComputedStyle(box).display);
+// SVG's attributes that paint are styles of no specificity: a rule beats them, and they're inherited
+document.body.insertAdjacentHTML('beforeend', '<svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"/><path id="sq" fill="currentColor"/><stop id="st" stop-color="blue" stop-opacity=".5"/></g></svg>');
+var svgc = function (i) { return getComputedStyle(document.getElementById(i)); };
+log('svg hints', svgc('sv').fill, svgc('sv').color, svgc('sg').fill, svgc('sg').strokeWidth, svgc('sg').strokeDasharray, svgc('sp').fill, svgc('sq').fill, svgc('st').stopColor, svgc('st').stopOpacity);
 
 document.addEventListener('DOMContentLoaded', function () { log('DOMContentLoaded', document.readyState); });
 window.addEventListener('load', function () { log('load', document.readyState); });
@@ -753,7 +771,7 @@ document.getElementById('go').addEventListener('click', function (e) { log('list
 document.write('<p id="written">written</p>');
 log('written', document.getElementById('written').textContent);
 log('navigator', typeof navigator.javaEnabled, navigator.javaEnabled());
-</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><p id="written">written</p>
+</script><div id="added" class="fresh"><span>made <i>here</i></span> &amp; there</div><svg id="sv" fill="red" color="#0a0"><style>.pk{fill:#000}</style><g id="sg" fill="none" stroke-width="2" stroke-dasharray="1 2"><path id="sp" class="pk"></path><path id="sq" fill="currentColor"></path><stop id="st" stop-color="blue" stop-opacity=".5"></stop></g></svg><p id="written">written</p>
 <p>after the script</p>
 <script>
 // the old ways a page asks about its loading, makes an event, and asks to draw
