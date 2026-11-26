@@ -815,6 +815,21 @@ phi.CssCalc:Library
 	f64 cur_ch: -1.0;
 	ptr<u8> cur_style: 0;
 	method<ptr<u8>: f64> ch_hook;
+	# A container unit (cqw, cqh, cqi, cqb, cqmin, cqmax) is a hundredth of the nearest container's
+	# width or height, as laid out: the engine sets cur_node (the element whose style is being worked
+	# out, a DomNode) and cq_hook, which says how big one is across (axis 0) or down (1). Without
+	# them it's a viewport unit (as with no container). container_used: some value used one.
+	ptr<u8> cur_node: 0;
+	method<ptr<u8> u32: f64> cq_hook;
+	bln container_used: false;
+
+	[CqSize: u32 axis: 0; : f64]
+		container_used is true;
+		if cq_hook is 0 or cur_node is 0
+			if axis is 0 return cur_vw;
+			return cur_vh;
+		;;
+	[end: (cq_hook: cur_node axis)]
 
 	[PxOf: u32 unit: 0;]
 		when unit
@@ -866,6 +881,24 @@ phi.CssCalc:Library
 				viewport_used is true;
 				if cur_vw > cur_vh return cur_vw;
 				return cur_vh;
+			;;
+			is CssU.CQW CssU.CQI
+				return (CqSize: 0);
+			;;
+			is CssU.CQH CssU.CQB
+				return (CqSize: 1);
+			;;
+			is CssU.CQMIN
+				f64 across: (CqSize: 0);
+				f64 down: (CqSize: 1);
+				if across < down return across;
+				return down;
+			;;
+			is CssU.CQMAX
+				f64 across_: (CqSize: 0);
+				f64 down_: (CqSize: 1);
+				if across_ > down_ return across_;
+				return down_;
 			;;
 		;;
 	[end: (ToCanon: unit)]

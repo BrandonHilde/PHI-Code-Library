@@ -320,6 +320,40 @@ phi.TestCssCascade:Program
 	call C: 'in2' 'width' '3px';
 	call Finish;
 
+	# ---- container units: of the nearest container's laid-out width, or the window's (800 by 600)
+	call Setup: 'html(body(div#box(p#a) div#box2(p#b) div#sz(p#c) p#out))'
+		'#box, #box2 { container-type: inline-size; } #sz { container-type: size; } p { width: 10cqw; height: 10cqh; margin-left: 10cqmin; margin-right: 10cqmax; top: calc(50cqi - 1px); left: 10cqb; }';
+	call C: 'a' 'width' '80px';
+	call C: 'a' 'height' '60px';
+	call C: 'a' 'margin-left' '60px';
+	call C: 'a' 'margin-right' '80px';
+	call C: 'a' 'top' '399px';
+	call C: 'a' 'left' '60px';
+	call C: 'out' 'width' '80px';
+	call Say: 'an engine with container units says so' e.has_cq;
+	# (laid out: two containers alike but for their widths, 200 and 400; the size one 300)
+	ptr<DomNode> box_a: (Id: 'box');
+	ptr<DomNode> box_b: (Id: 'box2');
+	ptr<DomNode> box_c: (Id: 'sz');
+	box_a.box_w is 201;
+	box_b.box_w is 401;
+	box_c.box_w is 301;
+	call e.MarkDirty: box_a;
+	call e.MarkDirty: box_b;
+	call e.MarkDirty: box_c;
+	call e.Update;
+	call C: 'a' 'width' '20px';
+	call C: 'a' 'height' '60px';
+	call C: 'a' 'margin-left' '20px';
+	call C: 'a' 'margin-right' '60px';
+	call C: 'a' 'top' '99px';
+	call C: 'b' 'width' '40px';
+	call C: 'b' 'top' '199px';
+	call C: 'c' 'width' '30px';
+	call C: 'c' 'height' '60px';
+	call C: 'out' 'width' '80px';
+	call Finish;
+
 	# ---- @media, with the viewport changing
 	call Setup: 'html(body(div#a))'
 		'@media (min-width: 500px) { #a { width: 1px; } } @media (max-width: 499px) { #a { width: 2px; } } @media print { #a { height: 1px; } } @media screen { #a { height: 2px; } } @media not print { #a { margin-top: 3px; } } @media not screen { #a { margin-top: 4px; } } @media (orientation: landscape) { #a { margin-left: 1px; } } @media (orientation: portrait) { #a { margin-left: 2px; } } @media (prefers-color-scheme: dark) { #a { color: white; } } @media (400px <= width <= 700px) { #a { top: 1px; } } @media (width > 700px) { #a { top: 2px; } } @media screen and (min-width: 100px) and (max-width: 10000px) { #a { left: 1px; } } @media (nonsense) { #a { right: 1px; } } @media not (nonsense) { #a { bottom: 1px; } } @media (min-width: 1000px), print { #a { padding-top: 1px; } } @media ((min-width: 1px) or (nonsense)) and (not (max-width: 1px)) { #a { padding-left: 1px; } } @media all { @media (min-width: 1px) { #a { padding-right: 1px; } } } @media foo { #a { padding-bottom: 1px; } } @media { #a { z-index: 1; } } @media 1 + 1 { #a { order: 1; } } @media screen, 1 { #a { order: 2; } }';

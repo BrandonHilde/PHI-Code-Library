@@ -1103,6 +1103,34 @@ phi.CssCascade:Library
 		if n.parent is 0 and (Dom.IsShadowRoot: n) return n.shadow;
 	[end: n.parent]
 
+	# How big one container unit is for an element (CssCalc.cq_hook): a hundredth of its nearest
+	# container's content box, across (axis 0: container-type inline-size or size) or down (1: size).
+	# Across, how wide the browser laid it out (box_w), or before that the window; down, and with no
+	# container, the window's (layout doesn't say how tall a container was).
+	[ContainerUnit: ptr<u8> element: 0; u32 axis: 0; : f64]
+		ptr<DomNode> node: element as ptr<DomNode>;
+		ptr<DomNode> up: (Above: node);
+		int hops: 0;
+		while up is not 0 and hops < 512
+			hops++;
+			if up.type is DomType.ELEMENT and up.style is not 0
+				ptr<CssComputed> us: up.style as ptr<CssComputed>;
+				u32 kind: (us.Kw: CssP.CONTAINER_TYPE);
+				if axis is 0 and (kind is CssK.INLINE_SIZE or kind is CssK.SIZE)
+					if up.box_w > 0
+						return ((up.box_w - 1) as f64) / 100.0;
+					;;
+					return CssCalc.cur_vw;
+				;;
+				if axis is 1 and kind is CssK.SIZE
+					return CssCalc.cur_vh;
+				;;
+			;;
+			up is (Above: up);
+		;;
+		if axis is 0 return CssCalc.cur_vw;
+	[end: CssCalc.cur_vh]
+
 	# whether a container's container-name has this name in it (no name asked for: any will do)
 	[Named: ptr<CssComputed> s: 0; ptr<WlAtom> name: 0;]
 		if name is 0 return true;
@@ -1375,6 +1403,8 @@ phi.CssCascade:Library
 		CssCalc.cur_vw is e.env.width / 100.0;
 		CssCalc.cur_vh is e.env.height / 100.0;
 		CssCalc.viewport_used is false;
+		CssCalc.container_used is false;
+		CssCalc.cq_hook is addr ContainerUnit;
 		e.root_px is 16.0;
 		ptr<DomNode> root_element: (Dom.DocumentElement: doc);
 		if root_element is not 0 and root_element.style is not 0
@@ -1506,6 +1536,12 @@ phi.CssCascade:Library
 		if CssCalc.viewport_used
 			e.uses_viewport is true;
 		;;
+		CssCalc.cur_node is 0;
+		if CssCalc.container_used
+			# (a container unit: as an @container rule, what it is depends on how wide boxes
+			# were laid out, so the browser notes their widths and styles the page again)
+			e.has_cq is true;
+		;;
 		e.all_dirty is false;
 		e.ran is true;
 		e.seen_version is doc.version;
@@ -1543,13 +1579,19 @@ phi.CssCascade:Library
 			call CssStyles.Retain: made;
 		;;
 		else
+			# (a container unit in it is of this element's container, which another element of the
+			# same parent style needn't have: such a style isn't kept for them)
+			bln used_before: CssCalc.container_used;
+			CssCalc.container_used is false;
+			CssCalc.cur_node is n as ptr<u8>;
 			made is (Build: e parent is_root 0);
 			if e.has_pseudo
 				call BuildPseudos: e made;
 			;;
-			if is_root is false
+			if is_root is false and not CssCalc.container_used
 				call CacheStore: parent h made;
 			;;
+			CssCalc.container_used is CssCalc.container_used or used_before;
 		;;
 		if is_root
 			e.root_px is made.font_px;

@@ -465,7 +465,7 @@ sh('border-block', 'any2', ['border-top', 'border-bottom'])
 
 # ---- words the code names that no grammar mentions
 UNITS = '''px em rem ex ch vw vh vmin vmax cm mm in pt pc q lh rlh cap ic svw svh lvw lvh dvw dvh vi vb svi svb
-lvi lvb dvi dvb svmin svmax lvmin lvmax dvmin dvmax
+lvi lvb dvi dvb svmin svmax lvmin lvmax dvmin dvmax cqw cqh cqi cqb cqmin cqmax
 deg rad grad turn s ms dpi dpcm dppx x fr hz khz'''.split()
 UNIT_LEN = UNITS.index('deg')    # the lengths; then 4 angles, 2 times, 4 resolutions, fr, 2 frequencies
 
