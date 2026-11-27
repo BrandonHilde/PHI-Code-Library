@@ -1,0 +1,215 @@
+== https://caret.example/c.html#k
+start "hello" 0,0,none k 0,0,none t 0,0,none
+range 1 3 1,3,none
+backward 1,3,backward
+sideways 2,4,none
+direction= 2,4,forward
+start=4 4,4,forward
+end=2 2,2,forward
+past end 5,5,none
+start after end 1,1,none
+negative 2,2,none
+one argument TypeError: Failed to execute 'setSelectionRange' on 'HTMLInputElement': 2 arguments required, but only 1 present.
+select 0,5,none
+rangetext "hXYo" 1,3,none
+select mode "ZZZllo" 0,3,none
+preserve "__ello" 4,4,none
+start mode "_!_ello" 1,1,none
+end mode "??_!_ello" 2,2,none
+past the end "??-" 2,2,none
+start>end IndexSizeError: Failed to execute 'setRangeText' on 'HTMLInputElement': The provided start value (3) is larger than the provided end value (1).
+no argument TypeError: Failed to execute 'setRangeText' on 'HTMLInputElement': 1 argument required, but only 0 present.
+same value 1,2,none
+new value 4,4,none
+pair 4 4,4,none
+number null null null email null
+number range InvalidStateError: Failed to execute 'setSelectionRange' on 'HTMLInputElement': The input element's type ('number') does not support selection.
+number start InvalidStateError: Failed to set the 'selectionStart' property on 'HTMLInputElement': The input element's type ('number') does not support selection.
+email rangetext InvalidStateError: Failed to execute 'setRangeText' on 'HTMLInputElement': The input element's type ('email') does not support selection.
+number select ok
+textarea "ab\ncdef\ng" 0,0,none 9
+focused k 0,0,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+keyup ArrowLeft k "abc" 0,0,none
+keyup ArrowLeft k "abc" 0,0,none
+beforeinput k insertText "x" "abc" 0,0,none
+input k insertText "x" "xabc" 1,1,none
+keyup x k "xabc" 1,1,none
+beforeinput k deleteContentBackward null "xabc" 1,1,none
+input k deleteContentBackward null "abc" 0,0,none
+keyup Backspace k "abc" 0,0,none
+beforeinput k deleteContentForward null "abc" 0,0,none
+input k deleteContentForward null "bc" 0,0,none
+keyup Delete k "bc" 0,0,none
+keyup ArrowRight+shift k "bc" 0,1,forward
+beforeinput k insertText "z" "bc" 0,1,forward
+input k insertText "z" "zc" 1,1,forward
+keyup z k "zc" 1,1,forward
+keyup Home k "zc" 0,0,none
+keyup End+shift k "zc" 0,2,forward
+beforeinput k deleteContentBackward null "zc" 0,2,forward
+input k deleteContentBackward null "" 0,0,forward
+keyup Backspace k "" 0,0,forward
+beforeinput k deleteContentBackward null "" 0,0,forward
+keyup Backspace k "" 0,0,forward
+keyup ArrowUp k "" 0,0,none
+keyup ArrowDown k "" 0,0,none
+== https://caret.example/c.html#e
+start "hello" 0,0,none k 0,0,none t 0,0,none
+range 1 3 1,3,none
+backward 1,3,backward
+sideways 2,4,none
+direction= 2,4,forward
+start=4 4,4,forward
+end=2 2,2,forward
+past end 5,5,none
+start after end 1,1,none
+negative 2,2,none
+one argument TypeError: Failed to execute 'setSelectionRange' on 'HTMLInputElement': 2 arguments required, but only 1 present.
+select 0,5,none
+rangetext "hXYo" 1,3,none
+select mode "ZZZllo" 0,3,none
+preserve "__ello" 4,4,none
+start mode "_!_ello" 1,1,none
+end mode "??_!_ello" 2,2,none
+past the end "??-" 2,2,none
+start>end IndexSizeError: Failed to execute 'setRangeText' on 'HTMLInputElement': The provided start value (3) is larger than the provided end value (1).
+no argument TypeError: Failed to execute 'setRangeText' on 'HTMLInputElement': 1 argument required, but only 0 present.
+same value 1,2,none
+new value 4,4,none
+pair 4 4,4,none
+number null null null email null
+number range InvalidStateError: Failed to execute 'setSelectionRange' on 'HTMLInputElement': The input element's type ('number') does not support selection.
+number start InvalidStateError: Failed to set the 'selectionStart' property on 'HTMLInputElement': The input element's type ('number') does not support selection.
+email rangetext InvalidStateError: Failed to execute 'setRangeText' on 'HTMLInputElement': The input element's type ('email') does not support selection.
+number select ok
+textarea "ab\ncdef\ng" 0,0,none 9
+focused e 4,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+keyup ArrowLeft e "a😀b" 3,3,none
+keyup ArrowLeft e "a😀b" 1,1,none
+beforeinput e deleteContentForward null "a😀b" 1,1,none
+input e deleteContentForward null "ab" 1,1,none
+keyup Delete e "ab" 1,1,none
+keyup ArrowLeft+shift e "ab" 0,1,backward
+keyup ArrowRight e "ab" 1,1,none
+beforeinput e deleteContentBackward null "ab" 1,1,none
+input e deleteContentBackward null "b" 0,0,none
+keyup Backspace e "b" 0,0,none
+== https://caret.example/c.html#t
+start "hello" 0,0,none k 0,0,none t 0,0,none
+range 1 3 1,3,none
+backward 1,3,backward
+sideways 2,4,none
+direction= 2,4,forward
+start=4 4,4,forward
+end=2 2,2,forward
+past end 5,5,none
+start after end 1,1,none
+negative 2,2,none
+one argument TypeError: Failed to execute 'setSelectionRange' on 'HTMLInputElement': 2 arguments required, but only 1 present.
+select 0,5,none
+rangetext "hXYo" 1,3,none
+select mode "ZZZllo" 0,3,none
+preserve "__ello" 4,4,none
+start mode "_!_ello" 1,1,none
+end mode "??_!_ello" 2,2,none
+past the end "??-" 2,2,none
+start>end IndexSizeError: Failed to execute 'setRangeText' on 'HTMLInputElement': The provided start value (3) is larger than the provided end value (1).
+no argument TypeError: Failed to execute 'setRangeText' on 'HTMLInputElement': 1 argument required, but only 0 present.
+same value 1,2,none
+new value 4,4,none
+pair 4 4,4,none
+number null null null email null
+number range InvalidStateError: Failed to execute 'setSelectionRange' on 'HTMLInputElement': The input element's type ('number') does not support selection.
+number start InvalidStateError: Failed to set the 'selectionStart' property on 'HTMLInputElement': The input element's type ('number') does not support selection.
+email rangetext InvalidStateError: Failed to execute 'setRangeText' on 'HTMLInputElement': The input element's type ('email') does not support selection.
+number select ok
+textarea "ab\ncdef\ng" 0,0,none 9
+focused t 5,5,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+select event 0,4,none
+keyup ArrowUp t "ab\ncdef\ng" 2,2,none
+keyup ArrowDown t "ab\ncdef\ng" 5,5,none
+keyup ArrowDown t "ab\ncdef\ng" 9,9,none
+keyup ArrowLeft t "ab\ncdef\ng" 8,8,none
+keyup Home t "ab\ncdef\ng" 8,8,none
+keyup End t "ab\ncdef\ng" 9,9,none
+beforeinput t insertLineBreak null "ab\ncdef\ng" 9,9,none
+input t insertLineBreak null "ab\ncdef\ng\n" 10,10,none
+keyup Enter t "ab\ncdef\ng\n" 10,10,none
+keyup ArrowUp+shift t "ab\ncdef\ng\n" 8,10,backward
+== https://caret.example/tab.html
+focus a 0,0,none
+select event b 2,3,none
+keyup End a 5,5,none
+keyup ArrowUp a 0,0,none
+keyup ArrowDown a 5,5,none
+keyup ArrowLeft a 4,4,none
+keyup ArrowUp a 0,0,none
+focus b 0,6,none
+keyup Tab b 0,6,none
+select event b 0,6,none
+focus c 0,0,none
+keyup Tab c 0,0,none
+focus d 0,6,none
+keyup Tab d 0,6,none
+select event d 0,6,none
+focus c 0,0,none
+keyup Tab c 0,0,none

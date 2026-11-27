@@ -1,0 +1,126 @@
+# A text field's caret and selection, checked against Brave (PHI OS tools/mouse_ref.py key: steps on
+# the same page): selectionStart, selectionEnd and selectionDirection, setSelectionRange, select
+# and setRangeText as scripts use them (a field starts with the caret at 0; a new value puts it at
+# the end; UTF-16 units); and the keys (Page.KeyDefault, Page.TypeInto): typing in place of the
+# selection, Backspace and Delete at the caret (beforeinput even with nothing to take off), the
+# arrows, Home and End (with shift, a selection that grows at its moving end), up and down a
+# textarea's lines (an input's: its start and end), a character past U+FFFF as one, and Tab to an
+# input selecting what's in it (and its select event).
+use weblib;
+
+phi.TestPageCaret:Program
+{
+	str c_html: '<!doctype html><meta charset=utf-8><style>input,textarea{display:block;margin:2px;width:200px;font-size:12px}</style>\n<input id=i value=hello><input id=k value=abc><input id=e><input id=n type=number value=12><input id=m type=email value=a@b><textarea id=t>ab\ncdef\ng</textarea>\n<script>window.__log=[];function L(s){__log.push(s);console.log(s);}\nfunction S(e){return e.selectionStart+","+e.selectionEnd+","+e.selectionDirection;}\nvar i=document.getElementById("i"),k=document.getElementById("k"),e=document.getElementById("e"),n=document.getElementById("n"),m=document.getElementById("m"),t=document.getElementById("t");\nL("start "+JSON.stringify(i.value)+" "+S(i)+" k "+S(k)+" t "+S(t));\ni.setSelectionRange(1,3);L("range 1 3 "+S(i));\ni.setSelectionRange(1,3,"backward");L("backward "+S(i));\ni.setSelectionRange(2,4,"sideways");L("sideways "+S(i));\ni.selectionDirection="forward";L("direction= "+S(i));\ni.selectionStart=4;L("start=4 "+S(i));\ni.selectionEnd=2;L("end=2 "+S(i));\ni.setSelectionRange(10,20);L("past end "+S(i));\ni.setSelectionRange(3,1);L("start after end "+S(i));\ni.setSelectionRange(-1,2);L("negative "+S(i));\ntry{i.setSelectionRange(1);L("one argument "+S(i));}catch(x){L("one argument "+x.name+": "+x.message);}\ni.select();L("select "+S(i));\ni.setSelectionRange(1,4);i.setRangeText("XY");L("rangetext "+JSON.stringify(i.value)+" "+S(i));\ni.value="hello";i.setSelectionRange(1,4);i.setRangeText("ZZZ",0,2,"select");L("select mode "+JSON.stringify(i.value)+" "+S(i));\ni.value="hello";i.setSelectionRange(3,3);i.setRangeText("__",0,1,"preserve");L("preserve "+JSON.stringify(i.value)+" "+S(i));\ni.setRangeText("!",1,1,"start");L("start mode "+JSON.stringify(i.value)+" "+S(i));\ni.setRangeText("??",0,0,"end");L("end mode "+JSON.stringify(i.value)+" "+S(i));\ni.setRangeText("-",2,99);L("past the end "+JSON.stringify(i.value)+" "+S(i));\ntry{i.setRangeText("a",3,1);}catch(x){L("start>end "+x.name+": "+x.message);}\ntry{i.setRangeText();}catch(x){L("no argument "+x.name+": "+x.message);}\ni.value="hello";i.setSelectionRange(1,2);i.value="hello";L("same value "+S(i));i.value="help";L("new value "+S(i));\ne.value="a\\ud83d\\ude00b";L("pair "+e.value.length+" "+S(e));\nL("number "+n.selectionStart+" "+n.selectionEnd+" "+n.selectionDirection+" email "+m.selectionStart);\ntry{n.setSelectionRange(0,1);}catch(x){L("number range "+x.name+": "+x.message);}\ntry{n.selectionStart=1;}catch(x){L("number start "+x.name+": "+x.message);}\ntry{m.setRangeText("x");}catch(x){L("email rangetext "+x.name+": "+x.message);}\nn.select();L("number select ok");\nL("textarea "+JSON.stringify(t.value)+" "+S(t)+" "+t.value.length);\ni.addEventListener("select",function(){L("select event "+S(i));});\ni.select();\n[k,e,t].forEach(function(f){["beforeinput","input"].forEach(function(ty){f.addEventListener(ty,function(v){L(ty+" "+f.id+" "+v.inputType+" "+JSON.stringify(v.data)+" "+JSON.stringify(f.value)+" "+S(f));});});\nf.addEventListener("keyup",function(v){L("keyup "+v.key+(v.shiftKey?"+shift":"")+" "+f.id+" "+JSON.stringify(f.value)+" "+S(f));});});\nif(location.hash==="#e"){e.focus();L("focused e "+S(e));}\nif(location.hash==="#t"){t.focus();t.setSelectionRange(5,5);L("focused t "+S(t));}\nif(location.hash==="#k"){k.focus();L("focused k "+S(k));}\n</script>\n';
+	str tab_html: '<!doctype html><meta charset=utf-8><input id=a value=first><input id=b value=second><textarea id=c>third\nline</textarea><input id=d value=fourth>\n<script>window.__log=[];function L(s){__log.push(s);console.log(s);}\nfunction S(e){return e.selectionStart+","+e.selectionEnd+","+e.selectionDirection;}\n["a","b","c","d"].forEach(function(id){var f=document.getElementById(id);f.addEventListener("keyup",function(v){L("keyup "+v.key+" "+(document.activeElement.id)+" "+S(document.activeElement));});f.addEventListener("focus",function(){L("focus "+id+" "+S(f));});f.addEventListener("select",function(){L("select event "+id+" "+S(f));});});\ndocument.getElementById("a").focus();document.getElementById("b").setSelectionRange(2,3);\n</script>\n';
+	call Weblib.Start: 900000;
+	call Run: addr c_html:0 'https://caret.example/c.html#k';
+	call Run: addr c_html:0 'https://caret.example/c.html#e';
+	call Run: addr c_html:0 'https://caret.example/c.html#t';
+	call Run: addr tab_html:0 'https://caret.example/tab.html';
+	exit 0;
+
+	int run: -1;
+
+	[Run: ptr<u8> html: 0; ptr<u8> url: 0;]
+		run++;
+		pressed is 0;
+		log '== ' url '\n';
+		PageHost host;
+		host.logger is addr Print;
+		ptr<Page> page: (Page.New: addr host 800.0 600.0);
+		call Page.Load: page html (WlText.LenZ: html) url;
+		call Page.Tick: page 5.0;
+		call Page.Tick: page 20.0;
+		if run is 0
+			call Press: page 'ArrowLeft' 'ArrowLeft' 37 0 false false;
+			call Press: page 'ArrowLeft' 'ArrowLeft' 37 0 false false;
+			call Press: page 'x' 'KeyX' 88 120 false false;
+			call Press: page 'Backspace' 'Backspace' 8 0 false false;
+			call Press: page 'Delete' 'Delete' 46 0 false false;
+			call Press: page 'ArrowRight' 'ArrowRight' 39 0 false true;
+			call Press: page 'z' 'KeyZ' 90 122 false false;
+			call Press: page 'Home' 'Home' 36 0 false false;
+			call Press: page 'End' 'End' 35 0 false true;
+			call Press: page 'Backspace' 'Backspace' 8 0 false false;
+			call Press: page 'Backspace' 'Backspace' 8 0 false false;
+			call Press: page 'ArrowUp' 'ArrowUp' 38 0 false false;
+			call Press: page 'ArrowDown' 'ArrowDown' 40 0 false false;
+		;;
+		if run is 1
+			call Press: page 'ArrowLeft' 'ArrowLeft' 37 0 false false;
+			call Press: page 'ArrowLeft' 'ArrowLeft' 37 0 false false;
+			call Press: page 'Delete' 'Delete' 46 0 false false;
+			call Press: page 'ArrowLeft' 'ArrowLeft' 37 0 false true;
+			call Press: page 'ArrowRight' 'ArrowRight' 39 0 false false;
+			call Press: page 'Backspace' 'Backspace' 8 0 false false;
+		;;
+		if run is 2
+			call Press: page 'ArrowUp' 'ArrowUp' 38 0 false false;
+			call Press: page 'ArrowDown' 'ArrowDown' 40 0 false false;
+			call Press: page 'ArrowDown' 'ArrowDown' 40 0 false false;
+			call Press: page 'ArrowLeft' 'ArrowLeft' 37 0 false false;
+			call Press: page 'Home' 'Home' 36 0 false false;
+			call Press: page 'End' 'End' 35 0 false false;
+			call Press: page 'Enter' 'Enter' 13 13 false false;
+			call Press: page 'ArrowUp' 'ArrowUp' 38 0 false true;
+		;;
+		if run is 3
+			call Press: page 'End' 'End' 35 0 false false;
+			call Press: page 'ArrowUp' 'ArrowUp' 38 0 false false;
+			call Press: page 'ArrowDown' 'ArrowDown' 40 0 false false;
+			call Press: page 'ArrowLeft' 'ArrowLeft' 37 0 false false;
+			call Press: page 'ArrowUp' 'ArrowUp' 38 0 false false;
+			call Press: page 'Tab' 'Tab' 9 0 false false;
+			call Press: page 'Tab' 'Tab' 9 0 false false;
+			call Press: page 'Tab' 'Tab' 9 0 false false;
+			call Press: page 'Tab' 'Tab' 9 0 false true;
+		;;
+		call Page.Tick: page 400.0;
+		call Page.Free: page;
+	[end]
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+
+	# a key pressed and let go, as the browser has it (its PageKey), and the page's timers a moment after
+	[Press: ptr<Page> page: 0; ptr<u8> key: 0; ptr<u8> code: 0; int key_code: 0; int char_code: 0; bln ctrl: false; bln shift: false;]
+		bln allowed: (Page.Key: page key code key_code char_code ctrl shift false false);
+		if allowed
+			ptr<DomNode> field: (Field: page);
+			bln did: false;
+			if field is not 0 and key_code is 13
+				if not (Page.LineBreak: page field) or (Page.Is: field HtmlTag.TEXTAREA)
+					did is true;
+				;;
+			;;
+			if not did
+				did is (Page.KeyDefault: page key shift);
+			;;
+			field is (Field: page);
+			if not did and field is not 0
+				if key_code is 8
+					bln back: (Page.TypeInto: page field 0 as ptr<u8>);
+				;;
+				elif char_code >= 32 and not ctrl
+					u8 one[2];
+					one:0 is char_code as u8;
+					one:1 is 0;
+					bln typed: (Page.TypeInto: page field addr one:0);
+				;;
+			;;
+		;;
+		bln up: (Page.KeyUp: page key code key_code ctrl shift false false);
+		pressed++;
+		call Page.Tick: page 40.0 + pressed as f64 * 20.0;
+	[end]
+
+	int pressed: 0;
+
+	[Field: ptr<Page> page: 0; : ptr<DomNode>]
+		ptr<DomNode> f: (Page.Focused: page);
+		if f is not 0 and not (((Page.Is: f HtmlTag.INPUT) or (Page.Is: f HtmlTag.TEXTAREA)) and (Page.TypedInto: f))
+			f is 0;
+		;;
+	[end: f]
+}

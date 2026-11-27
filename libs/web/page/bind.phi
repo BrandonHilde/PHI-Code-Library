@@ -1545,11 +1545,103 @@ phi.PageBind:Library
 		ptr<JsObj> w: (JsV.AsObj: (Wrap: n));
 		WlBuf b;
 		call StringArg: (Js.Arg: args argc 0) addr b;
+		# (a value that's new puts the caret at its end, as the HTML standard has it)
+		WlBuf was;
+		call FieldValue: n addr was;
+		bln changed: not (WlText.Eq: was.data was.len b.data b.len);
+		call was.Free;
+		u32 units: (Units: b.data b.len);
 		u64 v: (Js.NewString: b.data b.len);
 		call b.Free;
 		call JsObjs.DefineValue: w (JsStrs.InternZ: '%value') as ptr<u8> v JsObjs.W;
+		if changed
+			call JsObjs.DefineValue: w (JsStrs.InternZ: '%ss') as ptr<u8> (JsV.Int: units as int) JsObjs.WC;
+			call JsObjs.DefineValue: w (JsStrs.InternZ: '%se') as ptr<u8> (JsV.Int: units as int) JsObjs.WC;
+			call JsObjs.DefineValue: w (JsStrs.InternZ: '%sd') as ptr<u8> (Js.NewStringZ: 'none') JsObjs.WC;
+		;;
 		n.flags is n.flags | Dom.DIRTY_LAYOUT;
 	[end: JsV.UNDEF]
+
+	# a field's value now (what value gives a script: what's typed, else a textarea's text or the
+	# value attribute), into b
+	[FieldValue: ptr<DomNode> n: 0; ptr<WlBuf> b: 0;]
+		if (LiveValue: n b) return;
+		if n.tag is (WlAtoms.GetZ: 'textarea')
+			call Dom.TextContent: n b;
+			return;
+		;;
+		ptr<u8> now: (Dom.AttrValue: n 'value');
+		if now is not 0
+			call b.AddZ: now;
+		;;
+	[end]
+
+	# how many UTF-16 units n bytes of UTF-8 text are (a character past U+FFFF is two)
+	[Units: ptr<u8> text: 0; u32 n: 0; : u32]
+		u32 u: 0;
+		while u32 i: 0; i < n; i++;
+			u8 c: text:i;
+			if (c & 0xC0) is not 0x80
+				u++;
+				if c >= 0xF0
+					u++;
+				;;
+			;;
+		;;
+	[end: u]
+
+	# A field's selection, in UTF-16 units as scripts count them (selectionStart, selectionEnd), in
+	# a value length units long: the caret at 0 until it's been put elsewhere (as Chrome's);
+	# direction 0 none, 1 forward, 2 backward
+	[Selection: ptr<DomNode> n: 0; u32 length: 0; ptr<u32> start: 0; ptr<u32> stop: 0; ptr<int> direction: 0;]
+		start:0 is 0;
+		stop:0 is 0;
+		direction:0 is 0;
+		if n is 0 or n.js_wrapper is 0 or not (JsV.IsObj: n.js_wrapper) return;
+		ptr<JsObj> w: (JsV.AsObj: n.js_wrapper);
+		ptr<JsProp> a: (JsObjs.Find: w (JsStrs.InternZ: '%ss') as ptr<u8>);
+		ptr<JsProp> b: (JsObjs.Find: w (JsStrs.InternZ: '%se') as ptr<u8>);
+		if a is 0 or b is 0 or not (JsV.IsNum: a.value) or not (JsV.IsNum: b.value) return;
+		f64 x: (JsV.AsNum: a.value);
+		f64 y: (JsV.AsNum: b.value);
+		if x < 0.0 or y < 0.0 return;
+		u32 e: length;
+		if y < length as f64
+			e is y as u32;
+		;;
+		u32 s: e;
+		if x < e as f64
+			s is x as u32;
+		;;
+		start:0 is s;
+		stop:0 is e;
+		ptr<JsProp> d: (JsObjs.Find: w (JsStrs.InternZ: '%sd') as ptr<u8>);
+		if d is not 0
+			WlBuf t;
+			call Js.TextOf: d.value addr t;
+			if (WlText.EqZ: t.data t.len 'forward')
+				direction:0 is 1;
+			;;
+			elif (WlText.EqZ: t.data t.len 'backward')
+				direction:0 is 2;
+			;;
+			call t.Free;
+		;;
+	[end]
+
+	[SetSelection: ptr<DomNode> n: 0; u32 start: 0; u32 stop: 0; int direction: 0;]
+		ptr<JsObj> w: (JsV.AsObj: (Wrap: n));
+		call JsObjs.DefineValue: w (JsStrs.InternZ: '%ss') as ptr<u8> (JsV.Int: start as int) JsObjs.WC;
+		call JsObjs.DefineValue: w (JsStrs.InternZ: '%se') as ptr<u8> (JsV.Int: stop as int) JsObjs.WC;
+		ptr<u8> said: 'none';
+		if direction is 1
+			said is 'forward';
+		;;
+		elif direction is 2
+			said is 'backward';
+		;;
+		call JsObjs.DefineValue: w (JsStrs.InternZ: '%sd') as ptr<u8> (Js.NewStringZ: said) JsObjs.WC;
+	[end]
 
 	# ---- ParentNode and ChildNode ----
 

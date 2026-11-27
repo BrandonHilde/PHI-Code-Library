@@ -353,3 +353,16 @@ typed; `same-origin`; `same-site`, the same scheme and registrable domain by `Wi
 redirect chain. weblib has nothing of it: what a page's request is for is the host's to say
 (PHI OS's `brw/meta.phi`, from `PageRequest.kind` and the element). netlib's test_metadata; PHI OS
 FINDINGS #56.
+
+## A field's caret: Page.Edit, PageBind.Selection, platform.js's selection (2026-11-27)
+
+A text field's selection is kept on its element as `%ss`, `%se` and `%sd` (UTF-16 units and
+`none`/`forward`/`backward`), as `%value` is: platform.js's `selectionStart` and the rest read and
+set them, and so do `PageBind.Selection`/`SetSelection` for the page's typing. `Page.Edit` makes
+every change a user does (text, Backspace, Delete, a line break, paste, cut: beforeinput, the
+value, the caret after it, input); `Page.TypeInto` and `LineBreak` are it. `Page.KeyDefault` takes
+the caret keys and Delete in a field (`MoveCaret`). The host draws and clicks in characters
+(`FieldCaret`, `PlaceCaret`, `SelectAllIn`, `SelectedText`). Unexpected: `platformjs.phi` is made
+from `platform.js` (tools/web/make_page_js.py); an edit of the made file alone is lost the next
+time it's made, as the Referer's nearly was. test_page_caret, checked against Brave; PHI OS
+FINDINGS #57.

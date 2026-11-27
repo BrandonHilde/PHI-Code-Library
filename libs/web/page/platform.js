@@ -1498,6 +1498,9 @@
       hidden(this, "_native", null);
       hidden(this, "_credentials", init.credentials || (from ? from._credentials : "same-origin"));
       hidden(this, "_mode", init.mode || (from ? from._mode : "cors"));
+      var policy = init.referrerPolicy !== undefined ? String(init.referrerPolicy) : from ? from._referrerPolicy : "";
+      if (!/^(|no-referrer|no-referrer-when-downgrade|same-origin|origin|strict-origin|origin-when-cross-origin|strict-origin-when-cross-origin|unsafe-url)$/.test(policy)) throw new TypeError("Failed to construct 'Request': The provided value '" + policy + "' is not a valid enum value of type ReferrerPolicy.");
+      hidden(this, "_referrerPolicy", policy);
     }
     get url() { return this._url; }
     get method() { return this._method; }
@@ -1508,6 +1511,7 @@
     get cache() { return "default"; }
     get redirect() { return "follow"; }
     get referrer() { return "about:client"; }
+    get referrerPolicy() { return this._referrerPolicy; }
     get bodyUsed() { return this._used; }
     clone() { return new Request(this); }
   }
@@ -1605,7 +1609,7 @@
         // (a body that's a stream is read to its end, then sent)
         return readAllBytes(req._text._stream).then(function (bytes) { req._text = bytes; return global.fetch(req); });
       }
-      var options = { method: req._method, headers: headerLines(req._headers), body: bodied ? (typeof req._text === "string" ? req._text : asBuffer(req._text)) : undefined };
+      var options = { method: req._method, referrerPolicy: req._referrerPolicy, headers: headerLines(req._headers), body: bodied ? (typeof req._text === "string" ? req._text : asBuffer(req._text)) : undefined };
       return new Promise(function (resolve, reject) {
         var settled = false;
         req._signal.addEventListener("abort", function () {
@@ -3791,4 +3795,109 @@
       }
     });
   }
+  // A text field's selection (selectionStart, selectionEnd, selectionDirection, setSelectionRange,
+  // select, setRangeText), kept on the element as %ss, %se and %sd, which the page's typing keeps
+  // too (Page.Edit, in UTF-16 units as here). A field starts with the caret at 0 (as Chrome's);
+  // a new value puts it at the end. A change from these queues a select event, as Chrome does.
+  (function () {
+  var notText = ["hidden", "email", "date", "month", "week", "time", "datetime-local", "number", "range", "color", "checkbox", "radio", "file", "submit", "image", "reset", "button"];
+  var selectable = function (e) {
+  if (e.localName === "textarea") return true;
+  return notText.indexOf(String(e.type).toLowerCase()) < 0;
+  };
+  var selOf = function (e) {
+  var n = String(e.value).length;
+  var s = e["%ss"], f = e["%se"];
+  if (typeof s !== "number" || typeof f !== "number") { s = 0; f = 0; }
+  if (f > n) f = n;
+  if (s > f) s = f;
+  var d = e["%sd"];
+  return [s, f, d === "forward" || d === "backward" ? d : "none"];
+  };
+  // (before: what to measure a change from, if not the selection now)
+  var setSel = function (e, s, f, d, before) {
+  var n = String(e.value).length;
+  s = Number(s) >>> 0; f = Number(f) >>> 0;
+  if (f > n) f = n;
+  if (s > f) s = f;
+  d = d === "forward" || d === "backward" ? d : "none";
+  var was = before || selOf(e);
+  hidden(e, "%ss", s);
+  hidden(e, "%se", f);
+  hidden(e, "%sd", d);
+  if (was[0] !== s || was[1] !== f || was[2] !== d) global.setTimeout(function () { e.dispatchEvent(new global.Event("select", { bubbles: true })); }, 0);
+  };
+  [["HTMLInputElement", "input"], ["HTMLTextAreaElement", "textarea"]].forEach(function (k) {
+  var C = global[k[0]];
+  if (!C) return;
+  var refuse = function (e, how) {
+  return new global.DOMException("Failed to " + how + " on '" + k[0] + "': The input element's type ('" + e.type + "') does not support selection.", "InvalidStateError");
+  };
+  Object.defineProperties(C.prototype, {
+  selectionStart: {
+  get: function () { return selectable(this) ? selOf(this)[0] : null; },
+  set: function (v) {
+  if (!selectable(this)) throw refuse(this, "set the 'selectionStart' property");
+  var c = selOf(this);
+  v = Number(v) >>> 0;
+  setSel(this, v, Math.max(v, c[1]), c[2]);
+  },
+  configurable: true, enumerable: true
+  },
+  selectionEnd: {
+  get: function () { return selectable(this) ? selOf(this)[1] : null; },
+  set: function (v) {
+  if (!selectable(this)) throw refuse(this, "set the 'selectionEnd' property");
+  var c = selOf(this);
+  setSel(this, c[0], v, c[2]);
+  },
+  configurable: true, enumerable: true
+  },
+  selectionDirection: {
+  get: function () { return selectable(this) ? selOf(this)[2] : null; },
+  set: function (v) {
+  if (!selectable(this)) throw refuse(this, "set the 'selectionDirection' property");
+  var c = selOf(this);
+  setSel(this, c[0], c[1], String(v));
+  },
+  configurable: true, enumerable: true
+  }
+  });
+  hidden(C.prototype, "setSelectionRange", function setSelectionRange(start, end, direction) {
+  if (!selectable(this)) throw refuse(this, "execute 'setSelectionRange'");
+  if (arguments.length < 2) throw new TypeError("Failed to execute 'setSelectionRange' on '" + k[0] + "': 2 arguments required, but only " + arguments.length + " present.");
+  setSel(this, start, end, direction === undefined ? "none" : String(direction));
+  });
+  hidden(C.prototype, "select", function select() {
+  if (!selectable(this)) return;
+  setSel(this, 0, String(this.value).length, "none");
+  });
+  hidden(C.prototype, "setRangeText", function setRangeText(replacement, start, end, mode) {
+  if (!selectable(this)) throw refuse(this, "execute 'setRangeText'");
+  if (arguments.length < 1) throw new TypeError("Failed to execute 'setRangeText' on '" + k[0] + "': 1 argument required, but only 0 present.");
+  var v = String(this.value), c = selOf(this);
+  replacement = String(replacement);
+  if (arguments.length < 3) { start = c[0]; end = c[1]; }
+  else {
+  start = Number(start) >>> 0; end = Number(end) >>> 0;
+  if (start > end) throw new global.DOMException("Failed to execute 'setRangeText' on '" + k[0] + "': The provided start value (" + start + ") is larger than the provided end value (" + end + ").", "IndexSizeError");
+  }
+  if (start > v.length) start = v.length;
+  if (end > v.length) end = v.length;
+  var ss = c[0], se = c[1], d = c[2];
+  this.value = v.slice(0, start) + replacement + v.slice(end);
+  var newEnd = start + replacement.length;
+  mode = mode === undefined ? "preserve" : String(mode);
+  if (mode === "select") { ss = start; se = newEnd; }
+  else if (mode === "start") { ss = start; se = start; }
+  else if (mode === "end") { ss = newEnd; se = newEnd; }
+  else {
+  var delta = replacement.length - (end - start);
+  if (ss > end) ss += delta; else if (ss > start) ss = start;
+  if (se > end) se += delta; else if (se > start) se = newEnd;
+  }
+  setSel(this, ss, se, d, c);
+  });
+  });
+  })();
 })(this);

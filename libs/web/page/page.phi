@@ -2178,6 +2178,17 @@ phi.Page:Library
 			p.space_on is f;
 			return true;
 		;;
+		if (Writable: f)
+			if (WlText.EqZ: key kl 'Delete')
+				bln took: (Edit: p f 0 as ptr<u8> EDIT_FORWARD);
+				return true;
+			;;
+			int move: (CaretKey: key kl);
+			if move is not 0
+				call MoveCaret: p f move shift;
+				return true;
+			;;
+		;;
 	[end: false]
 
 	# whether a key presses n (a click): a button, or an input that's one (submit, reset, button,
@@ -2313,6 +2324,21 @@ phi.Page:Library
 		;;
 		if best is 0 return false;
 		p.mouse_focus is false;
+		# (Tab to an input one types into selects what's in it, as Chrome does, before its focus
+		# event; a textarea keeps its caret where it was)
+		if (Is: best HtmlTag.INPUT) and (TypedInto: best)
+			u64 w: (PageBind.Wrap: best);
+			u64 fn: (Js.GetProp: w 'select');
+			if (JsV.IsObj: fn)
+				p.nest++;
+				u64 ignored: (Js.Call: fn w 0);
+				p.nest--;
+				if Js.failed
+					call ReportException: p;
+				;;
+				call RunJobs: p;
+			;;
+		;;
 		call MoveFocus: p best false;
 		p.start_point is best;
 	[end: true]
@@ -2323,88 +2349,412 @@ phi.Page:Library
 		if t > 0 return t;
 	[end: 2147483647]
 
-	# What the host types into the field n (an input or textarea, what has the focus): text put at
-	# its end, or with none (0) the last character taken off, Backspace (the browser has no caret
-	# yet). beforeinput first, which a handler can cancel (false: then it isn't changed), then the
-	# value changed (its attribute and what scripts see), then input; its change event comes when
+	# ---- typing into a field: its value, and the caret or selection in it
+	#
+	# A field's value is UTF-8 here; its selection is kept as scripts count it, in UTF-16 units
+	# (PageBind.Selection: selectionStart, selectionEnd); the host draws and clicks in characters
+	# (FieldCaret, PlaceCaret), one a code point, as a password's dots are.
+
+	const int EDIT_TEXT: 0;         # text in place of what's selected (insertText)
+	const int EDIT_BACK: 1;         # what's selected, or the character before the caret (Backspace)
+	const int EDIT_FORWARD: 2;      # what's selected, or the character after it (Delete)
+	const int EDIT_LINE: 3;         # a line break (Enter in a textarea)
+	const int EDIT_PASTE: 4;        # text pasted (insertFromPaste)
+	const int EDIT_CUT: 5;          # what's selected, cut (deleteByCut; nothing if nothing is)
+
+	# What the host types into the field n (an input or textarea, what has the focus): text in
+	# place of what's selected (at the caret), or with none (0) Backspace. beforeinput first, which a
+	# handler can cancel (false: then it isn't changed), then the value changed (its attribute and
+	# what scripts see) and the caret after what changed, then input; its change event comes when
 	# the focus leaves it (Commit).
 	[TypeInto: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<u8> text: 0; : bln]
-		call Use: p;
-		ptr<u8> type: 'insertText';
-		if text is 0
-			type is 'deleteContentBackward';
-		;;
-		p.nest++;
-		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: n) (PageEvents.NewInputEvent: 'beforeinput' type text true));
-		p.nest--;
-		call RunJobs: p;
-		if not allowed return false;
-		WlBuf b;
-		if not (PageBind.LiveValue: n addr b)
-			ptr<u8> now: (Dom.AttrValue: n 'value');
-			if now is not 0
-				call b.AddZ: now;
-			;;
-		;;
-		if text is 0
-			# (a whole character off, however many bytes UTF-8 gave it)
-			if b.len > 0
-				b.len--;
-				while b.len > 0 and (b.data:(b.len) & 0xC0) is 0x80
-					b.len--;
-				;;
-			;;
-		;;
-		else
-			call b.AddZ: text;
-		;;
-		u32 vl: b.len;
-		call b.Add: 0;
-		call Dom.SetAttrZ: n 'value' b.data;
-		call PageBind.SetLiveValue: n b.data vl;
-		call b.Free;
-		n.flags is n.flags | Dom.DIRTY_LAYOUT;
-		call Dom.MarkUp: n;
-		p.edited is n;
-		p.nest++;
-		bln said: (PageEvents.Dispatch: (PageBind.Wrap: n) (PageEvents.NewInputEvent: 'input' type text false));
-		p.nest--;
-		call RunJobs: p;
-		call Invalidate: p;
-	[end: true]
+		if text is 0 return (Edit: p n 0 as ptr<u8> EDIT_BACK);
+	[end: (Edit: p n text EDIT_TEXT)]
 
 	# Enter in a field: beforeinput's insertLineBreak (false if canceled); a textarea then takes
 	# the line (and input follows), an input doesn't (KeyDefault sends its form)
 	[LineBreak: ptr<Page> p: 0; ptr<DomNode> n: 0; : bln]
+		if (Is: n HtmlTag.TEXTAREA) return (Edit: p n 0 as ptr<u8> EDIT_LINE);
 		call Use: p;
 		p.nest++;
 		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: n) (PageEvents.NewInputEvent: 'beforeinput' 'insertLineBreak' 0 as ptr<u8> true));
 		p.nest--;
 		call RunJobs: p;
-		if not allowed or not (Is: n HtmlTag.TEXTAREA) return allowed;
-		# (beforeinput's been heard: the line put in as TypeInto puts text, but for its own input)
+	[end: allowed]
+
+	# an edit of field n (EDIT_TEXT and the rest), as a user makes it: false if it changed nothing
+	# (canceled, or nothing to take off)
+	[Edit: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<u8> text: 0; int kind: 0; : bln]
+		call Use: p;
 		WlBuf b;
-		if not (PageBind.LiveValue: n addr b)
-			ptr<u8> now: (Dom.AttrValue: n 'value');
-			if now is not 0
-				call b.AddZ: now;
-			;;
-		;;
-		call b.Add: '\n';
-		u32 vl: b.len;
-		call b.Add: 0;
-		call Dom.SetAttrZ: n 'value' b.data;
-		call PageBind.SetLiveValue: n b.data vl;
+		u32 from: 0;
+		u32 to: 0;
+		bln some: (EditRange: n kind addr b addr from addr to);
 		call b.Free;
+		# (Backspace with nothing before the caret is still told in beforeinput, as Chrome tells it;
+		# a cut of nothing isn't)
+		if not some and kind is EDIT_CUT return false;
+		ptr<u8> type: 'insertText';
+		ptr<u8> data: text;
+		if kind is EDIT_BACK
+			type is 'deleteContentBackward';
+		;;
+		elif kind is EDIT_FORWARD
+			type is 'deleteContentForward';
+		;;
+		elif kind is EDIT_LINE
+			type is 'insertLineBreak';
+		;;
+		elif kind is EDIT_PASTE
+			type is 'insertFromPaste';
+		;;
+		elif kind is EDIT_CUT
+			type is 'deleteByCut';
+		;;
+		if kind is not EDIT_TEXT and kind is not EDIT_PASTE
+			data is 0;
+		;;
+		p.nest++;
+		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: n) (PageEvents.NewInputEvent: 'beforeinput' type data true));
+		p.nest--;
+		call RunJobs: p;
+		if not allowed or not some return false;
+		# (as things are after beforeinput, which a handler may have changed)
+		WlBuf now;
+		if not (EditRange: n kind addr now addr from addr to)
+			call now.Free;
+			return true;
+		;;
+		WlBuf made;
+		call made.AddN: now.data from;
+		u32 caret: from;
+		if kind is EDIT_LINE
+			call made.Add: 10;
+			caret++;
+		;;
+		elif (kind is EDIT_TEXT or kind is EDIT_PASTE) and text is not 0
+			u32 tl: (WlText.LenZ: text);
+			call made.AddN: text tl;
+			caret is caret + tl;
+		;;
+		call made.AddN: now.data + to now.len - to;
+		# (the caret after what changed; its direction as the selection's was, as Chrome keeps it)
+		u32 was_s: 0;
+		u32 was_e: 0;
+		int dir: 0;
+		call PageBind.Selection: n (U16Of: now.data now.len) addr was_s addr was_e addr dir;
+		call now.Free;
+		u32 vl: made.len;
+		call made.Add: 0;
+		call Dom.SetAttrZ: n 'value' made.data;
+		call PageBind.SetLiveValue: n made.data vl;
+		u32 at16: (U16Of: made.data caret);
+		call PageBind.SetSelection: n at16 at16 dir;
+		call made.Free;
 		n.flags is n.flags | Dom.DIRTY_LAYOUT;
 		call Dom.MarkUp: n;
 		p.edited is n;
 		p.nest++;
-		bln said: (PageEvents.Dispatch: (PageBind.Wrap: n) (PageEvents.NewInputEvent: 'input' 'insertLineBreak' 0 as ptr<u8> false));
+		bln said: (PageEvents.Dispatch: (PageBind.Wrap: n) (PageEvents.NewInputEvent: 'input' type data false));
 		p.nest--;
 		call RunJobs: p;
 		call Invalidate: p;
 	[end: true]
+
+	# n's value into b, and the bytes an edit of that kind changes (from, to): false if it changes
+	# none (Backspace at the start, Delete at the end, a cut of nothing)
+	[EditRange: ptr<DomNode> n: 0; int kind: 0; ptr<WlBuf> b: 0; ptr<u32> from: 0; ptr<u32> to: 0; : bln]
+		call PageBind.FieldValue: n b;
+		u32 s: 0;
+		u32 e: 0;
+		call Selected: n b addr s addr e;
+		if s is e
+			if kind is EDIT_CUT return false;
+			if kind is EDIT_BACK
+				if s is 0 return false;
+				s is (CharBefore: b.data s);
+			;;
+			elif kind is EDIT_FORWARD
+				if e >= b.len return false;
+				e is (CharAfter: b.data b.len e);
+			;;
+		;;
+		from:0 is s;
+		to:0 is e;
+	[end: true]
+
+	# the selection in n (whose value is in b) as bytes of it
+	[Selected: ptr<DomNode> n: 0; ptr<WlBuf> b: 0; ptr<u32> start: 0; ptr<u32> stop: 0;]
+		u32 s16: 0;
+		u32 e16: 0;
+		int dir: 0;
+		call PageBind.Selection: n (U16Of: b.data b.len) addr s16 addr e16 addr dir;
+		start:0 is (ByteOfU16: b.data b.len s16);
+		stop:0 is (ByteOfU16: b.data b.len e16);
+	[end]
+
+	# A caret key in field n (CaretKey's): the caret moved, or with shift the selection made bigger
+	# or smaller at its moving end (the other stays put), as Chrome does
+	[MoveCaret: ptr<Page> p: 0; ptr<DomNode> n: 0; int move: 0; bln shift: false;]
+		call Use: p;
+		WlBuf b;
+		call PageBind.FieldValue: n addr b;
+		u32 len16: (U16Of: b.data b.len);
+		u32 s16: 0;
+		u32 e16: 0;
+		int dir: 0;
+		call PageBind.Selection: n len16 addr s16 addr e16 addr dir;
+		u32 s: (ByteOfU16: b.data b.len s16);
+		u32 e: (ByteOfU16: b.data b.len e16);
+		u32 anchor: s;
+		u32 focus: e;
+		if dir is 2
+			anchor is e;
+			focus is s;
+		;;
+		u32 to: focus;
+		bln area: (Is: n HtmlTag.TEXTAREA);
+		if not shift and s is not e and (move is 1 or move is 2)
+			# (a selection, and no shift: the caret goes to its start or its end)
+			to is e;
+			if move is 1
+				to is s;
+			;;
+		;;
+		elif move is 1
+			if focus > 0
+				to is (CharBefore: b.data focus);
+			;;
+		;;
+		elif move is 2
+			if focus < b.len
+				to is (CharAfter: b.data b.len focus);
+			;;
+		;;
+		elif move is 3 or (move is 5 and not area)
+			to is 0;
+			if area
+				to is (LineStart: b.data focus);
+			;;
+		;;
+		elif move is 4 or (move is 6 and not area)
+			to is b.len;
+			if area
+				to is (LineEnd: b.data b.len focus);
+			;;
+		;;
+		else
+			# (up or down a line of a textarea, as many characters in as the caret was)
+			u32 line: (LineStart: b.data focus);
+			u32 column: (CharsIn: b.data + line focus - line);
+			u32 other: 0;
+			bln there: false;
+			if move is 5 and line > 0
+				other is (LineStart: b.data line - 1);
+				there is true;
+			;;
+			elif move is 6
+				u32 stop: (LineEnd: b.data b.len focus);
+				if stop < b.len
+					other is stop + 1;
+					there is true;
+				;;
+			;;
+			if there
+				u32 other_end: (LineEnd: b.data b.len other);
+				to is other;
+				while column > 0 and to < other_end
+					to is (CharAfter: b.data b.len to);
+					column--;
+				;;
+			;;
+			elif move is 5
+				to is 0;
+			;;
+			else
+				to is b.len;
+			;;
+		;;
+		u32 ns: to;
+		u32 ne: to;
+		int nd: 0;
+		if shift
+			ns is anchor;
+			ne is to;
+			nd is 1;
+			if to < anchor
+				ns is to;
+				ne is anchor;
+				nd is 2;
+			;;
+			elif to is anchor
+				nd is 0;
+			;;
+		;;
+		call PageBind.SetSelection: n (U16Of: b.data ns) (U16Of: b.data ne) nd;
+		call b.Free;
+		n.flags is n.flags | Dom.DIRTY_LAYOUT;
+		call Invalidate: p;
+	[end]
+
+	# which caret key key is: 1 left, 2 right, 3 Home, 4 End, 5 up, 6 down; 0 none
+	[CaretKey: ptr<u8> key: 0; u32 kl: 0; : int]
+		if (WlText.EqZ: key kl 'ArrowLeft') return 1;
+		if (WlText.EqZ: key kl 'ArrowRight') return 2;
+		if (WlText.EqZ: key kl 'Home') return 3;
+		if (WlText.EqZ: key kl 'End') return 4;
+		if (WlText.EqZ: key kl 'ArrowUp') return 5;
+		if (WlText.EqZ: key kl 'ArrowDown') return 6;
+	[end: 0]
+
+	# whether n is a field the keys write in (an input of a text kind, a textarea)
+	[Writable: ptr<DomNode> n: 0; : bln]
+	[end: ((Is: n HtmlTag.INPUT) or (Is: n HtmlTag.TEXTAREA)) and (TypedInto: n)]
+
+	# The host's: the selection in field n, in characters of its value (start is stop: the caret)
+	[FieldCaret: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<u32> start: 0; ptr<u32> stop: 0;]
+		start:0 is 0;
+		stop:0 is 0;
+		if p is 0 or n is 0 return;
+		call Use: p;
+		WlBuf b;
+		call PageBind.FieldValue: n addr b;
+		u32 s: 0;
+		u32 e: 0;
+		call Selected: n addr b addr s addr e;
+		start:0 is (CharsIn: b.data s);
+		stop:0 is (CharsIn: b.data e);
+		call b.Free;
+	[end]
+
+	# the host's: the selection in field n put at characters start to stop (a click in it: the
+	# same); past its end is its end
+	[PlaceCaret: ptr<Page> p: 0; ptr<DomNode> n: 0; u32 start: 0; u32 stop: 0;]
+		if p is 0 or n is 0 return;
+		call Use: p;
+		WlBuf b;
+		call PageBind.FieldValue: n addr b;
+		u32 s: (ByteOfChar: b.data b.len start);
+		u32 e: (ByteOfChar: b.data b.len stop);
+		int dir: 0;
+		if e < s
+			u32 t: s;
+			s is e;
+			e is t;
+			dir is 2;
+		;;
+		elif e > s
+			dir is 1;
+		;;
+		call PageBind.SetSelection: n (U16Of: b.data s) (U16Of: b.data e) dir;
+		call b.Free;
+		n.flags is n.flags | Dom.DIRTY_LAYOUT;
+		call Invalidate: p;
+	[end]
+
+	# the host's: all of field n's text selected (Ctrl+A in it)
+	[SelectAllIn: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		if p is 0 or n is 0 return;
+		call Use: p;
+		WlBuf b;
+		call PageBind.FieldValue: n addr b;
+		call PageBind.SetSelection: n 0 (U16Of: b.data b.len) 0;
+		call b.Free;
+		n.flags is n.flags | Dom.DIRTY_LAYOUT;
+		call Invalidate: p;
+	[end]
+
+	# the host's: what's selected in field n, into target (Ctrl+C); nothing if nothing is
+	[SelectedText: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<WlBuf> target: 0;]
+		if p is 0 or n is 0 return;
+		call Use: p;
+		WlBuf b;
+		call PageBind.FieldValue: n addr b;
+		u32 s: 0;
+		u32 e: 0;
+		call Selected: n addr b addr s addr e;
+		if e > s
+			call target.AddN: b.data + s e - s;
+		;;
+		call b.Free;
+	[end]
+
+	# how many UTF-16 units the first b bytes of text are (a character past U+FFFF is two)
+	[U16Of: ptr<u8> text: 0; u32 b: 0; : u32]
+		u32 u: 0;
+		while u32 i: 0; i < b; i++;
+			u8 c: text:i;
+			if (c & 0xC0) is not 0x80
+				u++;
+				if c >= 0xF0
+					u++;
+				;;
+			;;
+		;;
+	[end: u]
+
+	# the byte UTF-16 unit u of text (n bytes) falls at (inside a pair: after it)
+	[ByteOfU16: ptr<u8> text: 0; u32 n: 0; u32 u: 0; : u32]
+		u32 i: 0;
+		u32 seen: 0;
+		while i < n and seen < u
+			if text:i >= 0xF0
+				seen++;
+			;;
+			seen++;
+			i is (CharAfter: text n i);
+		;;
+	[end: i]
+
+	# how many characters the first b bytes of text are
+	[CharsIn: ptr<u8> text: 0; u32 b: 0; : u32]
+		u32 c: 0;
+		while u32 i: 0; i < b; i++;
+			if (text:i & 0xC0) is not 0x80
+				c++;
+			;;
+		;;
+	[end: c]
+
+	# the byte character c of text (n bytes) starts at (n past its end)
+	[ByteOfChar: ptr<u8> text: 0; u32 n: 0; u32 c: 0; : u32]
+		u32 i: 0;
+		while i < n and c > 0
+			i is (CharAfter: text n i);
+			c--;
+		;;
+	[end: i]
+
+	# where the character before byte i of text starts
+	[CharBefore: ptr<u8> text: 0; u32 i: 0; : u32]
+		if i is 0 return 0;
+		i--;
+		while i > 0 and (text:i & 0xC0) is 0x80
+			i--;
+		;;
+	[end: i]
+
+	# where the character after the one at byte i ends (n bytes in all)
+	[CharAfter: ptr<u8> text: 0; u32 n: 0; u32 i: 0; : u32]
+		if i >= n return n;
+		i++;
+		while i < n and (text:i & 0xC0) is 0x80
+			i++;
+		;;
+	[end: i]
+
+	# the start of the line byte i of text is in, and its end (the line break, or n)
+	[LineStart: ptr<u8> text: 0; u32 i: 0; : u32]
+		while i > 0 and text:(i - 1) is not 10
+			i--;
+		;;
+	[end: i]
+
+	[LineEnd: ptr<u8> text: 0; u32 n: 0; u32 i: 0; : u32]
+		while i < n and text:i is not 10
+			i++;
+		;;
+	[end: i]
 
 	# change at n, if it's been typed into since it was last told (as the focus leaves it, or Enter
 	# sends its form)
