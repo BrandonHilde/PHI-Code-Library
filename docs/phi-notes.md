@@ -301,3 +301,25 @@ during the blur. `:focus-visible` (`CssSel.ST_FOCUS_VISIBLE`) follows Chrome's r
 `MoveFocus`). `Page.Focused: page` is what has it, 0 once it's out of the document. Not yet: the
 blur Chrome fires as a focused element is taken out (it would run a handler in the middle of
 `Dom.Remove`). test_focus; PHI OS FINDINGS #53.
+
+## The keyboard: Page.Key, Page.KeyUp, Page.KeyDefault, Page.TypeInto (2026-11-27)
+
+A key now reaches the page as Chrome sends it. `Page.Key: page key code key_code char_code ctrl
+shift alt meta` fires keydown at what has the focus (the body when nothing does), then keypress
+for a key that types (`char_code` not 0, no ctrl, alt or meta); false if either was canceled,
+and then the key does nothing more. `Page.KeyUp` fires keyup at what has the focus by then (after
+a Tab, where it went). The host names the key (PHI OS has `brw/keys.phi` for that, a US
+keyboard). `Page.KeyDefault: page key shift` is what a key the page let be does: Tab and shift Tab
+move the focus along (`Page.TabFocus`; positive tabindex first, then tree order, from where the
+last click was), Enter follows a focused link, presses a button or sends the field's form
+(`Page.ImplicitSubmit`, the standard's implicit submission), and a space pressed on a button,
+checkbox or radio button clicks it when it comes up. `Page.TypeInto: page n text` types into a
+field: beforeinput (cancelable), the value, then input, InputEvents with insertText or
+deleteContentBackward and data; a field typed into fires change as the focus leaves it
+(`Page.Commit`, before the blur). `Page.Click` on a checkbox or radio button now changes it first,
+puts it back if the click is canceled, then fires input and change.
+
+Unexpected: Chrome sends no keypress for Enter on a link, though it does for Enter on a button and
+in a field. It follows the link as keydown's default and marks the key handled, which stops the
+keypress; a button and a field act on the keypress instead. `Page.Key` leaves out that one
+keypress. Brave's log of the same steps is test_keys; PHI OS FINDINGS #54.

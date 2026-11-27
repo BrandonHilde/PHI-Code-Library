@@ -444,6 +444,56 @@ phi.PageEvents:Library
 		call Js.Define: o 'composed' JsV.TRUE JsObjs.E;
 	[end: ev]
 
+	# keydown, keypress or keyup, as Chrome makes them: key and code as DOM names them ('a' and
+	# 'KeyA', 'Enter' and 'Enter'); key_code the legacy keyCode and which, char_code a keypress's
+	# charCode (0 for the rest)
+	[NewKeyboard: ptr<u8> type: 0; ptr<u8> key: 0; ptr<u8> code: 0; int key_code: 0; int char_code: 0; bln ctrl: false; bln shift: false; bln alt: false; bln meta: false;]
+		u64 ev: (NewEventObject: type key_proto true true);
+		ptr<JsObj> o: (JsV.AsObj: ev);
+		call Js.Define: o 'key' (Js.NewStringZ: key) JsObjs.E;
+		call Js.Define: o 'code' (Js.NewStringZ: code) JsObjs.E;
+		call Js.Define: o 'keyCode' (JsV.Int: key_code) JsObjs.E;
+		call Js.Define: o 'which' (JsV.Int: key_code) JsObjs.E;
+		call Js.Define: o 'charCode' (JsV.Int: char_code) JsObjs.E;
+		call Js.Define: o 'location' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: o 'repeat' JsV.FALSE JsObjs.E;
+		call Js.Define: o 'isComposing' JsV.FALSE JsObjs.E;
+		call Js.Define: o 'ctrlKey' (JsV.Bool: ctrl) JsObjs.E;
+		call Js.Define: o 'shiftKey' (JsV.Bool: shift) JsObjs.E;
+		call Js.Define: o 'altKey' (JsV.Bool: alt) JsObjs.E;
+		call Js.Define: o 'metaKey' (JsV.Bool: meta) JsObjs.E;
+		call Js.Define: o 'detail' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: o 'view' (JsV.Obj: JsRt.r.global) JsObjs.E;
+		call Js.Define: o 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
+		call Js.Define: o 'composed' JsV.TRUE JsObjs.E;
+	[end: ev]
+
+	# beforeinput (which can be canceled) or input, for what's typed into a field: input_type as
+	# InputEvent has it (insertText, insertLineBreak, deleteContentBackward), data what's put in
+	# (0: null)
+	[NewInputEvent: ptr<u8> type: 0; ptr<u8> input_type: 0; ptr<u8> data: 0; bln cancelable: false;]
+		u64 ev: (NewEventObject: type input_proto true cancelable);
+		ptr<JsObj> o: (JsV.AsObj: ev);
+		call Js.Define: o 'inputType' (Js.NewStringZ: input_type) JsObjs.E;
+		u64 d: JsV.NULL;
+		if data is not 0
+			d is (Js.NewStringZ: data);
+		;;
+		call Js.Define: o 'data' d JsObjs.E;
+		call Js.Define: o 'dataTransfer' JsV.NULL JsObjs.E;
+		call Js.Define: o 'isComposing' JsV.FALSE JsObjs.E;
+		call Js.Define: o 'detail' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: o 'view' (JsV.Obj: JsRt.r.global) JsObjs.E;
+		call Js.Define: o 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
+		call Js.Define: o 'composed' JsV.TRUE JsObjs.E;
+	[end: ev]
+
+	# an event the browser fires that's only its type (change, say): trusted
+	[NewTrusted: ptr<u8> type: 0; bln bubbles: false; bln cancelable: false;]
+		u64 ev: (NewEventObject: type event_proto bubbles cancelable);
+		call Js.Define: (JsV.AsObj: ev) 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
+	[end: ev]
+
 	# the prototype of the window's class of that name (one platform.js makes), or else fallback
 	[GlobalProto: ptr<u8> name: 0; ptr<JsObj> fallback: 0; : ptr<JsObj>]
 		u64 c: (JsObjs.GetV: (JsV.Obj: JsRt.r.global) (JsObjs.KeyZ: name));

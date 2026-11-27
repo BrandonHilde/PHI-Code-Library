@@ -1,0 +1,85 @@
+click go PointerEvent d1 true true val=undefined active=body fv=false
+keydown body KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse mods compfalse true true val=undefined active=body fv=false
+focus inp FocusEvent false false val="ab" active=inp fv=true
+keyup inp KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse mods compfalse true true val="ab" active=inp fv=true
+keydown inp KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse mods compfalse true true val="ab" active=inp fv=true
+blur inp FocusEvent false false val="ab" active=body fv=false
+focus btn FocusEvent false false val="" active=btn fv=true
+keyup btn KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse mods compfalse true true val="" active=btn fv=true
+keydown btn KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse mods compfalse true true val="" active=btn fv=true
+blur btn FocusEvent false false val="" active=body fv=false
+focus lnk FocusEvent false false val=undefined active=lnk fv=true
+keyup lnk KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse mods compfalse true true val=undefined active=lnk fv=true
+keydown lnk KeyboardEvent key="c" code=KeyC kc67 w67 cc0 loc0 repfalse mods compfalse true true val=undefined active=lnk fv=true
+keypress lnk KeyboardEvent key="c" code=KeyC kc99 w99 cc99 loc0 repfalse mods compfalse true true val=undefined active=lnk fv=true
+keyup lnk KeyboardEvent key="c" code=KeyC kc67 w67 cc0 loc0 repfalse mods compfalse true true val=undefined active=lnk fv=true
+keydown lnk KeyboardEvent key="C" code=KeyC kc67 w67 cc0 loc0 repfalse modss compfalse true true val=undefined active=lnk fv=true
+keypress lnk KeyboardEvent key="C" code=KeyC kc67 w67 cc67 loc0 repfalse modss compfalse true true val=undefined active=lnk fv=true
+keyup lnk KeyboardEvent key="C" code=KeyC kc67 w67 cc0 loc0 repfalse modss compfalse true true val=undefined active=lnk fv=true
+keydown lnk KeyboardEvent key="Backspace" code=Backspace kc8 w8 cc0 loc0 repfalse mods compfalse true true val=undefined active=lnk fv=true
+keyup lnk KeyboardEvent key="Backspace" code=Backspace kc8 w8 cc0 loc0 repfalse mods compfalse true true val=undefined active=lnk fv=true
+keydown lnk KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse mods compfalse true true val=undefined active=lnk fv=true
+blur lnk FocusEvent false false val=undefined active=body fv=false
+focus ta FocusEvent false false val="" active=ta fv=true
+keyup ta KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse mods compfalse true true val="" active=ta fv=true
+keydown ta KeyboardEvent key=" " code=Space kc32 w32 cc0 loc0 repfalse mods compfalse true true val="" active=ta fv=true
+keypress ta KeyboardEvent key=" " code=Space kc32 w32 cc32 loc0 repfalse mods compfalse true true val="" active=ta fv=true
+beforeinput ta InputEvent it=insertText data=" " true true val="" active=ta fv=true
+input ta InputEvent it=insertText data=" " true false val=" " active=ta fv=true
+keyup ta KeyboardEvent key=" " code=Space kc32 w32 cc0 loc0 repfalse mods compfalse true true val=" " active=ta fv=true
+keydown ta KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse mods compfalse true true val=" " active=ta fv=true
+change ta Event true false val=" " active=body fv=false
+blur ta FocusEvent false false val=" " active=body fv=false
+focus stop FocusEvent false false val="" active=stop fv=true
+keyup stop KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse mods compfalse true true val="" active=stop fv=true
+keydown stop KeyboardEvent key="Enter" code=Enter kc13 w13 cc0 loc0 repfalse mods compfalse true true val="" active=stop fv=true
+keypress stop KeyboardEvent key="Enter" code=Enter kc13 w13 cc13 loc0 repfalse mods compfalse true true val="" active=stop fv=true
+beforeinput stop InputEvent it=insertLineBreak data=null true true val="" active=stop fv=true
+keyup stop KeyboardEvent key="Enter" code=Enter kc13 w13 cc0 loc0 repfalse mods compfalse true true val="" active=stop fv=true
+keydown stop KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse modss compfalse true true val="" active=stop fv=true
+blur stop FocusEvent false false val="" active=body fv=false
+focus ta FocusEvent false false val=" " active=ta fv=true
+keyup ta KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse modss compfalse true true val=" " active=ta fv=true
+keydown ta KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse modss compfalse true true val=" " active=ta fv=true
+blur ta FocusEvent false false val=" " active=body fv=false
+focus lnk FocusEvent false false val=undefined active=lnk fv=true
+keyup lnk KeyboardEvent key="Tab" code=Tab kc9 w9 cc0 loc0 repfalse modss compfalse true true val=undefined active=lnk fv=true
+keydown lnk KeyboardEvent key="Enter" code=Enter kc13 w13 cc0 loc0 repfalse mods compfalse true true val=undefined active=lnk fv=true
+click lnk PointerEvent d0 true true val=undefined active=lnk fv=true
+keyup lnk KeyboardEvent key="Enter" code=Enter kc13 w13 cc0 loc0 repfalse mods compfalse true true val=undefined active=lnk fv=true
+blur lnk FocusEvent false false val=undefined active=body fv=false
+focus stop FocusEvent false false val="" active=stop fv=true
+click stop PointerEvent d1 true true val="" active=stop fv=true
+keydown stop KeyboardEvent key="x" code=KeyX kc88 w88 cc0 loc0 repfalse mods compfalse true true val="" active=stop fv=true
+keyup stop KeyboardEvent key="x" code=KeyX kc88 w88 cc0 loc0 repfalse mods compfalse true true val="" active=stop fv=true
+keydown stop KeyboardEvent key="y" code=KeyY kc89 w89 cc0 loc0 repfalse mods compfalse true true val="" active=stop fv=true
+keypress stop KeyboardEvent key="y" code=KeyY kc121 w121 cc121 loc0 repfalse mods compfalse true true val="" active=stop fv=true
+beforeinput stop InputEvent it=insertText data="y" true true val="" active=stop fv=true
+keyup stop KeyboardEvent key="y" code=KeyY kc89 w89 cc0 loc0 repfalse mods compfalse true true val="" active=stop fv=true
+keydown stop KeyboardEvent key="z" code=KeyZ kc90 w90 cc0 loc0 repfalse mods compfalse true true val="" active=stop fv=true
+keypress stop KeyboardEvent key="z" code=KeyZ kc122 w122 cc122 loc0 repfalse mods compfalse true true val="" active=stop fv=true
+beforeinput stop InputEvent it=insertText data="z" true true val="" active=stop fv=true
+input stop InputEvent it=insertText data="z" true false val="z" active=stop fv=true
+keyup stop KeyboardEvent key="z" code=KeyZ kc90 w90 cc0 loc0 repfalse mods compfalse true true val="z" active=stop fv=true
+keydown stop KeyboardEvent key="Escape" code=Escape kc27 w27 cc0 loc0 repfalse mods compfalse true true val="z" active=stop fv=true
+keyup stop KeyboardEvent key="Escape" code=Escape kc27 w27 cc0 loc0 repfalse mods compfalse true true val="z" active=stop fv=true
+keydown stop KeyboardEvent key="ArrowDown" code=ArrowDown kc40 w40 cc0 loc0 repfalse mods compfalse true true val="z" active=stop fv=true
+keyup stop KeyboardEvent key="ArrowDown" code=ArrowDown kc40 w40 cc0 loc0 repfalse mods compfalse true true val="z" active=stop fv=true
+keydown stop KeyboardEvent key="a" code=KeyA kc65 w65 cc0 loc0 repfalse modsc compfalse true true val="z" active=stop fv=true
+keyup stop KeyboardEvent key="a" code=KeyA kc65 w65 cc0 loc0 repfalse modsc compfalse true true val="z" active=stop fv=true
+change stop Event true false val="z" active=body fv=false
+blur stop FocusEvent false false val="z" active=body fv=false
+focus fi FocusEvent false false val="" active=fi fv=true
+click fi PointerEvent d1 true true val="" active=fi fv=true
+keydown fi KeyboardEvent key="q" code=KeyQ kc81 w81 cc0 loc0 repfalse mods compfalse true true val="" active=fi fv=true
+keypress fi KeyboardEvent key="q" code=KeyQ kc113 w113 cc113 loc0 repfalse mods compfalse true true val="" active=fi fv=true
+beforeinput fi InputEvent it=insertText data="q" true true val="" active=fi fv=true
+input fi InputEvent it=insertText data="q" true false val="q" active=fi fv=true
+keyup fi KeyboardEvent key="q" code=KeyQ kc81 w81 cc0 loc0 repfalse mods compfalse true true val="q" active=fi fv=true
+keydown fi KeyboardEvent key="Enter" code=Enter kc13 w13 cc0 loc0 repfalse mods compfalse true true val="q" active=fi fv=true
+keypress fi KeyboardEvent key="Enter" code=Enter kc13 w13 cc13 loc0 repfalse mods compfalse true true val="q" active=fi fv=true
+beforeinput fi InputEvent it=insertLineBreak data=null true true val="q" active=fi fv=true
+change fi Event true false val="q" active=fi fv=true
+submit f SubmitEvent true true val=undefined active=fi fv=true
+submit canceled
+keyup fi KeyboardEvent key="Enter" code=Enter kc13 w13 cc0 loc0 repfalse mods compfalse true true val="q" active=fi fv=true

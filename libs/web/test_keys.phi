@@ -1,0 +1,110 @@
+# Keys as the browser sends them (Page.Key, Page.KeyDefault, Page.TypeInto, Page.LineBreak,
+# Page.KeyUp), checked against Brave over its DevTools protocol (PHI OS tools/mouse_ref.py key:
+# steps): keydown at what has the focus (the body without), keypress for a key that types (not
+# with ctrl), beforeinput, the change, input; a canceled keydown or beforeinput stopping what comes
+# after; keyup at where the focus is then. Tab in Chrome's order from where the mouse was pressed
+# (a tabindex above 0 first; below 0, none), :focus-visible after it; Enter following a link
+# (a click with detail 0) and sending the form of the field it's in, after the field's change;
+# change before blur for a field typed into.
+use weblib;
+
+phi.TestKeys:Program
+{
+	call Weblib.Start: 900000;
+	str html: '<!doctype html><style>div,button,input,a,textarea{display:block;margin:2px;height:18px;width:200px;font-size:12px;padding:0;border:0}</style><div id=go>go</div><input id=inp value=ab><button id=btn>button</button><a id=lnk href="#x">link</a><div id=t2 tabindex=2>t2</div><div id=t1 tabindex=1>t1</div><div id=neg tabindex=-1>neg</div><input id=dis disabled><textarea id=ta></textarea><input id=stop><form id=f action="#sent"><input id=fi name=q></form><script>window.__log=[];function L(s){__log.push(s);console.log(s);}\nfunction who(t){return t&&t.id?t.id:(t===document.body?"body":String(t&&t.nodeName));}\n["keydown","keypress","keyup","beforeinput","input","focus","blur","click","change","submit"].forEach(function(ty){document.addEventListener(ty,function(e){var s=ty+" "+who(e.target)+" "+e.constructor.name;if(e.key!==undefined)s+=" key="+JSON.stringify(e.key)+" code="+e.code+" kc"+e.keyCode+" w"+e.which+" cc"+e.charCode+" loc"+e.location+" rep"+e.repeat+" mods"+(e.shiftKey?"s":"")+(e.ctrlKey?"c":"")+(e.altKey?"a":"")+(e.metaKey?"m":"")+" comp"+e.isComposing;if(e.inputType!==undefined)s+=" it="+e.inputType+" data="+JSON.stringify(e.data);if(e.detail!==undefined&&ty==="click")s+=" d"+e.detail;s+=" "+e.bubbles+" "+e.cancelable+" val="+JSON.stringify(e.target.value)+" active="+who(document.activeElement)+" fv="+(document.activeElement&&document.activeElement.matches(":focus-visible"));L(s);},true);});\ndocument.getElementById("stop").addEventListener("keydown",function(e){if(e.key==="x")e.preventDefault();});\ndocument.getElementById("stop").addEventListener("beforeinput",function(e){if(e.data==="y")e.preventDefault();});\ndocument.getElementById("f").addEventListener("submit",function(e){e.preventDefault();L("submit canceled");});\n</script>';
+	PageHost host;
+	host.logger is addr Print;
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page html html.len as u32 'https://keys.example/';
+	call Page.Tick: page 5.0;
+	call Down: page '#go';
+	call Up: page '#go';
+	call Press: page 'Tab' 'Tab' 9 0 false false;
+	call Press: page 'Tab' 'Tab' 9 0 false false;
+	call Press: page 'Tab' 'Tab' 9 0 false false;
+	call Press: page 'c' 'KeyC' 67 99 false false;
+	call Press: page 'C' 'KeyC' 67 67 false true;
+	call Press: page 'Backspace' 'Backspace' 8 0 false false;
+	call Press: page 'Tab' 'Tab' 9 0 false false;
+	call Press: page ' ' 'Space' 32 32 false false;
+	call Press: page 'Tab' 'Tab' 9 0 false false;
+	call Press: page 'Enter' 'Enter' 13 13 false false;
+	call Press: page 'Tab' 'Tab' 9 0 false true;
+	call Press: page 'Tab' 'Tab' 9 0 false true;
+	call Press: page 'Enter' 'Enter' 13 13 false false;
+	call Down: page '#stop';
+	call Up: page '#stop';
+	call Press: page 'x' 'KeyX' 88 120 false false;
+	call Press: page 'y' 'KeyY' 89 121 false false;
+	call Press: page 'z' 'KeyZ' 90 122 false false;
+	call Press: page 'Escape' 'Escape' 27 0 false false;
+	call Press: page 'ArrowDown' 'ArrowDown' 40 0 false false;
+	call Press: page 'a' 'KeyA' 65 97 true false;
+	call Down: page '#fi';
+	call Up: page '#fi';
+	call Press: page 'q' 'KeyQ' 81 113 false false;
+	call Press: page 'Enter' 'Enter' 13 13 false false;
+	call Page.Tick: page 50.0;
+	call Page.Free: page;
+	exit 0;
+
+	ptr<DomNode> pressed_on: 0;
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+
+	[Node: ptr<Page> page: 0; ptr<u8> sel: 0; : ptr<DomNode>]
+	[end: (Css.Query: page.doc.root sel (WlText.LenZ: sel))]
+
+	[Down: ptr<Page> page: 0; ptr<u8> sel: 0;]
+		pressed_on is (Node: page sel);
+		bln d: (Page.Pointer: page pressed_on Page.POINTER_DOWN 10.0 10.0 0 1 1);
+	[end]
+
+	[Up: ptr<Page> page: 0; ptr<u8> sel: 0;]
+		ptr<DomNode> n: (Node: page sel);
+		bln u: (Page.Pointer: page n Page.POINTER_UP 10.0 10.0 0 0 1);
+		ptr<DomNode> to: (Page.ClickTarget: pressed_on n);
+		if to is not 0
+			bln c: (Page.Click: page to 10.0 10.0 1 0);
+		;;
+	[end]
+
+	# a key pressed and let go, as the browser has it (its PageKey)
+	[Press: ptr<Page> page: 0; ptr<u8> key: 0; ptr<u8> code: 0; int key_code: 0; int char_code: 0; bln ctrl: false; bln shift: false;]
+		bln allowed: (Page.Key: page key code key_code char_code ctrl shift false false);
+		if allowed
+			ptr<DomNode> field: (Field: page);
+			bln did: false;
+			if field is not 0 and key_code is 13
+				if not (Page.LineBreak: page field) or (Page.Is: field HtmlTag.TEXTAREA)
+					did is true;
+				;;
+			;;
+			if not did
+				did is (Page.KeyDefault: page key shift);
+			;;
+			field is (Field: page);
+			if not did and field is not 0
+				if key_code is 8
+					bln back: (Page.TypeInto: page field 0 as ptr<u8>);
+				;;
+				elif char_code >= 32 and not ctrl
+					u8 one[2];
+					one:0 is char_code as u8;
+					one:1 is 0;
+					bln typed: (Page.TypeInto: page field addr one:0);
+				;;
+			;;
+		;;
+		bln up: (Page.KeyUp: page key code key_code ctrl shift false false);
+	[end]
+
+	[Field: ptr<Page> page: 0; : ptr<DomNode>]
+		ptr<DomNode> f: (Page.Focused: page);
+		if f is not 0 and not (((Page.Is: f HtmlTag.INPUT) or (Page.Is: f HtmlTag.TEXTAREA)) and (Page.TypedInto: f))
+			f is 0;
+		;;
+	[end: f]
+}

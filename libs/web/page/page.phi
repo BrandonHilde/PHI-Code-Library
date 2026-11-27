@@ -226,6 +226,9 @@ struct.Page
 	bln no_compat;
 	bln focus_quiet;            # what has the focus isn't :focus-visible (Chrome's rule, MoveFocus)
 	bln mouse_focus;            # the last the user moved the focus, it was with the mouse
+	ptr<DomNode> start_point;   # where the mouse was last pressed: where Tab goes on from (TabFocus)
+	ptr<DomNode> edited;        # the field typed into since its last change event (Commit)
+	ptr<DomNode> space_on;      # what a space went down on, to be pressed when it comes up (KeyUp)
 
 	PageSheet sheets[atmost 4096];        # (each shadow tree's <style> is one)
 	u32 sheets_version;
@@ -1519,10 +1522,48 @@ phi.Page:Library
 		if button is not 0
 			type is 'auxclick';
 		;;
+		# (a checkbox or radio button changes as it's clicked, before the click's heard, and is put
+		# back if it's canceled; then input and change, as in Chrome)
+		ptr<DomNode> box: 0;
+		bln was_on: false;
+		ptr<DomNode> was_radio: 0;
+		int kind: 0;
+		if button is 0
+			kind is (CheckKind: node);
+		;;
+		if kind > 0
+			box is node;
+			was_on is ((Dom.AttrValue: node 'checked') is not 0);
+			if kind is 1
+				call SetChecked: node not was_on;
+			;;
+			elif not was_on
+				was_radio is (CheckedRadio: p node);
+				call SetChecked: node true;
+				if was_radio is not 0
+					call SetChecked: was_radio false;
+				;;
+			;;
+		;;
 		p.nest++;
 		bln allowed: (SendPointer: p node type x y button 0 0 as ptr<DomNode> detail);
 		p.nest--;
 		call RunJobs: p;
+		if box is not 0
+			if not allowed
+				call SetChecked: box was_on;
+				if was_radio is not 0
+					call SetChecked: was_radio true;
+				;;
+			;;
+			elif kind is 1 or not was_on
+				p.nest++;
+				bln said: (PageEvents.Dispatch: (PageBind.Wrap: box) (PageEvents.NewTrusted: 'input' true false));
+				bln changed: (PageEvents.Dispatch: (PageBind.Wrap: box) (PageEvents.NewTrusted: 'change' true false));
+				p.nest--;
+				call RunJobs: p;
+			;;
+		;;
 		if allowed and button is 0
 			call DefaultClick: p node;
 		;;
@@ -1534,6 +1575,51 @@ phi.Page:Library
 		;;
 		call Invalidate: p;
 	[end: allowed]
+
+	# 1 for a checkbox, 2 for a radio button (an input of that type), 0 for the rest
+	[CheckKind: ptr<DomNode> n: 0; : int]
+		if n is 0 or not (Is: n HtmlTag.INPUT) or (Dom.AttrValue: n 'disabled') is not 0 return 0;
+		ptr<u8> type: (Dom.AttrValue: n 'type');
+		if type is 0 return 0;
+		u32 tl: (WlText.LenZ: type);
+		if (WlText.EqNoCaseZ: type tl 'checkbox') return 1;
+		if (WlText.EqNoCaseZ: type tl 'radio') return 2;
+	[end: 0]
+
+	[SetChecked: ptr<DomNode> n: 0; bln on: false;]
+		if on
+			call Dom.SetAttrZ: n 'checked' '';
+		;;
+		elif (Dom.AttrValue: n 'checked') is not 0
+			call Dom.RemoveAttr: n (WlAtoms.GetZ: 'checked');
+		;;
+	[end]
+
+	# the radio button checked now in n's group (its name, in its form or with none), other than n
+	[CheckedRadio: ptr<Page> p: 0; ptr<DomNode> n: 0; : ptr<DomNode>]
+		ptr<u8> name: (Dom.AttrValue: n 'name');
+		if name is 0 or name:0 is 0 return 0 as ptr<DomNode>;
+		ptr<DomNode> form: (FormOf: n);
+		ptr<DomNode> root: (Dom.DocumentElement: p.doc);
+		ptr<DomNode> r: root;
+		while r is not 0
+			if r is not n and (CheckKind: r) is 2 and (Dom.AttrValue: r 'checked') is not 0 and (FormOf: r) is form
+				ptr<u8> rn: (Dom.AttrValue: r 'name');
+				if rn is not 0 and (WlText.EqZ: rn (WlText.LenZ: rn) name) and (WlText.LenZ: rn) is (WlText.LenZ: name)
+					return r;
+				;;
+			;;
+			r is (Dom.Next: r root);
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	# the form n is in (0: none)
+	[FormOf: ptr<DomNode> n: 0; : ptr<DomNode>]
+		ptr<DomNode> f: n.parent;
+		while f is not 0 and not (Is: f HtmlTag.FORM)
+			f is f.parent;
+		;;
+	[end: f]
 
 	# where the click goes when a button's let go over node, having been pressed over pressed_on:
 	# what holds them both (Chrome's), 0 for neither
@@ -1591,6 +1677,7 @@ phi.Page:Library
 					allowed is (SendPointer: p node 'mousedown' x y button buttons 0 as ptr<DomNode> clicks);
 					if allowed and (Holds: (Dom.DocumentElement: p.doc) node)
 						call MoveFocus: p (FocusableFrom: node) true;
+						p.start_point is node;
 					;;
 				;;
 				if button is 2
@@ -1776,6 +1863,8 @@ phi.Page:Library
 		p.focused is 0;
 		call StatesSettled: p was;
 		if old is not 0
+			# (a field typed into is told it's changed first: change, then blur, as in Chrome)
+			call Commit: p old;
 			from is (PageBind.Wrap: old);
 			bln b: (PageEvents.Dispatch: from (PageEvents.NewFocus: 'blur' false to));
 			# (a blur handler that's moved it: its focus and focusin have come, then this one's
@@ -1805,6 +1894,32 @@ phi.Page:Library
 		;;
 	[end: n]
 
+	const int NO_TABINDEX: -2147483647;
+
+	# n's tabindex, or NO_TABINDEX when it has none (or one that isn't a number)
+	[TabIndex: ptr<DomNode> n: 0; : int]
+		ptr<u8> ti: (Dom.AttrValue: n 'tabindex');
+		if ti is 0 return NO_TABINDEX;
+		u32 i: 0;
+		while ti:i is ' ' or ti:i is '\t' or ti:i is '\n'
+			i++;
+		;;
+		bln minus: false;
+		if ti:i is '-' or ti:i is '+'
+			minus is (ti:i is '-');
+			i++;
+		;;
+		if not (ti:i >= '0' and ti:i <= '9') return NO_TABINDEX;
+		int v: 0;
+		while ti:i >= '0' and ti:i <= '9' and v < 100000000
+			v is v * 10 + (ti:i - '0') as int;
+			i++;
+		;;
+		if minus
+			v is 0 - v;
+		;;
+	[end: v]
+
 	# what the mouse pressed on node gives the focus to: it or the nearest it's in that can have it
 	# (0: none, so the focus goes)
 	[FocusableFrom: ptr<DomNode> node: 0; : ptr<DomNode>]
@@ -1819,17 +1934,7 @@ phi.Page:Library
 	# asks that it be shown, display not none; not yet here.)
 	[Focusable: ptr<DomNode> n: 0; : bln]
 		if n is 0 or n.type is not DomType.ELEMENT return false;
-		ptr<u8> ti: (Dom.AttrValue: n 'tabindex');
-		if ti is not 0
-			u32 i: 0;
-			while ti:i is ' ' or ti:i is '\t' or ti:i is '\n'
-				i++;
-			;;
-			if ti:i is '-' or ti:i is '+'
-				i++;
-			;;
-			if ti:i >= '0' and ti:i <= '9' return true;
-		;;
+		if (TabIndex: n) is not NO_TABINDEX return true;
 		ptr<u8> ce: (Dom.AttrValue: n 'contenteditable');
 		if ce is not 0 and not (WlText.EqNoCaseZ: ce (WlText.LenZ: ce) 'false') return true;
 		if n.ns is not DomNs.HTML or n.tag is 0 return false;
@@ -1850,6 +1955,331 @@ phi.Page:Library
 			return n.parent is not 0 and (Is: n.parent HtmlTag.DETAILS);
 		;;
 	[end: false]
+
+	# ---- the keyboard ----
+
+	# A key pressed, as the browser sees it: keydown at what has the focus (the body when nothing
+	# does), then for a key that types (char_code, its character's code; not with ctrl, alt or
+	# meta) keypress, as Chrome sends them. False if either was canceled: then the key does nothing
+	# more (no typing, no KeyDefault). key and code as DOM names them ('a', 'KeyA'; 'Enter',
+	# 'Enter'), key_code the legacy keyCode (a letter's capital, 13 for Enter, 9 for Tab...). The
+	# host sends KeyUp after, as it hears nothing of keys let go.
+	[Key: ptr<Page> p: 0; ptr<u8> key: 0; ptr<u8> code: 0; int key_code: 0; int char_code: 0; bln ctrl: false; bln shift: false; bln alt: false; bln meta: false; : bln]
+		call Use: p;
+		p.space_on is 0;
+		p.nest++;
+		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: (KeyTarget: p)) (PageEvents.NewKeyboard: 'keydown' key code key_code 0 ctrl shift alt meta));
+		# (Enter on a link: Chrome follows it as keydown's default, which stops the keypress)
+		if allowed and char_code > 0 and not ctrl and not alt and not meta and not ((WlText.EqZ: key (WlText.LenZ: key) 'Enter') and (LinkFocused: p))
+			allowed is (PageEvents.Dispatch: (PageBind.Wrap: (KeyTarget: p)) (PageEvents.NewKeyboard: 'keypress' key code char_code char_code ctrl shift alt meta));
+		;;
+		p.nest--;
+		call RunJobs: p;
+		call Invalidate: p;
+	[end: allowed]
+
+	# the key let go: keyup at what has the focus now (after a Tab, what it went to). A space let
+	# go on the button it went down on presses it (KeyDefault), as in Chrome.
+	[KeyUp: ptr<Page> p: 0; ptr<u8> key: 0; ptr<u8> code: 0; int key_code: 0; bln ctrl: false; bln shift: false; bln alt: false; bln meta: false; : bln]
+		call Use: p;
+		p.nest++;
+		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: (KeyTarget: p)) (PageEvents.NewKeyboard: 'keyup' key code key_code 0 ctrl shift alt meta));
+		p.nest--;
+		call RunJobs: p;
+		ptr<DomNode> armed: p.space_on;
+		p.space_on is 0;
+		if allowed and armed is not 0 and armed is (Focused: p)
+			bln c: (Click: p armed 0.0 0.0 0 0);
+		;;
+		call Invalidate: p;
+	[end: allowed]
+
+	# whether a link (an a or area with an href) has the focus
+	[LinkFocused: ptr<Page> p: 0; : bln]
+		ptr<DomNode> f: (Focused: p);
+		if f is 0 return false;
+		if not (Is: f HtmlTag.A) and not (Is: f HtmlTag.AREA) return false;
+	[end: (Dom.AttrValue: f 'href') is not 0]
+
+	# where keys go: what has the focus, or the body (or the root, without one)
+	[KeyTarget: ptr<Page> p: 0; : ptr<DomNode>]
+		ptr<DomNode> n: (Focused: p);
+		if n is 0
+			n is (Dom.Body: p.doc);
+		;;
+		if n is 0
+			n is (Dom.DocumentElement: p.doc);
+		;;
+	[end: n]
+
+	# What a key does that the page let be (Key gave true), where it's the page's to do. Tab and
+	# shift Tab move the focus along (TabFocus); Enter follows a link that has the focus, presses a
+	# button, or sends the form of the field one types into (Chrome's implicit submission); a
+	# space presses a button, a checkbox or a radio button when it comes up (KeyUp). True if it
+	# did something: the host types or scrolls only if not. A Tab with nowhere to go is false (the
+	# focus is then the host's to move, to its address bar say).
+	[KeyDefault: ptr<Page> p: 0; ptr<u8> key: 0; bln shift: false; : bln]
+		call Use: p;
+		u32 kl: (WlText.LenZ: key);
+		ptr<DomNode> f: (Focused: p);
+		if (WlText.EqZ: key kl 'Tab')
+			return (TabFocus: p shift);
+		;;
+		if f is 0 return false;
+		if (WlText.EqZ: key kl 'Enter')
+			if (LinkFocused: p)
+				bln followed: (Click: p f 0.0 0.0 0 0);
+				return true;
+			;;
+			if (Pressable: f false)
+				bln pressed: (Click: p f 0.0 0.0 0 0);
+				return true;
+			;;
+			if (Is: f HtmlTag.INPUT) and (TypedInto: f)
+				call ImplicitSubmit: p f;
+				return true;
+			;;
+			return false;
+		;;
+		if (WlText.EqZ: key kl ' ') and (Pressable: f true)
+			p.space_on is f;
+			return true;
+		;;
+	[end: false]
+
+	# whether a key presses n (a click): a button, or an input that's one (submit, reset, button,
+	# image); with a space (space) a checkbox or radio button too
+	[Pressable: ptr<DomNode> n: 0; bln space: false; : bln]
+		if (Is: n HtmlTag.BUTTON) return true;
+		if not (Is: n HtmlTag.INPUT) return false;
+		ptr<u8> type: (Dom.AttrValue: n 'type');
+		if type is 0 return false;
+		u32 tl: (WlText.LenZ: type);
+		if (WlText.EqNoCaseZ: type tl 'submit') or (WlText.EqNoCaseZ: type tl 'reset') or (WlText.EqNoCaseZ: type tl 'button') or (WlText.EqNoCaseZ: type tl 'image') return true;
+		if space and ((WlText.EqNoCaseZ: type tl 'checkbox') or (WlText.EqNoCaseZ: type tl 'radio')) return true;
+	[end: false]
+
+	# Enter in a field of a form: the field's change (if typed into), then its form's first submit
+	# button clicked (if it's disabled, nothing); with none, the form sent, unless it has more than
+	# one field one types into (the HTML standard's implicit submission)
+	[ImplicitSubmit: ptr<Page> p: 0; ptr<DomNode> field: 0;]
+		ptr<DomNode> form: field.parent;
+		while form is not 0 and not (Is: form HtmlTag.FORM)
+			form is form.parent;
+		;;
+		call Commit: p field;
+		if form is 0 return;
+		ptr<DomNode> button: 0;
+		int fields: 0;
+		ptr<DomNode> n: form;
+		while n is not 0
+			if button is 0 and (SubmitButton: n)
+				button is n;
+			;;
+			if (Is: n HtmlTag.INPUT) and (TypedInto: n)
+				fields++;
+			;;
+			n is (Dom.Next: n form);
+		;;
+		if button is not 0
+			if (Dom.AttrValue: button 'disabled') is 0
+				bln clicked: (Click: p button 0.0 0.0 0 0);
+			;;
+			return;
+		;;
+		if fields > 1 return;
+		call RequestSubmit: p form 0 as ptr<DomNode>;
+	[end]
+
+	# form.requestSubmit(button) (button 0: with none), which fires submit and, if nothing stops it,
+	# sends the form by its method (platform.js)
+	[RequestSubmit: ptr<Page> p: 0; ptr<DomNode> form: 0; ptr<DomNode> button: 0;]
+		u64 f: (PageBind.Wrap: form);
+		u64 fn: (Js.GetProp: f 'requestSubmit');
+		if not (JsV.IsObj: fn) return;
+		int argc: 0;
+		if button is not 0
+			call Js.Push: (PageBind.Wrap: button);
+			argc is 1;
+		;;
+		p.nest++;
+		u64 ignored: (Js.Call: fn f argc);
+		p.nest--;
+		if Js.failed
+			call ReportException: p;
+		;;
+		call RunJobs: p;
+		p.submitted is true;
+	[end]
+
+	# Tab (back: shift Tab): the focus to the next that takes it in Chrome's tab order: what has a
+	# tabindex above 0, least first, then the rest that can have the focus (but those with a
+	# tabindex below 0), as the document has them. From what has the focus, else from where the
+	# mouse was last pressed (the starting point), else from the start (the end, going back).
+	# False with nothing more that way. (What isn't shown, display none, isn't left out yet.)
+	[TabFocus: ptr<Page> p: 0; bln back: false; : bln]
+		ptr<DomNode> root: (Dom.DocumentElement: p.doc);
+		if root is 0 return false;
+		ptr<DomNode> me: (Focused: p);
+		if me is 0
+			me is p.start_point;
+		;;
+		if me is not 0 and (me.doc is not p.doc or not (Holds: root me))
+			me is 0;
+		;;
+		# where it's from, as the order sorts it: its tabindex (all those of 0 or none after), its place
+		int my_key: 0;
+		int my_pos: -1;
+		int pos: 0;
+		ptr<DomNode> n: root;
+		if me is not 0
+			while n is not 0
+				if n is me
+					my_pos is pos;
+					my_key is (TabKey: n);
+					break;
+				;;
+				pos++;
+				n is (Dom.Next: n root);
+			;;
+		;;
+		ptr<DomNode> best: 0;
+		int best_key: 0;
+		int best_pos: 0;
+		pos is 0;
+		n is root;
+		while n is not 0
+			if n is not me and (Focusable: n) and ((TabIndex: n) is NO_TABINDEX or (TabIndex: n) >= 0)
+				int k: (TabKey: n);
+				bln past: true;
+				if my_pos >= 0
+					if back
+						past is k < my_key or (k is my_key and pos < my_pos);
+					;;
+					else
+						past is k > my_key or (k is my_key and pos > my_pos);
+					;;
+				;;
+				bln better: best is 0;
+				if not better
+					if back
+						better is k > best_key or (k is best_key and pos > best_pos);
+					;;
+					else
+						better is k < best_key or (k is best_key and pos < best_pos);
+					;;
+				;;
+				if past and better
+					best is n;
+					best_key is k;
+					best_pos is pos;
+				;;
+			;;
+			pos++;
+			n is (Dom.Next: n root);
+		;;
+		if best is 0 return false;
+		p.mouse_focus is false;
+		call MoveFocus: p best false;
+		p.start_point is best;
+	[end: true]
+
+	# where n comes in the tab order: its tabindex if above 0, else after all those
+	[TabKey: ptr<DomNode> n: 0; : int]
+		int t: (TabIndex: n);
+		if t > 0 return t;
+	[end: 2147483647]
+
+	# What the host types into the field n (an input or textarea, what has the focus): text put at
+	# its end, or with none (0) the last character taken off, Backspace (the browser has no caret
+	# yet). beforeinput first, which a handler can cancel (false: then it isn't changed), then the
+	# value changed (its attribute and what scripts see), then input; its change event comes when
+	# the focus leaves it (Commit).
+	[TypeInto: ptr<Page> p: 0; ptr<DomNode> n: 0; ptr<u8> text: 0; : bln]
+		call Use: p;
+		ptr<u8> type: 'insertText';
+		if text is 0
+			type is 'deleteContentBackward';
+		;;
+		p.nest++;
+		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: n) (PageEvents.NewInputEvent: 'beforeinput' type text true));
+		p.nest--;
+		call RunJobs: p;
+		if not allowed return false;
+		WlBuf b;
+		if not (PageBind.LiveValue: n addr b)
+			ptr<u8> now: (Dom.AttrValue: n 'value');
+			if now is not 0
+				call b.AddZ: now;
+			;;
+		;;
+		if text is 0
+			# (a whole character off, however many bytes UTF-8 gave it)
+			if b.len > 0
+				b.len--;
+				while b.len > 0 and (b.data:(b.len) & 0xC0) is 0x80
+					b.len--;
+				;;
+			;;
+		;;
+		else
+			call b.AddZ: text;
+		;;
+		u32 vl: b.len;
+		call b.Add: 0;
+		call Dom.SetAttrZ: n 'value' b.data;
+		call PageBind.SetLiveValue: n b.data vl;
+		call b.Free;
+		n.flags is n.flags | Dom.DIRTY_LAYOUT;
+		call Dom.MarkUp: n;
+		p.edited is n;
+		p.nest++;
+		bln said: (PageEvents.Dispatch: (PageBind.Wrap: n) (PageEvents.NewInputEvent: 'input' type text false));
+		p.nest--;
+		call RunJobs: p;
+		call Invalidate: p;
+	[end: true]
+
+	# Enter in a field: beforeinput's insertLineBreak (false if canceled); a textarea then takes
+	# the line (and input follows), an input doesn't (KeyDefault sends its form)
+	[LineBreak: ptr<Page> p: 0; ptr<DomNode> n: 0; : bln]
+		call Use: p;
+		p.nest++;
+		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: n) (PageEvents.NewInputEvent: 'beforeinput' 'insertLineBreak' 0 as ptr<u8> true));
+		p.nest--;
+		call RunJobs: p;
+		if not allowed or not (Is: n HtmlTag.TEXTAREA) return allowed;
+		# (beforeinput's been heard: the line put in as TypeInto puts text, but for its own input)
+		WlBuf b;
+		if not (PageBind.LiveValue: n addr b)
+			ptr<u8> now: (Dom.AttrValue: n 'value');
+			if now is not 0
+				call b.AddZ: now;
+			;;
+		;;
+		call b.Add: '\n';
+		u32 vl: b.len;
+		call b.Add: 0;
+		call Dom.SetAttrZ: n 'value' b.data;
+		call PageBind.SetLiveValue: n b.data vl;
+		call b.Free;
+		n.flags is n.flags | Dom.DIRTY_LAYOUT;
+		call Dom.MarkUp: n;
+		p.edited is n;
+		p.nest++;
+		bln said: (PageEvents.Dispatch: (PageBind.Wrap: n) (PageEvents.NewInputEvent: 'input' 'insertLineBreak' 0 as ptr<u8> false));
+		p.nest--;
+		call RunJobs: p;
+		call Invalidate: p;
+	[end: true]
+
+	# change at n, if it's been typed into since it was last told (as the focus leaves it, or Enter
+	# sends its form)
+	[Commit: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		if n is 0 or p.edited is not n return;
+		p.edited is 0;
+		bln c: (PageEvents.Dispatch: (PageBind.Wrap: n) (PageEvents.NewTrusted: 'change' true false));
+	[end]
 
 	# whether n is a field one types text into (a textarea, an input of a text kind), which the
 	# mouse's focus leaves :focus-visible
@@ -1911,18 +2341,7 @@ phi.Page:Library
 			form is form.parent;
 		;;
 		if form is 0 return;
-		u64 f: (PageBind.Wrap: form);
-		u64 fn: (Js.GetProp: f 'requestSubmit');
-		if not (JsV.IsObj: fn) return;
-		call Js.Push: (PageBind.Wrap: button);
-		p.nest++;
-		u64 ignored: (Js.Call: fn f 1);
-		p.nest--;
-		if Js.failed
-			call ReportException: p;
-		;;
-		call RunJobs: p;
-		p.submitted is true;
+		call RequestSubmit: p form button;
 	[end]
 
 	[Is: ptr<DomNode> n: 0; u32 tag: 0; : bln]
