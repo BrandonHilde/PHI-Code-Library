@@ -2679,6 +2679,65 @@ phi.Page:Library
 		call b.Free;
 	[end]
 
+	const int CLIP_CANCELED: 0;     # the page stopped it: nothing more happens
+	const int CLIP_GO: 1;           # it didn't: the browser copies, cuts or pastes as it does
+	const int CLIP_SET: 2;          # (copy, cut) it stopped it and set what goes on the clipboard
+
+	# The host's: a clipboard event (kind 'copy', 'cut' or 'paste') at what has the focus, or at
+	# the page's body, as Ctrl+C, X or V make it, before doing it: a trusted ClipboardEvent whose
+	# clipboardData holds text (paste's: what's on the clipboard). CLIP_GO if not canceled;
+	# canceled, CLIP_SET with what the page set as text/plain into put (copy, cut), else
+	# CLIP_CANCELED.
+	[Clipboard: ptr<Page> p: 0; ptr<u8> kind: 0; ptr<u8> text: 0; ptr<WlBuf> put: 0; : int]
+		if p is 0 return CLIP_GO;
+		call Use: p;
+		ptr<DomNode> at_: (Focused: p);
+		if at_ is 0
+			at_ is (Dom.Body: p.doc);
+		;;
+		if at_ is 0
+			at_ is (Dom.DocumentElement: p.doc);
+		;;
+		if at_ is 0 return CLIP_GO;
+		u64 make: (JsObjs.GetV: (JsV.Obj: JsRt.r.global) (JsObjs.KeyZ: '%clipboardEvent'));
+		if not (JsV.IsObj: make) return CLIP_GO;
+		ptr<u8> said: text;
+		if said is 0
+			said is '';
+		;;
+		call Js.Push: (Js.NewStringZ: kind);
+		call Js.Push: (Js.NewStringZ: said);
+		u64 ev: (Js.Call: make (JsV.Obj: JsRt.r.global) 2);
+		if Js.failed
+			call ReportException: p;
+			return CLIP_GO;
+		;;
+		if not (JsV.IsObj: ev) return CLIP_GO;
+		call Js.Define: (JsV.AsObj: ev) 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
+		p.nest++;
+		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: at_) ev);
+		p.nest--;
+		call RunJobs: p;
+		if allowed return CLIP_GO;
+		if put is 0 or (WlText.EqZ: kind (WlText.LenZ: kind) 'paste') return CLIP_CANCELED;
+		# (what the page put in its clipboardData, as text)
+		u64 dt: (Js.GetProp: ev 'clipboardData');
+		if not (JsV.IsObj: dt) return CLIP_CANCELED;
+		u64 types: (Js.GetProp: dt 'types');
+		u64 get: (Js.GetProp: dt 'getData');
+		if not (JsV.IsObj: get) return CLIP_CANCELED;
+		call Js.Push: (Js.NewStringZ: 'text/plain');
+		u64 got: (Js.Call: get dt 1);
+		if Js.failed
+			call ReportException: p;
+			return CLIP_CANCELED;
+		;;
+		call Js.TextOf: got put;
+		# (set to nothing is something: an empty clipboard; not set at all, it's left as it was)
+		u64 count: (Js.GetProp: types 'length');
+		if put.len is 0 and (not (JsV.IsNum: count) or (JsV.AsNum: count) is 0.0) return CLIP_CANCELED;
+	[end: CLIP_SET]
+
 	# how many UTF-16 units the first b bytes of text are (a character past U+FFFF is two)
 	[U16Of: ptr<u8> text: 0; u32 b: 0; : u32]
 		u32 u: 0;

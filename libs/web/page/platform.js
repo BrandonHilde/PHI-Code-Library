@@ -1646,6 +1646,7 @@
       }
     };
     Object.defineProperty(C, "name", { value: name });
+    Object.defineProperty(C.prototype, Symbol.toStringTag, { value: name, configurable: true });
     hidden(global, name, C);
   }
   var mouse = global.MouseEvent || global.Event;
@@ -3900,4 +3901,59 @@
   });
   });
   })();
+  // DataTransfer, text only, as a clipboard event's clipboardData has it: paste's to read (what's on
+  // the clipboard), copy's and cut's to write what goes there instead (with preventDefault). The
+  // browser makes the event (Page.Clipboard) through %clipboardEvent.
+  if (typeof global.DataTransfer === "undefined") {
+    var dtType = function (t) {
+      t = String(t).toLowerCase();
+      if (t === "text") return "text/plain";
+      if (t === "url") return "text/uri-list";
+      return t;
+    };
+    class DataTransfer {
+      constructor() {
+        hidden(this, "_data", new Map());
+        hidden(this, "_writes", true);
+        this.dropEffect = "none";
+        this.effectAllowed = "none";
+      }
+      get types() { return Array.from(this._data.keys()); }
+      get files() { return []; }
+      get items() {
+        var self = this;
+        return this.types.map(function (t) {
+          return {
+            kind: "string", type: t,
+            getAsString: function (fn) { if (typeof fn === "function") global.setTimeout(function () { fn(self._data.get(t)); }, 0); },
+            getAsFile: function () { return null; }
+          };
+        });
+      }
+      getData(type) {
+        if (arguments.length < 1) throw new TypeError("Failed to execute 'getData' on 'DataTransfer': 1 argument required, but only 0 present.");
+        var t = dtType(type);
+        return this._data.has(t) ? this._data.get(t) : "";
+      }
+      setData(type, value) {
+        if (arguments.length < 2) throw new TypeError("Failed to execute 'setData' on 'DataTransfer': 2 arguments required, but only " + arguments.length + " present.");
+        if (this._writes) this._data.set(dtType(type), String(value));
+      }
+      clearData(type) {
+        if (!this._writes) return;
+        if (type === undefined) this._data.clear();
+        else this._data.delete(dtType(type));
+      }
+      setDragImage() { }
+    }
+    hidden(global, "DataTransfer", DataTransfer);
+  }
+  hidden(global, "%clipboardEvent", function (type, text) {
+    var dt = new global.DataTransfer();
+    if (type === "paste") {
+      if (text) dt._data.set("text/plain", String(text));
+      dt._writes = false;
+    }
+    return new global.ClipboardEvent(type, { bubbles: true, cancelable: true, composed: true, clipboardData: dt });
+  });
 })(this);

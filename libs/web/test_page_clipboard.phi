@@ -1,0 +1,88 @@
+# Copy, cut and paste as the browser makes them (Page.Clipboard, then Page.Edit): a trusted
+# ClipboardEvent at what has the focus (the body without), bubbling and composed, whose
+# clipboardData (a DataTransfer) holds the text being pasted and can't be written then; a copy or
+# cut the page lets be (the browser copies what's selected; cut takes it out, deleteByCut), one it
+# cancels after setting its own text/plain (that's what's copied), one it cancels with nothing set
+# (nothing is), a paste it cancels (nothing goes in).
+use weblib;
+
+phi.TestPageClipboard:Program
+{
+	call Weblib.Start: 900000;
+	str html: '<!doctype html><body><input id=i value="hello world"><script>window.__log=[];function L(s){console.log(s);}\nfunction mode(){return document.body.getAttribute("data-mode")||"";}\n["copy","cut","paste"].forEach(function(ty){document.addEventListener(ty,function(e){var d=e.clipboardData;var s=ty+" at "+(e.target.id||e.target.nodeName)+" "+e.constructor.name+" trusted "+e.isTrusted+" "+e.bubbles+" "+e.cancelable+" "+e.composed+" types "+JSON.stringify(d.types)+" text "+JSON.stringify(d.getData("text"));if(ty==="paste"){d.setData("text/plain","changed");s+=" after setData "+JSON.stringify(d.getData("text/plain"));}if(mode()==="set"){d.setData("text/plain","the page\'s own");e.preventDefault();}if(mode()==="cancel")e.preventDefault();L(s);});});\n["beforeinput","input"].forEach(function(ty){document.getElementById("i").addEventListener(ty,function(e){var f=e.target;L(ty+" "+e.inputType+" "+JSON.stringify(e.data)+" "+JSON.stringify(f.value)+" "+f.selectionStart+","+f.selectionEnd);});});\n</script>';
+	PageHost host;
+	host.logger is addr Print;
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page html html.len as u32 'https://clip.example/';
+	call Page.Tick: page 5.0;
+	ptr<DomNode> body: (Dom.Body: page.doc);
+	ptr<DomNode> field: (Css.Query: page.doc.root '#i' 2);
+
+	# nothing with the focus: at the body
+	call Copy: page 'copy' 0;
+	# the field: "hello" selected
+	call Page.MoveFocus: page field false;
+	call Page.PlaceCaret: page field 0 5;
+	call Copy: page 'copy' field;
+	call Dom.SetAttrZ: body 'data-mode' 'set';
+	call Copy: page 'copy' field;
+	call Dom.SetAttrZ: body 'data-mode' 'cancel';
+	call Copy: page 'copy' field;
+	call Dom.SetAttrZ: body 'data-mode' '';
+	call Copy: page 'cut' field;
+	call Page.PlaceCaret: page field 1 1;
+	call Paste: page field 'XY';
+	call Dom.SetAttrZ: body 'data-mode' 'cancel';
+	call Paste: page field 'no';
+	call Dom.SetAttrZ: body 'data-mode' 'set';
+	call Copy: page 'cut' field;
+	call Page.Free: page;
+	exit 0;
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+
+	# Ctrl+C or X as the browser has it: the event, then what's copied (and cut)
+	[Copy: ptr<Page> page: 0; ptr<u8> kind: 0; ptr<DomNode> field: 0;]
+		WlBuf put;
+		int said: (Page.Clipboard: page kind 0 as ptr<u8> addr put);
+		if said is Page.CLIP_SET
+			log '-> the page set "' (Text: addr put) '"\n';
+		;;
+		elif said is Page.CLIP_CANCELED
+			log '-> canceled\n';
+		;;
+		else
+			WlBuf b;
+			if field is not 0
+				call Page.SelectedText: page field addr b;
+			;;
+			log '-> copies "' (Text: addr b) '"\n';
+			if field is not 0 and (WlText.EqZ: kind (WlText.LenZ: kind) 'cut')
+				bln cut: (Page.Edit: page field 0 as ptr<u8> Page.EDIT_CUT);
+			;;
+			call b.Free;
+		;;
+		call put.Free;
+	[end]
+
+	# what b holds, as text to print
+	[Text: ptr<WlBuf> b: 0; : ptr<u8>]
+		if b.len is 0 return '';
+		call b.Add: 0;
+		b.len--;
+	[end: b.data]
+
+	# Ctrl+V with text on the clipboard
+	[Paste: ptr<Page> page: 0; ptr<DomNode> field: 0; ptr<u8> text: 0;]
+		int said: (Page.Clipboard: page 'paste' text 0 as ptr<WlBuf>);
+		if said is Page.CLIP_GO
+			log '-> pastes "' text '"\n';
+			bln pasted: (Page.Edit: page field text Page.EDIT_PASTE);
+		;;
+		else
+			log '-> canceled\n';
+		;;
+	[end]
+}

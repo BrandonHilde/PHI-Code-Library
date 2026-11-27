@@ -1,0 +1,20 @@
+copy at BODY ClipboardEvent trusted true true true true types [] text ""
+-> copies ""
+copy at i ClipboardEvent trusted true true true true types [] text ""
+-> copies "hello"
+copy at i ClipboardEvent trusted true true true true types [] text ""
+-> the page set "the page's own"
+copy at i ClipboardEvent trusted true true true true types [] text ""
+-> canceled
+cut at i ClipboardEvent trusted true true true true types [] text ""
+-> copies "hello"
+beforeinput deleteByCut null "hello world" 0,5
+input deleteByCut null " world" 0,0
+paste at i ClipboardEvent trusted true true true true types ["text/plain"] text "XY" after setData "XY"
+-> pastes "XY"
+beforeinput insertFromPaste "XY" " world" 1,1
+input insertFromPaste "XY" " XYworld" 3,3
+paste at i ClipboardEvent trusted true true true true types ["text/plain"] text "no" after setData "no"
+-> canceled
+cut at i ClipboardEvent trusted true true true true types [] text ""
+-> the page set "the page's own"

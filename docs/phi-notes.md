@@ -366,3 +366,21 @@ the caret keys and Delete in a field (`MoveCaret`). The host draws and clicks in
 from `platform.js` (tools/web/make_page_js.py); an edit of the made file alone is lost the next
 time it's made, as the Referer's nearly was. test_page_caret, checked against Brave; PHI OS
 FINDINGS #57.
+
+## The clipboard's events: Page.Clipboard, platform.js's DataTransfer (2026-11-27)
+
+`Page.Clipboard: p kind text put` makes the copy, cut or paste a key makes into a trusted
+ClipboardEvent (through platform.js's hidden `%clipboardEvent`, whose DataTransfer is text only
+and read-only for paste) at what has the focus, or the body, and says what the browser does next:
+`CLIP_GO` (copy or paste as it does), `CLIP_SET` (what the page set, in put, is what's copied),
+`CLIP_CANCELED`. Every class platform.js's `eventClass` makes has its own Symbol.toStringTag now
+(they all said `[object Event]`). test_page_clipboard; PHI OS FINDINGS #58.
+
+## phi test passed a test that didn't compile, on a Mac without Linux (2026-11-27)
+
+A program that builds for none of the systems a computer runs is run on the first anyway, so
+its build fails and says why; the first had to be an x86 one, so on this Mac without
+PHI_LINUX_RUN a test that didn't compile ran nowhere and `phi test` said "0/0 passed" and
+succeeded (build.ps1 then said the run passed). Found when a new test with a type error passed.
+Fixed on PHI's macos branch (8ed6973): an arm64 host when there's no other. Runs with Lima were
+never fooled (its Linux is the first x86 system).
