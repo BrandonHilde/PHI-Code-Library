@@ -1,0 +1,85 @@
+# The policy each of a page's requests goes by, for its host's Referer (netlib's WireReferrer.For),
+# as Chrome takes it (each case checked against Brave, over a server that logs what came): the
+# page's Referrer-Policy header (Page.SetPolicy), then each <meta name=referrer> as it's put in or
+# changed (one taken out leaves it as it is), an element's referrerpolicy, fetch()'s and Request's
+# referrerPolicy, a link's rel=noreferrer (which wins over its referrerpolicy); and
+# document.referrer (Page.SetReferrer).
+use weblib;
+
+phi.TestPageReferrer:Program
+{
+
+
+	call Weblib.Start: 900000;
+	str html: ('<!doctype html><html><head>'
+		'<link rel=stylesheet href="/s1.css"><link rel=stylesheet referrerpolicy=no-referrer href="/s2.css">'
+		'</head><body>'
+		'<img src="/i1"><img referrerpolicy="unsafe-url" src="/i2"><img referrerpolicy="never" src="/i3">'
+		'<script src="/j1"></script><script referrerpolicy=" Same-Origin " src="/j2"></script>'
+		'<meta name=referrer content="never"><img src="/i4">'
+		'<meta name=referrer content="bogus"><img src="/i5">'
+		'<meta name=Referrer content="unsafe-url"><img src="/i6">'
+		'<meta name=description content="no-referrer"><img src="/i7">'
+		'<a id=a1 href="/n1">1</a><a id=a2 rel="nofollow NoReferrer" href="/n2">2</a>'
+		'<a id=a3 referrerpolicy=origin rel=noreferrer href="/n3">3</a><a id=a4 referrerpolicy=origin href="/n4">4</a>'
+		'<script>'
+		'console.log("document.referrer " + JSON.stringify(document.referrer));'
+		'fetch("/f1"); fetch("/f2", {referrerPolicy: "same-origin"}); fetch(new Request("/f3", {referrerPolicy: "strict-origin"}));'
+		'try { new Request("/x", {referrerPolicy: "never"}); console.log("no throw"); } catch (e) { console.log(e.name + ": " + e.message); }'
+		'console.log("Request.referrerPolicy " + JSON.stringify(new Request("/x").referrerPolicy) + " " + new Request("/x", {referrerPolicy: "origin"}).referrerPolicy + " " + new Request(new Request("/x", {referrerPolicy: "origin"})).referrerPolicy + " " + new Request("/x").referrer);'
+		'var m = document.createElement("meta"); m.name = "referrer"; m.content = "origin"; document.head.appendChild(m);'
+		'fetch("/f4");'
+		'm.content = "same-origin"; fetch("/f5");'
+		'm.remove(); fetch("/f6");'
+		'm.content = "no-referrer"; fetch("/f7");'
+		'var x = new XMLHttpRequest(); x.open("GET", "/x1"); x.send();'
+		'document.getElementById("a1").click(); document.getElementById("a2").click();'
+		'document.getElementById("a3").click(); document.getElementById("a4").click();'
+		'location.href = "/n5";'
+		'</script></body></html>');
+	PageHost host;
+	host.load is addr Load;
+	host.logger is addr Print;
+	host.navigate is addr Navigate;
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.SetReferrer: page 'https://from.example/';
+	call Page.SetPolicy: page PageReferrer.ORIGIN_WHEN_CROSS_ORIGIN;
+	call Page.Load: page addr html:0 html.len as u32 'https://test.example/r.html';
+	call Page.Tick: page 5.0;
+	# what each picture goes by when the browser fetches it: as it was when the <img> asked
+	ptr<DomNode> n: page.doc.root;
+	while n is not 0
+		if n.type is DomType.ELEMENT and n.tag is (WlAtoms.GetZ: 'img')
+			log 'picture ' (Dom.AttrValue: n 'src') ' ' (Name: (Page.PicturePolicy: page n)) '\n';
+		;;
+		n is (Dom.Next: n page.doc.root);
+	;;
+	call Page.Free: page;
+
+	# a document with nothing said: the default, and no referrer
+	ptr<Page> plain: (Page.New: addr host 800.0 600.0);
+	ptr<u8> small: '<!doctype html><img src="/p1"><script>console.log("document.referrer " + JSON.stringify(document.referrer)); fetch("/p2");</script>';
+	call Page.Load: plain small (WlText.LenZ: small) 'https://test.example/p.html';
+	call Page.Tick: plain 5.0;
+	call Page.Free: plain;
+	log 'done\n';
+	exit 0;
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+
+	[Name: int policy: 0; : ptr<u8>]
+		if policy is 0 return '(the default)';
+	[end: (PageReferrer.Name: policy)]
+
+	[Load: ptr<Page> p: 0; ptr<u8> url: 0; PageLoad kind: PageLoad.DOCUMENT; u32 id: 0;]
+		ptr<PageRequest> r: (Page.Find: p id);
+		log url ' ' (Name: r.policy) '\n';
+		call Page.Delivered: p id 404 0 0;
+	[end]
+
+	[Navigate: ptr<Page> p: 0; ptr<u8> url: 0;]
+		log 'go to ' url ' ' (Name: p.nav_policy) '\n';
+	[end]
+}

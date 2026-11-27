@@ -1,0 +1,303 @@
+# netlib's Referer (the W3C's Referrer Policy, as Chrome has it): what a request says it came from,
+# by the policy of whatever made it. The page's address goes whole only to its own origin by
+# default; to another origin only the origin goes (https://example.com/), and from https to
+# http nothing does (strict-origin-when-cross-origin).
+#
+#   int p: (WireReferrer.Header: 'no-referrer, strict-origin');     # a Referrer-Policy header's
+#   int m: (WireReferrer.Meta: 'never');                           # a <meta name=referrer>'s
+#   int e: (WireReferrer.Policy: 'origin');                        # a referrerpolicy attribute's
+#   u32 n: (WireReferrer.For: 'https://a.example/x?y' 'https://b.example/' p target 4096);
+#   # target: 'https://a.example/', n bytes; 0: no Referer at all
+#
+# Each gives UNSET (0) when it names no policy, and then the one before it holds (the element's
+# falls back to the page's, the page's to the default). The address it came from is sent only if
+# it's http:// or https://, never its user:password@ or #fragment; one longer than 4096 bytes
+# goes as its origin. A request to a potentially trustworthy address (https, or localhost and
+# 127.x.x.x, ::1) from one isn't a downgrade; from https to anything else is.
+
+use corelib;
+use memory.mem;
+use netlib.http;
+
+phi.WireReferrer:Library
+{
+	const int UNSET: 0;
+	const int NO_REFERRER: 1;
+	const int NO_REFERRER_WHEN_DOWNGRADE: 2;
+	const int SAME_ORIGIN: 3;
+	const int ORIGIN: 4;
+	const int STRICT_ORIGIN: 5;
+	const int ORIGIN_WHEN_CROSS_ORIGIN: 6;
+	const int STRICT_ORIGIN_WHEN_CROSS_ORIGIN: 7;
+	const int UNSAFE_URL: 8;
+	const int DEFAULT: 7;                 # what UNSET means for a request
+	const u32 MOST: 4096;                 # the longest address sent whole
+
+	# the policies by number, from 1, each ending with |
+	str NAMES: 'no-referrer|no-referrer-when-downgrade|same-origin|origin|strict-origin|origin-when-cross-origin|strict-origin-when-cross-origin|unsafe-url|';
+
+	# ---- policies
+
+	# the policy a referrerpolicy attribute names (any case; spaces around it ignored), or UNSET
+	[Policy: ptr<u8> text: 0; : int]
+		if text is 0 return UNSET;
+	[end: (Named: text 0 (WireHttp.Count: text) false)]
+
+	# A Referrer-Policy header's: the last of its comma-separated names that is one, as browsers
+	# take it (so a new name can come first, and one they know after it), or UNSET.
+	[Header: ptr<u8> text: 0; : int]
+		if text is 0 return UNSET;
+		int found: UNSET;
+		u32 i: 0;
+		while true
+			u32 start: i;
+			while text:i is not 0 and text:i is not ','
+				i++;
+			;;
+			int p: (Named: text start i false);
+			if p is not UNSET
+				found is p;
+			;;
+			if text:i is 0 break;
+			i++;
+		;;
+	[end: found]
+
+	# a <meta name=referrer>'s content: the one name it holds (not a list), or one of the old
+	# names Chrome still takes there (never, default, always, origin-when-crossorigin), or UNSET
+	[Meta: ptr<u8> text: 0; : int]
+		if text is 0 return UNSET;
+	[end: (Named: text 0 (WireHttp.Count: text) true)]
+
+	# the policy text from start to end names, spaces and tabs around it passed over
+	[Named: ptr<u8> text: 0; u32 start: 0; u32 stop: 0; bln old: false; : int]
+		while start < stop and (text:start is ' ' or text:start is 9)
+			start++;
+		;;
+		while stop > start and (text:(stop - 1) is ' ' or text:(stop - 1) is 9)
+			stop--;
+		;;
+		u32 n: stop - start;
+		if n is 0 return UNSET;
+		ptr<u8> w: text + start;
+		if old
+			if (Is: w n 'never') return NO_REFERRER;
+			if (Is: w n 'default') return DEFAULT;
+			if (Is: w n 'always') return UNSAFE_URL;
+			if (Is: w n 'origin-when-crossorigin') return ORIGIN_WHEN_CROSS_ORIGIN;
+		;;
+		int number: 1;
+		u32 k: 0;
+		while k < NAMES.len
+			u32 from: k;
+			while NAMES:k is not '|'
+				k++;
+			;;
+			if k - from is n and (WireHttp.SameNoCase: w addr NAMES:from n)
+				return number;
+			;;
+			k++;
+			number++;
+		;;
+	[end: UNSET]
+
+	[Is: ptr<u8> w: 0; u32 n: 0; ptr<u8> name: 0; : bln]
+		if (WireHttp.Count: name) is not n return false;
+	[end: (WireHttp.SameNoCase: w name n)]
+
+	# a policy's name, as Request.referrerPolicy and the like give it ('' for UNSET)
+	[Name: int policy: 0; ptr<u8> target: 0; u32 max: 0;]
+		if max is 0 return;
+		target:0 is 0;
+		if policy < 1 or policy > UNSAFE_URL return;
+		int number: 1;
+		u32 k: 0;
+		while number < policy
+			while NAMES:k is not '|'
+				k++;
+			;;
+			k++;
+			number++;
+		;;
+		u32 n: 0;
+		while NAMES:(k + n) is not '|' and n + 1 < max
+			target:n is NAMES:(k + n);
+			n++;
+		;;
+		target:n is 0;
+	[end]
+
+	# ---- a request's Referer
+
+	# Target (max bytes, with a zero after) = the Referer a request to `to` has, made by something
+	# at `from` (a page's address, say) with policy (UNSET: the default): its length, or 0 if it
+	# has none (nothing to send) or it doesn't fit.
+	[For: ptr<u8> from: 0; ptr<u8> to: 0; int policy: 0; ptr<u8> target: 0; u32 max: 0; : u32]
+		if max is 0 return 0;
+		target:0 is 0;
+		if from is 0 or to is 0 return 0;
+		if policy is UNSET
+			policy is DEFAULT;
+		;;
+		if policy is NO_REFERRER return 0;
+		ptr<WireTarget> a: new WireTarget;
+		ptr<WireTarget> b: new WireTarget;
+		if a is 0 or b is 0
+			call Drop: a b;
+			return 0;
+		;;
+		# (an address too long to split goes as its origin)
+		bln whole: true;
+		if not (WireHttp.Split: from a)
+			whole is false;
+			if not (OriginOnly: from a)
+				call Drop: a b;
+				return 0;
+			;;
+		;;
+		if not (WireHttp.Split: to b)
+			call Drop: a b;
+			return 0;
+		;;
+		bln same: a.secure is b.secure and a.port is b.port and (SameHost: a b);
+		bln down: (Trustworthy: a) and not (Trustworthy: b);
+		# 0: nothing; 1: the origin; 2: the whole address
+		int send: 0;
+		if policy is UNSAFE_URL
+			send is 2;
+		;;
+		elif policy is ORIGIN
+			send is 1;
+		;;
+		elif policy is SAME_ORIGIN
+			if same
+				send is 2;
+			;;
+		;;
+		elif policy is STRICT_ORIGIN
+			if not down
+				send is 1;
+			;;
+		;;
+		elif policy is ORIGIN_WHEN_CROSS_ORIGIN
+			send is 1;
+			if same
+				send is 2;
+			;;
+		;;
+		elif policy is NO_REFERRER_WHEN_DOWNGRADE
+			if not down
+				send is 2;
+			;;
+		;;
+		else
+			# strict-origin-when-cross-origin
+			if same
+				send is 2;
+			;;
+			elif not down
+				send is 1;
+			;;
+		;;
+		u32 n: 0;
+		if send > 0
+			str made: [2400];
+			made is 'http://';
+			if a.secure
+				made is 'https://';
+			;;
+			bln v6: false;
+			while int i: 0; i < a.host.len; i++;
+				if a.host:i is ':'
+					v6 is true;
+				;;
+			;;
+			if v6
+				made++ '[';
+			;;
+			made++ a.host;
+			if v6
+				made++ ']';
+			;;
+			if (a.secure and a.port is not 443) or (not a.secure and a.port is not 80)
+				made++ ':';
+				made++ a.port;
+			;;
+			if send is 2 and whole and made.len + a.path.len <= MOST
+				made++ a.path;
+			;;
+			else
+				made++ '/';
+			;;
+			if made.len + 1 <= max
+				while n < made.len
+					target:n is made:n;
+					n++;
+				;;
+				target:n is 0;
+			;;
+		;;
+		call Drop: a b;
+	[end: n]
+
+	# t = where url goes, from its scheme and host alone (for an address too long to split whole)
+	[OriginOnly: ptr<u8> url: 0; ptr<WireTarget> t: 0; : bln]
+		u32 i: 0;
+		if (WireHttp.StartsNoCase: url 'https://')
+			i is 8;
+		;;
+		elif (WireHttp.StartsNoCase: url 'http://')
+			i is 7;
+		;;
+		else
+			return false;
+		;;
+		while url:i is not 0 and url:i is not '/' and url:i is not '?' and url:i is not '#'
+			i++;
+		;;
+		if i > 1000 return false;
+		u8 cut[1024];
+		call Mem.Copy: addr cut:0 url i;
+		cut:i is 0;
+	[end: (WireHttp.Split: addr cut:0 t)]
+
+	[SameHost: ptr<WireTarget> a: 0; ptr<WireTarget> b: 0; : bln]
+		if a.host.len is not b.host.len return false;
+		while int i: 0; i < a.host.len; i++;
+			if a.host:i is not b.host:i return false;
+		;;
+	[end: true]
+
+	# a potentially trustworthy address: https, or the machine itself (localhost and the names
+	# under it, 127.x.x.x, ::1)
+	[Trustworthy: ptr<WireTarget> t: 0; : bln]
+		if t.secure return true;
+		u32 n: t.host.len as u32;
+		if (Is: addr t.host:0 n 'localhost') return true;
+		if n > 10 and (WireHttp.SameNoCase: addr t.host:(n - 10) '.localhost' 10) return true;
+		if (Is: addr t.host:0 n '::1') return true;
+		if n >= 7 and t.host:0 is '1' and t.host:1 is '2' and t.host:2 is '7' and t.host:3 is '.'
+			# (four numbers, so a name that starts 127. isn't taken for one)
+			int dots: 0;
+			while u32 i: 0; i < n; i++;
+				u8 c: t.host:i;
+				if c is '.'
+					dots++;
+				;;
+				elif c < '0' or c > '9'
+					return false;
+				;;
+			;;
+			return dots is 3;
+		;;
+	[end: false]
+
+	[Drop: ptr<WireTarget> a: 0; ptr<WireTarget> b: 0;]
+		if a is not 0
+			free a;
+		;;
+		if b is not 0
+			free b;
+		;;
+	[end]
+}

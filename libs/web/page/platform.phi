@@ -64,6 +64,8 @@ phi.PagePlatform:Library
 		call Js.TextOf: (Js.Arg: args argc 1) addr kind;
 		WlBuf body;
 		call Js.TextOf: (Js.Arg: args argc 2) addr body;
+		call Page.MetaPolicies: p;
+		p.nav_policy is p.policy;
 		call p.host.post: p full.data kind.data body.data body.len;
 		call where.Free;
 		call full.Free;

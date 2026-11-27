@@ -24,6 +24,7 @@ use page.bind;
 use page.events;
 use page.window;
 use page.observers;
+use page.referrer;
 use page.elements;
 use page.platform;
 use page.shadow;
@@ -133,6 +134,8 @@ struct.PageRequest
 	u64 a;                  # resolve
 	u64 b;                  # reject
 	ptr<u8> url;
+	int policy;             # its referrer policy (PageReferrer's numbers, 0 the default), fixed as it's made:
+	                        # its element's referrerpolicy, fetch's referrerPolicy, or the document's then
 	# what fetch and XMLHttpRequest send (the host reads them in PageHost.load, through Page.Find):
 	ptr<u8> verb;           # 'POST' and the like, or 0 for a GET
 	ptr<u8> headers;        # header lines, each "Name: value\r\n", or 0
@@ -191,6 +194,11 @@ struct.Page
 
 	PageRequest requests[atmost 1024];
 	ptr<DomNode> new_srcs[atmost 512];  # <img>s given a src, which ask for it once the script's done
+	ptr<DomNode> new_metas[atmost 16];  # <meta>s given another name or content: taken before the next request (MetaPolicies)
+	ptr<u8> referrer;       # document.referrer: the Referer the page's own request went with (SetReferrer; 0: none)
+	int policy;             # the document's referrer policy (PageReferrer's numbers, 0 the default): its
+	                        # Referrer-Policy header's (the host's), then each <meta name=referrer>'s as it comes
+	int nav_policy;         # while host.navigate or host.post runs: the policy its request's Referer goes by
 	u32 next_request;
 	int blocking;           # requests the parser is waiting for
 	int nest;               # how deep in running JS we are: microtasks and answers wait for 0
@@ -353,6 +361,7 @@ phi.Page:Library
 		ptr<Page> p: current;
 		if p is 0 return;
 		call Pictures: p target kind node name;
+		call Metas: p target kind node name;
 		PageElements.holding++;
 		if p.custom_elements
 			call PageElements.Mutated: target kind node name old old_length;
@@ -391,6 +400,9 @@ phi.Page:Library
 	[end]
 
 	[AskPicture: ptr<Page> p: 0; ptr<DomNode> img: 0;]
+		# (the policy its picture goes by is fixed now, for the host: PicturePolicy)
+		int policy: (ElementPolicy: p img false);
+		img.flags is (img.flags & (Dom.PICTURE_POLICY ^ 0xFFFFFFFF)) | ((((policy + 1) as u32) << Dom.PICTURE_POLICY_SHIFT));
 		ptr<DomAttr> src: (Dom.Attr: img (WlAtoms.GetZ: 'src'));
 		if src is not 0 and src.value_len > 0
 			img.flags is img.flags | Dom.PICTURE_ASKED;
@@ -487,6 +499,10 @@ phi.Page:Library
 		if p.base is not 0
 			free p.base;
 			p.base is 0;
+		;;
+		if p.referrer is not 0
+			free p.referrer;
+			p.referrer is 0;
 		;;
 		call Dom.FreeDocument: p.doc;
 		while each d in p.docs
@@ -785,7 +801,7 @@ phi.Page:Library
 
 	# a request for the host to answer; a fetch's can say its verb (method), header lines and body (all copied)
 	[Request: ptr<Page> p: 0; ptr<u8> url: 0; u32 n: 0; PageLoad kind: PageLoad.FETCH; ptr<DomNode> node: 0; u64 a: 0; u64 b: 0; ptr<CssImport> import: 0;
-			ptr<u8> verb: 0; ptr<u8> headers: 0; ptr<u8> body: 0; u32 body_len: 0;]
+			ptr<u8> verb: 0; ptr<u8> headers: 0; ptr<u8> body: 0; u32 body_len: 0; int policy: 0;]
 		if p.requests.len >= p.requests.max
 			call Compact: p;
 			if p.requests.len >= p.requests.max
@@ -811,6 +827,10 @@ phi.Page:Library
 		p.requests:at_.body_len is 0;
 		p.requests:at_.answer_headers is 0;
 		p.requests:at_.blocks is false;
+		if policy is PageReferrer.UNSET
+			policy is (ElementPolicy: p node false);
+		;;
+		p.requests:at_.policy is policy;
 		if verb is not 0 and verb:0 is not 0 and not (WlText.EqZ: verb (WlText.LenZ: verb) 'GET')
 			p.requests:at_.verb is (DupZ: verb (WlText.LenZ: verb));
 		;;
@@ -892,6 +912,119 @@ phi.Page:Library
 			free r.answer_headers;
 		;;
 		r.answer_headers is (DupZ: text n);
+	[end]
+
+	# ---- the Referer
+
+	# document.referrer, from the host: the Referer the page's own request went with (0 or '': none)
+	[SetReferrer: ptr<Page> p: 0; ptr<u8> text: 0;]
+		if p.referrer is not 0
+			free p.referrer;
+			p.referrer is 0;
+		;;
+		if text is not 0 and text:0 is not 0
+			p.referrer is (DupZ: text (WlText.LenZ: text));
+		;;
+	[end]
+
+	# the document's referrer policy from its Referrer-Policy header (the host's to read, with
+	# netlib's WireReferrer.Header, which gives PageReferrer's numbers): a <meta> may change it after
+	[SetPolicy: ptr<Page> p: 0; int policy: 0;]
+		p.policy is policy;
+		p.nav_policy is policy;
+	[end]
+
+	# The policy a request for n goes by: (a link followed: link) none for a link whose rel has
+	# noreferrer, whatever else it says; its referrerpolicy if that names one; then the
+	# document's, as it is now (a <meta> changed since taken first).
+	[ElementPolicy: ptr<Page> p: 0; ptr<DomNode> n: 0; bln link: false; : int]
+		call MetaPolicies: p;
+		if n is not 0 and n.type is DomType.ELEMENT
+			if link and (HasWord: (Dom.Attr: n (WlAtoms.GetZ: 'rel')) 'noreferrer')
+				return PageReferrer.NO_REFERRER;
+			;;
+			ptr<DomAttr> a: (Dom.Attr: n (WlAtoms.GetZ: 'referrerpolicy'));
+			if a is not 0
+				int own: (PageReferrer.Parse: a.value a.value_len false);
+				if own is not PageReferrer.UNSET return own;
+			;;
+		;;
+	[end: p.policy]
+
+	# The policy the picture of n (an <img>, or 0 for a background) goes by: what it was when the
+	# <img> asked for it (its src given, or it put in), as Chrome fixes it then; else as it is now.
+	[PicturePolicy: ptr<Page> p: 0; ptr<DomNode> n: 0; : int]
+		if n is not 0
+			u32 kept: (n.flags & Dom.PICTURE_POLICY) >> Dom.PICTURE_POLICY_SHIFT;
+			if kept > 0 return (kept - 1) as int;
+		;;
+	[end: (ElementPolicy: p n false)]
+
+	# whether an attribute's value has word among its space-separated words, in any case
+	[HasWord: ptr<DomAttr> a: 0; ptr<u8> word: 0; : bln]
+		if a is 0 return false;
+		u32 wl: (WlText.LenZ: word);
+		u32 i: 0;
+		while i < a.value_len
+			while i < a.value_len and (a.value:i is ' ' or a.value:i is 9 or a.value:i is 10 or a.value:i is 12 or a.value:i is 13)
+				i++;
+			;;
+			u32 from: i;
+			while i < a.value_len and not (a.value:i is ' ' or a.value:i is 9 or a.value:i is 10 or a.value:i is 12 or a.value:i is 13)
+				i++;
+			;;
+			if i - from is wl and (WlText.EqNoCaseZ: a.value + from wl word)
+				return true;
+			;;
+		;;
+	[end: false]
+
+	# A <meta name=referrer> put in the document sets its policy, when its content names one, and
+	# so does one given another name or content (told before the new value's in place: taken
+	# before the next request, MetaPolicies). Taking one out leaves the policy as it is, as in Chrome.
+	[Metas: ptr<Page> p: 0; ptr<DomNode> target: 0; int kind: 0; ptr<DomNode> node: 0; ptr<WlAtom> name: 0;]
+		ptr<WlAtom> meta_tag: (WlAtoms.GetZ: 'meta');
+		if kind is Dom.ATTRIBUTE
+			if target is 0 or target.doc is not p.doc or target.tag is not meta_tag or target.ns is not DomNs.HTML return;
+			if name is not (WlAtoms.GetZ: 'content') and name is not (WlAtoms.GetZ: 'name') return;
+			while u32 q: 0; q < p.new_metas.len; q++;
+				if p.new_metas:q is target return;
+			;;
+			if p.new_metas.len < p.new_metas.max
+				p.new_metas++ target;
+			;;
+			return;
+		;;
+		if kind is not Dom.ADDED or node is 0 or node.doc is not p.doc return;
+		ptr<DomNode> n: node;
+		while n is not 0
+			if n.type is DomType.ELEMENT and n.tag is meta_tag and n.ns is DomNs.HTML
+				call MetaPolicy: p n;
+			;;
+			n is (Dom.Next: n node);
+		;;
+	[end]
+
+	# the <meta>s given another name or content since the last request, each as it is now
+	[MetaPolicies: ptr<Page> p: 0;]
+		if p.new_metas.len is 0 return;
+		while u32 q: 0; q < p.new_metas.len; q++;
+			call MetaPolicy: p p.new_metas:q;
+		;;
+		p.new_metas.len is 0;
+	[end]
+
+	[MetaPolicy: ptr<Page> p: 0; ptr<DomNode> n: 0;]
+		if not (Dom.IsConnected: n) return;
+		ptr<DomAttr> name: (Dom.Attr: n (WlAtoms.GetZ: 'name'));
+		if name is 0 or not (WlText.EqNoCaseZ: name.value name.value_len 'referrer') return;
+		ptr<DomAttr> content: (Dom.Attr: n (WlAtoms.GetZ: 'content'));
+		if content is 0 return;
+		int named: (PageReferrer.Parse: content.value content.value_len true);
+		if named is not PageReferrer.UNSET
+			p.policy is named;
+			p.nav_policy is named;
+		;;
 	[end]
 
 	# a copy with a zero after it
@@ -2321,7 +2454,9 @@ phi.Page:Library
 				if href is not 0 and p.host.navigate is not 0
 					WlBuf full;
 					call Resolve: p href (WlText.LenZ: href) addr full;
+					p.nav_policy is (ElementPolicy: p n true);
 					call p.host.navigate: p full.data;
+					p.nav_policy is p.policy;
 					call full.Free;
 				;;
 				return;

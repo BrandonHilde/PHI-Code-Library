@@ -12,6 +12,7 @@ use netlib.http;
 use netlib.hpacktables;
 use netlib.http2;
 use netlib.cookies;
+use netlib.referrer;
 
 phi.NetLib:Library
 {

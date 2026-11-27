@@ -1,0 +1,38 @@
+https://test.example/i1 origin-when-cross-origin
+https://test.example/i2 unsafe-url
+https://test.example/i3 origin-when-cross-origin
+https://test.example/s1.css origin-when-cross-origin
+https://test.example/s2.css no-referrer
+https://test.example/j1 origin-when-cross-origin
+https://test.example/j2 same-origin
+https://test.example/i4 no-referrer
+https://test.example/i5 no-referrer
+https://test.example/i6 unsafe-url
+https://test.example/i7 unsafe-url
+document.referrer "https://from.example/"
+https://test.example/f1 unsafe-url
+https://test.example/f2 same-origin
+https://test.example/f3 strict-origin
+TypeError: Failed to construct 'Request': The provided value 'never' is not a valid enum value of type ReferrerPolicy.
+Request.referrerPolicy "" origin origin about:client
+https://test.example/f4 origin
+https://test.example/f5 same-origin
+https://test.example/f6 same-origin
+https://test.example/f7 same-origin
+https://test.example/x1 same-origin
+go to https://test.example/n1 same-origin
+go to https://test.example/n2 no-referrer
+go to https://test.example/n3 no-referrer
+go to https://test.example/n4 origin
+go to https://test.example/n5 same-origin
+picture /i1 origin-when-cross-origin
+picture /i2 unsafe-url
+picture /i3 origin-when-cross-origin
+picture /i4 no-referrer
+picture /i5 no-referrer
+picture /i6 unsafe-url
+picture /i7 unsafe-url
+https://test.example/p1 (the default)
+document.referrer ""
+https://test.example/p2 (the default)
+done

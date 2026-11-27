@@ -1,0 +1,83 @@
+# Referrer policies by name, as a page gives them: a <meta name=referrer>'s content, an element's
+# referrerpolicy attribute, fetch()'s referrerPolicy. The numbers are netlib's (WireReferrer's),
+# so a host with netlib can hand a request's policy straight to WireReferrer.For; 0 is none
+# given (the document's, or the default, strict-origin-when-cross-origin).
+#
+#   int p: (PageReferrer.Parse: text n false);   # an attribute's or fetch's; true: a meta's, which
+#                                                # also takes never, default, always, origin-when-crossorigin
+
+use core.text;
+
+phi.PageReferrer:Library
+{
+	const int UNSET: 0;
+	const int NO_REFERRER: 1;
+	const int NO_REFERRER_WHEN_DOWNGRADE: 2;
+	const int SAME_ORIGIN: 3;
+	const int ORIGIN: 4;
+	const int STRICT_ORIGIN: 5;
+	const int ORIGIN_WHEN_CROSS_ORIGIN: 6;
+	const int STRICT_ORIGIN_WHEN_CROSS_ORIGIN: 7;
+	const int UNSAFE_URL: 8;
+
+	# the policies by number, from 1, each ending with |
+	str NAMES: 'no-referrer|no-referrer-when-downgrade|same-origin|origin|strict-origin|origin-when-cross-origin|strict-origin-when-cross-origin|unsafe-url|';
+
+	# the policy text (n bytes) names, any case, spaces around it passed over; old: a meta's, which
+	# takes the old names too. UNSET if it names none.
+	[Parse: ptr<u8> text: 0; u32 n: 0; bln old: false; : int]
+		if text is 0 return UNSET;
+		u32 start: 0;
+		while start < n and (text:start is ' ' or text:start is 9 or text:start is 10 or text:start is 12 or text:start is 13)
+			start++;
+		;;
+		while n > start and (text:(n - 1) is ' ' or text:(n - 1) is 9 or text:(n - 1) is 10 or text:(n - 1) is 12 or text:(n - 1) is 13)
+			n--;
+		;;
+		ptr<u8> w: text + start;
+		u32 len: n - start;
+		if len is 0 return UNSET;
+		if old
+			if (WlText.EqNoCaseZ: w len 'never') return NO_REFERRER;
+			if (WlText.EqNoCaseZ: w len 'default') return STRICT_ORIGIN_WHEN_CROSS_ORIGIN;
+			if (WlText.EqNoCaseZ: w len 'always') return UNSAFE_URL;
+			if (WlText.EqNoCaseZ: w len 'origin-when-crossorigin') return ORIGIN_WHEN_CROSS_ORIGIN;
+		;;
+		int number: 1;
+		u32 k: 0;
+		while k < NAMES.len
+			u32 from: k;
+			while NAMES:k is not '|'
+				k++;
+			;;
+			if k - from is len and (Same: w addr NAMES:from len)
+				return number;
+			;;
+			k++;
+			number++;
+		;;
+	[end: UNSET]
+
+	# a policy's name ('' for UNSET), as Request.referrerPolicy gives it
+	[Name: int policy: 0; : ptr<u8>]
+		if policy is NO_REFERRER return 'no-referrer';
+		if policy is NO_REFERRER_WHEN_DOWNGRADE return 'no-referrer-when-downgrade';
+		if policy is SAME_ORIGIN return 'same-origin';
+		if policy is ORIGIN return 'origin';
+		if policy is STRICT_ORIGIN return 'strict-origin';
+		if policy is ORIGIN_WHEN_CROSS_ORIGIN return 'origin-when-cross-origin';
+		if policy is STRICT_ORIGIN_WHEN_CROSS_ORIGIN return 'strict-origin-when-cross-origin';
+		if policy is UNSAFE_URL return 'unsafe-url';
+	[end: '']
+
+	[Same: ptr<u8> a: 0; ptr<u8> b: 0; u32 n: 0; : bln]
+		while u32 i: 0; i < n; i++;
+			u8 x: a:i;
+			u8 y: b:i;
+			if x >= 'A' and x <= 'Z'
+				x is x + 32;
+			;;
+			if x is not y return false;
+		;;
+	[end: true]
+}

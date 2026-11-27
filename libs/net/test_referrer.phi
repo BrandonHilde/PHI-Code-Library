@@ -1,0 +1,160 @@
+# netlib's Referer, every day: each policy of the W3C's Referrer Policy for a request to its own
+# origin, to another, and from https to http (a downgrade), each by a case worked out from the
+# standard; what's never sent of an address (user:password@, the #fragment, an address that
+# isn't http's); what's trustworthy (localhost, 127.x.x.x, ::1); and the policy names as a
+# Referrer-Policy header, a <meta name=referrer> and a referrerpolicy attribute give them.
+use netlib;
+
+phi.TestReferrer:Program
+{
+	int right: 0;
+	int count: 0;
+	u8 buffer[8192];
+	const int U: 0;
+
+	[Check: ptr<u8> name: 0; bln good: false; ptr<u8> got: 0;]
+		count++;
+		if good
+			right++;
+		;;
+		else
+			log 'WRONG ' name ': ' got '\n';
+		;;
+	[end]
+
+	[Equal: ptr<u8> a: 0; ptr<u8> b: 0;]
+		u32 i: 0;
+		while a:i is b:i
+			if a:i is 0 return true;
+			i++;
+		;;
+	[end: false]
+
+	# the Referer from `from` to `to` with policy should be want ('' for none)
+	[Sends: ptr<u8> from: 0; ptr<u8> to: 0; int policy: 0; ptr<u8> want: 0;]
+		u32 n: (WireReferrer.For: from to policy addr buffer 8192);
+		str name: (from ' to ' to ' (' policy ')');
+		str said: ('"' addr buffer '", not "' want '"');
+		call Check: addr name:0 (Equal: addr buffer want) and n is (WireHttp.Count: want) addr said:0;
+	[end]
+
+	[Named: ptr<u8> what: 0; ptr<u8> text: 0; int got: 0; int want: 0;]
+		str name: (what ' "' text '"');
+		str said: (got ', not ' want);
+		call Check: addr name:0 got is want addr said:0;
+	[end]
+
+	call NetLib.Start;
+	int SAME: WireReferrer.SAME_ORIGIN;
+	int NONE: WireReferrer.NO_REFERRER;
+	int ORIGIN: WireReferrer.ORIGIN;
+	int STRICT: WireReferrer.STRICT_ORIGIN;
+	int OWCO: WireReferrer.ORIGIN_WHEN_CROSS_ORIGIN;
+	int SOWCO: WireReferrer.STRICT_ORIGIN_WHEN_CROSS_ORIGIN;
+	int NRWD: WireReferrer.NO_REFERRER_WHEN_DOWNGRADE;
+	int UNSAFE: WireReferrer.UNSAFE_URL;
+
+	# the default (strict-origin-when-cross-origin): whole to its own origin, the origin to
+	# another, nothing from https to http
+	call Sends: 'https://a.test/p?q#f' 'https://a.test/x' U 'https://a.test/p?q';
+	call Sends: 'https://a.test/p?q#f' 'https://b.test/' U 'https://a.test/';
+	call Sends: 'https://a.test/p?q' 'http://a.test/p' U '';
+	call Sends: 'http://a.test/p?q' 'http://b.test/' U 'http://a.test/';
+	call Sends: 'http://a.test/p?q' 'https://a.test/p' U 'http://a.test/';
+	call Sends: 'https://a.test/p?q' 'https://a.test/x' SOWCO 'https://a.test/p?q';
+	# the machine itself is trustworthy, so going there isn't a downgrade; a name like it isn't
+	call Sends: 'https://a.test/p' 'http://localhost:8000/' U 'https://a.test/';
+	call Sends: 'https://a.test/p' 'http://app.localhost/' U 'https://a.test/';
+	call Sends: 'https://a.test/p' 'http://127.0.0.1:8000/x' U 'https://a.test/';
+	call Sends: 'https://a.test/p' 'http://[::1]/' U 'https://a.test/';
+	call Sends: 'https://a.test/p' 'http://127.example/' U '';
+	call Sends: 'https://a.test/p' 'http://localhost.test/' U '';
+
+	# never sent: user:password@, the fragment; the port only when it isn't the scheme's own
+	call Sends: 'https://u:pw@a.test/p#top' 'https://a.test/z' U 'https://a.test/p';
+	call Sends: 'https://a.test:8443/p' 'https://a.test:8443/q' U 'https://a.test:8443/p';
+	call Sends: 'https://a.test:8443/p' 'https://a.test/q' U 'https://a.test:8443/';
+	call Sends: 'https://a.test:443/p' 'https://a.test/q' U 'https://a.test/p';
+	call Sends: 'https://A.Test/p' 'https://a.test/q' U 'https://a.test/p';
+	call Sends: 'https://a.test' 'https://a.test/q' U 'https://a.test/';
+	call Sends: 'https://a.test?x=1' 'https://a.test/q' U 'https://a.test/?x=1';
+	call Sends: 'http://[::1]:8080/a' 'http://[::1]:8080/b' U 'http://[::1]:8080/a';
+	call Sends: 'http://[::1]:8080/a' 'http://localhost:8080/b' U 'http://[::1]:8080/';
+	# only from http's addresses
+	call Sends: 'phi:home' 'https://a.test/' U '';
+	call Sends: 'data:text/html,hi' 'https://a.test/' UNSAFE '';
+	call Sends: 'about:blank' 'https://a.test/' UNSAFE '';
+
+	# each policy, to its own origin, to another, and from https to http
+	call Sends: 'https://a.test/p?q' 'https://a.test/x' NONE '';
+	call Sends: 'https://a.test/p?q' 'https://b.test/x' NONE '';
+	call Sends: 'https://a.test/p?q' 'https://a.test/x' UNSAFE 'https://a.test/p?q';
+	call Sends: 'https://a.test/p?q' 'https://b.test/x' UNSAFE 'https://a.test/p?q';
+	call Sends: 'https://a.test/p?q' 'http://b.test/x' UNSAFE 'https://a.test/p?q';
+	call Sends: 'https://a.test/p?q' 'https://a.test/x' ORIGIN 'https://a.test/';
+	call Sends: 'https://a.test/p?q' 'http://b.test/x' ORIGIN 'https://a.test/';
+	call Sends: 'https://a.test/p?q' 'https://a.test/x' SAME 'https://a.test/p?q';
+	call Sends: 'https://a.test/p?q' 'https://b.test/x' SAME '';
+	call Sends: 'https://a.test/p?q' 'http://a.test/p?q' SAME '';
+	call Sends: 'https://a.test/p?q' 'https://a.test/x' STRICT 'https://a.test/';
+	call Sends: 'https://a.test/p?q' 'https://b.test/x' STRICT 'https://a.test/';
+	call Sends: 'https://a.test/p?q' 'http://b.test/x' STRICT '';
+	call Sends: 'http://a.test/p?q' 'http://b.test/x' STRICT 'http://a.test/';
+	call Sends: 'https://a.test/p?q' 'https://a.test/x' OWCO 'https://a.test/p?q';
+	call Sends: 'https://a.test/p?q' 'https://b.test/x' OWCO 'https://a.test/';
+	call Sends: 'https://a.test/p?q' 'http://b.test/x' OWCO 'https://a.test/';
+	call Sends: 'https://a.test/p?q' 'https://a.test/x' NRWD 'https://a.test/p?q';
+	call Sends: 'https://a.test/p?q' 'https://b.test/x' NRWD 'https://a.test/p?q';
+	call Sends: 'https://a.test/p?q' 'http://b.test/x' NRWD '';
+
+	# an address longer than 4096 bytes goes as its origin, even where it would go whole
+	str long: 'https://a.test/';
+	while long.len < 5000
+		long++ 'abcdefghij';
+	;;
+	call Sends: addr long:0 'https://a.test/x' UNSAFE 'https://a.test/';
+	str fits: 'https://a.test/';
+	while fits.len < 1990
+		fits++ 'abcdefghij';
+	;;
+	u32 n: (WireReferrer.For: addr fits:0 'https://a.test/x' U addr buffer 8192);
+	str said: (n ' bytes');
+	call Check: 'an address of 1995 bytes goes whole' n is fits.len as u32 addr said:0;
+	n is (WireReferrer.For: 'https://a.test/p' 'https://a.test/x' U addr buffer 5);
+	str said2: (n ' bytes');
+	call Check: 'none if it would not fit' n is 0 and buffer:0 is 0 addr said2:0;
+
+	# a Referrer-Policy header: the last name in it that is one
+	call Named: 'header' 'no-referrer' (WireReferrer.Header: 'no-referrer') NONE;
+	call Named: 'header' 'unknown-new-one, origin' (WireReferrer.Header: 'unknown-new-one, origin') ORIGIN;
+	call Named: 'header' 'origin, unknown-new-one' (WireReferrer.Header: 'origin, unknown-new-one') ORIGIN;
+	call Named: 'header' 'no-referrer, unsafe-url' (WireReferrer.Header: 'no-referrer, unsafe-url') UNSAFE;
+	call Named: 'header' ' strict-origin ,  ' (WireReferrer.Header: ' strict-origin ,  ') STRICT;
+	call Named: 'header' 'Same-Origin' (WireReferrer.Header: 'Same-Origin') SAME;
+	call Named: 'header' '' (WireReferrer.Header: '') U;
+	call Named: 'header' 'never' (WireReferrer.Header: 'never') U;
+	call Named: 'header' 'origin-when-cross-origin' (WireReferrer.Header: 'origin-when-cross-origin') OWCO;
+	call Named: 'header' 'no-referrer-when-downgrade' (WireReferrer.Header: 'no-referrer-when-downgrade') NRWD;
+	call Named: 'header' 'strict-origin-when-cross-origin' (WireReferrer.Header: 'strict-origin-when-cross-origin') SOWCO;
+	# a <meta name=referrer>: one name, or an old one
+	call Named: 'meta' 'never' (WireReferrer.Meta: 'never') NONE;
+	call Named: 'meta' 'always' (WireReferrer.Meta: 'always') UNSAFE;
+	call Named: 'meta' 'default' (WireReferrer.Meta: 'default') SOWCO;
+	call Named: 'meta' 'origin-when-crossorigin' (WireReferrer.Meta: 'origin-when-crossorigin') OWCO;
+	call Named: 'meta' ' Origin ' (WireReferrer.Meta: ' Origin ') ORIGIN;
+	call Named: 'meta' 'origin, unsafe-url' (WireReferrer.Meta: 'origin, unsafe-url') U;
+	# a referrerpolicy attribute: one name, not an old one
+	call Named: 'attribute' 'same-origin' (WireReferrer.Policy: 'same-origin') SAME;
+	call Named: 'attribute' 'never' (WireReferrer.Policy: 'never') U;
+	call Named: 'attribute' 'nonsense' (WireReferrer.Policy: 'nonsense') U;
+	call Named: 'attribute' '' (WireReferrer.Policy: '') U;
+	# and back to a name
+	call WireReferrer.Name: SOWCO addr buffer 64;
+	call Check: 'the name of 7' (Equal: addr buffer 'strict-origin-when-cross-origin') addr buffer;
+	call WireReferrer.Name: UNSAFE addr buffer 64;
+	call Check: 'the name of 8' (Equal: addr buffer 'unsafe-url') addr buffer;
+	call WireReferrer.Name: U addr buffer 64;
+	call Check: 'no name for UNSET' buffer:0 is 0 addr buffer;
+
+	log right ' of ' count ' as they should be\n';
+}

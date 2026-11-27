@@ -337,6 +337,8 @@ phi.PageWindow:Library
 		WlBuf full;
 		call Page.Resolve: p b.data b.len addr full;
 		if p.host.navigate is not 0
+			call Page.MetaPolicies: p;
+			p.nav_policy is p.policy;
 			call p.host.navigate: p full.data;
 		;;
 		call b.Free;
@@ -695,8 +697,17 @@ phi.PageNet:Library
 		WlBuf headers;
 		WlBuf body;
 		bln has_body: false;
+		int policy: 0;
 		u64 options: (Js.Arg: args argc 1);
 		if (JsV.IsObj: options)
+			# (its referrerPolicy: platform.js's Request has made sure it's one, or '')
+			u64 rp: (JsObjs.GetV: options (JsObjs.KeyZ: 'referrerPolicy'));
+			if (JsV.IsStr: rp)
+				WlBuf rpt;
+				call Js.TextOf: rp addr rpt;
+				policy is (PageReferrer.Parse: rpt.data rpt.len false);
+				call rpt.Free;
+			;;
 			u64 m: (JsObjs.GetV: options (JsObjs.KeyZ: 'method'));
 			if m is not JsV.UNDEF
 				call Js.TextOf: m addr verb;
@@ -730,7 +741,7 @@ phi.PageNet:Library
 				sent is '';
 			;;
 		;;
-		u32 id: (Page.Request: p url.data url.len PageLoad.FETCH 0 holder.elems:0 holder.elems:1 0 verb.data headers.data sent body.len);
+		u32 id: (Page.Request: p url.data url.len PageLoad.FETCH 0 holder.elems:0 holder.elems:1 0 verb.data headers.data sent body.len policy);
 		call url.Free;
 		call verb.Free;
 		call headers.Free;

@@ -2274,6 +2274,7 @@ phi.PageBind:Library
 	const u32 D_IMAGES: 14;
 	const u32 D_LINKS: 15;
 	const u32 D_SCRIPTS: 16;
+	const u32 D_REFERRER: 17;
 
 	[InstallDocument]
 		ptr<JsObj> p: document_proto;
@@ -2297,6 +2298,7 @@ phi.PageBind:Library
 		call Getter: p 'images' addr DocProp 0 D_IMAGES;
 		call Getter: p 'links' addr DocProp 0 D_LINKS;
 		call Getter: p 'scripts' addr DocProp 0 D_SCRIPTS;
+		call Getter: p 'referrer' addr DocProp 0 D_REFERRER;
 		call Getter: p 'title' addr TitleGet addr TitleSet 0;
 		call Getter: p 'cookie' addr CookieGet addr CookieSet 0;
 		call Method: p 'createElement' addr CreateElement 1 0;
@@ -2407,6 +2409,14 @@ phi.PageBind:Library
 			;;
 			is D_SCRIPTS
 				return (NewCollection: doc.root C_BY_TAG (WlAtoms.GetZ: 'script') collection_proto);
+			;;
+			is D_REFERRER
+				# (the page's own document's; another made by a script has none)
+				ptr<Page> rp: Page.current;
+				if rp is not 0 and rp.doc is doc and rp.referrer is not 0
+					return (Js.NewStringZ: rp.referrer);
+				;;
+				return (Js.NewStringZ: '');
 			;;
 		;;
 	[end: JsV.UNDEF]

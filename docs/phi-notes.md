@@ -323,3 +323,20 @@ Unexpected: Chrome sends no keypress for Enter on a link, though it does for Ent
 in a field. It follows the link as keydown's default and marks the key handled, which stops the
 keypress; a button and a field act on the keypress instead. `Page.Key` leaves out that one
 keypress. Brave's log of the same steps is test_keys; PHI OS FINDINGS #54.
+
+## The Referer: WireReferrer (netlib), Page.policy and PageRequest.policy (weblib) (2026-11-27)
+
+netlib's `WireReferrer.For: from to policy target max` is the Referer a request to `to` made at
+`from` has, by the W3C's Referrer Policy (0, the default, is strict-origin-when-cross-origin);
+`WireReferrer.Header`, `Meta` and `Policy` read a policy from a Referrer-Policy header (the last
+name in it that is one), a `<meta name=referrer>` (with the old names) and an attribute. weblib
+can't use netlib, so `PageReferrer.Parse` reads the names again with the same numbers. A page has
+`policy` (`Page.SetPolicy` from its header; each `<meta name=referrer>` as it comes in or changes,
+through `Page.Mutated`) and `referrer` (`Page.SetReferrer`, document.referrer). Each request's
+policy is fixed as it's made (`PageRequest.policy`: the element's referrerpolicy, fetch's
+referrerPolicy, or the page's then), as is an `<img>`'s picture's (`Page.PicturePolicy`, kept in
+four of its flag bits, as the browser fetches pictures later); `Page.nav_policy` is a link's or
+the page's while `host.navigate` or `host.post` runs (`rel=noreferrer` wins over `referrerpolicy`).
+Unexpected: a meta's content changes reach `Mutated` before the new value is in place, so
+they're taken before the next request (`MetaPolicies`), as `<img>` src changes are. Checked
+against Brave: test_page_referrer, netlib's test_referrer; PHI OS FINDINGS #55.
