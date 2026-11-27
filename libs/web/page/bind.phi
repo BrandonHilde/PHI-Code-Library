@@ -1060,14 +1060,19 @@ phi.PageBind:Library
 		call OnTags: 'img ' 'naturalWidth' addr PictureGet 0 0;
 		call OnTags: 'img ' 'naturalHeight' addr PictureGet 0 1;
 		call OnTags: 'img ' 'complete' addr PictureGet 0 2;
-		ptr<u8> events: 'onclick ondblclick onmousedown onmouseup onmouseover onmouseout onmousemove onkeydown onkeyup onkeypress onfocus onblur onchange oninput onsubmit onload onerror onresize onscroll ';
+		# Chrome's (GlobalEventHandlers), on elements, documents and the window; not the touch
+		# ones, which desktop Chrome hasn't ('ontouchstart' in window is how a page tells a phone)
+		ptr<u8> events: 'onclick ondblclick onauxclick oncontextmenu onmousedown onmouseup onmouseover onmouseout onmousemove onmouseenter onmouseleave onmousewheel onwheel onpointerdown onpointerup onpointermove onpointerover onpointerout onpointerenter onpointerleave onpointercancel onpointerrawupdate ongotpointercapture onlostpointercapture onkeydown onkeyup onkeypress onfocus onblur onchange oninput onbeforeinput oninvalid onreset onselect onselectstart onselectionchange onsubmit onformdata onload onerror onabort onresize onscroll onscrollend oncopy oncut onpaste ondrag ondragstart ondragend ondragenter ondragleave ondragover ondrop onanimationstart onanimationiteration onanimationend onanimationcancel ontransitionrun ontransitionstart ontransitionend ontransitioncancel ontoggle onbeforetoggle oncancel onclose onslotchange oncanplay oncanplaythrough ondurationchange onemptied onended onloadeddata onloadedmetadata onloadstart onpause onplay onplaying onprogress onratechange onseeked onseeking onstalled onsuspend ontimeupdate onvolumechange onwaiting oncuechange onsecuritypolicyviolation ';
 		call EventProps: h events;
 		call EventProps: document_proto events;
+		call EventProps: document_proto 'onreadystatechange onvisibilitychange onfullscreenchange onfullscreenerror onpointerlockchange onpointerlockerror onfreeze onresume ';
 		ptr<JsObj> tp: (TagProto: a_template);
 		if tp is not 0
 			call Getter: tp 'content' addr TemplateContent 0 0;
 		;;
 		call EventProps: JsRt.r.global events;
+		# (WindowEventHandlers, the window's alone)
+		call EventProps: JsRt.r.global 'onafterprint onbeforeprint onbeforeunload onhashchange onlanguagechange onmessage onmessageerror onoffline ononline onpagehide onpageshow onpopstate onrejectionhandled onstorage onunhandledrejection onunload ondevicemotion ondeviceorientation ondeviceorientationabsolute ';
 	[end]
 
 	# el.onclick and the like start as plain properties: Event dispatch looks them up by name, and they read as
@@ -1284,6 +1289,23 @@ phi.PageBind:Library
 			call Js.Define: one 'prefix' JsV.NULL JsObjs.E;
 			call Js.Define: one 'specified' JsV.TRUE JsObjs.E;
 			call JsObjs.ArrayPush: list (JsV.Obj: one);
+			# and by its name (el.attributes["onclick"]), not enumerable, as Chrome's named
+			# properties are; not over length or a method of the map's, nor an earlier one
+			u64 key: (JsObjs.KeyOfStr: (JsStrs.Intern: a.name.text a.name.len));
+			if not (JsObjs.IsIndexKey: key)
+				ptr<u8> kp: (JsObjs.KeyPtr: key);
+				bln taken: false;
+				ptr<JsObj> o: list;
+				while o is not 0 and not taken
+					if (JsObjs.Find: o kp) is not 0
+						taken is true;
+					;;
+					o is o.proto;
+				;;
+				if not taken
+					call JsObjs.DefineValue: list kp (JsV.Obj: one) 0;
+				;;
+			;;
 			a is a.next;
 		;;
 	[end: (JsV.Obj: list)]

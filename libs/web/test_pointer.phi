@@ -1,0 +1,49 @@
+# The mouse as the browser sends it (Page.Pointer, Page.Wheel): pointer and mouse events in Chrome's
+# order (checked against Brave over its DevTools protocol, PHI OS PAGES/MOUSE.HTM), over, out, enter
+# and leave as what's under it changes, a canceled pointerdown keeping mousedown and mouseup back,
+# :hover and :active for what handlers ask, a wheel listener on the document passive unless it says;
+# el.attributes by name; the on... handler properties Chrome has (and not the touch ones).
+use weblib;
+
+phi.TestPointer:Program
+{
+	call Weblib.Start: 900000;
+	str html: '<!doctype html><style>#inner:hover{color:rgb(255,0,0)} #outer:hover{color:rgb(0,0,255)} #other:active{color:rgb(0,128,0)}</style><div id=outer><div id=inner>x</div></div><div id=other>o</div><div id=nocompat>n</div><script>var types=["pointerover","pointerenter","pointerdown","pointermove","pointerup","pointerout","pointerleave","mouseover","mouseenter","mousedown","mousemove","mouseup","mouseout","mouseleave","click","wheel"];\nfunction name(n){return n&&n.id?n.id:(n&&n.nodeName?n.nodeName.toLowerCase():String(n));}\n["outer","inner","other","nocompat"].forEach(function(id){\n  var el=document.getElementById(id);\n  types.forEach(function(t){el.addEventListener(t,function(e){\n    if(e.currentTarget!==e.target&&(t.indexOf("enter")<0&&t.indexOf("leave")<0))return;\n    var s=t+"@"+id;\n    if(/over|out|enter|leave/.test(t))s+="<"+name(e.relatedTarget)+" bubbles "+e.bubbles+" cancelable "+e.cancelable;\n    if(t==="pointerdown")s+=" "+e.pointerType+" "+e.pointerId+" "+e.isPrimary+" b"+e.button+"/"+e.buttons+" "+(e instanceof PointerEvent)+" "+(e instanceof MouseEvent)+" "+e.isTrusted;\n    if(t==="mousedown"||t==="click")s+=" b"+e.button+"/"+e.buttons+" w"+e.which+" d"+e.detail;\n    if(t==="pointermove")s+=" b"+e.button+"/"+e.buttons;\n    if(t==="wheel")s+=" dy "+e.deltaY+" "+(e instanceof WheelEvent)+" mode"+e.deltaMode;\n    console.log(s);\n  });});\n});\ndocument.getElementById("nocompat").addEventListener("pointerdown",function(e){e.preventDefault();});\ndocument.addEventListener("wheel",function(e){e.preventDefault();console.log("doc wheel canceled "+e.defaultPrevented);});\ndocument.getElementById("inner").addEventListener("wheel",function(e){e.preventDefault();},{passive:false});\ndocument.getElementById("inner").addEventListener("mouseover",function(){console.log("inner hover "+getComputedStyle(document.getElementById("inner")).color+" outer "+getComputedStyle(document.getElementById("outer")).color);});\ndocument.getElementById("other").addEventListener("mousedown",function(){console.log("other active "+getComputedStyle(document.getElementById("other")).color+" "+document.querySelector(":active").id);});\ndocument.getElementById("other").addEventListener("click",function(){console.log("after up "+getComputedStyle(document.getElementById("other")).color+" "+document.querySelectorAll(":active").length);});\nvar d=document.createElement("div");d.setAttribute("onfocusin","t");d.setAttribute("data-x","1");\nconsole.log("attributes by name "+d.attributes["onfocusin"].value+" "+d.attributes["data-x"].name+" "+Object.keys(d.attributes).join(",")+" "+d.attributes.length);\nconsole.log("handlers "+["ontouchstart","onpointerdown","onwheel","onmessage","onbeforeunload","onanimationend"].map(function(n){return n.slice(2)+":"+(n in window);}).join(" ")+" doc "+["onreadystatechange","onvisibilitychange"].map(function(n){return n.slice(2)+":"+(n in document);}).join(" "));</script>';
+	PageHost host;
+	host.logger is addr Print;
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page html html.len as u32 'https://pointer.example/';
+	call Page.Tick: page 5.0;
+	ptr<DomNode> inner: (Css.Query: page.doc.root '#inner' 6);
+	ptr<DomNode> other: (Css.Query: page.doc.root '#other' 6);
+	ptr<DomNode> nocompat: (Css.Query: page.doc.root '#nocompat' 9);
+	log '-- move to inner\n';
+	bln a: (Page.Pointer: page inner Page.POINTER_MOVE 10.0 10.0 0 0 1);
+	log '-- move to other\n';
+	a is (Page.Pointer: page other Page.POINTER_MOVE 10.0 40.0 0 0 1);
+	log '-- press and let go\n';
+	bln allowed: (Page.Pointer: page other Page.POINTER_DOWN 10.0 40.0 0 1 1);
+	log 'mousedown allowed: ' allowed '\n';
+	a is (Page.Pointer: page other Page.POINTER_UP 10.0 40.0 0 0 1);
+	a is (Page.Click: page other 10.0 40.0);
+	log '-- a canceled pointerdown\n';
+	a is (Page.Pointer: page nocompat Page.POINTER_MOVE 10.0 60.0 0 0 1);
+	a is (Page.Pointer: page nocompat Page.POINTER_DOWN 10.0 60.0 0 1 1);
+	a is (Page.Pointer: page nocompat Page.POINTER_UP 10.0 60.0 0 0 1);
+	a is (Page.Click: page nocompat 10.0 60.0);
+	log '-- wheel\n';
+	a is (Page.Pointer: page inner Page.POINTER_MOVE 10.0 10.0 0 0 1);
+	allowed is (Page.Wheel: page inner 10.0 10.0 0.0 100.0 0);
+	log 'wheel over inner allowed: ' allowed '\n';
+	allowed is (Page.Wheel: page other 10.0 40.0 0.0 100.0 0);
+	log 'wheel over other allowed: ' allowed '\n';
+	log '-- out of the page\n';
+	a is (Page.Pointer: page 0 as ptr<DomNode> Page.POINTER_MOVE 900.0 900.0 0 0 1);
+	call Page.Tick: page 50.0;
+	call Page.Free: page;
+	exit 0;
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+}

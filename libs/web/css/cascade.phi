@@ -116,6 +116,7 @@ struct.CssEngine
 	u32 watch_n;
 	bln watch_full;
 	u32 restyled;           # how many elements the last Update worked out the styles of
+	u32 changed;            # and how many of those came out different
 	bln has_cq;         # an @container rule: what applies depends on how wide boxes were laid out
 	bln has_layers;
 	ptr<CssLayerEntry> layers;
@@ -1381,6 +1382,7 @@ phi.CssCascade:Library
 	[Update: ptr<CssEngine> e: 0;]
 		ptr<DomDocument> doc: e.doc;
 		e.restyled is 0;
+		e.changed is 0;
 		if a_style is 0
 			a_style is (WlAtoms.GetZ: 'style');
 		;;
@@ -1465,6 +1467,9 @@ phi.CssCascade:Library
 					;;
 					e.restyled++;
 					bln changed: (Restyle: e n);
+					if changed
+						e.changed++;
+					;;
 					n.flags is n.flags & (0xFFFFFFFF ^ (Dom.DIRTY_STYLE | Dom.DIRTY_SELF));
 					if force is 0 and (strong or changed or (tree_changed and has_everything))
 						force is n;

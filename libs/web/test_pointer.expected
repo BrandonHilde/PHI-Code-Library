@@ -1,0 +1,75 @@
+attributes by name t data-x 0,1 2
+handlers touchstart:false pointerdown:true wheel:true message:true beforeunload:true animationend:true doc readystatechange:true visibilitychange:true
+-- move to inner
+pointerover@inner<null bubbles true cancelable true
+pointerenter@outer<null bubbles false cancelable false
+pointerenter@inner<null bubbles false cancelable false
+mouseover@inner<null bubbles true cancelable true
+inner hover rgb(255, 0, 0) outer rgb(0, 0, 255)
+mouseenter@outer<null bubbles false cancelable false
+mouseenter@inner<null bubbles false cancelable false
+pointermove@inner b-1/0
+mousemove@inner
+-- move to other
+pointerout@inner<other bubbles true cancelable true
+pointerleave@inner<other bubbles false cancelable false
+pointerleave@outer<other bubbles false cancelable false
+pointerover@other<inner bubbles true cancelable true
+pointerenter@other<inner bubbles false cancelable false
+mouseout@inner<other bubbles true cancelable true
+mouseleave@inner<other bubbles false cancelable false
+mouseleave@outer<other bubbles false cancelable false
+mouseover@other<inner bubbles true cancelable true
+mouseenter@other<inner bubbles false cancelable false
+pointermove@other b-1/0
+mousemove@other
+-- press and let go
+pointerdown@other mouse 1 true b0/1 true true true
+mousedown@other b0/1 w1 d1
+other active rgb(0, 128, 0)
+mousedown allowed: 1
+pointerup@other
+mouseup@other
+click@other b0/0 w1 d1
+after up rgb(0, 0, 0) 0
+-- a canceled pointerdown
+pointerout@other<nocompat bubbles true cancelable true
+pointerleave@other<nocompat bubbles false cancelable false
+pointerover@nocompat<other bubbles true cancelable true
+pointerenter@nocompat<other bubbles false cancelable false
+mouseout@other<nocompat bubbles true cancelable true
+mouseleave@other<nocompat bubbles false cancelable false
+mouseover@nocompat<other bubbles true cancelable true
+mouseenter@nocompat<other bubbles false cancelable false
+pointermove@nocompat b-1/0
+mousemove@nocompat
+pointerdown@nocompat mouse 1 true b0/1 true true true
+pointerup@nocompat
+click@nocompat b0/0 w1 d1
+-- wheel
+pointerout@nocompat<inner bubbles true cancelable true
+pointerleave@nocompat<inner bubbles false cancelable false
+pointerover@inner<nocompat bubbles true cancelable true
+pointerenter@outer<nocompat bubbles false cancelable false
+pointerenter@inner<nocompat bubbles false cancelable false
+mouseout@nocompat<inner bubbles true cancelable true
+mouseleave@nocompat<inner bubbles false cancelable false
+mouseover@inner<nocompat bubbles true cancelable true
+inner hover rgb(255, 0, 0) outer rgb(0, 0, 255)
+mouseenter@outer<nocompat bubbles false cancelable false
+mouseenter@inner<nocompat bubbles false cancelable false
+pointermove@inner b-1/0
+mousemove@inner
+wheel@inner dy 100 true mode0
+doc wheel canceled true
+wheel over inner allowed: 0
+wheel@other dy 100 true mode0
+doc wheel canceled false
+wheel over other allowed: 1
+-- out of the page
+pointerout@inner<null bubbles true cancelable true
+pointerleave@inner<null bubbles false cancelable false
+pointerleave@outer<null bubbles false cancelable false
+mouseout@inner<null bubbles true cancelable true
+mouseleave@inner<null bubbles false cancelable false
+mouseleave@outer<null bubbles false cancelable false

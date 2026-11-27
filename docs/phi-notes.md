@@ -271,3 +271,16 @@ it's an EncodingError with no src or a picture that couldn't be had. `img.width`
 Chrome's: the size it's drawn at inside its padding and border (from `PageHost.box`); not drawn,
 the attribute, else the picture's own size once it's in. `new Image()` that's never put in the
 document did already ask for its picture. Checked against Brave; PHI OS FINDINGS #51.
+
+## The mouse: Page.Pointer and Page.Wheel (2026-11-26)
+
+The host tells the page about the mouse with `Page.Pointer: page node kind x y button buttons
+clicks` (kind `POINTER_MOVE`, `POINTER_DOWN` or `POINTER_UP`; x, y in the window's CSS pixels;
+button 0 main, 1 middle, 2 other; buttons as `MouseEvent.buttons`) and `Page.Wheel: page node x y
+dx dy buttons` (false if a handler canceled it, so the host doesn't scroll). Pointer and mouse
+events come in Chrome's order, `:hover` and `:active` follow (`CssSel.ST_HOVER`, `ST_ACTIVE`), and
+the click is still the host's to send with `Page.Click`, after the up. Listeners take `passive`
+(Chrome's default for wheel and touch listeners on the window, document, html and body).
+`el.attributes` has each attribute by name too, and the event handler properties are Chrome's
+lists. The CSS engine counts the styles an Update changed (`CssEngine.changed`): a hover change
+that changes none puts the document's version back. test_pointer; PHI OS FINDINGS #52.

@@ -219,6 +219,11 @@ struct.Page
 	u32 mod_next;                         # the first that hasn't run
 	ptr<DomNode> current_script;
 	ptr<DomNode> focused;
+	# the mouse (Page.Pointer): the element it's over (:hover), the one a button was pressed on
+	# while it's held (:active), and whether a canceled pointerdown keeps mouse events back
+	ptr<DomNode> hovered;
+	ptr<DomNode> pressed;
+	bln no_compat;
 
 	PageSheet sheets[atmost 4096];        # (each shadow tree's <style> is one)
 	u32 sheets_version;
@@ -418,6 +423,14 @@ phi.Page:Library
 		if p is 0 return -1;
 		if what is CssSel.ST_FOCUS
 			if e is p.focused return 1;
+			return 0;
+		;;
+		if what is CssSel.ST_HOVER
+			if p.hovered is not 0 and (Holds: e p.hovered) return 1;
+			return 0;
+		;;
+		if what is CssSel.ST_ACTIVE
+			if p.pressed is not 0 and (Holds: e p.pressed) return 1;
 			return 0;
 		;;
 		if what is CssSel.ST_FOCUS_WITHIN
@@ -1504,6 +1517,218 @@ phi.Page:Library
 		;;
 		call Invalidate: p;
 	[end: allowed]
+
+	const int POINTER_MOVE: 0;
+	const int POINTER_DOWN: 1;
+	const int POINTER_UP: 2;
+
+	# The mouse, as the browser sees it, at (x, y) in the window over node (0 for none): moved,
+	# or a button pressed or let go (button: 0 the main one, 1 the middle, 2 the other; buttons:
+	# those held now, as MouseEvent.buttons has them). What Chrome fires, in its order: when what
+	# it's over changes, pointerout, pointerleave, pointerover and pointerenter, then the same of
+	# mouse events; then pointermove and mousemove, pointerdown and mousedown, or pointerup and
+	# mouseup. A canceled pointerdown keeps the mouse events back (all but those four) until the
+	# button's let go. :hover and :active follow it. The click is the host's to send (Click),
+	# after the up. False if mousedown was canceled (nothing's to be focused then).
+	[Pointer: ptr<Page> p: 0; ptr<DomNode> node: 0; int kind: 0; f64 x: 0.0; f64 y: 0.0; int button: 0; int buttons: 0; int clicks: 1; : bln]
+		call Use: p;
+		while node is not 0 and node.type is not DomType.ELEMENT
+			node is (Dom.FlatParent: node);
+		;;
+		if node is not 0 and node.doc is not p.doc
+			node is 0;
+		;;
+		p.nest++;
+		if node is not p.hovered
+			call Boundary: p node x y buttons;
+		;;
+		bln allowed: true;
+		if node is not 0
+			if kind is POINTER_MOVE
+				bln moved: (SendPointer: p node 'pointermove' x y (-1) buttons 0 as ptr<DomNode>);
+				if not p.no_compat
+					bln mm: (SendPointer: p node 'mousemove' x y 0 buttons 0 as ptr<DomNode>);
+				;;
+			;;
+			elif kind is POINTER_DOWN
+				# (:active from the first, as handlers see it in Chrome)
+				if button is 0
+					call Pressed: p node;
+				;;
+				p.no_compat is not (SendPointer: p node 'pointerdown' x y button buttons 0 as ptr<DomNode>);
+				if not p.no_compat
+					allowed is (SendPointer: p node 'mousedown' x y button buttons 0 as ptr<DomNode> clicks);
+				;;
+			;;
+			elif kind is POINTER_UP
+				bln up: (SendPointer: p node 'pointerup' x y button buttons 0 as ptr<DomNode>);
+				if not p.no_compat
+					bln mu: (SendPointer: p node 'mouseup' x y button buttons 0 as ptr<DomNode> clicks);
+				;;
+			;;
+		;;
+		if kind is POINTER_UP
+			p.no_compat is false;
+			if button is 0
+				call Pressed: p 0;
+			;;
+		;;
+		p.nest--;
+		call RunJobs: p;
+		call Invalidate: p;
+	[end: allowed]
+
+	# the mouse's wheel turned over node (dx, dy in pixels, down and right being more): false if
+	# a handler canceled it (then the host doesn't scroll)
+	[Wheel: ptr<Page> p: 0; ptr<DomNode> node: 0; f64 x: 0.0; f64 y: 0.0; f64 dx: 0.0; f64 dy: 0.0; int buttons: 0; : bln]
+		call Use: p;
+		while node is not 0 and node.type is not DomType.ELEMENT
+			node is (Dom.FlatParent: node);
+		;;
+		if node is 0 or node.doc is not p.doc
+			node is (Dom.DocumentElement: p.doc);
+		;;
+		if node is 0 return true;
+		u64 ev: (PageEvents.NewWheel: x y x + p.scroll_x y + p.scroll_y dx dy buttons);
+		p.nest++;
+		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: node) ev);
+		p.nest--;
+		call RunJobs: p;
+		call Invalidate: p;
+	[end: allowed]
+
+	# (detail: a mousedown's or mouseup's count of clicks, 1 or 2 for a double click; 0 for the rest)
+	[SendPointer: ptr<Page> p: 0; ptr<DomNode> node: 0; ptr<u8> type: 0; f64 x: 0.0; f64 y: 0.0; int button: 0; int buttons: 0; ptr<DomNode> related: 0; int detail: 0; : bln]
+		u64 rel: JsV.NULL;
+		if related is not 0
+			rel is (PageBind.Wrap: related);
+		;;
+		u64 ev: (PageEvents.NewPointer: type x y x + p.scroll_x y + p.scroll_y button buttons rel detail);
+	[end: (PageEvents.Dispatch: (PageBind.Wrap: node) ev)]
+
+	# whether e is n or one n is in (through shadow trees and slots, as :hover goes)
+	[Holds: ptr<DomNode> e: 0; ptr<DomNode> n: 0; : bln]
+		while n is not 0
+			if n is e return true;
+			n is (Dom.FlatParent: n);
+		;;
+	[end: false]
+
+	# its style is to be worked out again (:hover or :active has changed), and what's under it
+	# too unless only its own (deep false: then what's under it is only if its own style changes)
+	[Restyle: ptr<DomNode> n: 0; bln deep: true;]
+		if n is 0 or n.type is not DomType.ELEMENT return;
+		if deep
+			n.flags is n.flags | Dom.DIRTY_STYLE;
+		;;
+		else
+			n.flags is n.flags | Dom.DIRTY_SELF;
+		;;
+		call Dom.MarkUp: n;
+		n.doc.version++;
+	[end]
+
+	# The mouse has gone from what it was over to node: out and leave for what it's left (each
+	# leave from the innermost out, up to what holds both), over and enter for what it's come into
+	# (each enter from the outermost in); pointer events first, then mouse ones
+	[Boundary: ptr<Page> p: 0; ptr<DomNode> node: 0; f64 x: 0.0; f64 y: 0.0; int buttons: 0;]
+		ptr<DomNode> old: p.hovered;
+		if old is not 0 and not (Holds: (Dom.DocumentElement: p.doc) old)
+			# (taken out of the document since)
+			old is 0;
+		;;
+		p.hovered is node;
+		# what it's left, innermost first, and what it's come into, outermost first
+		ptr<DomNode> left[256];
+		int nl: 0;
+		ptr<DomNode> a: old;
+		while a is not 0 and nl < 256 and not (Holds: a node)
+			if a.type is DomType.ELEMENT
+				left:nl is a;
+				nl++;
+			;;
+			a is (Dom.FlatParent: a);
+		;;
+		ptr<DomNode> came[256];
+		int nc: 0;
+		a is node;
+		while a is not 0 and nc < 256 and not (Holds: a old)
+			if a.type is DomType.ELEMENT
+				came:nc is a;
+				nc++;
+			;;
+			a is (Dom.FlatParent: a);
+		;;
+		# (:hover as it is now, for what the handlers ask)
+		u32 was: p.doc.version;
+		while int k: 0; k < nl; k++;
+			call Restyle: left:k;
+		;;
+		while int m: 0; m < nc; m++;
+			call Restyle: came:m;
+		;;
+		call StatesSettled: p was;
+		while int round: 0; round < 2; round++;
+			ptr<u8> out_: 'pointerout';
+			ptr<u8> leave: 'pointerleave';
+			ptr<u8> over: 'pointerover';
+			ptr<u8> enter: 'pointerenter';
+			if round is 1
+				out_ is 'mouseout';
+				leave is 'mouseleave';
+				over is 'mouseover';
+				enter is 'mouseenter';
+			;;
+			if old is not 0
+				bln o: (SendPointer: p old out_ x y 0 buttons node);
+			;;
+			while int i: 0; i < nl; i++;
+				bln l: (SendPointer: p left:i leave x y 0 buttons node);
+			;;
+			if node is not 0
+				bln v: (SendPointer: p node over x y 0 buttons old);
+			;;
+			int j: nc - 1;
+			while j >= 0
+				bln en: (SendPointer: p came:j enter x y 0 buttons old);
+				j--;
+			;;
+		;;
+	[end]
+
+	# the element a button's held down on (0: let go), for :active: it and what it's in (each of
+	# those only its own style: the whole page over again at each press would be slow)
+	[Pressed: ptr<Page> p: 0; ptr<DomNode> node: 0;]
+		u32 was: p.doc.version;
+		ptr<DomNode> a: p.pressed;
+		call Restyle: a true;
+		while a is not 0
+			a is (Dom.FlatParent: a);
+			call Restyle: a false;
+		;;
+		p.pressed is node;
+		a is node;
+		call Restyle: a true;
+		while a is not 0
+			a is (Dom.FlatParent: a);
+			call Restyle: a false;
+		;;
+		call StatesSettled: p was;
+	[end]
+
+	# :hover or :active has changed for what Restyle marked: their styles are worked out now, and
+	# when none came out different (no rule cares) the document's version is put back as it was,
+	# so the host needn't lay the page out again for nothing (each time the mouse crosses into
+	# another element). Only when nothing else had changed since the styles were last worked out.
+	[StatesSettled: ptr<Page> p: 0; u32 was: 0;]
+		if p.doc.version is was return;
+		bln clean: p.css.ran and p.css.seen_version is was;
+		if not (UpdateStyle: p) return;
+		if clean and p.css.changed is 0 and p.css.seen_version is p.doc.version
+			p.doc.version is was;
+			p.css.seen_version is was;
+		;;
+	[end]
 
 	# following a link, or sending a form from its submit button
 	[DefaultClick: ptr<Page> p: 0; ptr<DomNode> node: 0;]

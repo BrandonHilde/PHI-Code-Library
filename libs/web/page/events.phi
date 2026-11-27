@@ -99,7 +99,7 @@ phi.PageEvents:Library
 		ptr<JsObj> o: (JsObjs.NewWithProto: (JsOps.ProtoFromCtor: nt target_proto));
 	[end: (JsV.Obj: o)]
 
-	# ---- listeners: [type, callback, capture, once, removed] ----
+	# ---- listeners: [type, callback, capture, once, removed, passive] ----
 
 	[ListOf: ptr<JsObj> o: 0; bln make: false;]
 		ptr<JsProp> found: (JsObjs.Find: o listeners_key as ptr<u8>);
@@ -136,8 +136,20 @@ phi.PageEvents:Library
 		u64 options: (Js.Arg: args argc 2);
 		bln capture: (CaptureOf: options);
 		bln once: false;
+		# passive: its preventDefault does nothing. Unless it says, as in Chrome, a wheel or touch
+		# listener on the window, the document, <html> or <body> is (so scrolling needn't wait)
+		bln passive: false;
+		bln said: false;
 		if (JsV.IsObj: options)
 			once is (JsOps.ToBool: (JsObjs.GetV: options (JsObjs.KeyZ: 'once')));
+			u64 pv: (JsObjs.GetV: options (JsObjs.KeyZ: 'passive'));
+			if pv is not JsV.UNDEF
+				passive is (JsOps.ToBool: pv);
+				said is true;
+			;;
+		;;
+		if not said and (ScrollBlocking: type) and (Topmost: t)
+			passive is true;
 		;;
 		ptr<JsObj> list: (ListOf: t true);
 		# the same one twice counts once
@@ -153,8 +165,27 @@ phi.PageEvents:Library
 		call JsObjs.ArrayPush: rec (JsV.Bool: capture);
 		call JsObjs.ArrayPush: rec (JsV.Bool: once);
 		call JsObjs.ArrayPush: rec JsV.FALSE;
+		call JsObjs.ArrayPush: rec (JsV.Bool: passive);
 		call JsObjs.ArrayPush: list (JsV.Obj: rec);
 	[end: JsV.UNDEF]
+
+	# wheel, mousewheel, touchstart, touchmove: what a page could hold scrolling up with
+	[ScrollBlocking: ptr<JsStr> type: 0; : bln]
+		ptr<JsStr> s: (JsStrs.Flat: type);
+		if (WlText.EqZ: s.data s.bytes 'wheel') return true;
+		if (WlText.EqZ: s.data s.bytes 'mousewheel') return true;
+		if (WlText.EqZ: s.data s.bytes 'touchstart') return true;
+	[end: (WlText.EqZ: s.data s.bytes 'touchmove')]
+
+	# the window, a document, or its <html> or <body>
+	[Topmost: ptr<JsObj> t: 0; : bln]
+		if t is JsRt.r.global return true;
+		ptr<DomNode> n: (PageBind.NodeOf: (JsV.Obj: t));
+		if n is 0 return false;
+		if n.type is DomType.DOCUMENT return true;
+		if n.type is not DomType.ELEMENT or n.parent is 0 return false;
+		if n.parent.type is DomType.DOCUMENT return true;
+	[end: n.tag is (WlAtoms.GetZ: 'body') and n.parent.parent is not 0 and n.parent.parent.type is DomType.DOCUMENT]
 
 	[RemoveListener: ptr<u64> args: 0; int argc: 0;]
 		ptr<JsObj> t: (TargetObject: args:(-1));
@@ -322,16 +353,28 @@ phi.PageEvents:Library
 	[end]
 
 	[NewMouse: ptr<u8> type: 0; f64 x: 0.0; f64 y: 0.0; int button: 0; int detail: 0;]
-		u64 ev: (NewEventObject: type mouse_proto true true);
+	[end: (NewMouseAt: type mouse_proto true true x y x y button 0 detail JsV.NULL)]
+
+	# A mouse event (or one made from proto: a PointerEvent's or WheelEvent's) at (x, y) in the
+	# window, (px, py) on the page
+	[NewMouseAt: ptr<u8> type: 0; ptr<JsObj> proto: 0; bln bubbles: false; bln cancelable: false; f64 x: 0.0; f64 y: 0.0; f64 px: 0.0; f64 py: 0.0; int button: 0; int buttons: 0; int detail: 0; u64 related: 0;]
+		u64 ev: (NewEventObject: type proto bubbles cancelable);
 		ptr<JsObj> o: (JsV.AsObj: ev);
 		call Js.Define: o 'clientX' (JsV.Num: x) JsObjs.E;
 		call Js.Define: o 'clientY' (JsV.Num: y) JsObjs.E;
-		call Js.Define: o 'pageX' (JsV.Num: x) JsObjs.E;
-		call Js.Define: o 'pageY' (JsV.Num: y) JsObjs.E;
+		call Js.Define: o 'x' (JsV.Num: x) JsObjs.E;
+		call Js.Define: o 'y' (JsV.Num: y) JsObjs.E;
+		call Js.Define: o 'pageX' (JsV.Num: px) JsObjs.E;
+		call Js.Define: o 'pageY' (JsV.Num: py) JsObjs.E;
 		call Js.Define: o 'screenX' (JsV.Num: x) JsObjs.E;
 		call Js.Define: o 'screenY' (JsV.Num: y) JsObjs.E;
+		call Js.Define: o 'movementX' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: o 'movementY' (JsV.Int: 0) JsObjs.E;
 		call Js.Define: o 'button' (JsV.Int: button) JsObjs.E;
-		call Js.Define: o 'buttons' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: o 'buttons' (JsV.Int: buttons) JsObjs.E;
+		# (UIEvent.which, which old scripts read: the button and one, as Chrome has it)
+		call Js.Define: o 'which' (JsV.Int: button + 1) JsObjs.E;
+		call Js.Define: o 'relatedTarget' related JsObjs.E;
 		call Js.Define: o 'detail' (JsV.Int: detail) JsObjs.E;
 		call Js.Define: o 'ctrlKey' JsV.FALSE JsObjs.E;
 		call Js.Define: o 'shiftKey' JsV.FALSE JsObjs.E;
@@ -341,6 +384,59 @@ phi.PageEvents:Library
 		# (what the browser sends crosses shadow trees' edges)
 		call Js.Define: o 'composed' JsV.TRUE JsObjs.E;
 	[end: ev]
+
+	# A pointer event the mouse makes (pointerId 1, as Chrome's mouse is), or the mouse event that
+	# goes with it, by its type: enter and leave don't bubble and can't be canceled. A move's button
+	# is -1 for a pointer event (none changed), 0 for a mouse one.
+	[NewPointer: ptr<u8> type: 0; f64 x: 0.0; f64 y: 0.0; f64 px: 0.0; f64 py: 0.0; int button: 0; int buttons: 0; u64 related: 0; int detail: 0;]
+		bln pointer: type:0 is 'p';
+		u32 n: (WlText.LenZ: type);
+		bln crossing: n >= 5 and ((WlText.EqZ: type + n - 5 5 'enter') or (WlText.EqZ: type + n - 5 5 'leave'));
+		ptr<JsObj> proto: mouse_proto;
+		if pointer
+			proto is (GlobalProto: 'PointerEvent' mouse_proto);
+		;;
+		u64 ev: (NewMouseAt: type proto not crossing not crossing x y px py button buttons detail related);
+		ptr<JsObj> o: (JsV.AsObj: ev);
+		if pointer
+			call Js.Define: o 'pointerId' (JsV.Int: 1) JsObjs.E;
+			call Js.Define: o 'pointerType' (Js.NewStringZ: 'mouse') JsObjs.E;
+			call Js.Define: o 'isPrimary' JsV.TRUE JsObjs.E;
+			call Js.Define: o 'width' (JsV.Int: 1) JsObjs.E;
+			call Js.Define: o 'height' (JsV.Int: 1) JsObjs.E;
+			f64 pressure: 0.0;
+			if buttons is not 0
+				pressure is 0.5;
+			;;
+			call Js.Define: o 'pressure' (JsV.Num: pressure) JsObjs.E;
+			call Js.Define: o 'tangentialPressure' (JsV.Int: 0) JsObjs.E;
+			call Js.Define: o 'tiltX' (JsV.Int: 0) JsObjs.E;
+			call Js.Define: o 'tiltY' (JsV.Int: 0) JsObjs.E;
+			call Js.Define: o 'twist' (JsV.Int: 0) JsObjs.E;
+		;;
+		call Js.Define: o 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
+		call Js.Define: o 'composed' JsV.TRUE JsObjs.E;
+	[end: ev]
+
+	# the mouse's wheel turned: dx, dy in pixels
+	[NewWheel: f64 x: 0.0; f64 y: 0.0; f64 px: 0.0; f64 py: 0.0; f64 dx: 0.0; f64 dy: 0.0; int buttons: 0;]
+		u64 ev: (NewMouseAt: 'wheel' (GlobalProto: 'WheelEvent' mouse_proto) true true x y px py 0 buttons 0 JsV.NULL);
+		ptr<JsObj> o: (JsV.AsObj: ev);
+		call Js.Define: o 'deltaX' (JsV.Num: dx) JsObjs.E;
+		call Js.Define: o 'deltaY' (JsV.Num: dy) JsObjs.E;
+		call Js.Define: o 'deltaZ' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: o 'deltaMode' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: o 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
+		call Js.Define: o 'composed' JsV.TRUE JsObjs.E;
+	[end: ev]
+
+	# the prototype of the window's class of that name (one platform.js makes), or else fallback
+	[GlobalProto: ptr<u8> name: 0; ptr<JsObj> fallback: 0; : ptr<JsObj>]
+		u64 c: (JsObjs.GetV: (JsV.Obj: JsRt.r.global) (JsObjs.KeyZ: name));
+		if not (JsV.IsObj: c) return fallback;
+		u64 pr: (JsObjs.GetV: c (JsObjs.KeyZ: 'prototype'));
+		if not (JsV.IsObj: pr) return fallback;
+	[end: (JsV.AsObj: pr)]
 
 	[NewKey: ptr<u8> type: 0; ptr<u8> key: 0; bln ctrl: false; bln shift: false; bln alt: false;]
 		u64 ev: (NewEventObject: type key_proto true true);
@@ -570,7 +666,9 @@ phi.PageEvents:Library
 				if r.elems:3 is JsV.TRUE
 					call RemoveRecord: list r;
 				;;
+				d.passive is r.length > 5 and r.elems:5 is JsV.TRUE;
 				call Invoke: r.elems:1 target ev;
+				d.passive is false;
 			;;
 		;;
 		JsVm.sp is mark;
