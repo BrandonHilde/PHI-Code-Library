@@ -1,0 +1,118 @@
+# netlib's Fetch Metadata, every day: where a request comes from (same-origin, same-site,
+# cross-site, none) as the W3C's Fetch Metadata Request Headers measure it, across redirects too,
+# and the header lines for each kind of request, only to trustworthy addresses, each case worked
+# out from the standard and Chrome's order.
+use netlib;
+
+phi.TestMetadata:Program
+{
+	int right: 0;
+	int count: 0;
+	u8 buffer[1024];
+
+	[Check: ptr<u8> name: 0; bln good: false; ptr<u8> got: 0;]
+		count++;
+		if good
+			right++;
+		;;
+		else
+			log 'WRONG ' name ': ' got '\n';
+		;;
+	[end]
+
+	[Equal: ptr<u8> a: 0; ptr<u8> b: 0;]
+		u32 i: 0;
+		while a:i is b:i
+			if a:i is 0 return true;
+			i++;
+		;;
+	[end: false]
+
+	[Site: ptr<u8> from: 0; ptr<u8> to: 0; int want: 0;]
+		int got: (WireMetadata.Site: from to);
+		ptr<u8> shown: from;
+		if shown is 0
+			shown is '(nothing)';
+		;;
+		str name: (shown ' to ' to);
+		str said: (got ', not ' want);
+		call Check: addr name:0 got is want addr said:0;
+	[end]
+
+	[Lines: ptr<u8> what: 0; ptr<u8> to: 0; int dest: 0; int mode: 0; int site: 0; bln user: false; ptr<u8> want: 0;]
+		u32 n: (WireMetadata.Lines: to dest mode site user addr buffer 1024);
+		str said: ('"' addr buffer '", not "' want '"');
+		call Check: what (Equal: addr buffer want) and n is (WireHttp.Count: want) addr said:0;
+	[end]
+
+	call NetLib.Start;
+	int NONE: WireMetadata.NONE;
+	int ORIGIN: WireMetadata.SAME_ORIGIN;
+	int SITE: WireMetadata.SAME_SITE;
+	int CROSS: WireMetadata.CROSS_SITE;
+
+	# where from: the same scheme, host and port; the same registrable domain and scheme; neither
+	call Site: 'https://a.test/p' 'https://a.test/x?y' ORIGIN;
+	call Site: 'https://a.test/p' 'https://a.test:443/x' ORIGIN;
+	call Site: 'https://a.test/p' 'https://a.test:8443/x' SITE;
+	call Site: 'https://a.test/p' 'https://cdn.a.test/x' SITE;
+	call Site: 'https://www.example.com/' 'https://example.com/' SITE;
+	call Site: 'https://a.example.co.uk/' 'https://b.example.co.uk/' SITE;
+	call Site: 'https://a.co.uk/' 'https://b.co.uk/' CROSS;
+	call Site: 'http://a.test/p' 'https://a.test/p' CROSS;
+	call Site: 'https://a.test/p' 'https://b.test/p' CROSS;
+	call Site: 'https://127.0.0.1:8000/' 'https://127.0.0.1:8000/x' ORIGIN;
+	call Site: 'http://127.0.0.1:8000/' 'http://localhost:8000/x' CROSS;
+	call Site: 'http://127.0.0.1:8000/' 'http://127.0.0.1:9000/x' SITE;
+	# the user's own (nothing asked), and what has no origin
+	call Site: 0 'https://a.test/' NONE;
+	call Site: '' 'https://a.test/' NONE;
+	call Site: 'data:text/html,hi' 'https://a.test/' CROSS;
+	call Site: 'about:blank' 'https://a.test/' CROSS;
+	call Site: 'https://a.test/' 'data:image/png,x' CROSS;
+
+	# across redirects: the worst so far
+	str said: '';
+	int worse: (WireMetadata.Worse: ORIGIN SITE);
+	said is worse;
+	call Check: 'same-origin then same-site' worse is SITE addr said:0;
+	worse is (WireMetadata.Worse: CROSS ORIGIN);
+	said is worse;
+	call Check: 'cross-site then same-origin' worse is CROSS addr said:0;
+	worse is (WireMetadata.Worse: NONE CROSS);
+	said is worse;
+	call Check: 'none stays none' worse is NONE addr said:0;
+
+	# the lines, as Chrome sends them
+	call Lines: 'a navigation typed' 'https://a.test/' WireMetadata.DOCUMENT WireMetadata.NAVIGATE NONE true 'Sec-Fetch-Site: none\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-User: ?1\r\nSec-Fetch-Dest: document\r\n';
+	call Lines: 'a link followed' 'https://b.test/' WireMetadata.DOCUMENT WireMetadata.NAVIGATE CROSS true 'Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-User: ?1\r\nSec-Fetch-Dest: document\r\n';
+	call Lines: 'a script that navigates' 'https://a.test/' WireMetadata.DOCUMENT WireMetadata.NAVIGATE ORIGIN false 'Sec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-Dest: document\r\n';
+	call Lines: 'a frame' 'https://b.test/f' WireMetadata.IFRAME WireMetadata.NAVIGATE CROSS false 'Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-Dest: iframe\r\n';
+	call Lines: 'a picture' 'https://cdn.a.test/x.png' WireMetadata.IMAGE WireMetadata.NO_CORS SITE false 'Sec-Fetch-Site: same-site\r\nSec-Fetch-Mode: no-cors\r\nSec-Fetch-Dest: image\r\n';
+	call Lines: 'a picture (user is only for navigations)' 'https://a.test/x.png' WireMetadata.IMAGE WireMetadata.NO_CORS ORIGIN true 'Sec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: no-cors\r\nSec-Fetch-Dest: image\r\n';
+	call Lines: 'a font' 'https://fonts.test/f.woff2' WireMetadata.FONT WireMetadata.CORS CROSS false 'Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Dest: font\r\n';
+	call Lines: 'a script' 'https://a.test/s.js' WireMetadata.SCRIPT WireMetadata.NO_CORS ORIGIN false 'Sec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: no-cors\r\nSec-Fetch-Dest: script\r\n';
+	call Lines: 'a stylesheet' 'https://a.test/s.css' WireMetadata.STYLE WireMetadata.NO_CORS ORIGIN false 'Sec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: no-cors\r\nSec-Fetch-Dest: style\r\n';
+	call Lines: 'a fetch' 'https://api.test/' WireMetadata.EMPTY WireMetadata.CORS CROSS false 'Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Dest: empty\r\n';
+	call Lines: 'a video' 'https://a.test/v.webm' WireMetadata.VIDEO WireMetadata.NO_CORS ORIGIN false 'Sec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: no-cors\r\nSec-Fetch-Dest: video\r\n';
+	call Lines: 'the machine itself over http' 'http://localhost:8000/' WireMetadata.DOCUMENT WireMetadata.NAVIGATE NONE true 'Sec-Fetch-Site: none\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-User: ?1\r\nSec-Fetch-Dest: document\r\n';
+	call Lines: '127.0.0.1 over http' 'http://127.0.0.1:8601/a' WireMetadata.IMAGE WireMetadata.NO_CORS ORIGIN false 'Sec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: no-cors\r\nSec-Fetch-Dest: image\r\n';
+	# none: plain http elsewhere, nothing said of what it's for, not http's
+	call Lines: 'plain http' 'http://a.test/' WireMetadata.DOCUMENT WireMetadata.NAVIGATE NONE true '';
+	call Lines: 'no dest' 'https://a.test/' 0 WireMetadata.NAVIGATE NONE true '';
+	call Lines: 'no mode' 'https://a.test/' WireMetadata.IMAGE 0 NONE false '';
+	call Lines: 'data:' 'data:text/plain,x' WireMetadata.IMAGE WireMetadata.NO_CORS ORIGIN false '';
+	u32 n: (WireMetadata.Lines: 'https://a.test/' WireMetadata.IMAGE WireMetadata.NO_CORS ORIGIN false addr buffer 20);
+	str said2: (n ' bytes');
+	call Check: 'none if they would not fit' n is 0 and buffer:0 is 0 addr said2:0;
+
+	# names
+	call WireMetadata.Name: 0 WireMetadata.IFRAME addr buffer 64;
+	call Check: 'dest 3' (Equal: addr buffer 'iframe') addr buffer;
+	call WireMetadata.Name: 1 WireMetadata.NO_CORS addr buffer 64;
+	call Check: 'mode 3' (Equal: addr buffer 'no-cors') addr buffer;
+	call WireMetadata.Name: 2 WireMetadata.SAME_SITE addr buffer 64;
+	call Check: 'site 3' (Equal: addr buffer 'same-site') addr buffer;
+
+	log right ' of ' count ' as they should be\n';
+}

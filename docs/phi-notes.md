@@ -340,3 +340,16 @@ the page's while `host.navigate` or `host.post` runs (`rel=noreferrer` wins over
 Unexpected: a meta's content changes reach `Mutated` before the new value is in place, so
 they're taken before the next request (`MetaPolicies`), as `<img>` src changes are. Checked
 against Brave: test_page_referrer, netlib's test_referrer; PHI OS FINDINGS #55.
+
+## Fetch Metadata: WireMetadata (netlib) (2026-11-27)
+
+netlib's `WireMetadata.Lines: to dest mode site user target max` writes a request's
+`Sec-Fetch-Site`, `-Mode`, `-User` (navigations the user made only) and `-Dest` lines, in
+Chrome's order, and nothing for an address that isn't potentially trustworthy (WireReferrer's
+`Trustworthy`: https, localhost, 127.x.x.x, ::1), as the W3C's Fetch Metadata Request Headers say.
+`WireMetadata.Site: from to` is where a request comes from (`none` when nothing asked: an address
+typed; `same-origin`; `same-site`, the same scheme and registrable domain by `WireCookies.SameSite`;
+`cross-site`, and always from something with no origin), and `Worse` keeps the worst along a
+redirect chain. weblib has nothing of it: what a page's request is for is the host's to say
+(PHI OS's `brw/meta.phi`, from `PageRequest.kind` and the element). netlib's test_metadata; PHI OS
+FINDINGS #56.

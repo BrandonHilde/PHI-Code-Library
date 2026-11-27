@@ -1,0 +1,173 @@
+# netlib's Fetch Metadata (the W3C's Fetch Metadata Request Headers, as every browser sends them):
+# what a request is for, so a server can tell a page's picture from its script from a navigation,
+# and whether it came from the server's own site.
+#
+#   Sec-Fetch-Site: same-origin | same-site | cross-site | none (the user's own: an address typed)
+#   Sec-Fetch-Mode: navigate | same-origin | no-cors | cors | websocket
+#   Sec-Fetch-User: ?1        (only a navigation the user made: a click, a key, an address typed)
+#   Sec-Fetch-Dest: document | iframe | image | font | script | style | empty (fetch) | audio | ...
+#
+#   int site: (WireMetadata.Site: 'https://a.example/page' 'https://cdn.a.example/x.png');  # SAME_SITE
+#   site is (WireMetadata.Worse: site (WireMetadata.Site: from next_hop));           # a redirect's
+#   u32 n: (WireMetadata.Lines: to WireMetadata.IMAGE WireMetadata.NO_CORS site false target 512);
+#   # target: the header lines, each ending \r\n; 0 if there are none
+#
+# They go only to a potentially trustworthy address (https, or the machine itself: WireReferrer's
+# Trustworthy), as the standard has it: over plain http someone between could read them anyway.
+# Across redirects the site is the worst of every address so far, measured from what asked (its
+# origin): same-origin, then same-site, then cross-site. The same site is the same scheme and the
+# same registrable domain (WireCookies.SameSite: the Public Suffix List's, if the program gave it).
+
+use corelib;
+use netlib.http;
+use netlib.cookies;
+use netlib.referrer;
+
+phi.WireMetadata:Library
+{
+	# what a request is for (Sec-Fetch-Dest), by number from 1
+	const int EMPTY: 1;
+	const int DOCUMENT: 2;
+	const int IFRAME: 3;
+	const int IMAGE: 4;
+	const int FONT: 5;
+	const int SCRIPT: 6;
+	const int STYLE: 7;
+	const int AUDIO: 8;
+	const int VIDEO: 9;
+	const int TRACK: 10;
+	const int MANIFEST: 11;
+	const int OBJECT: 12;
+	const int EMBED: 13;
+	const int WORKER: 14;
+	const int FRAME: 15;
+	str DESTS: 'empty|document|iframe|image|font|script|style|audio|video|track|manifest|object|embed|worker|frame|';
+
+	# how (Sec-Fetch-Mode), by number from 1
+	const int NAVIGATE: 1;
+	const int SAME_ORIGIN_MODE: 2;
+	const int NO_CORS: 3;
+	const int CORS: 4;
+	const int WEBSOCKET: 5;
+	str MODES: 'navigate|same-origin|no-cors|cors|websocket|';
+
+	# where it came from (Sec-Fetch-Site), worse as it goes up
+	const int NONE: 1;
+	const int SAME_ORIGIN: 2;
+	const int SAME_SITE: 3;
+	const int CROSS_SITE: 4;
+	str SITES: 'none|same-origin|same-site|cross-site|';
+
+	# A request to `to` from what's at `from` (a page's address; 0 or '' for the user's own, an
+	# address typed or a bookmark: NONE). An address with no origin (data:, about:) is no site's,
+	# so everything is CROSS_SITE from it; so is anything `to` that isn't http's.
+	[Site: ptr<u8> from: 0; ptr<u8> to: 0; : int]
+		if from is 0 or from:0 is 0 return NONE;
+		if to is 0 return CROSS_SITE;
+		ptr<WireTarget> a: new WireTarget;
+		ptr<WireTarget> b: new WireTarget;
+		int site: CROSS_SITE;
+		if a is not 0 and b is not 0 and (Split: from a) and (Split: to b)
+			if a.secure is b.secure and a.port is b.port and (WireReferrer.SameHost: a b)
+				site is SAME_ORIGIN;
+			;;
+			elif a.secure is b.secure and (WireCookies.SameSite: addr a.host:0 addr b.host:0)
+				site is SAME_SITE;
+			;;
+		;;
+		if a is not 0
+			free a;
+		;;
+		if b is not 0
+			free b;
+		;;
+	[end: site]
+
+	# the site a redirected request has: the worse of the two (NONE stays NONE: the user asked)
+	[Worse: int a: 0; int b: 0; : int]
+		if a is NONE or b is NONE return NONE;
+		if b > a return b;
+	[end: a]
+
+	# Target (max bytes, with a zero after) = the Sec-Fetch- header lines for a request to `to`:
+	# their length, or 0 if it has none (not a trustworthy address, a dest or mode not given) or
+	# they don't fit. user: the user made it (a navigation only: Sec-Fetch-User).
+	[Lines: ptr<u8> to: 0; int dest: 0; int mode: 0; int site: 0; bln user: false; ptr<u8> target: 0; u32 max: 0; : u32]
+		if max is 0 return 0;
+		target:0 is 0;
+		if to is 0 or dest < EMPTY or dest > FRAME or mode < NAVIGATE or mode > WEBSOCKET return 0;
+		if site < NONE or site > CROSS_SITE
+			site is CROSS_SITE;
+		;;
+		ptr<WireTarget> t: new WireTarget;
+		if t is 0 return 0;
+		bln trusted: (Split: to t) and (WireReferrer.Trustworthy: t);
+		free t;
+		if not trusted return 0;
+		# (in Chrome's order)
+		str made: [256];
+		made is 'Sec-Fetch-Site: ';
+		call Add: made addr SITES:0 site;
+		made++ '\r\nSec-Fetch-Mode: ';
+		call Add: made addr MODES:0 mode;
+		made++ '\r\n';
+		if user and mode is NAVIGATE
+			made++ 'Sec-Fetch-User: ?1\r\n';
+		;;
+		made++ 'Sec-Fetch-Dest: ';
+		call Add: made addr DESTS:0 dest;
+		made++ '\r\n';
+		if made.len + 1 > max return 0;
+		u32 n: 0;
+		while n < made.len
+			target:n is made:n;
+			n++;
+		;;
+		target:n is 0;
+	[end: n]
+
+	# the name of dest or mode by its number (DESTS, MODES), into target
+	[Name: int list: 0; int number: 0; ptr<u8> target: 0; u32 max: 0;]
+		if max is 0 return;
+		target:0 is 0;
+		str made: [64];
+		if list is 0
+			call Add: made addr DESTS:0 number;
+		;;
+		elif list is 1
+			call Add: made addr MODES:0 number;
+		;;
+		else
+			call Add: made addr SITES:0 number;
+		;;
+		u32 n: 0;
+		while n < made.len and n + 1 < max
+			target:n is made:n;
+			n++;
+		;;
+		target:n is 0;
+	[end]
+
+	# the number-th of names (each ending |), onto made
+	[Add: str made; ptr<u8> names: 0; int number: 0;]
+		u32 k: 0;
+		int pos: 1;
+		while pos < number
+			while names:k is not '|'
+				if names:k is 0 return;
+				k++;
+			;;
+			k++;
+			pos++;
+		;;
+		while names:k is not '|' and names:k is not 0
+			made++ names:k as chr;
+			k++;
+		;;
+	[end]
+
+	# url split, as WireHttp.Split, but only an http:// or https:// one
+	[Split: ptr<u8> url: 0; ptr<WireTarget> t: 0; : bln]
+		if not (WireHttp.StartsNoCase: url 'http://') and not (WireHttp.StartsNoCase: url 'https://') return false;
+	[end: (WireHttp.Split: url t)]
+}
