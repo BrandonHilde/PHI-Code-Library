@@ -370,6 +370,7 @@ phi.PageEvents:Library
 		call Js.Define: o 'screenY' (JsV.Num: y) JsObjs.E;
 		call Js.Define: o 'movementX' (JsV.Int: 0) JsObjs.E;
 		call Js.Define: o 'movementY' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: o 'view' (JsV.Obj: JsRt.r.global) JsObjs.E;
 		call Js.Define: o 'button' (JsV.Int: button) JsObjs.E;
 		call Js.Define: o 'buttons' (JsV.Int: buttons) JsObjs.E;
 		# (UIEvent.which, which old scripts read: the button and one, as Chrome has it)
@@ -387,10 +388,11 @@ phi.PageEvents:Library
 
 	# A pointer event the mouse makes (pointerId 1, as Chrome's mouse is), or the mouse event that
 	# goes with it, by its type: enter and leave don't bubble and can't be canceled. A move's button
-	# is -1 for a pointer event (none changed), 0 for a mouse one.
+	# is -1 for a pointer event (none changed), 0 for a mouse one. click, auxclick and contextmenu
+	# are pointer events too, as Chrome makes them; dblclick is a mouse one.
 	[NewPointer: ptr<u8> type: 0; f64 x: 0.0; f64 y: 0.0; f64 px: 0.0; f64 py: 0.0; int button: 0; int buttons: 0; u64 related: 0; int detail: 0;]
-		bln pointer: type:0 is 'p';
 		u32 n: (WlText.LenZ: type);
+		bln pointer: type:0 is 'p' or (WlText.EqZ: type n 'click') or (WlText.EqZ: type n 'auxclick') or (WlText.EqZ: type n 'contextmenu');
 		bln crossing: n >= 5 and ((WlText.EqZ: type + n - 5 5 'enter') or (WlText.EqZ: type + n - 5 5 'leave'));
 		ptr<JsObj> proto: mouse_proto;
 		if pointer
@@ -426,6 +428,18 @@ phi.PageEvents:Library
 		call Js.Define: o 'deltaY' (JsV.Num: dy) JsObjs.E;
 		call Js.Define: o 'deltaZ' (JsV.Int: 0) JsObjs.E;
 		call Js.Define: o 'deltaMode' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: o 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
+		call Js.Define: o 'composed' JsV.TRUE JsObjs.E;
+	[end: ev]
+
+	# focus, blur, focusin or focusout, the focus having moved (related: the element it went to or
+	# came from, or null)
+	[NewFocus: ptr<u8> type: 0; bln bubbles: false; u64 related: 0;]
+		u64 ev: (NewEventObject: type focus_proto bubbles false);
+		ptr<JsObj> o: (JsV.AsObj: ev);
+		call Js.Define: o 'detail' (JsV.Int: 0) JsObjs.E;
+		call Js.Define: o 'view' (JsV.Obj: JsRt.r.global) JsObjs.E;
+		call Js.Define: o 'relatedTarget' related JsObjs.E;
 		call Js.Define: o 'isTrusted' JsV.TRUE JsObjs.W | JsObjs.E;
 		call Js.Define: o 'composed' JsV.TRUE JsObjs.E;
 	[end: ev]

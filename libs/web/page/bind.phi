@@ -2233,20 +2233,15 @@ phi.PageBind:Library
 		ptr<JsNativeFn> self: (Js.CalleeOf: args);
 		ptr<DomNode> n: (ThisElement: args);
 		ptr<Page> p: Page.current;
-		ptr<DomNode> old: p.focused;
+		if p is 0 or n is 0 return JsV.UNDEF;
 		if self.magic is 1
-			if old is n
-				return JsV.UNDEF;
+			# (only what can have it, and is in the document)
+			if (Page.Focusable: n) and n.doc is p.doc and (Page.Holds: (Dom.DocumentElement: p.doc) n)
+				call Page.MoveFocus: p n false;
 			;;
-			p.focused is n;
-			if old is not 0
-				call PageEvents.FireSimple: old 'blur';
-			;;
-			call PageEvents.FireSimple: n 'focus';
 		;;
-		elif old is n
-			p.focused is 0;
-			call PageEvents.FireSimple: n 'blur';
+		elif (Page.Focused: p) is n
+			call Page.MoveFocus: p 0 as ptr<DomNode> false;
 		;;
 	[end: JsV.UNDEF]
 
@@ -2364,8 +2359,9 @@ phi.PageBind:Library
 				return (Js.NewStringZ: 'loading');
 			;;
 			is D_ACTIVE
-				if p.focused is not 0
-					return (Wrap: p.focused);
+				ptr<DomNode> fn: (Page.Focused: p);
+				if fn is not 0
+					return (Wrap: fn);
 				;;
 				return (Wrap: (Dom.Body: doc));
 			;;

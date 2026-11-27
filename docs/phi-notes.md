@@ -284,3 +284,20 @@ the click is still the host's to send with `Page.Click`, after the up. Listeners
 `el.attributes` has each attribute by name too, and the event handler properties are Chrome's
 lists. The CSS engine counts the styles an Update changed (`CssEngine.changed`): a hover change
 that changes none puts the document's version back. test_pointer; PHI OS FINDINGS #52.
+
+## Clicks and the focus: Page.Click, Page.ClickTarget, Page.MoveFocus (2026-11-27)
+
+`Page.Click: page node x y detail button` now takes the click count (`detail`, 2 for a double
+click's second, which then also fires `dblclick`) and the button (0 a `click`, which takes a
+link's default action; 1 or 2 an `auxclick`, which doesn't); both are PointerEvents, as Chrome
+makes them. Where it goes is the host's to ask: `Page.ClickTarget: pressed_on node` is the
+nearest element holding both what the button went down on and what it came up on (0 for none,
+then no click). `Page.Pointer`'s down moves the focus when its mousedown isn't canceled, and the
+other button's down fires `contextmenu` (as on the Mac); its result is false if either was
+canceled (the host then doesn't start choosing text). `Page.MoveFocus: page n by_mouse` is how
+the focus moves, for `focus()` and `blur()` too (`Page.Focusable` says what can have it):
+blur and focusout, then focus and focusin, FocusEvents with relatedTarget, the focus nowhere
+during the blur. `:focus-visible` (`CssSel.ST_FOCUS_VISIBLE`) follows Chrome's rule (in
+`MoveFocus`). `Page.Focused: page` is what has it, 0 once it's out of the document. Not yet: the
+blur Chrome fires as a focused element is taken out (it would run a handler in the middle of
+`Dom.Remove`). test_focus; PHI OS FINDINGS #53.

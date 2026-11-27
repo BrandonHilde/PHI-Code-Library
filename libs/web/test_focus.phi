@@ -1,0 +1,85 @@
+# The focus and clicks as the mouse makes them (Page.Pointer, Page.ClickTarget, Page.Click) and as
+# focus() and blur() move it (Page.MoveFocus): checked against Brave over its DevTools protocol
+# (PHI OS tools/mouse_ref.py). A mousedown that isn't canceled gives the focus to what can have it
+# (or takes it away); blur and focusout, then focus and focusin, each with relatedTarget, the body
+# active during the blur; click and auxclick are PointerEvents, dblclick after a double click's
+# second, contextmenu at the other button's press (as on the Mac); a click let go elsewhere goes to
+# what holds both; :focus-visible by Chrome's rule; what's taken out of the document loses it.
+use weblib;
+
+phi.TestFocus:Program
+{
+	call Weblib.Start: 900000;
+	str html: '<!doctype html><style>div,button,input,a{display:block;margin:2px;height:18px;width:200px;font-size:12px;padding:0;border:0}</style><div id=go>go</div><div id=plain>plain</div><button id=btn>button</button><input id=inp><input id=chk type=checkbox><a id=lnk href="#x">link</a><a id=noh>no href</a><input id=dis disabled><div id=tab tabindex=0><span id=intab>in</span></div><div id=ce contenteditable>edit</div><div id=stop>stop</div><div id=ctx>ctx</div><button id=pcan>pcan</button><script>window.__log=[];function L(s){__log.push(s);console.log(s);}\nfunction who(t){return t&&t.id?t.id:(t===document.body?"body":String(t&&t.nodeName));}\n["mousedown","mouseup","click","dblclick","auxclick","contextmenu","focus","blur","focusin","focusout"].forEach(function(ty){document.addEventListener(ty,function(e){if(e.target.id==="tmp")return;var s=ty+" "+who(e.target)+" "+e.constructor.name+" d"+e.detail;if(e.button!==undefined)s+=" b"+e.button+"/"+e.buttons;if(e.relatedTarget!==undefined)s+=" rel="+who(e.relatedTarget);s+=" "+e.bubbles+" "+e.cancelable+" "+e.isTrusted+" active="+who(document.activeElement);if(e.view!==undefined)s+=" view "+(e.view===window);L(s);},true);});\ndocument.getElementById("stop").addEventListener("mousedown",function(e){e.preventDefault();});\ndocument.getElementById("pcan").addEventListener("pointerdown",function(e){e.preventDefault();});\ndocument.getElementById("ctx").addEventListener("contextmenu",function(e){e.preventDefault();L("ctx canceled");});\nfunction st(id){var e=document.getElementById(id);return id+" active="+who(document.activeElement)+" f="+e.matches(":focus")+" fv="+e.matches(":focus-visible")+" fw="+document.body.matches(":focus-within");}\ndocument.getElementById("go").addEventListener("click",function(){\n["plain","noh","dis","chk","tab","ce","inp","btn"].forEach(function(id){document.getElementById(id).focus();L("focus() "+st(id));});\ndocument.getElementById("btn").blur();L("blur() "+st("btn"));\nvar i=document.getElementById("inp");function mv(){L("in blur active="+who(document.activeElement));document.getElementById("chk").focus();}\ni.addEventListener("blur",mv);i.focus();document.getElementById("btn").focus();L("blur moved it "+who(document.activeElement));i.removeEventListener("blur",mv);\nvar t=document.createElement("button");t.id="tmp";document.body.appendChild(t);t.focus();t.remove();L("removed "+who(document.activeElement)+" fw="+document.body.matches(":focus-within"));\n},{once:true});\ndocument.getElementById("plain").addEventListener("click",function(){document.getElementById("btn").focus();L("after mouse "+st("btn"));document.getElementById("inp").focus();L("after mouse "+st("inp"));document.getElementById("chk").focus();L("after mouse "+st("chk"));},{once:true});\n</script>';
+	PageHost host;
+	host.logger is addr Print;
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page html html.len as u32 'https://focus.example/';
+	call Page.Tick: page 5.0;
+	call Down: page '#go' 0 1;
+	call Up: page '#go' 0 1;
+	call Down: page '#pcan' 0 1;
+	call Up: page '#pcan' 0 1;
+	call Down: page '#btn' 0 1;
+	call Up: page '#btn' 0 1;
+	call Down: page '#btn' 0 2;
+	call Up: page '#btn' 0 2;
+	call Down: page '#plain' 0 1;
+	call Up: page '#plain' 0 1;
+	call Down: page '#lnk' 0 1;
+	call Up: page '#lnk' 0 1;
+	call Down: page '#intab' 0 1;
+	call Up: page '#intab' 0 1;
+	call Down: page '#stop' 0 1;
+	call Up: page '#stop' 0 1;
+	call Down: page '#plain' 2 1;
+	call Up: page '#plain' 2 1;
+	call Down: page '#ctx' 2 1;
+	call Up: page '#ctx' 2 1;
+	call Down: page '#btn' 1 1;
+	call Up: page '#btn' 1 1;
+	call Down: page '#inp' 2 1;
+	call Up: page '#inp' 2 1;
+	call Down: page '#lnk' 0 1;
+	call Up: page '#plain' 0 1;
+	call Down: page '#ce' 0 1;
+	call Up: page '#ce' 0 1;
+	call Page.Tick: page 50.0;
+	call Page.Free: page;
+	exit 0;
+
+	int held: 0;                    # the buttons held, as MouseEvent.buttons has them
+	ptr<DomNode> down_on[3];        # what each button went down on
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+
+	[Node: ptr<Page> page: 0; ptr<u8> sel: 0; : ptr<DomNode>]
+	[end: (Css.Query: page.doc.root sel (WlText.LenZ: sel))]
+
+	# a button pressed over the element sel finds (button: 0 the main one, 1 the middle, 2 the other)
+	[Down: ptr<Page> page: 0; ptr<u8> sel: 0; int button: 0; int clicks: 1;]
+		ptr<DomNode> n: (Node: page sel);
+		held is held | (Bit: button);
+		down_on:button is n;
+		bln d: (Page.Pointer: page n Page.POINTER_DOWN 10.0 10.0 button held clicks);
+	[end]
+
+	# and let go over it, then the click where it goes
+	[Up: ptr<Page> page: 0; ptr<u8> sel: 0; int button: 0; int clicks: 1;]
+		ptr<DomNode> n: (Node: page sel);
+		held is held & ((Bit: button) ^ 7);
+		bln u: (Page.Pointer: page n Page.POINTER_UP 10.0 10.0 button held clicks);
+		ptr<DomNode> to: (Page.ClickTarget: down_on:button n);
+		down_on:button is 0;
+		if to is not 0
+			bln c: (Page.Click: page to 10.0 10.0 clicks button);
+		;;
+	[end]
+
+	[Bit: int button: 0; : int]
+		if button is 1 return 4;
+		if button is 2 return 2;
+	[end: 1]
+}

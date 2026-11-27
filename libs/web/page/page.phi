@@ -224,6 +224,8 @@ struct.Page
 	ptr<DomNode> hovered;
 	ptr<DomNode> pressed;
 	bln no_compat;
+	bln focus_quiet;            # what has the focus isn't :focus-visible (Chrome's rule, MoveFocus)
+	bln mouse_focus;            # the last the user moved the focus, it was with the mouse
 
 	PageSheet sheets[atmost 4096];        # (each shadow tree's <style> is one)
 	u32 sheets_version;
@@ -423,6 +425,10 @@ phi.Page:Library
 		if p is 0 return -1;
 		if what is CssSel.ST_FOCUS
 			if e is p.focused return 1;
+			return 0;
+		;;
+		if what is CssSel.ST_FOCUS_VISIBLE
+			if e is p.focused and not p.focus_quiet return 1;
 			return 0;
 		;;
 		if what is CssSel.ST_HOVER
@@ -1503,20 +1509,42 @@ phi.Page:Library
 
 	# ---- what happens to the page from outside ----
 
-	# An event at a node, as the browser sees it happen: a mouse event at a point, say. False if a handler
-	# called preventDefault. A link's default action is taken here, unless that happened.
-	[Click: ptr<Page> p: 0; ptr<DomNode> node: 0; f64 x: 0.0; f64 y: 0.0;]
+	# A click at node, as the browser sees it happen, at (x, y) in the window (ClickTarget says where
+	# one goes): with the main button (0) a click, its count of clicks being detail, then for the
+	# second of a double click a dblclick; with another button an auxclick. False if a handler
+	# called preventDefault on the click. A link's default action is taken here, unless that happened.
+	[Click: ptr<Page> p: 0; ptr<DomNode> node: 0; f64 x: 0.0; f64 y: 0.0; int detail: 1; int button: 0; : bln]
 		call Use: p;
-		u64 ev: (PageEvents.NewMouse: 'click' x y 0 1);
+		ptr<u8> type: 'click';
+		if button is not 0
+			type is 'auxclick';
+		;;
 		p.nest++;
-		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: node) ev);
+		bln allowed: (SendPointer: p node type x y button 0 0 as ptr<DomNode> detail);
 		p.nest--;
 		call RunJobs: p;
-		if allowed
+		if allowed and button is 0
 			call DefaultClick: p node;
+		;;
+		if button is 0 and detail is 2
+			p.nest++;
+			bln dbl: (SendPointer: p node 'dblclick' x y 0 0 0 as ptr<DomNode> 2);
+			p.nest--;
+			call RunJobs: p;
 		;;
 		call Invalidate: p;
 	[end: allowed]
+
+	# where the click goes when a button's let go over node, having been pressed over pressed_on:
+	# what holds them both (Chrome's), 0 for neither
+	[ClickTarget: ptr<DomNode> pressed_on: 0; ptr<DomNode> node: 0; : ptr<DomNode>]
+		if pressed_on is 0 or node is 0 return 0 as ptr<DomNode>;
+		ptr<DomNode> a: pressed_on;
+		while a is not 0
+			if a.type is DomType.ELEMENT and (Holds: a node) return a;
+			a is (Dom.FlatParent: a);
+		;;
+	[end: 0 as ptr<DomNode>]
 
 	const int POINTER_MOVE: 0;
 	const int POINTER_DOWN: 1;
@@ -1528,8 +1556,11 @@ phi.Page:Library
 	# it's over changes, pointerout, pointerleave, pointerover and pointerenter, then the same of
 	# mouse events; then pointermove and mousemove, pointerdown and mousedown, or pointerup and
 	# mouseup. A canceled pointerdown keeps the mouse events back (all but those four) until the
-	# button's let go. :hover and :active follow it. The click is the host's to send (Click),
-	# after the up. False if mousedown was canceled (nothing's to be focused then).
+	# button's let go. :hover and :active follow it. A mousedown that isn't canceled (and is sent)
+	# moves the focus to what can have it that the mouse is over, or takes it away (any button);
+	# then the other button's press is a contextmenu, as on the Mac (Windows and Linux have it at
+	# the up). The click is the host's to send (Click), after the up. False if mousedown (or the
+	# contextmenu) was canceled.
 	[Pointer: ptr<Page> p: 0; ptr<DomNode> node: 0; int kind: 0; f64 x: 0.0; f64 y: 0.0; int button: 0; int buttons: 0; int clicks: 1; : bln]
 		call Use: p;
 		while node is not 0 and node.type is not DomType.ELEMENT
@@ -1558,6 +1589,12 @@ phi.Page:Library
 				p.no_compat is not (SendPointer: p node 'pointerdown' x y button buttons 0 as ptr<DomNode>);
 				if not p.no_compat
 					allowed is (SendPointer: p node 'mousedown' x y button buttons 0 as ptr<DomNode> clicks);
+					if allowed and (Holds: (Dom.DocumentElement: p.doc) node)
+						call MoveFocus: p (FocusableFrom: node) true;
+					;;
+				;;
+				if button is 2
+					allowed is (SendPointer: p node 'contextmenu' x y button buttons 0 as ptr<DomNode> 0) and allowed;
 				;;
 			;;
 			elif kind is POINTER_UP
@@ -1696,25 +1733,138 @@ phi.Page:Library
 		;;
 	[end]
 
-	# the element a button's held down on (0: let go), for :active: it and what it's in (each of
-	# those only its own style: the whole page over again at each press would be slow)
+	# the element a button's held down on (0: let go), for :active
 	[Pressed: ptr<Page> p: 0; ptr<DomNode> node: 0;]
 		u32 was: p.doc.version;
-		ptr<DomNode> a: p.pressed;
-		call Restyle: a true;
-		while a is not 0
-			a is (Dom.FlatParent: a);
-			call Restyle: a false;
-		;;
+		call Restate: p.pressed;
+		call Restate: node;
 		p.pressed is node;
-		a is node;
-		call Restyle: a true;
-		while a is not 0
-			a is (Dom.FlatParent: a);
-			call Restyle: a false;
-		;;
 		call StatesSettled: p was;
 	[end]
+
+	# n's state has changed (:active, :focus): it's to be styled again, and what it's in (each of
+	# those only its own style: the whole page over again at each press would be slow)
+	[Restate: ptr<DomNode> n: 0;]
+		call Restyle: n true;
+		while n is not 0
+			n is (Dom.FlatParent: n);
+			call Restyle: n false;
+		;;
+	[end]
+
+	# The focus goes to n (0: nowhere, so the body's the active element): blur and focusout at what
+	# had it, then focus and focusin at n, each with the other as relatedTarget, :focus and
+	# :focus-within moved first (as handlers see it in Chrome: during the blur it's nowhere). A
+	# blur handler that moves the focus itself has the last word. :focus-visible, as Chrome has
+	# it: always in a field one types into; else not when the mouse moved it (by_mouse), nor when
+	# focus() does, if the last the user moved it was with the mouse (taking it away counts).
+	[MoveFocus: ptr<Page> p: 0; ptr<DomNode> n: 0; bln by_mouse: false;]
+		ptr<DomNode> old: (Focused: p);
+		if old is n return;
+		if by_mouse
+			p.mouse_focus is true;
+		;;
+		p.focus_quiet is p.mouse_focus and not (TypedInto: n);
+		u64 to: JsV.NULL;
+		if n is not 0
+			to is (PageBind.Wrap: n);
+		;;
+		u64 from: JsV.NULL;
+		# (it's nowhere while what had it hears of it going: the body's the active element then)
+		u32 was: p.doc.version;
+		call Restate: p.focused;
+		p.focused is 0;
+		call StatesSettled: p was;
+		if old is not 0
+			from is (PageBind.Wrap: old);
+			bln b: (PageEvents.Dispatch: from (PageEvents.NewFocus: 'blur' false to));
+			# (a blur handler that's moved it: its focus and focusin have come, then this one's
+			# focusout, with no relatedTarget, as in Chrome)
+			u64 out_to: to;
+			if p.focused is not 0
+				out_to is JsV.NULL;
+			;;
+			bln fo: (PageEvents.Dispatch: from (PageEvents.NewFocus: 'focusout' true out_to));
+		;;
+		if n is 0 or p.focused is not 0 return;
+		was is p.doc.version;
+		call Restate: n;
+		p.focused is n;
+		call StatesSettled: p was;
+		bln f: (PageEvents.Dispatch: to (PageEvents.NewFocus: 'focus' false from));
+		bln fi: (PageEvents.Dispatch: to (PageEvents.NewFocus: 'focusin' true from));
+	[end]
+
+	# what has the focus (0: nothing, the body being the active element). Taken out of the document,
+	# it's lost it, without a blur, as in Chrome.
+	[Focused: ptr<Page> p: 0; : ptr<DomNode>]
+		ptr<DomNode> n: p.focused;
+		if n is not 0 and (n.doc is not p.doc or not (Holds: (Dom.DocumentElement: p.doc) n))
+			p.focused is 0;
+			n is 0;
+		;;
+	[end: n]
+
+	# what the mouse pressed on node gives the focus to: it or the nearest it's in that can have it
+	# (0: none, so the focus goes)
+	[FocusableFrom: ptr<DomNode> node: 0; : ptr<DomNode>]
+		while node is not 0
+			if (Focusable: node) return node;
+			node is (Dom.FlatParent: node);
+		;;
+	[end: 0 as ptr<DomNode>]
+
+	# whether n can have the focus, as Chrome has it: what has a tabindex, a link, a form control
+	# that isn't disabled (nor a hidden input), a frame, a summary, what's editable. (Chrome also
+	# asks that it be shown, display not none; not yet here.)
+	[Focusable: ptr<DomNode> n: 0; : bln]
+		if n is 0 or n.type is not DomType.ELEMENT return false;
+		ptr<u8> ti: (Dom.AttrValue: n 'tabindex');
+		if ti is not 0
+			u32 i: 0;
+			while ti:i is ' ' or ti:i is '\t' or ti:i is '\n'
+				i++;
+			;;
+			if ti:i is '-' or ti:i is '+'
+				i++;
+			;;
+			if ti:i >= '0' and ti:i <= '9' return true;
+		;;
+		ptr<u8> ce: (Dom.AttrValue: n 'contenteditable');
+		if ce is not 0 and not (WlText.EqNoCaseZ: ce (WlText.LenZ: ce) 'false') return true;
+		if n.ns is not DomNs.HTML or n.tag is 0 return false;
+		u32 t: n.tag.tag;
+		if t is HtmlTag.A or t is HtmlTag.AREA
+			return (Dom.AttrValue: n 'href') is not 0;
+		;;
+		if t is HtmlTag.BUTTON or t is HtmlTag.SELECT or t is HtmlTag.TEXTAREA
+			return (Dom.AttrValue: n 'disabled') is 0;
+		;;
+		if t is HtmlTag.INPUT
+			if (Dom.AttrValue: n 'disabled') is not 0 return false;
+			ptr<u8> type: (Dom.AttrValue: n 'type');
+			return type is 0 or not (WlText.EqNoCaseZ: type (WlText.LenZ: type) 'hidden');
+		;;
+		if t is HtmlTag.IFRAME return true;
+		if t is HtmlTag.SUMMARY
+			return n.parent is not 0 and (Is: n.parent HtmlTag.DETAILS);
+		;;
+	[end: false]
+
+	# whether n is a field one types text into (a textarea, an input of a text kind), which the
+	# mouse's focus leaves :focus-visible
+	[TypedInto: ptr<DomNode> n: 0; : bln]
+		if n is 0 return false;
+		if (Is: n HtmlTag.TEXTAREA) return true;
+		ptr<u8> ce: (Dom.AttrValue: n 'contenteditable');
+		if ce is not 0 and not (WlText.EqNoCaseZ: ce (WlText.LenZ: ce) 'false') return true;
+		if not (Is: n HtmlTag.INPUT) return false;
+		ptr<u8> type: (Dom.AttrValue: n 'type');
+		if type is 0 return true;
+		u32 tl: (WlText.LenZ: type);
+		if tl is 0 return true;
+		bln not_text: (WlText.EqNoCaseZ: type tl 'button') or (WlText.EqNoCaseZ: type tl 'submit') or (WlText.EqNoCaseZ: type tl 'reset') or (WlText.EqNoCaseZ: type tl 'checkbox') or (WlText.EqNoCaseZ: type tl 'radio') or (WlText.EqNoCaseZ: type tl 'image') or (WlText.EqNoCaseZ: type tl 'file') or (WlText.EqNoCaseZ: type tl 'range') or (WlText.EqNoCaseZ: type tl 'color') or (WlText.EqNoCaseZ: type tl 'hidden');
+	[end: not not_text]
 
 	# :hover or :active has changed for what Restyle marked: their styles are worked out now, and
 	# when none came out different (no rule cares) the document's version is put back as it was,

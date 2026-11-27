@@ -1,0 +1,126 @@
+mousedown go MouseEvent d1 b0/1 rel=null true true true active=body view true
+mouseup go MouseEvent d1 b0/0 rel=null true true true active=body view true
+click go PointerEvent d1 b0/0 rel=null true true true active=body view true
+focus() plain active=body f=false fv=false fw=false
+focus() noh active=body f=false fv=false fw=false
+focus() dis active=body f=false fv=false fw=false
+focus chk FocusEvent d0 rel=null false false true active=chk view true
+focusin chk FocusEvent d0 rel=null true false true active=chk view true
+focus() chk active=chk f=true fv=true fw=true
+blur chk FocusEvent d0 rel=tab false false true active=body view true
+focusout chk FocusEvent d0 rel=tab true false true active=body view true
+focus tab FocusEvent d0 rel=chk false false true active=tab view true
+focusin tab FocusEvent d0 rel=chk true false true active=tab view true
+focus() tab active=tab f=true fv=true fw=true
+blur tab FocusEvent d0 rel=ce false false true active=body view true
+focusout tab FocusEvent d0 rel=ce true false true active=body view true
+focus ce FocusEvent d0 rel=tab false false true active=ce view true
+focusin ce FocusEvent d0 rel=tab true false true active=ce view true
+focus() ce active=ce f=true fv=true fw=true
+blur ce FocusEvent d0 rel=inp false false true active=body view true
+focusout ce FocusEvent d0 rel=inp true false true active=body view true
+focus inp FocusEvent d0 rel=ce false false true active=inp view true
+focusin inp FocusEvent d0 rel=ce true false true active=inp view true
+focus() inp active=inp f=true fv=true fw=true
+blur inp FocusEvent d0 rel=btn false false true active=body view true
+focusout inp FocusEvent d0 rel=btn true false true active=body view true
+focus btn FocusEvent d0 rel=inp false false true active=btn view true
+focusin btn FocusEvent d0 rel=inp true false true active=btn view true
+focus() btn active=btn f=true fv=true fw=true
+blur btn FocusEvent d0 rel=null false false true active=body view true
+focusout btn FocusEvent d0 rel=null true false true active=body view true
+blur() btn active=body f=false fv=false fw=false
+focus inp FocusEvent d0 rel=null false false true active=inp view true
+focusin inp FocusEvent d0 rel=null true false true active=inp view true
+blur inp FocusEvent d0 rel=btn false false true active=body view true
+in blur active=body
+focus chk FocusEvent d0 rel=null false false true active=chk view true
+focusin chk FocusEvent d0 rel=null true false true active=chk view true
+focusout inp FocusEvent d0 rel=null true false true active=chk view true
+blur moved it chk
+blur chk FocusEvent d0 rel=tmp false false true active=body view true
+focusout chk FocusEvent d0 rel=tmp true false true active=body view true
+removed body fw=false
+click pcan PointerEvent d1 b0/0 rel=null true true true active=body view true
+mousedown btn MouseEvent d1 b0/1 rel=null true true true active=body view true
+focus btn FocusEvent d0 rel=null false false true active=btn view true
+focusin btn FocusEvent d0 rel=null true false true active=btn view true
+mouseup btn MouseEvent d1 b0/0 rel=null true true true active=btn view true
+click btn PointerEvent d1 b0/0 rel=null true true true active=btn view true
+mousedown btn MouseEvent d2 b0/1 rel=null true true true active=btn view true
+mouseup btn MouseEvent d2 b0/0 rel=null true true true active=btn view true
+click btn PointerEvent d2 b0/0 rel=null true true true active=btn view true
+dblclick btn MouseEvent d2 b0/0 rel=null true true true active=btn view true
+mousedown plain MouseEvent d1 b0/1 rel=null true true true active=btn view true
+blur btn FocusEvent d0 rel=null false false true active=body view true
+focusout btn FocusEvent d0 rel=null true false true active=body view true
+mouseup plain MouseEvent d1 b0/0 rel=null true true true active=body view true
+click plain PointerEvent d1 b0/0 rel=null true true true active=body view true
+focus btn FocusEvent d0 rel=null false false true active=btn view true
+focusin btn FocusEvent d0 rel=null true false true active=btn view true
+after mouse btn active=btn f=true fv=false fw=true
+blur btn FocusEvent d0 rel=inp false false true active=body view true
+focusout btn FocusEvent d0 rel=inp true false true active=body view true
+focus inp FocusEvent d0 rel=btn false false true active=inp view true
+focusin inp FocusEvent d0 rel=btn true false true active=inp view true
+after mouse inp active=inp f=true fv=true fw=true
+blur inp FocusEvent d0 rel=chk false false true active=body view true
+focusout inp FocusEvent d0 rel=chk true false true active=body view true
+focus chk FocusEvent d0 rel=inp false false true active=chk view true
+focusin chk FocusEvent d0 rel=inp true false true active=chk view true
+after mouse chk active=chk f=true fv=false fw=true
+mousedown lnk MouseEvent d1 b0/1 rel=null true true true active=chk view true
+blur chk FocusEvent d0 rel=lnk false false true active=body view true
+focusout chk FocusEvent d0 rel=lnk true false true active=body view true
+focus lnk FocusEvent d0 rel=chk false false true active=lnk view true
+focusin lnk FocusEvent d0 rel=chk true false true active=lnk view true
+mouseup lnk MouseEvent d1 b0/0 rel=null true true true active=lnk view true
+click lnk PointerEvent d1 b0/0 rel=null true true true active=lnk view true
+mousedown intab MouseEvent d1 b0/1 rel=null true true true active=lnk view true
+blur lnk FocusEvent d0 rel=tab false false true active=body view true
+focusout lnk FocusEvent d0 rel=tab true false true active=body view true
+focus tab FocusEvent d0 rel=lnk false false true active=tab view true
+focusin tab FocusEvent d0 rel=lnk true false true active=tab view true
+mouseup intab MouseEvent d1 b0/0 rel=null true true true active=tab view true
+click intab PointerEvent d1 b0/0 rel=null true true true active=tab view true
+mousedown stop MouseEvent d1 b0/1 rel=null true true true active=tab view true
+mouseup stop MouseEvent d1 b0/0 rel=null true true true active=tab view true
+click stop PointerEvent d1 b0/0 rel=null true true true active=tab view true
+mousedown plain MouseEvent d1 b2/2 rel=null true true true active=tab view true
+blur tab FocusEvent d0 rel=null false false true active=body view true
+focusout tab FocusEvent d0 rel=null true false true active=body view true
+contextmenu plain PointerEvent d0 b2/2 rel=null true true true active=body view true
+mouseup plain MouseEvent d1 b2/0 rel=null true true true active=body view true
+auxclick plain PointerEvent d1 b2/0 rel=null true true true active=body view true
+mousedown ctx MouseEvent d1 b2/2 rel=null true true true active=body view true
+contextmenu ctx PointerEvent d0 b2/2 rel=null true true true active=body view true
+ctx canceled
+mouseup ctx MouseEvent d1 b2/0 rel=null true true true active=body view true
+auxclick ctx PointerEvent d1 b2/0 rel=null true true true active=body view true
+mousedown btn MouseEvent d1 b1/4 rel=null true true true active=body view true
+focus btn FocusEvent d0 rel=null false false true active=btn view true
+focusin btn FocusEvent d0 rel=null true false true active=btn view true
+mouseup btn MouseEvent d1 b1/0 rel=null true true true active=btn view true
+auxclick btn PointerEvent d1 b1/0 rel=null true true true active=btn view true
+mousedown inp MouseEvent d1 b2/2 rel=null true true true active=btn view true
+blur btn FocusEvent d0 rel=inp false false true active=body view true
+focusout btn FocusEvent d0 rel=inp true false true active=body view true
+focus inp FocusEvent d0 rel=btn false false true active=inp view true
+focusin inp FocusEvent d0 rel=btn true false true active=inp view true
+contextmenu inp PointerEvent d0 b2/2 rel=null true true true active=inp view true
+mouseup inp MouseEvent d1 b2/0 rel=null true true true active=inp view true
+auxclick inp PointerEvent d1 b2/0 rel=null true true true active=inp view true
+mousedown lnk MouseEvent d1 b0/1 rel=null true true true active=inp view true
+blur inp FocusEvent d0 rel=lnk false false true active=body view true
+focusout inp FocusEvent d0 rel=lnk true false true active=body view true
+focus lnk FocusEvent d0 rel=inp false false true active=lnk view true
+focusin lnk FocusEvent d0 rel=inp true false true active=lnk view true
+mouseup plain MouseEvent d1 b0/0 rel=null true true true active=lnk view true
+click body PointerEvent d1 b0/0 rel=null true true true active=lnk view true
+mousedown ce MouseEvent d1 b0/1 rel=null true true true active=lnk view true
+blur lnk FocusEvent d0 rel=ce false false true active=body view true
+focusout lnk FocusEvent d0 rel=ce true false true active=body view true
+focus ce FocusEvent d0 rel=lnk false false true active=ce view true
+focusin ce FocusEvent d0 rel=lnk true false true active=ce view true
+mouseup ce MouseEvent d1 b0/0 rel=null true true true active=ce view true
+click ce PointerEvent d1 b0/0 rel=null true true true active=ce view true
