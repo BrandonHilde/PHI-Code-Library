@@ -1434,12 +1434,38 @@ phi.PageBind:Library
 				return (JsV.Int: (PageCanvas.Size: n 'height' 150));
 			;;
 		;;
-		ptr<DomAttr> a: (Dom.Attr: n name);
-		if a is 0
-			return JsV.INT_BASE;
+		# an <img> as Chrome has it: the size it's drawn at, inside its padding and border; not
+		# drawn, what the attribute says, else its picture's own size once that's come
+		bln img: n.tag is (WlAtoms.GetZ: 'img') and n.ns is DomNs.HTML;
+		bln wide: name is (WlAtoms.GetZ: 'width');
+		if img and (wide or name is (WlAtoms.GetZ: 'height'))
+			f64 box[4];
+			call BoxOf: n addr box:0;
+			if box:2 > 0.0 or box:3 > 0.0
+				ptr<CssComputed> s: (Css.StyleOf: n);
+				if wide
+					return (JsV.Int: (box:2 - (s.PaddingLeft: 0.0) - (s.PaddingRight: 0.0) - (s.BorderLeft) - (s.BorderRight)) as int);
+				;;
+				return (JsV.Int: (box:3 - (s.PaddingTop: 0.0) - (s.PaddingBottom: 0.0) - (s.BorderTop) - (s.BorderBottom)) as int);
+			;;
 		;;
-		f64 x: (JsOps.ToNumber: (Js.NewString: a.value a.value_len));
-		if x is not x
+		ptr<DomAttr> a: (Dom.Attr: n name);
+		bln says: false;
+		f64 x: 0.0;
+		if a is not 0
+			x is (JsOps.ToNumber: (Js.NewString: a.value a.value_len));
+			if x is x
+				says is true;
+			;;
+		;;
+		if not says and img
+			int size[2];
+			if (PictureState: n addr size:0) is 2
+				if wide return (JsV.Int: size:0);
+				return (JsV.Int: size:1);
+			;;
+		;;
+		if not says
 			return JsV.INT_BASE;
 		;;
 	[end: (JsV.Num: x)]
@@ -2051,29 +2077,40 @@ phi.PageBind:Library
 		call BoxOf: n addr box:0;
 	[end: (JsV.Num: box:(self.magic))]
 
+	# PageHost.picture's word on an <img> (0 to 3, and its size at 2), with what the page knows
+	# itself: a picture asked for that the host hasn't heard of yet, or a src just given that's to
+	# be asked for once what's running is done (Page.RunJobs), is coming
+	[PictureState: ptr<DomNode> n: 0; ptr<int> size: 0; : int]
+		size:0 is 0;
+		size:1 is 0;
+		ptr<Page> p: Page.current;
+		if p is 0 or p.host.picture is 0 return 0;
+		int state: (p.host.picture: p n size);
+		if state is not 0 return state;
+		while u32 r: 0; r < p.requests.len; r++;
+			if p.requests:r.node is n and p.requests:r.kind is PageLoad.IMAGE and not p.requests:r.done
+				return 1;
+			;;
+		;;
+		while u32 q: 0; q < p.new_srcs.len; q++;
+			if p.new_srcs:q is n
+				ptr<DomAttr> src: (Dom.Attr: n (WlAtoms.GetZ: 'src'));
+				ptr<DomAttr> set: (Dom.Attr: n (WlAtoms.GetZ: 'srcset'));
+				if (src is not 0 and src.value_len > 0) or (set is not 0 and set.value_len > 0)
+					return 1;
+				;;
+			;;
+		;;
+	[end: 0]
+
 	# img.naturalWidth, naturalHeight (magic 0, 1): its picture's size once it's come, else 0; and
 	# complete (2): whether there's nothing more to wait for, its picture come or not to be had,
 	# or no src. From PageHost.picture; without it a picture's complete and has no size.
 	[PictureGet: ptr<u64> args: 0; int argc: 0;]
 		ptr<JsNativeFn> self: (Js.CalleeOf: args);
 		ptr<DomNode> n: (ThisElement: args);
-		ptr<Page> p: Page.current;
 		int size[2];
-		size:0 is 0;
-		size:1 is 0;
-		int state: 0;
-		if p is not 0 and p.host.picture is not 0
-			state is (p.host.picture: p n addr size:0);
-			if state is 0
-				# (asked for, and the host hasn't heard yet)
-				while u32 r: 0; r < p.requests.len; r++;
-					if p.requests:r.node is n and p.requests:r.kind is PageLoad.IMAGE and not p.requests:r.done
-						state is 1;
-						break;
-					;;
-				;;
-			;;
-		;;
+		int state: (PictureState: n addr size:0);
 		if self.magic is 2
 			return (JsV.Bool: state is not 1);
 		;;

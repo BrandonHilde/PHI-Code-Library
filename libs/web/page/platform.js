@@ -2600,7 +2600,23 @@
         Object.defineProperty(imgProto, p[0], { get: p[1], enumerable: true, configurable: true });
       }
     });
-    if (!imgProto.decode) hidden(imgProto, "decode", function decode() { return Promise.resolve(); });
+    // decode(): once its picture's in (at once if it's complete); no src, or a picture that
+    // couldn't be had, is an EncodingError, as in Chrome
+    if (!imgProto.decode) hidden(imgProto, "decode", function decode() {
+      var img = this;
+      return new Promise(function (ok, no) {
+        var bad = function () { no(new DOMException("The source image cannot be decoded.", "EncodingError")); };
+        if (!img.getAttribute("src") && !img.getAttribute("srcset")) return bad();
+        if (img.complete) return ok();
+        var done = function (e) {
+          img.removeEventListener("load", done);
+          img.removeEventListener("error", done);
+          if (e.type === "load") ok(); else bad();
+        };
+        img.addEventListener("load", done);
+        img.addEventListener("error", done);
+      });
+    });
   }
 
   ["HTMLAnchorElement", "HTMLAreaElement"].forEach(function (name) {

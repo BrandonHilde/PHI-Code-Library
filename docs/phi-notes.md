@@ -261,3 +261,13 @@ whose IMAGE request is still waiting counts as coming. Settle's wait for the win
 counts an image's request unless the host has no hook or the image is `loading="lazy"`; FETCH
 requests are not waited for (as in Chrome). A host that answers IMAGE with 200 at once still works
 as before. PHI OS FINDINGS #50 has the browser side.
+
+## An <img>'s width, complete and decode() straight after a src (2026-11-26)
+
+An `<img>` given a src asks for its picture once the running script is done (`Page.RunJobs`), so
+just after `img.src = ...` nothing said it was coming and `complete` was true; now a src waiting
+to be asked for counts as coming. `img.decode()` resolved at once; now when the picture is in, and
+it's an EncodingError with no src or a picture that couldn't be had. `img.width` and `height` are
+Chrome's: the size it's drawn at inside its padding and border (from `PageHost.box`); not drawn,
+the attribute, else the picture's own size once it's in. `new Image()` that's never put in the
+document did already ask for its picture. Checked against Brave; PHI OS FINDINGS #51.
