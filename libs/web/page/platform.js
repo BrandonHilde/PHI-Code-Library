@@ -1283,18 +1283,60 @@
   FileReader.EMPTY = 0; FileReader.LOADING = 1; FileReader.DONE = 2;
   define("FileReader", FileReader);
 
+  // whether f is in a disabled fieldset, and not in its first legend (which isn't disabled)
+  var fieldsetOff = function (f) {
+    for (var p = f.parentElement; p; p = p.parentElement) {
+      if (p.localName !== "fieldset" || !p.hasAttribute("disabled")) continue;
+      var first = null;
+      for (var c = p.firstElementChild; c; c = c.nextElementSibling) if (c.localName === "legend") { first = c; break; }
+      if (!first || !first.contains(f)) return true;
+    }
+    return false;
+  };
   class FormData {
-    constructor(form) {
+    constructor(form, submitter) {
       hidden(this, "_list", []);
       if (form && form.nodeType === 1 && form.querySelectorAll) {
-        var fields = form.querySelectorAll("input[name], select[name], textarea[name]");
+        // (the HTML standard's entry list, as Chrome makes it: the form's own fields in tree
+        // order, those elsewhere that name it with form="", not those inside it that name another;
+        // none without a name, or disabled (or in a disabled fieldset, but for its first legend);
+        // each chosen option of a select multiple; a file input's file, an empty one when none is
+        // chosen; the submit button the form's sent with, where it is)
+        var doc = form.ownerDocument || global.document;
+        var fields = doc.querySelectorAll("input[name], select[name], textarea[name], button[name]");
         for (var i = 0; i < fields.length; i++) {
           var f = fields[i];
-          if (f.disabled) continue;
+          var name = f.getAttribute("name");
+          if (!name) continue;
+          if ("form" in f ? f.form !== form : !form.contains(f)) continue;
+          if (f.disabled || fieldsetOff(f)) continue;
           var type = (f.getAttribute("type") || "").toLowerCase();
+          if (f.localName === "button" || type === "submit" || type === "image") {
+            if (f !== submitter) continue;
+            if (type === "image") {
+              this._list.push([name + ".x", "0"]);
+              this._list.push([name + ".y", "0"]);
+            }
+            else this._list.push([name, String(f.value === undefined ? "" : f.value)]);
+            continue;
+          }
           if ((type === "checkbox" || type === "radio") && !f.checked) continue;
-          if (type === "submit" || type === "button" || type === "reset" || type === "file") continue;
-          this._list.push([f.getAttribute("name"), String(f.value === undefined ? "" : f.value)]);
+          if (type === "button" || type === "reset") continue;
+          if (type === "file") {
+            var files = f.files && f.files.length ? f.files : null;
+            if (files) for (var k = 0; k < files.length; k++) this._list.push([name, files[k]]);
+            else this._list.push([name, new File([], "", { type: "application/octet-stream" })]);
+            continue;
+          }
+          if (f.localName === "select" && f.multiple) {
+            var opts = f.options || f.querySelectorAll("option");
+            for (var j = 0; j < opts.length; j++) {
+              var o = opts[j];
+              if (o.selected && !o.disabled) this._list.push([name, String(o.value)]);
+            }
+            continue;
+          }
+          this._list.push([name, String(f.value === undefined ? "" : f.value)]);
         }
       }
     }
@@ -2799,9 +2841,12 @@
         return;
       }
       var to = new global.URL(formAttr(form, submitter, "formaction", "action"), global.document.baseURI || global.location.href);
+      // (each entry's name and value, a file's as its name but in multipart, where it's a file)
       var list = [];
-      new FormData(form).forEach(function (value, key) { if (typeof value === "string") list.push([key, value]); });
-      if (submitter && submitter.getAttribute && submitter.getAttribute("name")) list.push([submitter.getAttribute("name"), String(submitter.value === undefined ? "" : submitter.value)]);
+      new FormData(form, submitter).forEach(function (value, key) {
+        if (typeof value === "string") list.push([key, value]);
+        else list.push([key, String(value.name || ""), value]);
+      });
       if (method !== "post") {
         var pairs = new global.URLSearchParams();
         list.forEach(function (kv) { pairs.append(kv[0], kv[1]); });
@@ -2816,6 +2861,13 @@
         var esc = function (s) { return String(s).replace(/\r\n|\r|\n/g, "%0D%0A").replace(/"/g, "%22"); };
         body = "";
         list.forEach(function (kv) {
+          if (kv[2]) {
+            // (a file's bytes as UTF-8 text, as the body is one; an empty one, none chosen, as Chrome sends it)
+            var file = kv[2];
+            var bytes = file._bytes && file._bytes.length ? new TextDecoder().decode(file._bytes) : "";
+            body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + esc(kv[0]) + "\"; filename=\"" + esc(kv[1]) + "\"\r\nContent-Type: " + (file.type || "application/octet-stream") + "\r\n\r\n" + bytes + "\r\n";
+            return;
+          }
           body += "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + esc(kv[0]) + "\"\r\n\r\n" + String(kv[1]).replace(/\r\n|\r|\n/g, "\r\n") + "\r\n";
         });
         body += "--" + boundary + "--\r\n";

@@ -1,0 +1,24 @@
+# FormData's entries as Chrome makes them (and so what a form sends), checked against Brave on the
+# same page: fields without a name left out, those that name the form with form="" in and those
+# inside it naming another out, a disabled fieldset's fields out but for its first legend's, a
+# datalist's in (as Chrome has it), each chosen option of a select multiple, an empty File for a
+# file input with none chosen, and the submit button the form's sent with where it is (an image
+# button as its .x and .y).
+use weblib;
+
+phi.TestPageFormData:Program
+{
+	str html: '<!doctype html><meta charset=utf-8>\n<form id=f action="/x"><input name=a value=1><input name="" value=nameless><input value=noname>\n<input name=b value=2 form=other><fieldset disabled><input name=c value=3><legend><input name=c2 value=legend></legend></fieldset>\n<datalist><input name=d value=4></datalist><select name=s1><option>first<option>second</select>\n<select name=s2 multiple><option selected>m1<option>m2<option selected value=v3>m3<option selected disabled>m4</select>\n<input type=checkbox name=cb><input type=checkbox name=cb2 checked><input type=image name=img><input type=file name=up><button name=btn value=bv>go</button>\n<input name=z value=last></form>\n<form id=other></form><input name=outside value=out form=f><input name=away value=away>\n<script>window.__log=[];function L(s){__log.push(s);console.log(s);}\nvar e=[];new FormData(document.getElementById("f")).forEach(function(v,k){e.push(k+"="+(typeof v==="string"?v:"[File "+v.name+"]"));});L("f: "+e.join(" & "));\nvar o=[];new FormData(document.getElementById("other")).forEach(function(v,k){o.push(k+"="+v);});L("other: "+o.join(" & "));\n</script>\n<form id=g><input name=q value=x><button name=go value=one>1</button><input name=r value=y><input type=submit name=sub value=two><input type=image name=pic></form>\n<script>var g=document.getElementById("g");["go","sub","pic"].forEach(function(n){var s=g.querySelector("[name="+n+"]");var e=[];new FormData(g,s).forEach(function(v,k){e.push(k+"="+v);});L("g with "+n+": "+e.join(" & "));});\nvar e2=[];new FormData(g).forEach(function(v,k){e2.push(k+"="+v);});L("g alone: "+e2.join(" & "));\nvar fe=[];new FormData(document.getElementById("f")).forEach(function(v,k){if(typeof v!=="string")fe.push(k+" File name="+JSON.stringify(v.name)+" type="+v.type+" size="+v.size);});L("file entry: "+fe.join(", "));\n</script>\n';
+	call Weblib.Start: 900000;
+	PageHost host;
+	host.logger is addr Print;
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page addr html:0 html.len as u32 'https://forms.example/fd.html';
+	call Page.Tick: page 5.0;
+	call Page.Free: page;
+	exit 0;
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+}

@@ -384,3 +384,13 @@ PHI_LINUX_RUN a test that didn't compile ran nowhere and `phi test` said "0/0 pa
 succeeded (build.ps1 then said the run passed). Found when a new test with a type error passed.
 Fixed on PHI's macos branch (8ed6973): an arm64 host when there's no other. Runs with Lima were
 never fooled (its Linux is the first x86 system).
+
+## FormData's entries as Chrome makes them (2026-11-27)
+
+platform.js's FormData (and so every form sent) took `input[name]`, which matches `name=""`, and
+appended the submit button at the end. It now builds the entry list as Chrome does: by the
+form's owner (`form=""` counts), in tree order, nothing without a name, disabled ones (a
+disabled fieldset's, but for its first legend) out, each chosen option of a select multiple, an
+empty File for a file input with none chosen, and the submitter where it stands (FormData's second
+argument). Chrome keeps a `<datalist>`'s fields, which the standard drops; this follows Chrome.
+test_page_formdata (Brave's output as it is); PHI OS FINDINGS #60.

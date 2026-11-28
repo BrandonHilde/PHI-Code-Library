@@ -1,0 +1,7 @@
+f: a=1 & c2=legend & d=4 & s1=first & s2=m1 & s2=v3 & cb2=on & up=[File ] & z=last & outside=out
+other: b=2
+g with go: q=x & go=one & r=y
+g with sub: q=x & r=y & sub=two
+g with pic: q=x & r=y & pic.x=0 & pic.y=0
+g alone: q=x & r=y
+file entry: up File name="" type=application/octet-stream size=0
