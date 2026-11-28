@@ -1,0 +1,24 @@
+# TextEncoder and TextDecoder's UTF-8 (PHI's, page/platform.phi's %utf8Encode and %utf8Decode),
+# checked against Brave on the same page: a lone surrogate encoded as U+FFFD; each way UTF-8 can
+# go wrong decoded as the Encoding standard says (overlong, a surrogate, past U+10FFFF, a byte that
+# can't start one, cut short in the middle and at the end), fatal throwing for each; the BOM; a
+# sequence split across a stream's chunks at each place; a view with an offset; encodeInto; and a
+# string of a megabyte both ways, and as a Blob.
+use weblib;
+
+phi.TestPageUtf8:Program
+{
+	str html: '<!doctype html><meta charset=utf-8>\n<script>\nwindow.__log=[];function L(s){__log.push(s);console.log(s);}\nfunction hex(a){return Array.prototype.map.call(a,function(b){return b.toString(16);}).join(" ");}\nfunction units(s){var r=[];for(var i=0;i<s.length;i++)r.push(s.charCodeAt(i).toString(16));return r.join(" ");}\nvar e=new TextEncoder();\nL("lone: "+hex(e.encode("a\\uD800b\\uDFFFc\\uD83D")));\nL("pair: "+hex(e.encode("😀é€")));\nL("empty: "+e.encode().length+" "+e.encode("").length+" "+hex(e.encode(null))+" "+hex(e.encode(12)));\nvar cases=[[0xC0,0x80,0x41],[0xE0,0x80,0x80,0x41],[0xED,0xA0,0x80,0x41],[0xF4,0x90,0x80,0x80,0x41],[0xF5,0x41],[0xE2,0x82,0x41],[0xF0,0x9F,0x98,0x41],[0x80,0xBF,0x41],[0xE2,0x82],[0xF0,0x9F,0x98],[0xEF,0xBB,0xBF,0x41],[0xC2,0xA0,0xFF,0xFE]];\ncases.forEach(function(c){L("decode "+hex(c)+": "+units(new TextDecoder().decode(new Uint8Array(c))));});\nL("bom kept: "+units(new TextDecoder("utf-8",{ignoreBOM:true}).decode(new Uint8Array([0xEF,0xBB,0xBF,0x41]))));\ncases.forEach(function(c){try{new TextDecoder("utf-8",{fatal:true}).decode(new Uint8Array(c));L("fatal "+hex(c)+": ok");}catch(x){L("fatal "+hex(c)+": "+x.name);}});\nvar full=[0x41,0xE2,0x82,0xAC,0xF0,0x9F,0x98,0x80,0xC3,0xA9,0x42];\nfor(var cut=1;cut<full.length;cut++){var d=new TextDecoder();var s=d.decode(new Uint8Array(full.slice(0,cut)),{stream:true});s+=d.decode(new Uint8Array(full.slice(cut)));L("split "+cut+": "+units(s));}\nvar d2=new TextDecoder();L("stream bad tail: "+units(d2.decode(new Uint8Array([0x41,0xE2,0x41]),{stream:true}))+" / "+units(d2.decode(new Uint8Array([0x82,0xAC]))));\nvar d3=new TextDecoder();L("stream end: "+units(d3.decode(new Uint8Array([0xE2,0x82]),{stream:true}))+" / "+units(d3.decode()));\nvar buf=new Uint8Array([0x58,0x41,0xC3,0xA9,0x42,0x59]);L("view: "+units(new TextDecoder().decode(buf.subarray(1,5)))+" "+units(new TextDecoder().decode(new DataView(buf.buffer,2,2))));\nvar into=new Uint8Array(5);var r=e.encodeInto("a€€",into);L("encodeInto: "+r.read+" "+r.written+" "+hex(into));\nvar big="";for(var i=0;i<50000;i++)big+="héllo € 😀 world ";var t0=Date.now();var b=e.encode(big);var back=new TextDecoder().decode(b);\nL("big: "+big.length+" "+b.length+" "+(back===big));\nvar blob=new Blob(["xé",big]);L("blob: "+blob.size);\n</script>\n';
+	call Weblib.Start: 900000;
+	PageHost host;
+	host.logger is addr Print;
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page addr html:0 html.len as u32 'https://text.example/utf.html';
+	call Page.Tick: page 5.0;
+	call Page.Free: page;
+	exit 0;
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+}

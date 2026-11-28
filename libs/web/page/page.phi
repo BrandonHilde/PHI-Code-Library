@@ -253,6 +253,7 @@ struct.Page
 	bln observing;          # a MutationObserver is watching (page/observers.phi)
 	bln custom_elements;    # a custom element is defined (page/elements.phi)
 
+	u32 activations;        # how many times a key (but Escape) or the mouse was pressed: user activation
 	u64 keep;
 	u64 window_location;
 	u64 storage;
@@ -434,6 +435,11 @@ phi.Page:Library
 	[CssState: ptr<DomNode> e: 0; u32 what: 0;]
 		if what is CssSel.ST_POPOVER_OPEN
 			if (e.flags & Dom.POPOVER_OPEN) is not 0 return 1;
+			return 0;
+		;;
+		if what is CssSel.ST_MODAL
+			# (one taken out of the document is out of the top layer, though it's still open)
+			if (e.flags & Dom.MODAL) is not 0 and (Dom.IsConnected: e) return 1;
 			return 0;
 		;;
 		ptr<Page> p: current;
@@ -1805,6 +1811,7 @@ phi.Page:Library
 				if button is 0
 					call Pressed: p node;
 				;;
+				p.activations++;
 				p.no_compat is not (SendPointer: p node 'pointerdown' x y button buttons 0 as ptr<DomNode>);
 				if not p.no_compat
 					allowed is (SendPointer: p node 'mousedown' x y button buttons 0 as ptr<DomNode> clicks);
@@ -2100,6 +2107,9 @@ phi.Page:Library
 	[Key: ptr<Page> p: 0; ptr<u8> key: 0; ptr<u8> code: 0; int key_code: 0; int char_code: 0; bln ctrl: false; bln shift: false; bln alt: false; bln meta: false; : bln]
 		call Use: p;
 		p.space_on is 0;
+		if not (WlText.EqZ: key (WlText.LenZ: key) 'Escape')
+			p.activations++;
+		;;
 		p.nest++;
 		bln allowed: (PageEvents.Dispatch: (PageBind.Wrap: (KeyTarget: p)) (PageEvents.NewKeyboard: 'keydown' key code key_code 0 ctrl shift alt meta));
 		# (Enter on a link: Chrome follows it as keydown's default, which stops the keypress)
@@ -2157,6 +2167,20 @@ phi.Page:Library
 		ptr<DomNode> f: (Focused: p);
 		if (WlText.EqZ: key kl 'Tab')
 			return (TabFocus: p shift);
+		;;
+		if (WlText.EqZ: key kl 'Escape')
+			# (a modal dialog's close request: cancel, then close if that isn't canceled)
+			u64 hook: (Js.GetProp: p.keep '%escape');
+			if (JsV.IsObj: hook)
+				p.nest++;
+				u64 did: (Js.Call: hook JsV.UNDEF 0);
+				p.nest--;
+				if Js.failed
+					call ReportException: p;
+				;;
+				call RunJobs: p;
+				if did is JsV.TRUE return true;
+			;;
 		;;
 		if f is 0 return false;
 		if (WlText.EqZ: key kl 'Enter')

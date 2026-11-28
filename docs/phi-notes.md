@@ -394,3 +394,22 @@ disabled fieldset's, but for its first legend) out, each chosen option of a sele
 empty File for a file input with none chosen, and the submitter where it stands (FormData's second
 argument). Chrome keeps a `<datalist>`'s fields, which the standard drops; this follows Chrome.
 test_page_formdata (Brave's output as it is); PHI OS FINDINGS #60.
+
+## `<dialog>`, and UTF-8 in PHI (2026-11-27)
+
+HTMLDialogElement had none of its methods (nature.com's consent: `showModal is not a function`).
+platform.js now has show, showModal, close, requestClose, returnValue and closedBy; `%dialog` sets
+Dom.MODAL (CSS's `:modal`, which a dialog taken out of the document loses), the UA sheet has the
+standard's `dialog:modal` and `::backdrop` rules, and Escape (Page.KeyDefault) asks the last modal
+dialog to close through `%dialogHook`. Page.activations counts key (not Escape) and mouse presses:
+Escape's cancel can be canceled only if one came since the dialog was shown or the last time it
+could, as in Chrome. Unexpected, from Brave: close is fired at the next animation frame, not as a
+task; show() moves the focus as showModal() does. test_page_dialog (Brave's output).
+
+TextEncoder and TextDecoder built UTF-8 a byte at a time in JavaScript; a 4 MB Blob of a string
+took about 1 s (YouTube's player went past the 6 s a script may run). A JS string is WTF-8
+already, so `%utf8Encode` copies its bytes, a lone surrogate's three (ED A0..BF xx) made U+FFFD's
+three; `%utf8Decode` checks and copies, U+FFFD for each maximal bad part as the Encoding standard
+says, null for fatal. The BOM and a stream's unfinished tail stay in JavaScript. The 4 MB Blob
+takes 5 ms (205 times faster than before), encode and decode back 12 ms (112 times faster).
+test_page_utf8 (Brave's output); PHI OS FINDINGS #61.

@@ -1,0 +1,44 @@
+lone: 61 ef bf bd 62 ef bf bd 63 ef bf bd
+pair: f0 9f 98 80 c3 a9 e2 82 ac
+empty: 0 0 6e 75 6c 6c 31 32
+decode c0 80 41: fffd fffd 41
+decode e0 80 80 41: fffd fffd fffd 41
+decode ed a0 80 41: fffd fffd fffd 41
+decode f4 90 80 80 41: fffd fffd fffd fffd 41
+decode f5 41: fffd 41
+decode e2 82 41: fffd 41
+decode f0 9f 98 41: fffd 41
+decode 80 bf 41: fffd fffd 41
+decode e2 82: fffd
+decode f0 9f 98: fffd
+decode ef bb bf 41: 41
+decode c2 a0 ff fe: a0 fffd fffd
+bom kept: feff 41
+fatal c0 80 41: TypeError
+fatal e0 80 80 41: TypeError
+fatal ed a0 80 41: TypeError
+fatal f4 90 80 80 41: TypeError
+fatal f5 41: TypeError
+fatal e2 82 41: TypeError
+fatal f0 9f 98 41: TypeError
+fatal 80 bf 41: TypeError
+fatal e2 82: TypeError
+fatal f0 9f 98: TypeError
+fatal ef bb bf 41: ok
+fatal c2 a0 ff fe: TypeError
+split 1: 41 20ac d83d de00 e9 42
+split 2: 41 20ac d83d de00 e9 42
+split 3: 41 20ac d83d de00 e9 42
+split 4: 41 20ac d83d de00 e9 42
+split 5: 41 20ac d83d de00 e9 42
+split 6: 41 20ac d83d de00 e9 42
+split 7: 41 20ac d83d de00 e9 42
+split 8: 41 20ac d83d de00 e9 42
+split 9: 41 20ac d83d de00 e9 42
+split 10: 41 20ac d83d de00 e9 42
+stream bad tail: 41 fffd 41 / fffd fffd
+stream end:  / fffd
+view: 41 e9 42 e9
+encodeInto: 2 4 61 e2 82 ac 0
+big: 850000 1100000 true
+blob: 1100003

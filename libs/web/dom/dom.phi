@@ -158,6 +158,8 @@ phi.Dom:Library
 	                                        # inert document, where nothing is upgraded), until it's put in
 	const u32 DIRTY_SELF: 0x200000;         # CSS: this element's own style again, but what's under it
 	                                        # only if that changes (a :has() or :first-child that may hold now)
+	const u32 MODAL: 0x400000;              # the page's: a dialog shown with showModal (CSS's :modal), in the
+	                                        # top layer, over the page with its ::backdrop
 	const u32 PICTURE_POLICY: 0xF000000;    # the page's: the referrer policy an <img> asked for its picture by,
 	const u32 PICTURE_POLICY_SHIFT: 24;     # one more than it (Page.PicturePolicy), in these bits
 

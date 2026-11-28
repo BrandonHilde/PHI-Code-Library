@@ -1,0 +1,37 @@
+kind: [object HTMLDialogElement] true function function function function
+open: false true rv="" closedBy=none
+styles: a=none b=block absolute
+after showModal: open=true attr=true modal=true active=ab display=block position=fixed
+showModal again: ok
+show on modal: InvalidStateError
+showModal on open: InvalidStateError
+detached: InvalidStateError
+after close: open=false rv=done modal=false active=out
+close again rv=done
+b closed: false rv=""
+c show: open=true modal=false active=ci
+after submit: open=false rv=yes
+open=true: true modal=false
+attr removed: open=false
+a cancel rv=done open=true cancelable=true bubbles=false [object Event]
+requestClose: open=false rv=asked
+a cancel rv=asked open=true cancelable=true bubbles=false [object Event]
+requestClose kept: open=true rv=asked
+removed: open=true modal=false
+a close rv=asked open=true cancelable=false bubbles=false [object Event]
+b close rv= open=false cancelable=false bubbles=false [object Event]
+c close rv=yes open=false cancelable=false bubbles=false [object Event]
+a close rv=asked open=true cancelable=false bubbles=false [object Event]
+keydown Escape open=true
+cancel 1 cancelable=false prevented=false
+close open=false active=out
+keydown r open=false
+reopened active=ai
+keydown x open=true
+keydown Escape open=true
+cancel 2 cancelable=true prevented=true
+keydown Escape open=true
+cancel 3 cancelable=false prevented=false
+close open=false active=out
+keydown x open=false
+keydown Escape open=false

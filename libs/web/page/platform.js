@@ -550,23 +550,32 @@
 
   // ---- TextEncoder, TextDecoder ----
 
+  // (UTF-8 both ways is PHI's: %utf8Encode and %utf8Decode in page/platform.phi. A string of
+  // megabytes made into a Blob, as YouTube does, took longer than a script may run one byte at a
+  // time here.)
+  var utf8Encode = global["%utf8Encode"], utf8Decode = global["%utf8Decode"];
+  delete global["%utf8Encode"]; delete global["%utf8Decode"];
+  // where an unfinished sequence at the end of bytes (from at least from) starts, for a decoder
+  // that's streaming to keep for next time: n if there's none, or what's there can't go on
+  function utf8Tail(bytes, from, n) {
+    for (var back = 1; back <= 3 && back <= n - from; back++) {
+      var b = bytes[n - back];
+      if ((b & 0xC0) === 0x80) continue;
+      var need = b >= 0xC2 && b <= 0xDF ? 1 : b >= 0xE0 && b <= 0xEF ? 2 : b >= 0xF0 && b <= 0xF4 ? 3 : 0;
+      if (need < back) return n;
+      if (back > 1) {
+        var x = bytes[n - back + 1];
+        var lower = b === 0xE0 ? 0xA0 : b === 0xF0 ? 0x90 : 0x80, upper = b === 0xED ? 0x9F : b === 0xF4 ? 0x8F : 0xBF;
+        if (x < lower || x > upper) return n;
+      }
+      return n - back;
+    }
+    return n;
+  }
   class TextEncoder {
     get encoding() { return "utf-8"; }
     encode(s) {
-      s = s === undefined ? "" : String(s);
-      var out = [];
-      for (var i = 0; i < s.length; i++) {
-        var c = s.charCodeAt(i);
-        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) {
-          var d = s.charCodeAt(i + 1);
-          if (d >= 0xDC00 && d <= 0xDFFF) { c = 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00); i++; } else c = 0xFFFD;
-        } else if (c >= 0xD800 && c <= 0xDFFF) c = 0xFFFD;
-        if (c < 0x80) out.push(c);
-        else if (c < 0x800) out.push(0xC0 | (c >> 6), 0x80 | (c & 63));
-        else if (c < 0x10000) out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
-        else out.push(0xF0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
-      }
-      return new Uint8Array(out);
+      return new Uint8Array(utf8Encode(s === undefined ? "" : String(s)));
     }
     encodeInto(s, dest) {
       var bytes = this.encode(s);
@@ -624,40 +633,14 @@
         return out;
       }
       if (!this._bom && n >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) i = 3;
-      var chunk = [];
-      while (i < n) {
-        var b = bytes[i], need = 0, c = 0, lower = 0x80, upper = 0xBF;
-        if (b < 0x80) { chunk.push(b); i++; }
-        else {
-          if (b >= 0xC2 && b <= 0xDF) { need = 1; c = b & 31; }
-          else if (b >= 0xE0 && b <= 0xEF) { need = 2; c = b & 15; if (b === 0xE0) lower = 0xA0; if (b === 0xED) upper = 0x9F; }
-          else if (b >= 0xF0 && b <= 0xF4) { need = 3; c = b & 7; if (b === 0xF0) lower = 0x90; if (b === 0xF4) upper = 0x8F; }
-          else need = -1;
-          var j = i + 1, ok = need > 0;
-          for (var k = 0; ok && k < need; k++, j++) {
-            if (j >= n) {
-              if (stream) { this._pending = Array.prototype.slice.call(bytes, i); i = n; ok = false; need = -2; break; }
-              ok = false; break;
-            }
-            var x = bytes[j];
-            if (x < lower || x > upper) { ok = false; break; }
-            lower = 0x80; upper = 0xBF;
-            c = (c << 6) | (x & 63);
-          }
-          if (need === -2) break;
-          if (ok) {
-            if (c >= 0x10000) { c -= 0x10000; chunk.push(0xD800 + (c >> 10), 0xDC00 + (c & 1023)); } else chunk.push(c);
-            i = j;
-          } else {
-            if (this._fatal) throw new TypeError("The data isn't valid UTF-8");
-            chunk.push(0xFFFD);
-            i = need > 0 ? Math.max(i + 1, j) : i + 1;
-          }
-        }
-        if (chunk.length >= 4096) { out += String.fromCharCode.apply(null, chunk); chunk = []; }
+      var to = n;
+      if (stream) {
+        to = utf8Tail(bytes, i, n);
+        if (to < n) this._pending = Array.prototype.slice.call(bytes, to);
       }
-      if (chunk.length) out += String.fromCharCode.apply(null, chunk);
-      return out;
+      var text = utf8Decode(bytes.buffer, bytes.byteOffset + i, bytes.byteOffset + to, this._fatal);
+      if (text === null) throw new TypeError("The data isn't valid UTF-8");
+      return text;
     }
   }
   define("TextDecoder", TextDecoder);
@@ -3720,6 +3703,121 @@
     hidden(hp, "togglePopover", function togglePopover(force) {
       var open = force === undefined ? !openPopovers.has(this) : !!force;
       return settle(this, open);
+    });
+  }
+
+  // ---- <dialog> ----
+  // show() and showModal() open a dialog (its open attribute) and give the focus to what's in it
+  // (what has autofocus, else the first that takes it); a modal one is in the top layer (%dialog:
+  // CSS's :modal, the browser paints it over the page with its ::backdrop). close(value) shuts it,
+  // gives the focus back and fires close, which Chrome sends at the next animation frame; Escape
+  // (Page.KeyDefault through %dialogHook) and requestClose fire cancel first. A cancel from Escape
+  // can be canceled only if the user has pressed a key or the mouse since it was shown (or since
+  // the last one that could), as in Chrome. Not kept: what's outside a modal dialog being inert,
+  // and closedby="any"'s light dismiss.
+  var dialogNative = global["%dialog"], dialogHook = global["%dialogHook"], activations = global["%activations"];
+  delete global["%dialog"]; delete global["%dialogHook"]; delete global["%activations"];
+  if (global.HTMLDialogElement && !global.HTMLDialogElement.prototype.showModal) {
+    var dlp = global.HTMLDialogElement.prototype;
+    var dialogState = new WeakMap();
+    var modals = [];
+    var stateOf = function (d) {
+      var st = dialogState.get(d);
+      if (!st) { st = { modal: false, before: null, rv: "", acts: 0 }; dialogState.set(d, st); }
+      return st;
+    };
+    var focusDelegate = function (d) {
+      var all = d.querySelectorAll("*");
+      for (var i = 0; i < all.length; i++) if (all[i].hasAttribute("autofocus")) return all[i];
+      for (var j = 0; j < all.length; j++) {
+        var e = all[j], t = e.localName;
+        if (e.hasAttribute("disabled") && /^(button|input|select|textarea)$/.test(t)) continue;
+        if (t === "input" && String(e.getAttribute("type")).toLowerCase() === "hidden") continue;
+        if (/^(button|input|select|textarea|iframe)$/.test(t) || ((t === "a" || t === "area") && e.hasAttribute("href")) ||
+            (e.hasAttribute("tabindex") && !isNaN(parseInt(e.getAttribute("tabindex"), 10))) ||
+            (e.hasAttribute("contenteditable") && e.getAttribute("contenteditable") !== "false")) return e;
+      }
+      return null;
+    };
+    var opened = function (d, modal) {
+      var st = stateOf(d);
+      st.before = global.document.activeElement;
+      st.modal = modal;
+      st.acts = activations();
+      if (!d.hasAttribute("open")) d.setAttribute("open", "");
+      if (modal) { modals.push(d); dialogNative(d, true); }
+      var to = focusDelegate(d) || d;
+      if (to.focus) to.focus();
+    };
+    var stopModal = function (d) {
+      var i = modals.indexOf(d);
+      if (i >= 0) modals.splice(i, 1);
+      dialogNative(d, false);
+    };
+    var later = global.requestAnimationFrame ? function (f) { global.requestAnimationFrame(f); } : function (f) { setTimeout(f, 0); };
+    var closeDialog = function (d, result) {
+      if (!d.hasAttribute("open")) return;
+      var st = stateOf(d), was = st.modal;
+      if (result !== undefined && result !== null) st.rv = String(result);
+      d.removeAttribute("open");
+      if (st.modal) { st.modal = false; stopModal(d); }
+      var before = st.before;
+      st.before = null;
+      var act = global.document.activeElement;
+      if (before && before.isConnected && before.focus && (was || (act && d.contains(act)))) before.focus();
+      later(function () { d.dispatchEvent(new Event("close")); });
+    };
+    // (cancel, then close if it isn't canceled; cancelable says whether it can be)
+    var requestClose = function (d, result, cancelable) {
+      if (!d.hasAttribute("open")) return;
+      if (!d.dispatchEvent(new Event("cancel", { cancelable: cancelable })) && cancelable) return;
+      closeDialog(d, result);
+    };
+    hidden(dlp, "show", function show() {
+      if (this.hasAttribute("open")) {
+        if (stateOf(this).modal) throw new DOMException("The dialog is already open as a modal dialog, and therefore cannot be opened as a non-modal one.", "InvalidStateError");
+        return;
+      }
+      opened(this, false);
+    });
+    hidden(dlp, "showModal", function showModal() {
+      var st = stateOf(this);
+      if (this.hasAttribute("open")) {
+        if (st.modal && this.isConnected) return;
+        throw new DOMException("The element already has an 'open' attribute, and therefore cannot be opened modally.", "InvalidStateError");
+      }
+      if (!this.isConnected) throw new DOMException("The element is not in a Document.", "InvalidStateError");
+      opened(this, true);
+    });
+    hidden(dlp, "close", function close(result) { closeDialog(this, result); });
+    hidden(dlp, "requestClose", function requestClose_(result) { requestClose(this, result, true); });
+    Object.defineProperty(dlp, "returnValue", {
+      get: function () { return stateOf(this).rv; },
+      set: function (v) { stateOf(this).rv = String(v); },
+      enumerable: true, configurable: true
+    });
+    Object.defineProperty(dlp, "closedBy", {
+      get: function () {
+        var v = String(this.getAttribute("closedby") || "").toLowerCase();
+        if (v === "any" || v === "closerequest" || v === "none") return v;
+        return stateOf(this).modal ? "closerequest" : "none";
+      },
+      set: function (v) { this.setAttribute("closedby", String(v)); },
+      enumerable: true, configurable: true
+    });
+    // Escape: the last modal dialog still in the document (and showing) gets a close request
+    dialogHook(function () {
+      for (var i = modals.length - 1; i >= 0; i--) {
+        var d = modals[i];
+        if (!d.isConnected || !d.hasAttribute("open")) continue;
+        if (d.closedBy === "none") return true;
+        // (one that can be canceled uses up the user's press: the next Escape closes it)
+        var st = stateOf(d), can = activations() > st.acts;
+        if (can) st.acts = activations();
+        requestClose(d, undefined, can);
+        return true;
+      }
+      return false;
     });
   }
 

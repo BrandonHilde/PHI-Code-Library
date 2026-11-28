@@ -1,0 +1,51 @@
+# <dialog> as Chrome has it, checked against Brave on the same pages (PHI OS tools/mouse_ref.py):
+# show() and showModal() opening it and giving the focus to what has autofocus in it (else the first
+# that takes it), :modal and position: fixed for a modal one, the InvalidStateErrors, close(value)
+# setting returnValue and giving the focus back, close fired at the next animation frame (after
+# what the script does next), a form with method=dialog closing it with its button's value,
+# requestClose's cancel (which can be canceled), one taken out of the document leaving the top
+# layer. Then Escape: cancel and close, the cancel cancelable only if a key or the mouse was
+# pressed since the dialog was shown or since the last cancelable one.
+use weblib;
+
+phi.TestPageDialog:Program
+{
+	str one: '<!doctype html><meta charset=utf-8>\n<dialog id=a><p>Hi</p><button id=ab autofocus>ok</button></dialog>\n<dialog id=b open>b</dialog>\n<dialog id=c><form method=dialog><input id=ci><button id=cb value=yes>Yes</button></form></dialog>\n<button id=out>out</button>\n<script>\nwindow.__log=[];function L(s){__log.push(s);console.log(s);}\nvar a=document.getElementById("a"),b=document.getElementById("b"),c=document.getElementById("c");\nfunction act(){return document.activeElement?document.activeElement.id||document.activeElement.localName:"none";}\nL("kind: "+Object.prototype.toString.call(a)+" "+(a instanceof HTMLDialogElement)+" "+typeof a.showModal+" "+typeof a.show+" "+typeof a.close+" "+typeof a.requestClose);\nL("open: "+a.open+" "+b.open+" rv="+JSON.stringify(a.returnValue)+" closedBy="+a.closedBy);\nL("styles: a="+getComputedStyle(a).display+" b="+getComputedStyle(b).display+" "+getComputedStyle(b).position);\n["a","b","c"].forEach(function(id){var d=document.getElementById(id);["close","cancel"].forEach(function(t){d.addEventListener(t,function(e){L(id+" "+t+" rv="+d.returnValue+" open="+d.open+" cancelable="+e.cancelable+" bubbles="+e.bubbles+" "+Object.prototype.toString.call(e));});});});\ndocument.getElementById("out").focus();\na.showModal();\nL("after showModal: open="+a.open+" attr="+a.hasAttribute("open")+" modal="+a.matches(":modal")+" active="+act()+" display="+getComputedStyle(a).display+" position="+getComputedStyle(a).position);\ntry{a.showModal();L("showModal again: ok");}catch(e){L("showModal again: "+e.name);}\ntry{a.show();L("show on modal: ok");}catch(e){L("show on modal: "+e.name);}\ntry{b.showModal();L("showModal on open: ok");}catch(e){L("showModal on open: "+e.name);}\nvar d2=document.createElement("dialog");try{d2.showModal();L("detached: ok");}catch(e){L("detached: "+e.name);}\na.close("done");\nL("after close: open="+a.open+" rv="+a.returnValue+" modal="+a.matches(":modal")+" active="+act());\na.close("again"); L("close again rv="+a.returnValue);\nb.close(); L("b closed: "+b.open+" rv="+JSON.stringify(b.returnValue));\nc.show(); L("c show: open="+c.open+" modal="+c.matches(":modal")+" active="+act());\ndocument.getElementById("cb").click();\nL("after submit: open="+c.open+" rv="+c.returnValue);\na.open=true; L("open=true: "+a.hasAttribute("open")+" modal="+a.matches(":modal"));\na.removeAttribute("open"); L("attr removed: open="+a.open);\na.showModal(); a.requestClose("asked"); L("requestClose: open="+a.open+" rv="+a.returnValue);\na.showModal(); a.addEventListener("cancel",function(e){e.preventDefault();},{once:true}); a.requestClose("kept"); L("requestClose kept: open="+a.open+" rv="+a.returnValue);\na.remove(); L("removed: open="+a.open+" modal="+a.matches(":modal"));\n</script>\n';
+	str two: '<!doctype html><meta charset=utf-8>\n<button id=out>out</button>\n<dialog id=a><input id=ai></dialog>\n<script>\nwindow.__log=[];function L(s){__log.push(s);console.log(s);}\nfunction act(){return document.activeElement?document.activeElement.id||document.activeElement.localName:"none";}\nvar a=document.getElementById("a"),n=0;\na.addEventListener("cancel",function(e){n++;if(e.cancelable)e.preventDefault();L("cancel "+n+" cancelable="+e.cancelable+" prevented="+e.defaultPrevented);});\na.addEventListener("close",function(e){L("close open="+a.open+" active="+act());});\ndocument.getElementById("out").focus();\na.showModal();\ndocument.addEventListener("keydown",function(e){L("keydown "+e.key+" open="+a.open);if(e.key==="r"){a.showModal();L("reopened active="+act());}});\n</script>\n';
+	call Weblib.Start: 900000;
+	PageHost host;
+	host.logger is addr Print;
+	ptr<Page> page: (Page.New: addr host 800.0 600.0);
+	call Page.Load: page addr one:0 one.len as u32 'https://dialogs.example/dlg.html';
+	call Page.Tick: page 5.0;
+	call Page.Frame: page 16.0;
+	call Page.Tick: page 20.0;
+	call Page.Free: page;
+	page is (Page.New: addr host 800.0 600.0);
+	call Page.Load: page addr two:0 two.len as u32 'https://dialogs.example/esc.html';
+	call Page.Tick: page 5.0;
+	call Press: page 'Escape' 'Escape' 27 0;
+	call Press: page 'r' 'KeyR' 82 114;
+	call Press: page 'x' 'KeyX' 88 120;
+	call Press: page 'Escape' 'Escape' 27 0;
+	call Press: page 'Escape' 'Escape' 27 0;
+	call Press: page 'x' 'KeyX' 88 120;
+	call Press: page 'Escape' 'Escape' 27 0;
+	call Page.Free: page;
+	exit 0;
+
+	# a key pressed and let go, then a frame (where close is fired)
+	[Press: ptr<Page> page: 0; ptr<u8> key: 0; ptr<u8> code: 0; int key_code: 0; int char_code: 0;]
+		if (Page.Key: page key code key_code char_code false false false false)
+			bln did: (Page.KeyDefault: page key false);
+		;;
+		bln up: (Page.KeyUp: page key code key_code false false false false);
+		call Page.Tick: page 30.0;
+		call Page.Frame: page 30.0;
+		call Page.Tick: page 30.0;
+	[end]
+
+	[Print: ptr<Page> p: 0; ptr<u8> text: 0; u32 n: 0; int level: 0;]
+		log text '\n';
+	[end]
+}

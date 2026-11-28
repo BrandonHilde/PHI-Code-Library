@@ -17,6 +17,11 @@ phi.PagePlatform:Library
 		call Js.DefineNative: JsRt.r.global '%styleText' addr StyleText 2;
 		call Js.DefineNative: JsRt.r.global '%linkText' addr LinkText 1;
 		call Js.DefineNative: JsRt.r.global '%popover' addr Popover 2;
+		call Js.DefineNative: JsRt.r.global '%utf8Encode' addr Utf8Encode 1;
+		call Js.DefineNative: JsRt.r.global '%utf8Decode' addr Utf8Decode 4;
+		call Js.DefineNative: JsRt.r.global '%dialog' addr Dialog 2;
+		call Js.DefineNative: JsRt.r.global '%dialogHook' addr DialogHook 1;
+		call Js.DefineNative: JsRt.r.global '%activations' addr Activations 0;
 		call Js.DefineNative: JsRt.r.global '%media' addr PageMedia.Native 3;
 		call Js.DefineNative: JsRt.r.global '%post' addr Post 3;
 		call Js.DefineNative: JsRt.r.global '%fontFaces' addr FontFaces 0;
@@ -87,6 +92,160 @@ phi.PagePlatform:Library
 		ptr<Page> p: Page.current;
 		call p.css.MarkDirty: n;
 	[end: JsV.UNDEF]
+
+	# %utf8Encode(string): its UTF-8 as an ArrayBuffer (TextEncoder.encode). A string is WTF-8
+	# already: but a lone surrogate (ED A0..BF xx) is U+FFFD (EF BF BD), as long.
+	[Utf8Encode: ptr<u64> args: 0; int argc: 0;]
+		ptr<JsStr> s: (JsStrs.Flat: (JsOps.ToStr: (Js.Arg: args argc 0)));
+		u32 n: s.bytes;
+		ptr<JsObj> b: (JsTyped.NewBuffer: n as f64 JsRt.P.arraybuffer);
+		u64 bv: (JsV.Obj: b);
+		ptr<u8> to: (JsTyped.BytesOf: bv);
+		call Mem.Copy: to s.data n;
+		if (s.flags & JsStrs.F_ASCII) is 0
+			u32 i: 0;
+			while i + 2 < n
+				if to:i is 0xED and to:(i + 1) >= 0xA0
+					to:i is 0xEF;
+					to:(i + 1) is 0xBF;
+					to:(i + 2) is 0xBD;
+					i++ 3;
+				;;
+				else
+					i++;
+				;;
+			;;
+		;;
+	[end: bv]
+
+	# %utf8Decode(buffer, start, end, fatal): the text of the buffer's bytes from start to end, as
+	# UTF-8 (TextDecoder.decode). What isn't good UTF-8 is U+FFFD as the Encoding standard has it:
+	# one for each most of a sequence that started well, one for a byte that can't start one. Null
+	# if fatal and there's any.
+	[Utf8Decode: ptr<u64> args: 0; int argc: 0;]
+		u64 bv: (Js.Arg: args argc 0);
+		if not (JsV.IsObj: bv) return (JsV.Str: JsRt.blank);
+		u32 size: (JsTyped.BytesLen: bv) as u32;
+		u32 start: (JsOps.ToInteger: (Js.Arg: args argc 1)) as u32;
+		u32 stop: (JsOps.ToInteger: (Js.Arg: args argc 2)) as u32;
+		bln fatal: (JsOps.ToBool: (Js.Arg: args argc 3));
+		if stop > size
+			stop is size;
+		;;
+		if start >= stop return (JsV.Str: JsRt.blank);
+		ptr<u8> p: (JsTyped.BytesOf: bv) + start;
+		u32 n: stop - start;
+		WlBuf text;
+		bln bad: false;
+		u32 i: 0;
+		while i < n
+			u32 c: p:i;
+			if c < 0x80
+				if bad
+					call text.Add: c as u8;
+				;;
+				i++;
+				continue;
+			;;
+			u32 need: 0;
+			u32 lower: 0x80;
+			u32 upper: 0xBF;
+			if c >= 0xC2 and c <= 0xDF
+				need is 1;
+			;;
+			elif c >= 0xE0 and c <= 0xEF
+				need is 2;
+				if c is 0xE0
+					lower is 0xA0;
+				;;
+				if c is 0xED
+					upper is 0x9F;
+				;;
+			;;
+			elif c >= 0xF0 and c <= 0xF4
+				need is 3;
+				if c is 0xF0
+					lower is 0x90;
+				;;
+				if c is 0xF4
+					upper is 0x8F;
+				;;
+			;;
+			u32 j: i + 1;
+			bln ok: need > 0;
+			u32 k: 0;
+			while ok and k < need
+				if j >= n or p:j < lower or p:j > upper
+					ok is false;
+				;;
+				else
+					lower is 0x80;
+					upper is 0xBF;
+					j++;
+					k++;
+				;;
+			;;
+			if ok
+				if bad
+					call text.AddN: p + i j - i;
+				;;
+				i is j;
+				continue;
+			;;
+			if fatal
+				call text.Free;
+				return JsV.NULL;
+			;;
+			if not bad
+				# (the first that isn't good: what came before is copied, the rest goes along)
+				bad is true;
+				call text.AddN: p i;
+			;;
+			call text.Add: 0xEF;
+			call text.Add: 0xBF;
+			call text.Add: 0xBD;
+			if need > 0 and j > i + 1
+				i is j;
+			;;
+			else
+				i++;
+			;;
+		;;
+		if not bad
+			return (JsV.Str: (JsStrs.New: p n));
+		;;
+		ptr<JsStr> t: (JsStrs.New: text.data text.len);
+		call text.Free;
+	[end: (JsV.Str: t)]
+
+	# %dialog(element, modal): whether a dialog is modal (CSS's :modal; the browser paints it over the
+	# page, with its ::backdrop); its style is worked out again
+	[Dialog: ptr<u64> args: 0; int argc: 0;]
+		ptr<DomNode> n: (PageBind.NodeOf: (Js.Arg: args argc 0));
+		bln modal: (JsOps.ToBool: (Js.Arg: args argc 1));
+		if n is 0 return JsV.UNDEF;
+		if modal
+			n.flags is n.flags | Dom.MODAL;
+		;;
+		else
+			n.flags is n.flags & (0xFFFFFFFF ^ Dom.MODAL);
+		;;
+		ptr<Page> p: Page.current;
+		call p.css.MarkDirty: n;
+	[end: JsV.UNDEF]
+
+	# %dialogHook(fn): what Escape calls (Page.KeyDefault), fn(), true if it closed (or asked to
+	# close) a modal dialog
+	[DialogHook: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+		call Js.SetProp: p.keep '%escape' (Js.Arg: args argc 0);
+	[end: JsV.UNDEF]
+
+	# %activations(): how many times the user has pressed a key (but Escape) or the mouse: a cancel
+	# event can be canceled if they have since the dialog was shown, as in Chrome
+	[Activations: ptr<u64> args: 0; int argc: 0;]
+		ptr<Page> p: Page.current;
+	[end: (JsV.Num: p.activations as f64)]
 
 	# ---- constructable stylesheets (new CSSStyleSheet), and the trees that adopt them
 
